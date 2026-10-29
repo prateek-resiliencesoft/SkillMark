@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { ArrowUpRight, Building2, KeyRound, Settings, Users } from "lucide-react";
+import { ArrowUpRight, Building2, KeyRound, Settings, Sparkles, Users } from "lucide-react";
 import { motion } from "motion/react";
 
 export default function SettingsLayout({
@@ -41,6 +41,11 @@ export default function SettingsLayout({
       icon: KeyRound,
     },
     {
+      name: isZh ? "AI" : "AI",
+      href: "/settings/ai",
+      icon: Sparkles,
+    },
+    {
       name: isZh ? "组织" : "Organizations",
       href: "/organizations",
       icon: Building2,
@@ -49,7 +54,7 @@ export default function SettingsLayout({
   ];
 
   useEffect(() => {
-    const routes = ["/settings", "/settings/members", "/settings/api-keys", "/organizations"];
+    const routes = ["/settings", "/settings/members", "/settings/api-keys", "/settings/ai", "/organizations"];
     routes.forEach((route) => {
       try {
         router.prefetch(route);

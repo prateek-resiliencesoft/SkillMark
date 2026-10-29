@@ -1,5 +1,5 @@
 import { buildInterviewerPrompt } from "@/lib/ai/prompts/interviewer";
-import { getProvider } from "@/lib/ai/registry";
+import { resolveProvider } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("api/ai/chat");
@@ -14,7 +14,7 @@ export async function POST(req: Request) {
   try {
     const { data: interview } = await supabaseAdmin
       .from("interviews")
-      .select("*, questions(*)")
+      .select("*, questions(*), project:projects(organizationId)")
       .eq("id", interviewId)
       .order("order", { referencedTable: "questions", ascending: true })
       .single();
@@ -26,7 +26,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const provider = getProvider(interview.llmProvider);
+    const organizationId = (interview.project as { organizationId?: string } | null)?.organizationId;
+    const provider = await resolveProvider({
+      organizationId,
+      idOrModel: interview.llmProvider,
+    });
 
     const conversationHistory: LLMMessage[] = messages.map(
       (m: { role: "user" | "assistant"; content: string }) => ({

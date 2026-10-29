@@ -1,4 +1,4 @@
-import { getProvider, GENERATOR_MODEL } from "@/lib/ai/registry";
+import { resolveTaskModels } from "@/lib/ai/registry";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import type { InterviewConfig } from "@/lib/forms/schema";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -37,8 +37,8 @@ export function describeConfig(c: InterviewConfig): string {
 }
 
 /** Generate questions with the same prompt/provider as /api/ai/generate. */
-export async function generateQuestions(c: InterviewConfig) {
-  const provider = getProvider(GENERATOR_MODEL);
+export async function generateQuestions(c: InterviewConfig, organizationId?: string | null) {
+  const { provider, generatorModel } = await resolveTaskModels(organizationId);
   const premade = (c.predefinedQuestions ?? []).filter((q) => q.trim()).map((text) => ({ text, type: "OPEN_ENDED" }));
   const messages = buildGeneratorPrompt(
     describeConfig(c),
@@ -49,7 +49,7 @@ export async function generateQuestions(c: InterviewConfig) {
     premade.length ? (premade as never) : undefined,
   );
   let full = "";
-  for await (const chunk of provider.streamResponse({ messages, temperature: 0.7, maxTokens: 8192, model: GENERATOR_MODEL })) {
+  for await (const chunk of provider.streamResponse({ messages, temperature: 0.7, maxTokens: 8192, model: generatorModel })) {
     full += chunk;
   }
   const json = parseJsonLoose(full);
@@ -120,7 +120,16 @@ export async function syncFormInterview(opts: {
       questions = (c.predefinedQuestions ?? []).filter((q) => q.trim()).map((text) => ({ text, type: "OPEN_ENDED" }));
       if (!questions.length) throw new Error("Add at least one predefined question");
     } else {
-      const g = await generateQuestions(c);
+      let organizationId: string | null = null;
+      if (form.projectId) {
+        const { data: project } = await supabaseAdmin
+          .from("projects")
+          .select("organizationId")
+          .eq("id", form.projectId)
+          .maybeSingle();
+        organizationId = (project?.organizationId as string | undefined) ?? null;
+      }
+      const g = await generateQuestions(c, organizationId);
       questions = g.questions;
       objective = g.objective;
       if (g.assessmentCriteria && !c.evaluationCriteria?.length)

@@ -2,7 +2,7 @@ import { svgDataUrlToPng } from "@/lib/ai/convert-svg";
 import { extractJson } from "@/lib/ai/extract-json";
 import { createLogger } from "@/lib/logger";
 import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
-import { getProvider, REPORT_MODEL } from "@/lib/ai/registry";
+import { resolveTaskModels } from "@/lib/ai/registry";
 import { getAuthUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     const { data: interviewSession } = await supabaseAdmin
       .from("sessions")
       .select(
-        `*, interview:interviews!inner(title, userId, projectId, objective, language, assessmentCriteria, questions(text, order, type)), messages(*)`,
+        `*, interview:interviews!inner(title, userId, projectId, objective, language, assessmentCriteria, questions(text, order, type), project:projects(organizationId)), messages(*)`,
       )
       .eq("id", sessionId)
       .order("order", { referencedTable: "interviews.questions", ascending: true })
@@ -43,6 +43,7 @@ export async function POST(req: Request) {
       language: string;
       assessmentCriteria: { name: string; description: string }[] | null;
       questions: { text: string; order: number; type?: string }[];
+      project?: { organizationId?: string } | null;
     };
 
     const msgs = (interviewSession.messages ?? []) as {
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
       }))
       .filter((s) => s.code.trim().length > 0);
 
-    const provider = getProvider(REPORT_MODEL);
+    const { provider, reportModel } = await resolveTaskModels(interview.project?.organizationId);
     const textMessages = msgs
       .filter((m) => m.contentType === "TEXT")
       .map((m) => ({ role: m.role, content: m.content }));
@@ -105,7 +106,7 @@ export async function POST(req: Request) {
         messages,
         temperature: 0.3,
         maxTokens: 8192,
-        model: REPORT_MODEL,
+        model: reportModel,
       });
     } catch (err) {
       const isVisionError =
@@ -133,7 +134,7 @@ export async function POST(req: Request) {
           messages: fallbackMessages,
           temperature: 0.3,
           maxTokens: 8192,
-          model: REPORT_MODEL,
+          model: reportModel,
         });
       } else {
         throw err;
