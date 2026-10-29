@@ -16,9 +16,8 @@ import {
 } from "@/server/integrations/applications";
 import { resolveFormForKey } from "@/server/integrations/form-access";
 import { generateQuestions } from "@/server/integrations/form-interview";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { z } from "zod";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -32,23 +31,14 @@ function fail(code: string, message: string, details?: unknown): ToolResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: { code, message, ...(details ? { details } : {}) } }, null, 2) }] };
 }
 
-function isPrivateIp(ip: string): boolean {
-  if (ip.includes(":")) {
-    const l = ip.toLowerCase();
-    return l === "::1" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe80") || l === "::" || l.startsWith("::ffff:127.") || l.startsWith("::ffff:10.") || l.startsWith("::ffff:192.168.");
-  }
-  const [a, b] = ip.split(".").map(Number);
-  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
-}
-
 /** Fetch a remote file for submit_application (https only, no private networks, size-capped). */
 async function fetchRemoteFile(url: string, filename?: string): Promise<IncomingFile> {
   let u: URL;
-  try { u = new URL(url); } catch { throw new SubmissionError("INVALID_FILE_URL", `Invalid URL: ${url}`, 400); }
-  if (u.protocol !== "https:") throw new SubmissionError("INVALID_FILE_URL", "File URLs must use https", 400);
-  const host = u.hostname.replace(/^\[|\]$/g, "");
-  const addrs = isIP(host) ? [{ address: host }] : await lookup(host, { all: true }).catch(() => []);
-  if (!addrs.length || addrs.some((a) => isPrivateIp(a.address))) throw new SubmissionError("INVALID_FILE_URL", "File URL host is not allowed", 400);
+  try {
+    u = await assertSafeRemoteUrl(url);
+  } catch (err) {
+    throw new SubmissionError("INVALID_FILE_URL", (err as Error).message, 400);
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 15000);
   try {

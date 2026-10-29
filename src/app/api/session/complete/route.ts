@@ -4,6 +4,8 @@ import {
   effectiveNowForSession,
   type ActivitySegment,
 } from "@/app/api/voice/save/logic";
+import { checkRateLimit } from "@/lib/api-rate-limit";
+import { clientIp } from "@/server/integrations/applications";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
@@ -12,6 +14,10 @@ const log = createLogger("api/session/complete");
 
 export async function POST(req: Request) {
   try {
+    const ip = clientIp(req);
+    const rateLimited = checkRateLimit(`session:complete:${ip}`);
+    if (rateLimited) return rateLimited;
+
     const body = await req.json().catch(() => null);
     const sessionId = body?.sessionId;
     if (!sessionId) {
@@ -28,8 +34,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    if (session.status === "COMPLETED") {
-      return NextResponse.json({ ok: true, alreadyCompleted: true });
+    if (session.status !== "IN_PROGRESS") {
+      return NextResponse.json({ ok: true, alreadyCompleted: session.status === "COMPLETED" });
     }
 
     const now = new Date();

@@ -1,6 +1,7 @@
 import { encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import { RESILIO_DEFAULT_BASE_URL } from "@/lib/messaging/providers";
 import { DEFAULT_TEMPLATES, mergeTemplates, type TemplateVars } from "@/lib/messaging/templates";
+import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { appBaseUrl } from "../batch-access";
@@ -166,5 +167,46 @@ export const integrationRouter = router({
           : await deliverWhatsapp(cfg, input.to.replace(/[^\d+]/g, ""), vars);
       if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
       return { ok: true, provider: r.provider };
+    }),
+
+  testOutboundWebhook: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        event: z.enum(["candidate.invited", "session.started", "session.completed"]).default("candidate.invited"),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "ADMIN");
+      const cfg = await loadDeliveryConfig(ctx.supabase, input.organizationId);
+      if (!cfg.outboundWebhook?.url) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Outbound webhook URL is not configured" });
+      }
+      const result = await dispatchOutboundWebhook({
+        url: cfg.outboundWebhook.url,
+        secret: cfg.outboundWebhook.secret,
+        event: input.event,
+        organizationId: input.organizationId,
+        subscribedEvents: cfg.outboundWebhook.events,
+        data: {
+          test: true,
+          candidateName: ctx.user.email?.split("@")[0] ?? "Test Candidate",
+          interviewTitle: "Sample Interview",
+          message: "Skillmark outbound webhook test ping",
+        },
+      });
+      if (result.skipped) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Event ${input.event} is not in your subscribed events`,
+        });
+      }
+      if (!result.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: result.error ?? "Webhook delivery failed",
+        });
+      }
+      return { ok: true, status: result.status };
     }),
 });

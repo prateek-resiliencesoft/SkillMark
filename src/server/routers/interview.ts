@@ -300,7 +300,10 @@ export const interviewRouter = router({
         });
       }
 
-      return interview;
+      // Omit sensitive invited candidate emails and system prompt from public view
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { invitedEmails: _omittedEmails, systemPrompt: _omittedPrompt, ...safeInterview } = interview;
+      return safeInterview;
     }),
 
   create: protectedProcedure

@@ -35,11 +35,40 @@ export async function POST(req: Request) {
       );
     }
 
+    // Enforce active session verification
+    const { data: session } = await supabaseAdmin
+      .from("sessions")
+      .select("id, status")
+      .eq("id", sessionId)
+      .maybeSingle();
+
+    if (!session) {
+      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+
+    if (session.status === "COMPLETED" || session.status === "DISQUALIFIED") {
+      return NextResponse.json({ error: "Session has ended" }, { status: 403 });
+    }
+
+    // Enforce upload size caps
+    const MAX_RECORDING_BYTES = 100 * 1024 * 1024; // 100 MB
+    const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024; // 10 MB
+    const maxBytes = type === "recording" ? MAX_RECORDING_BYTES : MAX_SCREENSHOT_BYTES;
+    if (file.size > maxBytes) {
+      return NextResponse.json(
+        { error: `File exceeds maximum allowed size (${maxBytes / (1024 * 1024)}MB)` },
+        { status: 413 },
+      );
+    }
+
     const bucket = type === "recording" ? "recordings" : "screenshots";
     const defaultExt = type === "recording"
       ? (file.type?.includes("mp4") || file.type?.includes("m4a") ? "m4a" : "webm")
       : "jpg";
-    const storagePath = `${sessionId}/${filename || `${Date.now()}.${defaultExt}`}`;
+    const cleanFilename = (filename || `${Date.now()}.${defaultExt}`)
+      .replace(/[^a-zA-Z0-9._-]/g, "_")
+      .replace(/\.{2,}/g, ".");
+    const storagePath = `${sessionId}/${cleanFilename}`;
 
     const buffer = Buffer.from(await file.arrayBuffer());
 
@@ -64,7 +93,7 @@ export async function POST(req: Request) {
 
     const { data: signedData, error: signedError } = await supabaseAdmin.storage
       .from(bucket)
-      .createSignedUrl(storagePath, 60 * 60 * 24 * 365); // 1 year
+      .createSignedUrl(storagePath, 60 * 60 * 24); // 24 hours
 
     if (signedError || !signedData?.signedUrl) {
       log.error("Signed URL error:", bucket, signedError);

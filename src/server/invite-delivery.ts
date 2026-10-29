@@ -59,7 +59,7 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
     outboundWebhook: row?.outboundWebhookUrl
       ? {
           url: row.outboundWebhookUrl,
-          secret: row.outboundWebhookSecret ?? null,
+          secret: decryptSecret(row.outboundWebhookSecret) ?? null,
           events: (row.outboundWebhookEvents as string[]) ?? ["candidate.invited", "session.started", "session.completed"],
         }
       : null,

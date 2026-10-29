@@ -2,7 +2,7 @@ import { applyAntiCheatingViolation, countHeadViolations } from "@/lib/head-move
 import { createLogger } from "@/lib/logger";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { filterAccessibleProjectIds, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
+import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
 
 const log = createLogger("router/session");
 
@@ -255,6 +255,48 @@ export const sessionRouter = router({
 
       if (!session) {
         throw new TRPCError({ code: "NOT_FOUND" });
+      }
+
+      // If caller is authenticated user, verify tenant organization membership
+      if (ctx.user) {
+        const interviewData = session.interview as { projectId?: string } | null;
+        if (interviewData?.projectId) {
+          const { data: project } = await ctx.supabase
+            .from("projects")
+            .select("organizationId")
+            .eq("id", interviewData.projectId)
+            .maybeSingle();
+          if (project?.organizationId) {
+            const membership = await getOrgMembership(ctx.supabase, project.organizationId, ctx.user.id);
+            if (!membership) {
+              throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view this session" });
+            }
+          }
+        }
+      } else {
+        // Redact internal assessment details, scoring rubrics, and interviewer-only data for unauthenticated candidate access
+        const interview = session.interview as Record<string, unknown> | null;
+        const safeInterview = interview
+          ? {
+              ...interview,
+              systemPrompt: undefined,
+              prompt: undefined,
+              invitedEmails: undefined,
+              assessmentCriteria: undefined,
+              scoringRubric: undefined,
+            }
+          : null;
+
+        return {
+          ...session,
+          summary: undefined,
+          insights: undefined,
+          themes: undefined,
+          sentiment: undefined,
+          antiCheatingLog: undefined,
+          activitySegments: undefined,
+          interview: safeInterview,
+        };
       }
 
       return session;
