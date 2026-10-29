@@ -90,15 +90,39 @@ export async function POST(req: NextRequest) {
     let interviewId = data.interviewId;
     let batchId = data.batchId;
 
-    if (!interviewId && batchId) {
-      // Find interview in batch
+    if (interviewId) {
+      // Validate that interviewId belongs to this organization (cross-tenant protection)
       const { data: iv } = await supabase
         .from("interviews")
-        .select("id")
+        .select("id, batchId, project:projects!inner(organizationId)")
+        .eq("id", interviewId)
+        .maybeSingle();
+
+      const ivProject = (iv as unknown as { project?: { organizationId?: string } } | null)?.project;
+      if (!iv || ivProject?.organizationId !== orgId) {
+        return NextResponse.json(
+          { ok: false, error: "Interview not found or does not belong to your organization" },
+          { status: 403 },
+        );
+      }
+      if (!batchId && iv.batchId) batchId = iv.batchId;
+    } else if (batchId) {
+      // Find interview in batch and verify tenant ownership
+      const { data: iv } = await supabase
+        .from("interviews")
+        .select("id, project:projects!inner(organizationId)")
         .eq("batchId", batchId)
         .limit(1)
         .maybeSingle();
-      if (iv) interviewId = iv.id;
+
+      const ivProject = (iv as unknown as { project?: { organizationId?: string } } | null)?.project;
+      if (!iv || ivProject?.organizationId !== orgId) {
+        return NextResponse.json(
+          { ok: false, error: "Batch not found or does not belong to your organization" },
+          { status: 403 },
+        );
+      }
+      interviewId = iv.id;
     }
 
     if (!interviewId) {

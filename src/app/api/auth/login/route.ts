@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { verifyPassword } from "@/lib/users";
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from "@/lib/auth-session";
+import { checkRateLimit } from "@/lib/api-rate-limit";
+import { clientIp } from "@/server/integrations/applications";
 
 export async function POST(req: Request) {
+  const ip = clientIp(req);
+  const rateLimitResponse = checkRateLimit(`auth:login:${ip}`);
+  if (rateLimitResponse) return rateLimitResponse;
+
   const { email, password } = await req.json().catch(() => ({}));
   if (!email || !password) return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
   const user = await verifyPassword(String(email), String(password));
