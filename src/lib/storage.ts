@@ -64,9 +64,20 @@ export const storage = {
         try {
           safeJoin(bucket, p);
           const token = await signFileToken(bucket, p, expiresIn);
-          const base = (process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/$/, "");
+          let base = (process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/$/, "");
+          if (!base || base.includes("localhost") || base.includes("127.0.0.1")) {
+            try {
+              const { headers } = await import("next/headers");
+              const h = headers();
+              const host = h.get("x-forwarded-host") ?? h.get("host");
+              const proto = h.get("x-forwarded-proto") ?? "https";
+              if (host) base = `${proto}://${host}`;
+            } catch {
+              /* outside of request context */
+            }
+          }
           const rel = `/api/files/${encodeURIComponent(bucket)}/${p.split("/").map(encodeURIComponent).join("/")}?token=${token}`;
-          return { data: { signedUrl: base + rel }, error: null };
+          return { data: { signedUrl: base ? `${base}${rel}` : rel }, error: null };
         } catch (e) {
           return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
         }

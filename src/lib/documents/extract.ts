@@ -17,7 +17,9 @@ import { getChildren, getElementsByTagName, textContent } from "domutils";
 import { parseDocument } from "htmlparser2";
 import OpenAI from "openai";
 import sharp from "sharp";
+import { loadOrgAiCredentials } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const log = createLogger("documents/extract");
 
@@ -74,6 +76,7 @@ export async function extractDocument(
   buffer: Buffer,
   fileName: string,
   mime: string,
+  options?: { organizationId?: string | null },
 ): Promise<ExtractedDocument> {
   if (buffer.byteLength > MAX_DOCUMENT_BYTES) {
     throw new Error(`File is larger than ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`);
@@ -97,8 +100,8 @@ export async function extractDocument(
   }
 
   if (kind === "docx") return extractDocx(buffer);
-  if (kind === "pdf") return extractPdf(buffer, fileName);
-  return extractImage(buffer);
+  if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId);
+  return extractImage(buffer, options?.organizationId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,7 +228,11 @@ async function renderPdfPage(page: PdfPage): Promise<string> {
   return `${text}\n\f`;
 }
 
-async function extractPdf(buffer: Buffer, fileName: string): Promise<ExtractedDocument> {
+async function extractPdf(
+  buffer: Buffer,
+  fileName: string,
+  organizationId?: string | null,
+): Promise<ExtractedDocument> {
   const warnings: string[] = [];
   let pages: string[] = [];
   let numPages = 0;
@@ -253,10 +260,10 @@ async function extractPdf(buffer: Buffer, fileName: string): Promise<ExtractedDo
   }
 
   // Some or all pages are scans: ask the vision model to read the PDF.
-  const vision = getVisionClient();
+  const vision = await getVisionClient(organizationId);
   if (!vision) {
     warnings.push(
-      `${scannedPages || "All"} page(s) look scanned and no vision model is configured (OPENAI_API_KEY) — review manually.`,
+      `${scannedPages || "All"} page(s) look scanned and no vision model is configured (Settings → AI OpenAI/Gemini, or OPENAI_API_KEY) — review manually.`,
     );
     return { markdown: normalise(pages.join("\n\n")), method: "pdf-text", pages: numPages, warnings };
   }
@@ -284,14 +291,16 @@ async function extractPdf(buffer: Buffer, fileName: string): Promise<ExtractedDo
 /*  Images                                                             */
 /* ------------------------------------------------------------------ */
 
-async function extractImage(buffer: Buffer): Promise<ExtractedDocument> {
-  const vision = getVisionClient();
+async function extractImage(buffer: Buffer, organizationId?: string | null): Promise<ExtractedDocument> {
+  const vision = await getVisionClient(organizationId);
   if (!vision) {
     return {
       markdown: "",
       method: "vision",
       pages: 1,
-      warnings: ["Image CVs need a vision model (OPENAI_API_KEY) or DOCLING_SERVE_URL — review manually."],
+      warnings: [
+        "Image CVs need a vision model (Settings → AI OpenAI/Gemini, OPENAI_API_KEY, or DOCLING_SERVE_URL) — review manually.",
+      ],
     };
   }
   // Auto-rotate from EXIF and cap resolution: keeps OCR quality while
@@ -312,12 +321,24 @@ async function extractImage(buffer: Buffer): Promise<ExtractedDocument> {
 /*  Vision helper                                                      */
 /* ------------------------------------------------------------------ */
 
-function getVisionClient(): { client: OpenAI; model: string } | null {
-  if (!process.env.OPENAI_API_KEY) return null;
-  return {
-    client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL }),
-    model: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini",
-  };
+/** Org Settings → AI first (OpenAI, then Gemini); .env only when no org vision key. */
+async function getVisionClient(
+  organizationId?: string | null,
+): Promise<{ client: OpenAI; model: string } | null> {
+  const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
+  const preferOrg = (["openai", "gemini"] as const).some((id) => creds[id].from === "org");
+
+  for (const id of ["openai", "gemini"] as const) {
+    const c = creds[id];
+    if (!c.apiKey) continue;
+    if (preferOrg && c.from !== "org") continue;
+    const model =
+      id === "openai"
+        ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
+        : process.env.GEMINI_MODEL || "gemini-3.5-flash";
+    return { client: new OpenAI({ apiKey: c.apiKey, baseURL: c.baseUrl }), model };
+  }
+  return null;
 }
 
 const VISION_PROMPT = `Transcribe this document to GitHub-flavoured Markdown.

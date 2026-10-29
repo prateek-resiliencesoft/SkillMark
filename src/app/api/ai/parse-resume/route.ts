@@ -1,6 +1,7 @@
-import OpenAI from "openai";
 import { getAuthUser } from "@/lib/auth";
+import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
+
 const log = createLogger("api/ai/parse-resume");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require("pdf-parse") as (
@@ -29,28 +30,6 @@ Rules:
 - Extract ALL contact info including email and phone carefully
 - Return ONLY the JSON object, no markdown fences, no explanation`;
 
-function getClient(): { client: OpenAI; model: string } {
-  if (process.env.MINIMAX_API_KEY) {
-    return {
-      client: new OpenAI({
-        apiKey: process.env.MINIMAX_API_KEY,
-        baseURL: process.env.MINIMAX_BASE_URL ?? "https://api.minimax.chat/v1",
-      }),
-      model: "MiniMax-Text-01",
-    };
-  }
-  if (process.env.KIMI_API_KEY) {
-    return {
-      client: new OpenAI({
-        apiKey: process.env.KIMI_API_KEY,
-        baseURL: process.env.KIMI_BASE_URL ?? "https://api.moonshot.cn/v1",
-      }),
-      model: "moonshot-v1-32k",
-    };
-  }
-  throw new Error("No LLM provider configured");
-}
-
 export async function POST(req: Request) {
   try {
     const user = await getAuthUser();
@@ -63,6 +42,7 @@ export async function POST(req: Request) {
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
+    const organizationId = (formData.get("organizationId") as string | null)?.trim() || undefined;
     if (!file) {
       return new Response(
         JSON.stringify({ error: "No file provided" }),
@@ -82,32 +62,29 @@ export async function POST(req: Request) {
       );
     }
 
-    const { client, model } = getClient();
+    const { provider, generatorModel } = await resolveTaskModels(organizationId);
 
-    // Stream the LLM response via SSE
-    const stream = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: `${SYSTEM_PROMPT}\n\nThe following is the full text extracted from the candidate's resume. Parse it carefully and extract ALL fields including email and phone:\n\n${resumeText}`,
-        },
-        {
-          role: "user",
-          content: "Parse this resume and return the JSON object with all extracted fields.",
-        },
-      ],
-      temperature: 0.1,
-      max_tokens: 1024,
-      stream: true,
-    });
+    const messages = [
+      {
+        role: "system" as const,
+        content: `${SYSTEM_PROMPT}\n\nThe following is the full text extracted from the candidate's resume. Parse it carefully and extract ALL fields including email and phone:\n\n${resumeText}`,
+      },
+      {
+        role: "user" as const,
+        content: "Parse this resume and return the JSON object with all extracted fields.",
+      },
+    ];
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of stream) {
-            const token = chunk.choices[0]?.delta?.content;
+          for await (const token of provider.streamResponse({
+            messages,
+            model: generatorModel,
+            temperature: 0.1,
+            maxTokens: 1024,
+          })) {
             if (token) {
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ token })}\n\n`),
@@ -118,9 +95,10 @@ export async function POST(req: Request) {
           controller.close();
         } catch (err) {
           log.error("Stream error:", err);
+          const msg = err instanceof Error ? err.message : "Stream interrupted";
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ error: "Stream interrupted" })}\n\n`,
+              `data: ${JSON.stringify({ error: msg })}\n\n`,
             ),
           );
           controller.close();

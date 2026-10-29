@@ -42,12 +42,19 @@ export class SubmissionError extends Error {
 
 export function appBaseUrl(request?: Request): string {
   const env = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/+$/, "");
-  if (env) return env;
   if (request) {
+    const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+    const proto = request.headers.get("x-forwarded-proto") ?? "https";
+    if (host && (!env || env.includes("localhost") || env.includes("127.0.0.1"))) {
+      return `${proto}://${host}`;
+    }
     const u = new URL(request.url);
-    return `${u.protocol}//${u.host}`;
+    if (!env || env.includes("localhost") || env.includes("127.0.0.1")) {
+      return `${u.protocol}//${u.host}`;
+    }
   }
-  return "http://localhost:3100";
+  if (env) return env;
+  return "http://localhost:3000";
 }
 
 function setNested(target: ParsedSubmission, rawKey: string, value: unknown) {
