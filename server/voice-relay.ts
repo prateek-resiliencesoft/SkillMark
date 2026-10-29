@@ -46,6 +46,10 @@ config({ path: ".env" });
 // ── Configuration ───────────────────────────────────────────────────
 
 const RELAY_PORT = Number(process.env.VOICE_RELAY_PORT) || 8766;
+const RELAY_HOST = process.env.VOICE_RELAY_HOST || "0.0.0.0";
+const ALLOWED_ORIGINS = process.env.VOICE_RELAY_ALLOWED_ORIGINS
+  ? process.env.VOICE_RELAY_ALLOWED_ORIGINS.split(",").map((s) => s.trim().toLowerCase())
+  : null;
 const VOLCENGINE_WS_URL =
   process.env.DOUBAO_WS_URL ||
   "wss://openspeech.bytedance.com/api/v3/realtime/dialogue";
@@ -470,8 +474,21 @@ async function summarizeQuestion(
 
 // ── Relay server ────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ port: RELAY_PORT });
-log.info(`Listening on ws://localhost:${RELAY_PORT}`);
+const wss = new WebSocketServer({
+  port: RELAY_PORT,
+  host: RELAY_HOST,
+  verifyClient: (info, cb) => {
+    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.length > 0) {
+      const origin = info.origin?.toLowerCase();
+      if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
+        log.error(`Rejected WebSocket connection from untrusted origin: ${info.origin}`);
+        return cb(false, 403, "Forbidden: Untrusted Origin");
+      }
+    }
+    cb(true);
+  },
+});
+log.info(`Listening on ws://${RELAY_HOST}:${RELAY_PORT}`);
 
 wss.on("connection", (browserWs) => {
   log.info("Browser connected, waiting for init...");
