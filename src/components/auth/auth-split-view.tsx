@@ -114,16 +114,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
     setStage("glass_center");
   };
 
-  const skipIntro = () => {
-    if (glassTimerRef.current) clearTimeout(glassTimerRef.current);
-    setStage("settled");
-    try {
-      sessionStorage.setItem(INTRO_SESSION_KEY, "true");
-    } catch {
-      // no-op
-    }
-  };
-
   const supabase = createClient();
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -244,19 +234,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                 onComplete={advanceFromGlass}
               />
             </div>
-
-            {/* Skip action button */}
-            <motion.button
-              type="button"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.8, duration: 0.4 }}
-              onClick={skipIntro}
-              className="mt-6 inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-muted/40 px-3 py-1 text-xs text-muted-foreground/80 hover:text-foreground hover:bg-muted transition-colors"
-            >
-              <span>Skip intro</span>
-              <ArrowRight className="h-3 w-3" />
-            </motion.button>
           </motion.div>
         )}
       </AnimatePresence>
