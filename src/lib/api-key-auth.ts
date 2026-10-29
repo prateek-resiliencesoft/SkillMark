@@ -121,7 +121,7 @@ export function isAuthError(
   return result instanceof Response;
 }
 
-/** Fire-and-forget API usage log (shown on My Integrations). */
+/** Fire-and-forget API usage log (shown on Interview Form Integration → Connect). */
 export function logApiUsage(
   request: Request,
   status: number,

@@ -361,7 +361,7 @@ export function SendInvitesDialog({
                 <p>
                   {wantsEmail && !emailReady && "Email (Resend/Brevo) is not set up. "}
                   {wantsWhatsapp && !whatsappReady && "WhatsApp (ResilioHub) is not set up. "}
-                  <Link href="/settings/integrations" className="font-medium underline">
+                  <Link href="/integrations" className="font-medium underline">
                     Open Integrations
                   </Link>
                 </p>
