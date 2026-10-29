@@ -5,6 +5,13 @@ import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -19,9 +26,11 @@ import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
+  Download,
+  Eye,
   FileUp,
-  Layers,
   Loader2,
   MessageSquare,
   Mic,
@@ -33,7 +42,14 @@ import {
   XCircle,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+const INTERVIEW_TYPES = [
+  { value: "technical", label: "Technical" },
+  { value: "behavioral", label: "Behavioral" },
+  { value: "mixed", label: "Mixed" },
+  { value: "screening", label: "Screening" },
+] as const;
 
 type RowStatus = "queued" | "parsing" | "parsed" | "parse_error" | "generating" | "generated" | "generate_error";
 
@@ -100,18 +116,29 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState(false);
+  const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("technical");
   const [includePremade, setIncludePremade] = useState(true);
+  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(new Set());
 
   const [rows, setRows] = useState<CvRow[]>([]);
   const [dragging, setDragging] = useState(false);
   const [batchId, setBatchId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [sendOpen, setSendOpen] = useState(false);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const previewRow = previewKey ? rows.find((r) => r.key === previewKey) ?? null : null;
 
   const premade = trpc.questionBank.getEnabledQuestions.useQuery(
     { organizationId: currentOrg?.id ?? "" },
     { enabled: !!currentOrg?.id, staleTime: 30_000 },
   );
+
+  useEffect(() => {
+    if (premade.data?.sections) {
+      setSelectedSectionIds(new Set(premade.data.sections.map((s) => s.id)));
+    }
+  }, [premade.data?.sections]);
+
   const createBatch = trpc.batch.create.useMutation();
   const generateCandidate = trpc.batch.generateCandidate.useMutation();
 
@@ -126,6 +153,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         const form = new FormData();
         form.append("file", row.file);
         if (countryCode) form.append("defaultCountryCode", countryCode);
+        if (currentOrg?.id) form.append("organizationId", currentOrg.id);
         const res = await fetch("/api/batches/parse-cv", { method: "POST", body: form });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
@@ -144,7 +172,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         patchRow(row.key, { status: "parse_error", error: err instanceof Error ? err.message : "Failed" });
       }
     },
-    [countryCode, patchRow],
+    [countryCode, currentOrg?.id, patchRow],
   );
 
   const addFiles = useCallback(
@@ -169,14 +197,16 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   const ensureBatch = async (): Promise<string> => {
     if (batchId) return batchId;
     const premadeQuestions = includePremade
-      ? (premade.data?.questions ?? []).map((q) => ({
-          text: q.text as string,
-          type: (q.type as string) ?? undefined,
-          sectionName: q.sectionName as string,
-          description: (q.description as string | null) ?? undefined,
-          options: q.options ?? undefined,
-          starterCode: q.starterCode ?? undefined,
-        }))
+      ? (premade.data?.questions ?? [])
+          .filter((q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId))
+          .map((q) => ({
+            text: q.text as string,
+            type: (q.type as string) ?? undefined,
+            sectionName: q.sectionName as string,
+            description: (q.description as string | null) ?? undefined,
+            options: q.options ?? undefined,
+            starterCode: q.starterCode ?? undefined,
+          }))
       : undefined;
     const batch = await createBatch.mutateAsync({
       projectId,
@@ -186,6 +216,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         jobDescription: jobDescription.trim() || undefined,
         durationMinutes: Number(duration) || 20,
         language,
+        interviewType,
         chatEnabled,
         voiceEnabled,
         videoEnabled,
@@ -194,7 +225,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
         defaultCountryCode: countryCode || undefined,
-        premadeQuestions,
+        premadeQuestions: premadeQuestions?.length ? premadeQuestions : undefined,
       },
     });
     setBatchId(batch.id);
@@ -330,16 +361,16 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
               disabled={!!batchId || !antiCheatingEnabled}
               onChange={setHeadMovementDetectionEnabled}
             />
-            <ToggleRow
-              icon={Layers}
-              label={`Premade bank${premade.data?.questions.length ? ` (${premade.data.questions.length})` : ""}`}
-              checked={includePremade}
-              disabled={!!batchId}
-              onChange={setIncludePremade}
-            />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <SettingSelect
+              label="Interview type"
+              value={interviewType}
+              onChange={(v) => setInterviewType(v as typeof interviewType)}
+              options={INTERVIEW_TYPES}
+              disabled={!!batchId}
+            />
             <SettingSelect label="Tone" value={aiTone} onChange={(v) => setAiTone(v as typeof aiTone)} options={AI_TONES} disabled={!!batchId} />
             <SettingSelect
               label="Follow-up depth"
@@ -349,6 +380,64 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
               disabled={!!batchId}
             />
             <SettingSelect label="Language" value={language} onChange={setLanguage} options={LANGUAGES} disabled={!!batchId} />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="font-semibold text-sm">Premade section questions</Label>
+            <div className="space-y-3 rounded-xl border border-border/80 bg-card/60 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-semibold text-foreground">Include standard round questions</p>
+                  <p className="text-xs text-muted-foreground">
+                    Pulls enabled Question Bank rounds (Screening, Technical, HR). AI fills gaps without duplicates.
+                  </p>
+                </div>
+                <Switch checked={includePremade} disabled={!!batchId} onCheckedChange={setIncludePremade} />
+              </div>
+
+              {includePremade && (premade.data?.sections?.length ?? 0) > 0 && (
+                <div className="space-y-2 border-t border-border/50 pt-2">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Rounds to include (
+                    {(premade.data?.questions ?? []).filter(
+                      (q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId),
+                    ).length}{" "}
+                    questions):
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {(premade.data?.sections ?? []).map((sec) => {
+                      const isSelected = selectedSectionIds.has(sec.id);
+                      const count = (premade.data?.questions ?? []).filter((q) => q.sectionId === sec.id).length;
+                      return (
+                        <button
+                          key={sec.id}
+                          type="button"
+                          disabled={!!batchId}
+                          onClick={() => {
+                            setSelectedSectionIds((prev) => {
+                              const next = new Set(prev);
+                              if (isSelected) next.delete(sec.id);
+                              else next.add(sec.id);
+                              return next;
+                            });
+                          }}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
+                            isSelected
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border bg-muted/40 text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
+                          <span>{sec.name}</span>
+                          <span className="rounded-full border bg-background/80 px-1.5 text-[10px]">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -466,15 +555,25 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
                           )}
                         </TableCell>
                         <TableCell>
-                          {r.status === "parse_error" ? (
-                            <Button size="icon" variant="ghost" title="Retry" onClick={() => void parseRow(r)}>
-                              <RotateCcw className="h-4 w-4" />
+                          <div className="flex items-center gap-0.5">
+                            <Button size="icon" variant="ghost" title="View CV" onClick={() => setPreviewKey(r.key)}>
+                              <Eye className="h-4 w-4" />
                             </Button>
-                          ) : r.status !== "generated" && r.status !== "generating" ? (
-                            <Button size="icon" variant="ghost" title="Remove" onClick={() => setRows((p) => p.filter((x) => x.key !== r.key))}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          ) : null}
+                            {r.status === "parse_error" ? (
+                              <Button size="icon" variant="ghost" title="Retry" onClick={() => void parseRow(r)}>
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            ) : r.status !== "generated" && r.status !== "generating" ? (
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                title="Remove"
+                                onClick={() => setRows((p) => p.filter((x) => x.key !== r.key))}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -521,6 +620,8 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         </CardContent>
       </Card>
 
+      <CvPreviewDialog row={previewRow} open={!!previewRow} onOpenChange={(o) => !o && setPreviewKey(null)} />
+
       {batchId && (
         <SendInvitesDialog
           open={sendOpen}
@@ -537,6 +638,101 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         />
       )}
     </div>
+  );
+}
+
+function CvPreviewDialog({
+  row,
+  open,
+  onOpenChange,
+}: {
+  row: CvRow | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const file = row?.file ?? null;
+  const fileUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
+  useEffect(() => {
+    return () => {
+      if (fileUrl) URL.revokeObjectURL(fileUrl);
+    };
+  }, [fileUrl]);
+
+  if (!row) return null;
+
+  const mime = row.file.type || "";
+  const name = row.file.name.toLowerCase();
+  const isPdf = mime === "application/pdf" || name.endsWith(".pdf");
+  const isImage = mime.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/.test(name);
+  const isText = mime.startsWith("text/") || /\.(txt|md)$/.test(name);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 space-y-1 border-b px-6 py-4">
+          <DialogTitle className="truncate pr-8">{row.name || row.file.name}</DialogTitle>
+          <DialogDescription className="truncate">
+            {row.file.name}
+            {row.extractionMethod ? ` · extracted via ${row.extractionMethod}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
+          {fileUrl && isPdf && (
+            <iframe title={row.file.name} src={fileUrl} className="h-[55vh] w-full rounded-md border bg-muted/30" />
+          )}
+          {fileUrl && isImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={fileUrl} alt={row.file.name} className="mx-auto max-h-[55vh] rounded-md border object-contain" />
+          )}
+          {!isPdf && !isImage && (
+            <p className="text-sm text-muted-foreground">
+              Browser can&apos;t preview this file type inline. Download the original or read the extracted text below.
+            </p>
+          )}
+
+          {row.markdown ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Extracted text</p>
+              <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 text-xs leading-relaxed">
+                {row.markdown}
+              </pre>
+            </div>
+          ) : isText && fileUrl ? (
+            <iframe title="text preview" src={fileUrl} className="h-[40vh] w-full rounded-md border bg-muted/30" />
+          ) : (
+            <p className="text-xs text-muted-foreground">No extracted text yet (parse still running or failed).</p>
+          )}
+
+          {row.reviewFlags.length > 0 && (
+            <div className="space-y-1.5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950/30">
+              <p className="font-medium text-amber-900 dark:text-amber-200">Needs review</p>
+              <ul className="space-y-1 text-amber-800 dark:text-amber-300">
+                {row.reviewFlags.map((f, i) => (
+                  <li key={i}>
+                    <span className="font-medium">{f.field}:</span> {f.reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-6 py-3">
+          {fileUrl && (
+            <Button variant="outline" size="sm" asChild>
+              <a href={fileUrl} download={row.file.name}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Download original
+              </a>
+            </Button>
+          )}
+          <Button size="sm" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

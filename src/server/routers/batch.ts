@@ -28,6 +28,7 @@ const batchSettings = z.object({
   jobDescription: z.string().max(20_000).optional(),
   durationMinutes: z.number().int().min(5).max(120).default(20),
   language: z.string().default("en"),
+  interviewType: z.enum(["technical", "behavioral", "mixed", "screening"]).default("technical"),
   chatEnabled: z.boolean().default(true),
   voiceEnabled: z.boolean().default(true),
   videoEnabled: z.boolean().default(true),
@@ -207,8 +208,9 @@ export const batchRouter = router({
 
       // Structured profile first (cheap, dense), raw text after for details it missed.
       const resumeText = `${profileToResumeText(profile)}\n\n---\nOriginal CV text (excerpt):\n${input.resumeMarkdown.slice(0, 6000)}`;
+      const interviewType = settings.interviewType ?? "technical";
       const messages = buildGeneratorPrompt(
-        `${settings.roleDescription}\n\nThis interview is for one specific candidate (${input.contact.name}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
+        `${settings.roleDescription}\n\nInterview type: ${interviewType}. This interview is for one specific candidate (${input.contact.name}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
         settings.durationMinutes,
         LANGUAGES.find((l) => l.value === settings.language)?.label ?? settings.language,
         settings.jobDescription,
