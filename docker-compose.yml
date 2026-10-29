@@ -1,0 +1,38 @@
+# Skillmark local/production data services: plain Postgres + PostgREST.
+name: skillmark
+# PostgREST only listens on 127.0.0.1 and is used by the Next.js server (never the browser).
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skillmark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-skillmark}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - skillmark-pg:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skillmark} -d ${POSTGRES_DB:-skillmark}"]
+      interval: 5s
+      retries: 20
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://${POSTGRES_USER:-skillmark}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillmark}
+      PGRST_DB_SCHEMAS: public,auth
+      PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-skillmark}
+      PGRST_JWT_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      PGRST_DB_MAX_ROWS: "10000"
+    ports:
+      - "127.0.0.1:${POSTGREST_PORT:-3001}:3000"
+
+volumes:
+  skillmark-pg:

@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  Skillmark sample: careers page that submits candidates through YOUR backend.
+  The browser never sees the API key. Run the tiny proxy below with Node 18+:
+
+    SKILLMARK_URL=https://your-skillmark-host \
+    SKILLMARK_API_KEY=dlv_test_xxx \
+    SKILLMARK_FORM_ID=frm_xxx \
+    node examples/backend-proxy-server.mjs
+
+  then open http://localhost:4000
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Acme Careers – Apply</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; }
+    label { display: block; margin-top: 12px; font-size: 14px; }
+    input, select { width: 100%; padding: 8px; margin-top: 4px; }
+    button { margin-top: 18px; padding: 10px 16px; }
+    .err { color: #b91c1c; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Apply: Flutter Developer</h1>
+  <p>Option A (API via backend proxy). For Option B just embed:
+    <code>&lt;iframe src="https://your-skillmark-host/f/frm_xxx?embed=1"&gt;</code></p>
+  <form id="apply" enctype="multipart/form-data">
+    <label>Full name <input name="candidate[name]" required /></label>
+    <label>Email <input name="candidate[email]" type="email" required /></label>
+    <label>Phone <input name="candidate[phone]" required /></label>
+    <label>Years of experience <input name="answers[years_of_experience]" type="number" min="0" required /></label>
+    <label>Resume (PDF/DOCX) <input name="files[resume]" type="file" accept=".pdf,.docx" required /></label>
+    <label><input type="checkbox" name="answers[consent]" value="true" required style="width:auto" /> I consent to processing of my data</label>
+    <button>Submit</button>
+    <div id="out"></div>
+  </form>
+  <script>
+    document.getElementById("apply").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const out = document.getElementById("out");
+      out.textContent = "Submitting…";
+      // Your own backend endpoint (adds the secret key server-side)
+      const r = await fetch("/apply", { method: "POST", body: new FormData(e.target) });
+      const j = await r.json();
+      if (!r.ok) {
+        out.innerHTML = '<p class="err">' + (j.error?.message || "Error") + "</p>" +
+          (j.error?.details || []).map((d) => '<p class="err">' + d.field + ": " + d.message + "</p>").join("");
+        return;
+      }
+      out.innerHTML = 'Submitted! <a href="' + j.data.interview_url + '">Start your interview</a>';
+    });
+  </script>
+</body>
+</html>
