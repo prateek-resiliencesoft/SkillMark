@@ -16,6 +16,7 @@ import { questionBankRouter } from "./question-bank";
 import { batchRouter } from "./batch";
 import { integrationRouter } from "./integration";
 import { interviewFormRouter } from "./interviewForm";
+import { aiSettingsRouter } from "./aiSettings";
 
 export const appRouter = router({
   auth: authRouter,
@@ -35,6 +36,7 @@ export const appRouter = router({
   batch: batchRouter,
   integration: integrationRouter,
   interviewForm: interviewFormRouter,
+  aiSettings: aiSettingsRouter,
 });
 
 export type AppRouter = typeof appRouter;

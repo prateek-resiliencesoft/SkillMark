@@ -1,6 +1,6 @@
 import { extractJson } from "@/lib/ai/extract-json";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
-import { GENERATOR_MODEL, getProvider } from "@/lib/ai/registry";
+import { resolveTaskModels } from "@/lib/ai/registry";
 import type { GeneratedInterview } from "@/lib/ai/types";
 import { LANGUAGES } from "@/lib/constants";
 import { experienceBucket, profileToResumeText, type CandidateProfile } from "@/lib/documents/cv-profile";
@@ -200,7 +200,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
       assertMinRole(role, "MEMBER");
       const settings = batch.settings as BatchSettings;
       const profile = { ...input.profile, name: input.contact.name, email: input.contact.email, phone: input.contact.phone } as CandidateProfile;
@@ -216,12 +216,12 @@ export const batchRouter = router({
         settings.premadeQuestions,
       );
 
-      const provider = getProvider(GENERATOR_MODEL);
+      const { provider, generatorModel } = await resolveTaskModels(organizationId);
       let generated: GeneratedInterview | null = null;
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !generated; attempt++) {
         try {
-          const res = await provider.generateResponse({ messages, model: GENERATOR_MODEL, temperature: 0.6, maxTokens: 8192 });
+          const res = await provider.generateResponse({ messages, model: generatorModel, temperature: 0.6, maxTokens: 8192 });
           const parsed = extractJson<GeneratedInterview>(res.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
           if (Array.isArray(parsed.questions) && parsed.questions.length > 0) generated = parsed;
           else lastError = new Error("AI returned no questions");

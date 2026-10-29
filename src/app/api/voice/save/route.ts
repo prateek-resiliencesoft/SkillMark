@@ -1,7 +1,7 @@
 import { svgDataUrlToPng } from "@/lib/ai/convert-svg";
 import { extractJson } from "@/lib/ai/extract-json";
 import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
-import { getProvider, REPORT_MODEL } from "@/lib/ai/registry";
+import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
@@ -26,7 +26,7 @@ const voiceSaveOps: VoiceSaveOps = {
     const { data } = await supabaseAdmin
       .from("sessions")
       .select(
-        `*, interview:interviews!inner(title, objective, language, userId, projectId, assessmentCriteria, questions(text, order, type))`,
+        `*, interview:interviews!inner(title, objective, language, userId, projectId, assessmentCriteria, questions(text, order, type), project:projects(organizationId))`,
       )
       .eq("id", sessionId)
       .order("order", {
@@ -133,7 +133,16 @@ async function generateSummary(
       })
       .filter((s) => s.code.trim().length > 0);
 
-    const provider = getProvider(REPORT_MODEL);
+    const { data: sessionMeta } = await supabaseAdmin
+      .from("sessions")
+      .select("interview:interviews!inner(project:projects(organizationId))")
+      .eq("id", sessionId)
+      .maybeSingle();
+    const organizationId = (
+      sessionMeta?.interview as { project?: { organizationId?: string } } | null
+    )?.project?.organizationId;
+
+    const { provider, reportModel } = await resolveTaskModels(organizationId);
     const textMessages = allMessages
       .filter((m) => m.contentType === "TEXT")
       .map((m) => ({
@@ -161,7 +170,7 @@ async function generateSummary(
         messages: promptMessages,
         temperature: 0.3,
         maxTokens: 8192,
-        model: REPORT_MODEL,
+        model: reportModel,
       });
     } catch (err) {
       const isVisionError =
@@ -189,7 +198,7 @@ async function generateSummary(
           messages: fallbackMessages,
           temperature: 0.3,
           maxTokens: 8192,
-          model: REPORT_MODEL,
+          model: reportModel,
         });
       } else {
         throw err;

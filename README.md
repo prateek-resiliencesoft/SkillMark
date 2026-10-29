@@ -21,13 +21,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/1146345502/aural-oss/actions/workflows/ci.yml"><img src="https://github.com/1146345502/aural-oss/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
-  <a href="https://github.com/1146345502/aural-oss/releases/latest"><img src="https://img.shields.io/github/v/release/1146345502/aural-oss?color=orange" alt="Latest Release" /></a>
+  <a href="https://github.com/prateek-resiliencesoft/SkillMark"><img src="https://img.shields.io/badge/GitHub-SkillMark-181717?logo=github" alt="GitHub" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node 18+" />
   <img src="https://img.shields.io/badge/Next.js-14-black" alt="Next.js 14" />
   <img src="https://img.shields.io/badge/TypeScript-5-3178c6" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Supabase-PostgreSQL-3ecf8e" alt="Supabase" />
+  <img src="https://img.shields.io/badge/Postgres-PostgREST-336791" alt="Postgres" />
 </p>
 
 <br/>
@@ -68,11 +67,11 @@
     <td width="25%" align="center"><strong>🛡 Anti-Cheating</strong><br/><sub>Tab monitoring, paste blocking, multi-screen detection, integrity logs</sub></td>
     <td width="25%" align="center"><strong>👥 Team Management</strong><br/><sub>Organizations, projects, and role-based access control</sub></td>
     <td width="25%" align="center"><strong>🌐 Multilingual</strong><br/><sub>English and Chinese with pluggable locale system</sub></td>
-    <td width="25%" align="center"><strong>🔌 Pluggable LLMs</strong><br/><sub>OpenAI, Moonshot Kimi, MiniMax — or any OpenAI-compatible API</sub></td>
+    <td width="25%" align="center"><strong>🔌 Pluggable LLMs</strong><br/><sub>OpenAI, Gemini, Anthropic, NVIDIA, custom/local — keys in Settings → AI (env fallback)</sub></td>
   </tr>
   <tr>
-    <td width="25%" align="center"><strong>🚀 Quick Start Templates</strong><br/><sub>Pre-built interview templates for technical, behavioral, research, and more</sub></td>
-    <td width="25%" align="center"><strong>🔗 Share & Preview</strong><br/><sub>Share interviews with a link and preview as a candidate before going live</sub></td>
+    <td width="25%" align="center"><strong>📨 Messaging Integrations</strong><br/><sub>Email (Resend/Brevo), WhatsApp (ResilioHub), inbound/outbound webhooks</sub></td>
+    <td width="25%" align="center"><strong>📝 Interview Form Integration</strong><br/><sub>Hosted apply forms, REST/MCP docs, API keys for ATS and careers sites</sub></td>
     <td width="25%" align="center"><strong>🔑 Developer API</strong><br/><sub>Full REST API with OpenAPI spec for programmatic interview management</sub></td>
     <td width="25%" align="center"><strong>📈 Activity Tracking</strong><br/><sub>Session activity segments and multi-segment audio recordings</sub></td>
   </tr>
@@ -234,6 +233,27 @@ Track all your interviews, sessions, and candidates from a unified dashboard. Or
   <img src="public/images/docs/dashboard.webp" alt="Dashboard with stats cards, activity charts, and recent sessions" width="720" style="border: 1px solid #e1e4e8; border-radius: 8px;" />
 </p>
 
+### Integrations & AI Keys
+
+Connect email, WhatsApp, and webhooks from the **Integrations** sidebar. Configure LLM API keys under **Project Settings → AI** (org keys override `.env`).
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="public/images/docs/integrations.webp" alt="Integrations — email, WhatsApp, and webhook providers" width="100%" style="border: 1px solid #e1e4e8; border-radius: 8px;" />
+      <p align="center"><sub>Messaging integrations with sliding provider panels</sub></p>
+    </td>
+    <td width="50%">
+      <img src="public/images/docs/ai-settings.webp" alt="Settings → AI — OpenAI, Gemini, Anthropic, NVIDIA, custom keys" width="100%" style="border: 1px solid #e1e4e8; border-radius: 8px;" />
+      <p align="center"><sub>Per-org AI provider keys (models stay server-side)</sub></p>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="public/images/docs/interview-forms.webp" alt="Interview Form Integration — build and publish candidate apply forms" width="720" style="border: 1px solid #e1e4e8; border-radius: 8px;" />
+</p>
+
 ### Common Use Cases
 
 - **Technical hiring** — coding and system design interviews with built-in editor and whiteboard
@@ -249,14 +269,15 @@ Track all your interviews, sessions, and candidates from a unified dashboard. Or
 |-------|-----------|
 | Framework | [Next.js 14](https://nextjs.org/) (App Router) |
 | Language | TypeScript |
-| Database | [Supabase](https://supabase.com/) (PostgreSQL + Auth + Storage + RLS) |
-| API | [tRPC](https://trpc.io/) |
-| AI / LLM | OpenAI, Moonshot Kimi, MiniMax — pluggable provider system |
-| Voice | WebSocket relay servers (Volcengine Doubao, Azure OpenAI Realtime) |
+| Database | PostgreSQL + [PostgREST](https://postgrest.org/) (Docker Compose) |
+| Auth | Cookie/JWT session (`AUTH_SECRET`) — no Supabase Auth |
+| Storage | Local disk (`STORAGE_DIR`) |
+| API | [tRPC](https://trpc.io/) + REST `/api/v1` |
+| AI / LLM | OpenAI, Google Gemini, Anthropic, NVIDIA NIM, custom/local (Ollama), plus Kimi/MiniMax via env |
+| Voice | WebSocket relays (Volcengine Doubao, Azure OpenAI Realtime, Gemini Live) |
 | UI | [Tailwind CSS](https://tailwindcss.com/) + [shadcn/ui](https://ui.shadcn.com/) + [Radix](https://radix-ui.com/) |
 | Code Editor | [Monaco Editor](https://microsoft.github.io/monaco-editor/) |
 | Whiteboard | [Excalidraw](https://excalidraw.com/) |
-| Charts | [Recharts](https://recharts.org/) |
 
 ---
 
@@ -290,21 +311,19 @@ Track all your interviews, sessions, and candidates from a unified dashboard. Or
 │  │ AI Provider      │  │
 │  │ Registry         │  │
 │  │ ┌──────────────┐ │  │
-│  │ │OpenAI│Kimi│MM│ │  │
+│  │ OpenAI│Gemini│… │ │  │
 │  │ └──────────────┘ │  │
 │  └──────────────────┘  │
 └────────────┬───────────┘
              │
              ▼
 ┌────────────────────────┐
-│       Supabase         │
-│  ┌──────┐ ┌──────────┐ │
-│  │ Auth │ │PostgreSQL│ │
-│  ├──────┤ ├──────────┤ │
-│  │ RLS  │ │ Storage  │ │
-│  └──────┘ └──────────┘ │
+│  Postgres + PostgREST  │
+│  cookie/JWT auth       │
+│  local-disk storage    │
 └────────────────────────┘
 ```
+
 
 ### Key Modules
 
@@ -317,7 +336,9 @@ Track all your interviews, sessions, and candidates from a unified dashboard. Or
 | **AI Provider Registry** | `src/lib/ai/` | Pluggable LLM system with a provider registry, per-task model selection, and prompt templates for interviewing, generation, and report summarization. |
 | **Voice Relay** | `server/` | Standalone WebSocket servers that proxy audio between the browser and speech-to-speech APIs (Volcengine Doubao or Azure OpenAI Realtime). |
 | **Components** | `src/components/` | React components split by domain — `session/` (chat/voice/video UI, anti-cheating), `interview/` (builder, question cards), `auth/`, `layout/`, and `ui/` (shadcn primitives). |
-| **Supabase Layer** | `src/lib/supabase/` | Client/server/admin helpers for database access, auth, and storage. Row-Level Security enforces data isolation per user and organization. |
+| **Data Layer** | `src/lib/supabase/` | PostgREST client helpers (legacy path names) for DB access; auth via cookie JWT; org-scoped access in tRPC routers. |
+| **AI Settings** | `src/server/routers/aiSettings.ts` | Per-org encrypted LLM API keys (Settings → AI) with `.env` fallback. |
+| **Messaging Integrations** | `src/app/(dashboard)/integrations/` | Email/WhatsApp providers, templates, webhooks; Interview Form Integration for apply forms + API/MCP docs. |
 
 ---
 
@@ -325,163 +346,103 @@ Track all your interviews, sessions, and candidates from a unified dashboard. Or
 
 You can use Skillmark as a managed cloud service or self-host the entire platform on your own infrastructure.
 
-### Cloud Hosted
+### Self-Hosted (recommended)
 
-The fastest way to get started. No setup required — sign up and start creating interviews immediately.
-
-**[Get started at aural-ai.com &rarr;](https://aural-ai.com)**
-
-- Fully managed infrastructure
-- Automatic updates and maintenance
-- Built-in voice relay servers
-- No LLM keys or Supabase setup needed
-
-### Self-Hosted
-
-Run Skillmark on your own servers for full control over data, configuration, and customization.
+Run Skillmark on your own servers with Docker Postgres + PostgREST.
 
 #### Prerequisites
 
 - **Node.js** 18+ and npm
-- **Supabase** project (cloud or local via `supabase start`)
-- **LLM API key** — at least one of: OpenAI, Kimi (Moonshot), or MiniMax
-- **Voice relay credentials** — Volcengine Doubao (primary) or Azure OpenAI (backup)
+- **Docker** + Docker Compose
+- **LLM API key** — at least one provider (Settings → AI or `.env`)
+- Optional voice relay credentials (Doubao / Azure OpenAI / Gemini)
 
 #### 1. Clone and Install
 
 ```bash
-git clone https://github.com/1146345502/aural-oss.git
-cd aural-oss
+git clone https://github.com/prateek-resiliencesoft/SkillMark.git
+cd SkillMark
 npm install
 ```
 
-#### 2. Set Up Supabase
-
-**Option A — Supabase Cloud**
-
-1. Create a project at [supabase.com](https://supabase.com/)
-2. Copy your project URL and keys
-
-**Option B — Local Supabase**
-
-Requires [Docker](https://docs.docker.com/get-docker/) running on your machine.
+#### 2. Start database services
 
 ```bash
-npx supabase start
+cp .env.example .env.local   # if present; otherwise copy from .env
+# set POSTGRES_PASSWORD, AUTH_SECRET, and at least one LLM key
+docker compose up -d
 ```
 
-This pulls the Supabase Docker images, starts all services, and **automatically applies all migrations** from `supabase/migrations/`. When it finishes, it prints connection details including the API keys (look for the **Publishable** and **Secret** keys).
+SQL under `db/init/` runs on first Postgres boot (schema, integrations, AI providers column, etc.).
 
-#### 3. Run Migrations
-
-- **Local Supabase:** migrations are applied automatically during `supabase start` — skip this step.
-- **Supabase Cloud:** push the migrations to your remote project:
+#### 3. Start the app
 
 ```bash
-npx supabase db push
-```
-
-Or apply migrations manually from `supabase/migrations/`.
-
-#### 4. Configure Environment
-
-```bash
-cp .env.example .env.local
-```
-
-Edit `.env.local` with your credentials. At minimum you need:
-
-- Supabase URL and keys
-- One LLM provider API key (OpenAI recommended)
-
-**Local Supabase key mapping** — map the keys from `supabase status` output to your `.env.local`:
-
-| Supabase CLI output | `.env.local` variable |
-|--------------------|-----------------------|
-| Project URL (`http://127.0.0.1:54321`) | `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_URL` |
-| Publishable key | `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_ANON_KEY` |
-| Secret key | `SUPABASE_SERVICE_ROLE_KEY` |
-| Database URL | `DATABASE_URL` |
-
-#### 5. Start Development
-
-```bash
-# Start the Next.js dev server
 npm run dev
-
-# Start the primary voice relay (Volcengine Doubao)
+# optional voice relays:
 npm run dev:voice
-
-# Or start the backup voice relay (Azure OpenAI Realtime)
 npm run dev:openai-voice
+npm run dev:voice:gemini
 ```
 
-Open [http://localhost:3000/login](http://localhost:3000/login) to sign in, or [http://localhost:3000/register](http://localhost:3000/register) to create a new account.
+Open [http://localhost:3000/login](http://localhost:3000/login) or [http://localhost:3000/register](http://localhost:3000/register).
+
+> **Note:** Managed cloud at [aural-ai.com](https://aural-ai.com) is the upstream Aural SaaS — Skillmark is the Resiliencesoft fork for self-host and customization.
 
 ---
 
 ## Project Structure
 
 ```
-aural/
+SkillMark/
 ├── src/
 │   ├── app/                # Next.js App Router pages and API routes
-│   │   ├── (auth)/         # Login, register, password reset
-│   │   ├── (dashboard)/    # Dashboard, interviews, projects, settings
+│   │   ├── (auth)/         # Login, register
+│   │   ├── (dashboard)/    # Dashboard, interviews, integrations, settings
 │   │   ├── (docs)/         # Documentation pages
-│   │   ├── api/            # API routes (AI, auth, voice, session, etc.)
-│   │   │   └── v1/         # Developer REST API (interviews, sessions, etc.)
+│   │   ├── api/            # AI, auth, voice, session, v1 REST
 │   │   └── i/              # Public interview and invite links
-│   ├── components/         # React components
-│   │   ├── auth/           # Auth forms
-│   │   ├── interview/      # Interview builder, question cards
-│   │   ├── session/        # Voice/chat interface, anti-cheating
-│   │   ├── layout/         # Header, sidebar
-│   │   └── ui/             # shadcn/ui primitives
-│   ├── hooks/              # Custom React hooks
-│   ├── lib/                # Shared utilities
-│   │   ├── ai/             # LLM provider registry and implementations
-│   │   ├── supabase/       # Supabase client/server/admin helpers
-│   │   ├── voice/          # Voice relay types and utilities
-│   │   ├── api-key-auth.ts # Developer API key validation
-│   │   ├── api-rate-limit.ts # Per-key rate limiter
-│   │   └── interview-templates.ts # Quick start interview templates
-│   ├── server/             # tRPC routers
-│   └── content/            # Documentation content
+│   ├── components/         # React UI by domain
+│   ├── lib/ai/             # Provider registry + org credential resolve
+│   ├── lib/messaging/      # Email/WhatsApp/webhooks
+│   └── server/routers/     # tRPC (incl. aiSettings, integration)
 ├── server/                 # Voice relay WebSocket servers
-├── supabase/               # Database migrations and config
-├── tests/                  # Unit and functional tests
-└── public/                 # Static assets
+├── db/init/                # Postgres bootstrap SQL
+├── docker-compose.yml      # Postgres + PostgREST
+├── tests/
+└── public/
 ```
 
 ---
 
 ## AI Provider System
 
-Skillmark uses a pluggable LLM provider architecture. You need **at least one** provider configured. The system auto-selects the first available provider in this order: OpenAI > Kimi > MiniMax.
+Skillmark uses a pluggable LLM provider architecture. Configure keys in **Project Settings → AI** (encrypted per organization) **or** via `.env`. Org keys win; empty org key falls back to env.
 
-### Providers
+You need **at least one** provider. Default pick order: OpenAI → Gemini → NVIDIA → Anthropic → Custom/local → Kimi → MiniMax.
 
-| Provider | Env Variable | Default Model | Get API Key |
-|----------|-------------|---------------|-------------|
-| **OpenAI** (recommended) | `OPENAI_API_KEY` | `gpt-4o-mini` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| Moonshot Kimi | `KIMI_API_KEY` | `moonshot-v1-8k` | [platform.moonshot.cn](https://platform.moonshot.cn/) |
-| MiniMax | `MINIMAX_API_KEY` | `MiniMax-Text-01` | [platform.minimaxi.com](https://platform.minimaxi.com/) |
+### Providers (Settings → AI)
 
-You can also use any OpenAI-compatible API (e.g., local models via Ollama or LiteLLM) by setting `OPENAI_BASE_URL`.
+| Provider | Env fallback | Notes |
+|----------|-------------|-------|
+| **OpenAI** | `OPENAI_API_KEY`, optional `OPENAI_BASE_URL` | Recommended default |
+| **Google Gemini** | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | OpenAI-compatible Gemini endpoint |
+| **NVIDIA** | `NVIDIA_API_KEY` or `NGC_API_KEY` | NVIDIA NIM |
+| **Anthropic** | `ANTHROPIC_API_KEY` | Claude Messages API |
+| **Custom / local** | `CUSTOM_LLM_API_KEY`, `CUSTOM_LLM_BASE_URL` | Ollama, LiteLLM, vLLM, etc. |
+
+Legacy env-only (not shown in Settings UI): `KIMI_API_KEY`, `MINIMAX_API_KEY`.
+
+Models stay on the server (env defaults such as `OPENAI_MODEL`, `GEMINI_MODEL`, `ANTHROPIC_MODEL`) — the Settings UI only stores API keys / custom base URL.
 
 ### How LLMs Are Used
 
-Skillmark uses LLMs for four distinct tasks, each selecting the best available model:
-
-| Task | What It Does | OpenAI Model | Kimi Model | MiniMax Model |
-|------|-------------|-------------|-----------|--------------|
-| **Chat interviewing** | Powers the AI interviewer during live sessions — asks questions, generates follow-ups, adapts tone | `gpt-4o-mini` | `moonshot-v1-8k` | `MiniMax-Text-01` |
-| **Interview generation** | Generates a complete interview (questions, criteria, settings) from a plain-language description | `gpt-4o-mini` | `moonshot-v1-8k` | `MiniMax-M2.1-lightning` |
-| **Question refinement** | Improves or refines existing interview questions based on feedback | `gpt-4o-mini` | `moonshot-v1-8k` | `MiniMax-M2.1-lightning` |
-| **Report & analysis** | Generates post-interview reports with per-question scores, highlights, and improvement areas | `gpt-4o` | `kimi-k2.5` | `MiniMax-M2.1-lightning` |
-
-Report generation uses a higher-capability model because it requires synthesizing an entire conversation into structured analysis. Chat interviewing uses each provider's default model unless overridden per-interview in the settings.
+| Task | What It Does |
+|------|-------------|
+| **Chat interviewing** | AI interviewer during live sessions |
+| **Interview generation** | Full interview from a plain-language brief |
+| **Question refinement** | Improve questions from recruiter feedback |
+| **Report & analysis** | Post-session scores, highlights, improvement areas |
 
 ---
 
@@ -584,7 +545,8 @@ curl -X POST http://localhost:3000/api/v1/interviews/{id}/publish \
 | `npm run test:web` | Run web tests |
 | `npm run dev:voice` | Start primary voice relay (Volcengine Doubao) |
 | `npm run dev:openai-voice` | Start backup voice relay (Azure OpenAI) |
-| `npm run db:types` | Regenerate Supabase TypeScript types |
+| `npm run db:up` / `db:down` | Start/stop Postgres + PostgREST via Docker Compose |
+| `npm run mediapipe:assets` | Fetch MediaPipe assets for head-movement detection |
 
 ---
 
@@ -606,6 +568,19 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ---
 
+## Credits & upstream
+
+Skillmark is maintained by **Resiliencesoft** as a fork of the open-source **Aural** project.
+
+- Official upstream: [github.com/1146345502/aural-oss](https://github.com/1146345502/aural-oss)
+- Product site: [aural-ai.com](https://aural-ai.com)
+- Built originally by [AuraTerra Nexus](https://aural-ai.com) — thank you for releasing Aural under MIT so the community can build on it.
+
+We keep attribution and the MIT license intact. New Skillmark work (Postgres/PostgREST stack, Integrations UI, Settings → AI keys, Interview Form Integration, and related product changes) is developed by Resiliencesoft.
+
+---
+
 <p align="center">
-  <sub>Built by <a href="https://aural-ai.com">AuraTerra Nexus</a> — Every voice heard, every insight captured.</sub>
+  <sub>Built by <strong>Resiliencesoft</strong> team</sub><br/>
+  <sub>Forked with credit from <a href="https://github.com/1146345502/aural-oss">Aural OSS</a> by AuraTerra Nexus</sub>
 </p>
