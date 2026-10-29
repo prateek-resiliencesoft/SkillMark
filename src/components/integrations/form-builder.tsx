@@ -217,7 +217,7 @@ export function FormBuilder({ formId }: { formId: string }) {
               if (dirty && !(await save())) return;
               await publish.mutateAsync({ id: formId });
               await utils.interviewForm.get.invalidate({ id: formId });
-              toast({ title: "Published", description: "Integration docs are ready under My Integrations." });
+              toast({ title: "Published", description: "Integration docs are ready under Interview Form Integration → Connect." });
             }} disabled={publish.isLoading}>{publish.isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Publish</Button>
           )}
           <Button variant="ghost" asChild><Link href="/integrations/api-keys"><KeyRound className="mr-1.5 h-4 w-4" />Manage API keys</Link></Button>
@@ -225,7 +225,7 @@ export function FormBuilder({ formId }: { formId: string }) {
           {form.status === "published" && (
             <>
               <Button variant="ghost" asChild><a href={hostedUrl} target="_blank" rel="noreferrer"><Eye className="mr-1.5 h-4 w-4" />Open hosted form</a></Button>
-              <Button variant="ghost" asChild><Link href={`/integrations?form=${form.id}`}><ExternalLink className="mr-1.5 h-4 w-4" />API docs</Link></Button>
+              <Button variant="ghost" asChild><Link href={`/integrations/forms/connect?form=${form.id}`}><ExternalLink className="mr-1.5 h-4 w-4" />API docs</Link></Button>
             </>
           )}
         </div>

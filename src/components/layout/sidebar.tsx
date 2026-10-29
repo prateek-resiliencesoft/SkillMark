@@ -351,8 +351,8 @@ export function Sidebar({
                 </p>
               )}
               {[
-                { name: "Interview Form", href: "/integrations/forms", icon: LucideFileText },
-                { name: "My Integrations", href: "/integrations", icon: LucidePlug },
+                { name: "Interview Form Integration", href: "/integrations/forms", icon: LucideFileText },
+                { name: "Integrations", href: "/integrations", icon: LucidePlug },
               ].map((item) => (
                 <SidebarLink
                   key={item.href}

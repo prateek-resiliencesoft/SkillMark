@@ -39,3 +39,5 @@ yarn-error.log*
 
 # misc
 skillmark-data.sql
+public/mediapipe/
+

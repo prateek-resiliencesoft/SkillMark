@@ -30,11 +30,11 @@ export default function InterviewFormsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Interview Forms</h1>
+        <h1 className="text-2xl font-semibold">Interview Form Integration</h1>
         <p className="text-sm text-muted-foreground">Build candidate application forms, attach an AI interview, publish, and integrate via API or a hosted form.</p>
         <div className="mt-2 flex gap-3 text-sm">
           <Link className="text-primary underline" href="/integrations/api-keys">Manage API keys</Link>
-          <Link className="text-primary underline" href="/integrations">How to connect (API, embed, MCP)</Link>
+          <Link className="text-primary underline" href="/integrations/forms/connect">How to connect (API, embed, MCP)</Link>
         </div>
       </div>
       <Card>
