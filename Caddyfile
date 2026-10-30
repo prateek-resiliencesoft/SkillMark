@@ -1,0 +1,15 @@
+# Production reverse proxy (Compose service: caddy)
+# SITE_ADDRESS=:80 until DNS ready; then e.g. skillmark.resiliencesoftinterview.com
+{$SITE_ADDRESS::80} {
+	encode gzip
+
+	@voice path /ws/voice* /ws/openai-voice*
+	reverse_proxy @voice voice:8082
+
+	reverse_proxy app:3000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
