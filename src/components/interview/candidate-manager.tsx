@@ -65,6 +65,7 @@ import {
     Loader2,
     Plus,
     Search,
+    Send,
     Settings,
     Trash2,
     UserCheck,
@@ -539,6 +540,27 @@ export function CandidateManager({
     utils.candidate.list.invalidate({ interviewId });
     utils.analysis.getInterviewInsights.invalidate({ interviewId });
   }, [utils, interviewId]);
+
+  const resendInviteMutation = trpc.candidate.resendInvite.useMutation({
+    onSuccess: (d) => {
+      invalidateAll();
+      const parts: string[] = [];
+      let anyFail = false;
+      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+        const r = d[ch];
+        if (!r) continue;
+        if (r.status !== "sent") anyFail = true;
+        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+      }
+      toast({
+        title: anyFail ? "Some messages not sent" : "Invite link sent",
+        description: parts.join(" · ") || "Nothing to send",
+        variant: anyFail ? "destructive" : undefined,
+      });
+    },
+    onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
+  });
+  const deliveryOptions = trpc.candidate.deliveryOptions.useQuery({ interviewId });
 
   const handleCopyInviteLink = useCallback(
     (inviteToken: string) => {
@@ -1284,6 +1306,27 @@ export function CandidateManager({
                               }
                             >
                               <LinkIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          ) : null}
+                          {row.type === "candidate" && row.inviteToken &&
+                            (deliveryOptions.data?.email || deliveryOptions.data?.whatsapp) ? (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="Resend link (WhatsApp / Email)"
+                              disabled={resendInviteMutation.isLoading}
+                              onClick={() =>
+                                resendInviteMutation.mutate({
+                                  candidateId: row.id,
+                                  channels: {
+                                    email: !!deliveryOptions.data?.email,
+                                    whatsapp: !!deliveryOptions.data?.whatsapp,
+                                  },
+                                })
+                              }
+                            >
+                              <Send className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           ) : null}
                         </TableCell>

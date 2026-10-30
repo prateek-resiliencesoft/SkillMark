@@ -3,6 +3,7 @@
 import { useOrg } from "@/components/org-provider";
 import { AiButton } from "@/components/ui/ai-button";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -222,6 +223,18 @@ export function CandidateCreateDialog({
   const [parsingResume, setParsingResume] = useState(false);
   const [streamText, setStreamText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const deliveryOptions = trpc.candidate.deliveryOptions.useQuery(
+    { interviewId },
+    { enabled: open },
+  );
+  const [sendEmail, setSendEmail] = useState(false);
+  const [sendWhatsapp, setSendWhatsapp] = useState(false);
+  useEffect(() => {
+    if (deliveryOptions.data) {
+      setSendEmail(deliveryOptions.data.email);
+      setSendWhatsapp(deliveryOptions.data.whatsapp);
+    }
+  }, [deliveryOptions.data]);
   const streamRef = useRef<HTMLDivElement>(null);
   const streamEndRef = useRef<HTMLDivElement>(null);
 
@@ -234,7 +247,25 @@ export function CandidateCreateDialog({
 
   const createMutation = trpc.candidate.create.useMutation({
     onSuccess: (data) => {
-      if (data.inviteToken) {
+      const d = (data as { delivery?: Record<string, { status: string; error?: string }> }).delivery ?? {};
+      const parts: string[] = [];
+      let anyFail = false;
+      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+        const r = d[ch];
+        if (!r) continue;
+        if (r.status !== "sent") anyFail = true;
+        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+      }
+      if (parts.length) {
+        toast({
+          title: anyFail ? "Session added — some messages not sent" : "Session added — invite sent",
+          description: parts.join(" · "),
+          variant: anyFail ? "destructive" : undefined,
+        });
+        navigator.clipboard
+          .writeText(`${window.location.origin}/i/invite/${data.inviteToken}`)
+          .catch(() => {});
+      } else if (data.inviteToken) {
         const link = `${window.location.origin}/i/invite/${data.inviteToken}`;
         navigator.clipboard.writeText(link).catch(() => {});
         toast({
@@ -283,6 +314,10 @@ export function CandidateCreateDialog({
         : undefined,
       workExperience: form.workExperience || undefined,
       notes: form.notes.trim() || undefined,
+      sendVia: {
+        email: sendEmail && !!deliveryOptions.data?.email && !!form.email.trim(),
+        whatsapp: sendWhatsapp && !!deliveryOptions.data?.whatsapp && !!form.phone.trim(),
+      },
     });
   };
 
@@ -443,7 +478,7 @@ export function CandidateCreateDialog({
               <Label htmlFor="c-phone" className="text-xs">Phone</Label>
               <Input
                 id="c-phone"
-                placeholder="Enter phone"
+                placeholder="+91 98765 43210"
                 value={form.phone}
                 onChange={(e) => update("phone", e.target.value)}
                 className="h-8 text-sm"
@@ -646,6 +681,46 @@ export function CandidateCreateDialog({
               </p>
             )}
             <div ref={streamEndRef} />
+          </div>
+
+          <div className="space-y-2 rounded-md border p-3">
+            <p className="text-xs font-medium">Send interview link</p>
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={sendWhatsapp}
+                disabled={!deliveryOptions.data?.whatsapp}
+                onCheckedChange={(v) => setSendWhatsapp(v === true)}
+              />
+              <span>
+                Send link on WhatsApp
+                <span className="block text-xs text-muted-foreground">
+                  {!deliveryOptions.data?.whatsapp
+                    ? "WhatsApp (ResilioHub) not configured — set it up in Integrations."
+                    : !form.phone.trim()
+                      ? "Add a phone number with country code (e.g. +91…)."
+                      : !form.phone.trim().startsWith("+")
+                        ? "Phone must start with + and country code (e.g. +91…)."
+                        : `To ${form.phone.trim()}`}
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={sendEmail}
+                disabled={!deliveryOptions.data?.email}
+                onCheckedChange={(v) => setSendEmail(v === true)}
+              />
+              <span>
+                Send link by Email
+                <span className="block text-xs text-muted-foreground">
+                  {!deliveryOptions.data?.email
+                    ? "No email sender (Resend/Brevo) configured — set it up in Integrations."
+                    : !form.email.trim()
+                      ? "Add an email address."
+                      : `To ${form.email.trim()}`}
+                </span>
+              </span>
+            </label>
           </div>
 
           <SheetFooter className="pt-2">

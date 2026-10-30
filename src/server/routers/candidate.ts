@@ -5,6 +5,83 @@ import {
     assertMinRole, filterAccessibleProjectIds,
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
+import { inviteLink } from "../batch-access";
+import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
+import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
+
+const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
+
+type ChannelResult = { status: "sent" | "failed" | "skipped"; error?: string };
+export interface InviteDeliveryResult {
+  email?: ChannelResult;
+  whatsapp?: ChannelResult;
+}
+
+/** Send the invite link for one candidate. Never throws — errors are returned per channel. */
+async function sendCandidateInvite(
+  supabase: Parameters<typeof getOrgMembership>[0],
+  organizationId: string,
+  candidateId: string,
+  channels: { email: boolean; whatsapp: boolean },
+): Promise<InviteDeliveryResult> {
+  const out: InviteDeliveryResult = {};
+  if (!channels.email && !channels.whatsapp) return out;
+  try {
+    const { data: c } = await supabase
+      .from("candidates")
+      .select("id, name, email, phone, inviteToken, scheduledAt, expiresAt, interview:interviews(title, timeLimitMinutes)")
+      .eq("id", candidateId)
+      .single();
+    if (!c || !c.inviteToken) {
+      const r: ChannelResult = { status: "failed", error: "Candidate has no invite link" };
+      if (channels.email) out.email = r;
+      if (channels.whatsapp) out.whatsapp = r;
+      return out;
+    }
+    const cfg = await loadDeliveryConfig(supabase, organizationId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const iv = c.interview as any;
+    const title = ((iv?.title as string | undefined) ?? "Interview").split(" · ")[0];
+    const vars: TemplateVars = {
+      name: c.name,
+      interviewTitle: title,
+      organization: cfg.organizationName,
+      link: inviteLink(c.inviteToken),
+      duration: iv?.timeLimitMinutes ? `${iv.timeLimitMinutes} minutes` : "",
+      batchName: title,
+      scheduledAt: (c.scheduledAt as string | null) ?? undefined,
+      expiresAt: (c.expiresAt as string | null) ?? undefined,
+      scheduleNotice: formatScheduleNotice(c.scheduledAt as string | null, c.expiresAt as string | null),
+    };
+    const update: Record<string, unknown> = {};
+    const errors: string[] = [];
+    if (channels.email) {
+      const r = await deliverEmail(cfg, c.email, vars);
+      out.email = { status: r.status, error: r.error };
+      update.emailStatus = r.status;
+      update.emailProvider = r.provider;
+      if (r.status === "sent") update.emailSentAt = new Date().toISOString();
+      if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
+    }
+    if (channels.whatsapp) {
+      const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
+      const r = await deliverWhatsapp(cfg, phone, vars);
+      out.whatsapp = { status: r.status, error: r.error };
+      update.whatsappStatus = r.status;
+      update.whatsappProvider = r.provider ?? "resilio";
+      if (r.status === "sent") update.whatsappSentAt = new Date().toISOString();
+      if (r.error) errors.push(`WhatsApp: ${r.error}`);
+    }
+    update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;
+    await supabase.from("candidates").update(update).eq("id", c.id);
+  } catch (err) {
+    const r: ChannelResult = { status: "failed", error: err instanceof Error ? err.message : "Send failed" };
+    if (channels.email && !out.email) out.email = r;
+    if (channels.whatsapp && !out.whatsapp) out.whatsapp = r;
+  }
+  return out;
+}
+
 const candidateFields = z.object({
   name: z.string().min(1),
   email: z.string().email().optional().or(z.literal("")),
@@ -69,12 +146,12 @@ async function verifyInterviewAccess(
 export const candidateRouter = router({
   create: protectedProcedure
     .input(
-      z.object({ interviewId: z.string() }).merge(candidateFields),
+      z.object({ interviewId: z.string(), sendVia: sendViaSchema.optional() }).merge(candidateFields),
     )
     .mutation(async ({ ctx, input }) => {
-      const { interviewId, ...fields } = input;
+      const { interviewId, sendVia, ...fields } = input;
 
-      const { role } = await verifyInterviewAccess(
+      const { role, organizationId } = await verifyInterviewAccess(
         ctx.supabase,
         interviewId,
         ctx.user.id,
@@ -99,7 +176,36 @@ export const candidateRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       }
 
-      return candidate;
+      // Delivery failures never fail session creation.
+      const delivery = sendVia
+        ? await sendCandidateInvite(ctx.supabase, organizationId, candidate.id, sendVia)
+        : {};
+
+      return { ...candidate, delivery };
+    }),
+
+  /** Which invite channels the interview's org has configured (no secrets returned). */
+  deliveryOptions: protectedProcedure
+    .input(z.object({ interviewId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { organizationId } = await verifyInterviewAccess(ctx.supabase, input.interviewId, ctx.user.id);
+      const cfg = await loadDeliveryConfig(ctx.supabase, organizationId);
+      return { email: !!cfg.resend || !!cfg.brevo, whatsapp: !!cfg.resilio };
+    }),
+
+  /** Re-send the invite link of an existing session. */
+  resendInvite: protectedProcedure
+    .input(z.object({ candidateId: z.string(), channels: sendViaSchema }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("id, interviewId")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      const { role, organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+      return sendCandidateInvite(ctx.supabase, organizationId, c.id, input.channels);
     }),
 
   bulkCreate: protectedProcedure
