@@ -378,6 +378,7 @@ export function useVoice({
         binaryType: "arraybuffer",
         buildInitMessage: () => ({
           type: "init",
+          sessionId,
           context: {
             ...interviewContext,
             startQuestionIndex: currentQuestionIndexRef.current,
