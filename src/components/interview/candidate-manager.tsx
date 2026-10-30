@@ -63,6 +63,7 @@ import {
     GripVertical,
     Link as LinkIcon,
     Loader2,
+    Pencil,
     Plus,
     Search,
     Send,
@@ -75,6 +76,7 @@ import {
     X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
 import { CandidateCreateDialog } from "./candidate-create-dialog";
 import { CandidateImportDialog } from "./candidate-import-dialog";
 import { ResumeImportDialog } from "./resume-import-dialog";
@@ -425,6 +427,7 @@ export function CandidateManager({
   const [importOpen, setImportOpen] = useState(false);
   const [resumeImportOpen, setResumeImportOpen] = useState(false);
   const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
+  const [detail, setDetail] = useState<{ id: string; edit: boolean } | null>(null);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
 
@@ -1246,14 +1249,18 @@ export function CandidateManager({
                     return (
                       <TableRow
                         key={compositeId}
-                        className={hasSession ? "cursor-pointer" : undefined}
+                        className={
+                          row.type === "candidate" || hasSession ? "cursor-pointer" : undefined
+                        }
                         data-state={
                           selectedIds.has(compositeId) ? "selected" : undefined
                         }
                         onClick={
-                          hasSession
-                            ? () => onViewSession(session.id)
-                            : undefined
+                          row.type === "candidate"
+                            ? () => setDetail({ id: row.id, edit: false })
+                            : hasSession
+                              ? () => onViewSession(session.id)
+                              : undefined
                         }
                       >
                         {/* Frozen left: checkbox + name (single cell) */}
@@ -1288,8 +1295,19 @@ export function CandidateManager({
                         {/* Frozen right: actions */}
                         <TableCell
                           onClick={(e) => e.stopPropagation()}
-                          className="sticky right-0 z-10 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
+                          className="sticky right-0 z-10 w-10 whitespace-nowrap bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
                         >
+                          {row.type === "candidate" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="Edit session details"
+                              onClick={() => setDetail({ id: row.id, edit: true })}
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
                           {hasSession && status === "COMPLETED" ? (
                             <Button
                               variant="ghost"
@@ -1449,6 +1467,12 @@ export function CandidateManager({
         onOpenChange={setBulkUploadOpen}
         onImported={invalidateAll}
         bulk
+      />
+      <CandidateDetailSheet
+        candidateId={detail?.id ?? null}
+        startInEdit={detail?.edit ?? false}
+        onOpenChange={(o) => !o && setDetail(null)}
+        onSaved={invalidateAll}
       />
     </div>
   );

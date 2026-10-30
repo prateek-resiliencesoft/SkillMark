@@ -53,6 +53,7 @@ import {
     CircleDot,
     Download,
     ExternalLink,
+    Pencil,
     GripVertical,
     Loader2,
     Search,
@@ -61,6 +62,7 @@ import {
     X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -454,6 +456,8 @@ export default function CandidatesPage() {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailEdit, setDetailEdit] = useState(false);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
 
@@ -1247,12 +1251,21 @@ export default function CandidatesPage() {
                     return (
                       <TableRow
                         key={compositeId}
-                        className={hasSession ? "cursor-pointer" : undefined}
+                        className={
+                          row.type === "candidate" || hasSession ? "cursor-pointer" : undefined
+                        }
                         data-state={
                           selectedIds.has(compositeId) ? "selected" : undefined
                         }
                         onClick={
-                          hasSession ? () => handleRowClick(row) : undefined
+                          row.type === "candidate"
+                            ? () => {
+                                setDetailEdit(false);
+                                setDetailId(row.id);
+                              }
+                            : hasSession
+                              ? () => handleRowClick(row)
+                              : undefined
                         }
                       >
                         {/* Frozen left: checkbox + interview */}
@@ -1282,8 +1295,22 @@ export default function CandidatesPage() {
                         {/* Frozen right: action */}
                         <TableCell
                           onClick={(e) => e.stopPropagation()}
-                          className="sticky right-0 z-10 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
+                          className="sticky right-0 z-10 w-10 whitespace-nowrap bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
                         >
+                          {row.type === "candidate" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title={isZh ? "编辑" : "Edit session details"}
+                              onClick={() => {
+                                setDetailEdit(true);
+                                setDetailId(row.id);
+                              }}
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
                           {hasSession && (
                             <Button
                               variant="ghost"
@@ -1386,6 +1413,12 @@ export default function CandidatesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <CandidateDetailSheet
+        candidateId={detailId}
+        startInEdit={detailEdit}
+        onOpenChange={(o) => !o && setDetailId(null)}
+        onSaved={invalidateAll}
+      />
     </div>
   );
 }
