@@ -3,6 +3,8 @@
 import { useOrg } from "@/components/org-provider";
 import { AiButton } from "@/components/ui/ai-button";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import {
     Dialog,
     DialogContent,
@@ -17,10 +19,11 @@ import {
     CheckCircle2,
     FileText,
     Loader2,
+    Trash2,
     Upload,
     X,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface ResumeImportDialogProps {
   interviewId: string;
@@ -52,6 +55,21 @@ interface ResumeEntry {
 }
 
 type Step = "upload" | "preview" | "complete";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const BIRTHDAY_RE = /^\d{4}(-\d{2}){0,2}$/;
+
+function validateCandidate(c: ParsedCandidate): Record<string, string> {
+  const err: Record<string, string> = {};
+  if (!c.name?.trim()) err.name = "Name is required";
+  if (c.email?.trim() && !EMAIL_RE.test(c.email.trim())) err.email = "Invalid email";
+  const phone = c.phone?.replace(/[\s()-]/g, "") ?? "";
+  if (phone && !/^\+\d{7,15}$/.test(phone)) err.phone = "Use + and country code, e.g. +919876543210";
+  if (c.birthday?.trim() && !BIRTHDAY_RE.test(c.birthday.trim())) err.birthday = "Use YYYY-MM or YYYY-MM-DD";
+  if (c.graduationYear && (Number(c.graduationYear) < 1950 || Number(c.graduationYear) > 2100))
+    err.graduationYear = "Invalid year";
+  return err;
+}
 
 async function parseOneResume(
   file: File,
@@ -129,10 +147,57 @@ export function ResumeImportDialog({
   const [importedCount, setImportedCount] = useState(0);
   const [isParsing, setIsParsing] = useState(false);
   const abortRef = useRef(false);
+  const [showMore, setShowMore] = useState(false);
+  const deliveryOptions = trpc.candidate.deliveryOptions.useQuery({ interviewId }, { enabled: open });
+  const [sendEmail, setSendEmail] = useState(false);
+  const [sendWhatsapp, setSendWhatsapp] = useState(false);
+  useEffect(() => {
+    if (deliveryOptions.data) {
+      setSendEmail(deliveryOptions.data.email);
+      setSendWhatsapp(deliveryOptions.data.whatsapp);
+    }
+  }, [deliveryOptions.data]);
+
+  const updateField = useCallback(
+    (entry: ResumeEntry, field: keyof ParsedCandidate, value: string) => {
+      setEntries((prev) =>
+        prev.map((e) =>
+          e === entry && e.parsed
+            ? {
+                ...e,
+                parsed: {
+                  ...e.parsed,
+                  [field]: field === "graduationYear" ? (value ? Number(value) : undefined) : value,
+                },
+              }
+            : e,
+        ),
+      );
+    },
+    [],
+  );
+  const removeParsed = useCallback((entry: ResumeEntry) => {
+    setEntries((prev) => prev.filter((e) => e !== entry));
+  }, []);
 
   const bulkCreate = trpc.candidate.bulkCreate.useMutation({
     onSuccess: (data) => {
       setImportedCount(data.created);
+      const d = data.delivery;
+      if (d && d.email.sent + d.email.failed + d.whatsapp.sent + d.whatsapp.failed > 0) {
+        const failed = d.email.failed + d.whatsapp.failed;
+        toast({
+          title: failed ? "Imported — some invites not sent" : "Imported — invites sent",
+          description: [
+            d.whatsapp.sent + d.whatsapp.failed ? `WhatsApp: ${d.whatsapp.sent} sent, ${d.whatsapp.failed} failed` : "",
+            d.email.sent + d.email.failed ? `Email: ${d.email.sent} sent, ${d.email.failed} failed` : "",
+            ...d.errors,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          variant: failed ? "destructive" : undefined,
+        });
+      }
       setStep("complete");
       onImported();
     },
@@ -218,20 +283,22 @@ export function ResumeImportDialog({
   }, [entries, currentOrg?.id, interviewId]);
 
   const successEntries = entries.filter((e) => e.status === "done" && e.parsed);
+  const rowErrors = successEntries.map((e) => validateCandidate(e.parsed!));
+  const invalidCount = rowErrors.filter((r) => Object.keys(r).length > 0).length;
+  const validCount = successEntries.length - invalidCount;
 
   const handleImport = useCallback(() => {
-    const candidates = successEntries
-      .map((e) => e.parsed!)
-      .filter((c) => c.name);
+    if (successEntries.some((e) => Object.keys(validateCandidate(e.parsed!)).length)) return;
+    const candidates = successEntries.map((e) => e.parsed!);
 
     if (candidates.length === 0) return;
 
     bulkCreate.mutate({
       interviewId,
       candidates: candidates.map((c) => ({
-        name: c.name,
-        email: c.email || "",
-        phone: c.phone || undefined,
+        name: c.name.trim(),
+        email: c.email?.trim() || "",
+        phone: c.phone?.replace(/[\s()-]/g, "") || undefined,
         gender: c.gender || undefined,
         birthday: c.birthday || undefined,
         education: c.education || undefined,
@@ -243,8 +310,12 @@ export function ResumeImportDialog({
         workExperience: c.workExperience || undefined,
         notes: c.notes || undefined,
       })),
+      sendVia: {
+        email: sendEmail && !!deliveryOptions.data?.email,
+        whatsapp: sendWhatsapp && !!deliveryOptions.data?.whatsapp,
+      },
     });
-  }, [successEntries, interviewId, bulkCreate]);
+  }, [successEntries, interviewId, bulkCreate, sendEmail, sendWhatsapp, deliveryOptions.data]);
 
   const handleClose = useCallback(() => {
     abortRef.current = true;
@@ -264,7 +335,7 @@ export function ResumeImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className={step === "preview" ? "sm:max-w-5xl" : "sm:max-w-lg"}>
         <DialogHeader>
           <DialogTitle>Import by Resumes</DialogTitle>
           <DialogDescription>
@@ -438,25 +509,76 @@ export function ResumeImportDialog({
           {step === "preview" && (
             <>
               <div className="rounded-lg border">
-                <div className="max-h-[300px] overflow-auto code-scrollbar">
+                <div className="max-h-[360px] overflow-auto code-scrollbar">
                   <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-muted/80 backdrop-blur">
+                    <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
                       <tr>
-                        <th className="px-3 py-2 text-left font-medium">#</th>
-                        <th className="px-3 py-2 text-left font-medium">Name</th>
-                        <th className="px-3 py-2 text-left font-medium">Email</th>
-                        <th className="px-3 py-2 text-left font-medium">Phone</th>
+                        <th className="px-2 py-2 text-left font-medium">#</th>
+                        <th className="px-2 py-2 text-left font-medium">Name *</th>
+                        <th className="px-2 py-2 text-left font-medium">Email</th>
+                        <th className="px-2 py-2 text-left font-medium">Phone (+code)</th>
+                        {showMore && (
+                          <>
+                            <th className="px-2 py-2 text-left font-medium">DOB</th>
+                            <th className="px-2 py-2 text-left font-medium">Gender</th>
+                            <th className="px-2 py-2 text-left font-medium">Education</th>
+                            <th className="px-2 py-2 text-left font-medium">School</th>
+                            <th className="px-2 py-2 text-left font-medium">Major</th>
+                            <th className="px-2 py-2 text-left font-medium">Grad year</th>
+                            <th className="px-2 py-2 text-left font-medium">Experience</th>
+                          </>
+                        )}
+                        <th className="px-2 py-2" />
                       </tr>
                     </thead>
                     <tbody>
                       {successEntries.map((entry, i) => {
                         const c = entry.parsed!;
+                        const err = rowErrors[i];
+                        const hasErr = Object.keys(err).length > 0;
+                        const cell = (field: keyof ParsedCandidate, placeholder: string, w = "w-40") => (
+                          <td className="px-2 py-1.5 align-top">
+                            <Input
+                              value={c[field] == null ? "" : String(c[field])}
+                              placeholder={placeholder}
+                              onChange={(e) => updateField(entry, field, e.target.value)}
+                              className={`h-8 text-sm ${w} ${err[field] ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                              title={err[field]}
+                            />
+                            {err[field] && (
+                              <p className="mt-0.5 max-w-[10rem] text-[11px] leading-tight text-destructive">{err[field]}</p>
+                            )}
+                          </td>
+                        );
                         return (
-                          <tr key={i} className="border-t">
-                            <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
-                            <td className="px-3 py-2">{c.name}</td>
-                            <td className="px-3 py-2 text-muted-foreground">{c.email || "-"}</td>
-                            <td className="px-3 py-2 text-muted-foreground">{c.phone || "-"}</td>
+                          <tr key={`${entry.file.name}-${i}`} className={`border-t ${hasErr ? "bg-destructive/5" : ""}`}>
+                            <td className="px-2 py-2 align-top text-muted-foreground">{i + 1}</td>
+                            {cell("name", "Full name")}
+                            {cell("email", "name@example.com", "w-48")}
+                            {cell("phone", "+91 98765 43210")}
+                            {showMore && (
+                              <>
+                                {cell("birthday", "YYYY-MM", "w-28")}
+                                {cell("gender", "Gender", "w-24")}
+                                {cell("education", "Education", "w-28")}
+                                {cell("school", "School")}
+                                {cell("major", "Major", "w-32")}
+                                {cell("graduationYear", "YYYY", "w-20")}
+                                {cell("workExperience", "Experience", "w-28")}
+                              </>
+                            )}
+                            <td className="px-2 py-1.5 align-top">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title="Remove row"
+                                onClick={() => removeParsed(entry)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                              </Button>
+                            </td>
                           </tr>
                         );
                       })}
@@ -465,8 +587,43 @@ export function ResumeImportDialog({
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                <button
+                  type="button"
+                  className="text-xs text-primary underline-offset-2 hover:underline"
+                  onClick={() => setShowMore((v) => !v)}
+                >
+                  {showMore ? "Hide extra fields" : "Show all fields (DOB, education…)"}
+                </button>
+                <label className="flex items-center gap-2" title={deliveryOptions.data?.whatsapp ? "" : "Configure ResilioHub in Integrations"}>
+                  <Checkbox
+                    checked={sendWhatsapp}
+                    disabled={!deliveryOptions.data?.whatsapp}
+                    onCheckedChange={(v) => setSendWhatsapp(v === true)}
+                  />
+                  Send link on WhatsApp
+                  {!deliveryOptions.data?.whatsapp && (
+                    <span className="text-xs text-muted-foreground">(not configured)</span>
+                  )}
+                </label>
+                <label className="flex items-center gap-2" title={deliveryOptions.data?.email ? "" : "Configure Resend/Brevo in Integrations"}>
+                  <Checkbox
+                    checked={sendEmail}
+                    disabled={!deliveryOptions.data?.email}
+                    onCheckedChange={(v) => setSendEmail(v === true)}
+                  />
+                  Send link by Email
+                  {!deliveryOptions.data?.email && (
+                    <span className="text-xs text-muted-foreground">(not configured)</span>
+                  )}
+                </label>
+              </div>
+
               <p className="text-sm text-muted-foreground">
-                {successEntries.length} session{successEntries.length !== 1 ? "s" : ""} ready to import.
+                {validCount} session{validCount !== 1 ? "s" : ""} ready to import.
+                {invalidCount > 0 && (
+                  <span className="text-destructive"> {invalidCount} row{invalidCount !== 1 ? "s" : ""} need fixing.</span>
+                )}
                 {errorEntries.length > 0 && (
                   <span className="text-destructive">
                     {" "}{errorEntries.length} failed.
@@ -480,12 +637,12 @@ export function ResumeImportDialog({
                 </Button>
                 <Button
                   onClick={handleImport}
-                  disabled={bulkCreate.isLoading || successEntries.length === 0}
+                  disabled={bulkCreate.isLoading || successEntries.length === 0 || invalidCount > 0}
                 >
                   {bulkCreate.isLoading && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
-                  Import ({successEntries.length})
+                  Import ({validCount})
                 </Button>
               </div>
             </>
