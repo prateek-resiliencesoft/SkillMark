@@ -48,7 +48,8 @@ export function sessionCookieOptions() {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production" || (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https://"),
+    // Only Secure over HTTPS. NODE_ENV=production + plain HTTP drops the cookie in browsers.
+    secure: (process.env.NEXT_PUBLIC_APP_URL ?? "").startsWith("https://"),
     path: "/",
     maxAge: SESSION_MAX_AGE,
   };

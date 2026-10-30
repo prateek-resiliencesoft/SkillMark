@@ -21,7 +21,7 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface AuthSplitViewProps {
@@ -33,8 +33,12 @@ type AnimationStage = "glass_center" | "gliding" | "gathering" | "settled";
 const INTRO_SESSION_KEY = "skillmark_intro_played";
 
 export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const nextUrl = searchParams.get("next") || "/dashboard";
+  const nextQuery = searchParams.get("next")
+    ? `?next=${encodeURIComponent(searchParams.get("next")!)}`
+    : "";
 
   const { toast } = useToast();
   const { t } = useAppLocale();
@@ -43,6 +47,18 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
   const [activeTab, setActiveTab] = useState<"login" | "register">(defaultTab);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setActiveTab(defaultTab);
+  }, [defaultTab]);
+
+  const switchTab = useCallback(
+    (tab: "login" | "register") => {
+      setActiveTab(tab);
+      router.replace(tab === "login" ? `/login${nextQuery}` : `/register${nextQuery}`);
+    },
+    [router, nextQuery],
+  );
 
   // Form states
   const [name, setName] = useState("");
@@ -187,7 +203,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
           title: "Account Created",
           description: "Sign in with your new credentials.",
         });
-        setActiveTab("login");
+        switchTab("login");
         setLoading(false);
       }
     } catch (err: unknown) {
@@ -333,7 +349,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
             <button
               type="button"
-              onClick={() => setActiveTab("login")}
+              onClick={() => switchTab("login")}
               className={cn(
                 "relative z-10 flex-1 py-2.5 text-sm font-semibold transition-colors duration-200 text-center rounded-xl",
                 activeTab === "login"
@@ -346,7 +362,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
             <button
               type="button"
-              onClick={() => setActiveTab("register")}
+              onClick={() => switchTab("register")}
               className={cn(
                 "relative z-10 flex-1 py-2.5 text-sm font-semibold transition-colors duration-200 text-center rounded-xl",
                 activeTab === "register"
