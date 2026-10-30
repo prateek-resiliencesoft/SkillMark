@@ -27,7 +27,6 @@ import {
 
 const log = createLogger("openai-relay");
 
-config({ path: ".env.local", override: true });
 config({ path: ".env" });
 
 // ── Configuration ───────────────────────────────────────────────────
@@ -45,7 +44,7 @@ const OPENAI_REALTIME_TRANSCRIPTION_MODEL =
 const OPENAI_WS_URL = `${AZURE_ENDPOINT}/openai/v1/realtime?model=${AZURE_DEPLOYMENT}`;
 
 if (!AZURE_ENDPOINT || !AZURE_API_KEY) {
-  log.error("Missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY in .env.local");
+  log.error("Missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY in .env");
   process.exit(1);
 }
 
