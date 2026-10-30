@@ -59,7 +59,9 @@ export async function middleware(request: NextRequest) {
     return res;
   }
 
-  const res = NextResponse.next({ request });
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-pathname", path);
+  const res = NextResponse.next({ request: { headers: requestHeaders } });
   if (token && !user) res.cookies.delete(SESSION_COOKIE);
   return res;
 }
