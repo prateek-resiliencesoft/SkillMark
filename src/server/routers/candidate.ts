@@ -213,12 +213,13 @@ export const candidateRouter = router({
       z.object({
         interviewId: z.string(),
         candidates: z.array(candidateFields).min(1).max(500),
+        sendVia: sendViaSchema.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { interviewId, candidates } = input;
+      const { interviewId, candidates, sendVia } = input;
 
-      const { role } = await verifyInterviewAccess(
+      const { role, organizationId } = await verifyInterviewAccess(
         ctx.supabase,
         interviewId,
         ctx.user.id,
@@ -254,7 +255,27 @@ export const candidateRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       }
 
-      return { created: data?.length ?? 0, total: deduped.length };
+      // Optional invite delivery — failures never block the import.
+      const delivery = { email: { sent: 0, failed: 0 }, whatsapp: { sent: 0, failed: 0 }, errors: [] as string[] };
+      if (sendVia && (sendVia.email || sendVia.whatsapp)) {
+        for (const c of data ?? []) {
+          const r = await sendCandidateInvite(ctx.supabase, organizationId, c.id, {
+            email: sendVia.email && !!c.email,
+            whatsapp: sendVia.whatsapp && !!c.phone,
+          });
+          for (const ch of ["email", "whatsapp"] as const) {
+            const x = r[ch];
+            if (!x) continue;
+            if (x.status === "sent") delivery[ch].sent++;
+            else {
+              delivery[ch].failed++;
+              if (x.error && delivery.errors.length < 5) delivery.errors.push(`${c.name} (${ch}): ${x.error}`);
+            }
+          }
+        }
+      }
+
+      return { created: data?.length ?? 0, total: deduped.length, delivery };
     }),
 
   list: protectedProcedure
