@@ -64,7 +64,8 @@ interface RelayConnectorOptions<TJsonMessage extends Record<string, unknown>> {
 }
 
 const DEFAULT_VOICE_RELAY_PORT = "8766";
-const DEFAULT_OPENAI_RELAY_PORT = "8767";
+// The Gemini relay (server/gemini-voice-relay.ts, port 8082) speaks the OpenAI-relay protocol.
+const DEFAULT_OPENAI_RELAY_PORT = "8082";
 const DEFAULT_VOICE_RELAY_PATH = "/ws/voice";
 const DEFAULT_OPENAI_RELAY_PATH = "/ws/openai-voice";
 const READY_STATE_OPEN = 1;
@@ -207,7 +208,8 @@ export function resolveRelayPrimaryPreference(
   if (normalized === "voice" || normalized === "openai") {
     return normalized;
   }
-  return "voice";
+  // Default: the Gemini relay (openai-protocol, :8082) first; legacy :8766 relay as fallback.
+  return "openai";
 }
 
 export function relayDisplayName(kind: RelayKind): string {

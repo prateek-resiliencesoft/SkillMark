@@ -115,8 +115,8 @@ test("resolveRelayPrimaryPreference normalizes supported values and defaults to 
   assert.equal(resolveRelayPrimaryPreference("voice"), "voice");
   assert.equal(resolveRelayPrimaryPreference("openai"), "openai");
   assert.equal(resolveRelayPrimaryPreference("VOICE"), "voice");
-  assert.equal(resolveRelayPrimaryPreference(undefined), "voice");
-  assert.equal(resolveRelayPrimaryPreference("unexpected"), "voice");
+  assert.equal(resolveRelayPrimaryPreference(undefined), "openai");
+  assert.equal(resolveRelayPrimaryPreference("unexpected"), "openai");
 });
 
 test("OpenAI relay URL derives from the voice relay URL when only the primary URL is configured", () => {
@@ -126,7 +126,7 @@ test("OpenAI relay URL derives from the voice relay URL when only the primary UR
   });
 
   assert.equal(targets[0].url, "ws://localhost:8766");
-  assert.equal(targets[1].url, "ws://localhost:8767/");
+  assert.equal(targets[1].url, "ws://localhost:8082/");
 });
 
 test("Production browser defaults use same-origin relay paths instead of raw relay ports", () => {
