@@ -217,7 +217,6 @@ CREATE FUNCTION public.create_organization(org_name text, org_slug text) RETURNS
 DECLARE
   v_user_id uuid;
   v_org     record;
-  v_proj    record;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -230,10 +229,6 @@ BEGIN
 
   INSERT INTO organization_members ("workspaceId", "userId", role)
   VALUES (v_org.id, v_user_id, 'OWNER');
-
-  INSERT INTO projects ("organizationId", name, "createdBy")
-  VALUES (v_org.id, 'Default', v_user_id)
-  RETURNING * INTO v_proj;
 
   RETURN json_build_object(
     'id', v_org.id,
