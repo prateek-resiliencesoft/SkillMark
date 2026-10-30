@@ -19,9 +19,11 @@ function openaiModels() {
 }
 
 function geminiModels() {
-  // gemini-2.0 / 2.5 Flash shut down for new keys (404). Prefer current Flash.
+  // Prefer current Flash; keep aliases so dead-model retries can cascade.
   const d = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-  return Array.from(new Set([d, "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]));
+  return Array.from(
+    new Set([d, "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"]),
+  );
 }
 
 function nvidiaModels() {
