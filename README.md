@@ -368,7 +368,7 @@ npm install
 #### 2. Start database services
 
 ```bash
-cp .env.example .env.local   # if present; otherwise copy from .env
+cp .env.example .env
 # set POSTGRES_PASSWORD, AUTH_SECRET, and at least one LLM key
 docker compose up -d
 ```

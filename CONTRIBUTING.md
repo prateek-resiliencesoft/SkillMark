@@ -21,8 +21,8 @@ cd aural-oss
 npm install
 
 # 3. Copy environment variables
-cp .env.example .env.local
-# Edit .env.local with your API keys
+cp .env.example .env
+# Edit .env with your API keys
 
 # 4. Start local Supabase
 npx supabase start

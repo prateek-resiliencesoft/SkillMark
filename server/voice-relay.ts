@@ -40,7 +40,6 @@ import { SPOKEN, PROMPTS } from "./voice-relay-prompts";
 
 const log = createLogger("voice-relay");
 
-config({ path: ".env.local" });
 config({ path: ".env" });
 
 // ── Configuration ───────────────────────────────────────────────────
@@ -68,7 +67,7 @@ function buildTTSOptions(language?: string): TTSOptions | undefined {
 }
 
 if (!APP_ID || !ACCESS_TOKEN) {
-  log.error("Missing DOUBAO_APP_ID or DOUBAO_ACCESS_TOKEN in .env.local");
+  log.error("Missing DOUBAO_APP_ID or DOUBAO_ACCESS_TOKEN in .env");
   process.exit(1);
 }
 
