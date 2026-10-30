@@ -200,6 +200,7 @@ export function ResumeImportDialog({
           organizationId: currentOrg?.id,
           interviewId,
           onStream: (text) => patchEntry(entry.key, { streamText: text }),
+          onStatus: (msg) => patchEntry(entry.key, { streamText: msg }),
         });
         patchEntry(entry.key, { status: "done", form: parsedToForm(parsed), streamText: undefined });
         return true;
@@ -220,9 +221,15 @@ export function ResumeImportDialog({
       setIsParsing(true);
       abortRef.current = false;
       const queue = (only ?? entries).filter((e) => e.status !== "done");
-      const concurrency = bulk ? 3 : 1;
+      // Sequential with a short pause: free-tier AI keys are rate-limited per minute.
+      const concurrency = 1;
       const worker = async () => {
-        for (let e = queue.shift(); e && !abortRef.current; e = queue.shift()) await parseEntry(e);
+        let first = true;
+        for (let e = queue.shift(); e && !abortRef.current; e = queue.shift()) {
+          if (!first) await new Promise((r) => setTimeout(r, 1500));
+          first = false;
+          await parseEntry(e);
+        }
       };
       await Promise.all(Array.from({ length: concurrency }, worker));
       setIsParsing(false);
@@ -392,7 +399,7 @@ export function ResumeImportDialog({
                     {bulk ? "Drop PDF resumes here or click to choose" : "Upload PDF resumes"}
                     <span className="text-xs text-muted-foreground">
                       {bulk
-                        ? "Select as many as you like — they are parsed 3 at a time."
+                        ? "Select as many as you like — they are parsed one after another."
                         : "You can select multiple resumes at once. Each will be parsed by AI individually."}
                     </span>
                   </button>

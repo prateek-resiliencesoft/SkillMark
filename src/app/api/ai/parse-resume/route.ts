@@ -1,5 +1,5 @@
 import { getAuthUser } from "@/lib/auth";
-import { resolveTaskModels } from "@/lib/ai/registry";
+import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { parseResumeText } from "@/lib/ai/resume-parse";
 
@@ -51,7 +51,11 @@ export async function POST(req: Request) {
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          const parsed = await parseResumeText(provider, generatorModel, resumeText);
+          const fallbacks = await resolveFallbackProviders(organizationId, provider.id).catch(() => []);
+          const parsed = await parseResumeText(provider, generatorModel, resumeText, {
+            fallbacks,
+            onStatus: (status) => controller.enqueue(encoder.encode(`data: ${JSON.stringify({ status })}\n\n`)),
+          });
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: JSON.stringify(parsed) })}\n\n`));
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         } catch (err) {
