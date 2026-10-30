@@ -14,6 +14,7 @@
 import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
+import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 
 const log = createLogger("gemini-relay");
 
@@ -175,6 +176,7 @@ interface InterviewContext {
   language: string;
   followUpDepth: string;
   startQuestionIndex?: number;
+  candidateFocus?: CandidateFocus | null;
   questions: Array<{
     text: string;
     type: string;
@@ -252,6 +254,7 @@ function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
   }).join("\n");
 
   const currentQ = startIdx + 1;
+  const focus = buildCandidateFocusSection(ctx.candidateFocus, sorted.length);
 
   if (isZh) {
     return `你是"${ctx.aiName}"，一位${ctx.aiTone}的AI面试官。
@@ -303,7 +306,7 @@ ${questionList}
 - 如果受访者只是简单打招呼、确认性问题或模糊回答（如"你好"、"能听到吗?"、"我遇到过很多挑战"），先友好回应，再继续当前问题；不要调用 signal_question_change。这些不是实质性回答。必须等受访者给出详细、具体的回答后再切换。如果回答太简短或模糊，应追问以获取更多信息。
 - 始终关注当前问题，不要跳到其他话题。
 - 对于选择题，确保受访者给出选择并解释理由。
-- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。`;
+- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。${focus}`;
   }
 
   return `You are "${ctx.aiName}", a ${ctx.aiTone} AI interviewer.
@@ -355,7 +358,7 @@ When transitioning to a CODING or WHITEBOARD question:
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
 - For choice questions, ensure the participant both selects an option AND explains their reasoning.
-- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.`;
+- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.${focus}`;
 }
 
 // ── OpenAI tool definitions ─────────────────────────────────────────

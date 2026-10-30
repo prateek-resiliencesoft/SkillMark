@@ -1,4 +1,5 @@
 import { buildInterviewerPrompt } from "@/lib/ai/prompts/interviewer";
+import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
 import { resolveProvider } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 
@@ -45,6 +46,23 @@ export async function POST(req: Request) {
       conversationHistory,
       currentQuestionIndex: currentQuestionIndex ?? 0,
     });
+
+    // Per-candidate tailoring (invite sessions only).
+    if (sessionId) {
+      const { data: cand } = await supabaseAdmin
+        .from("candidates")
+        .select("skills, tailorInterview, tailoredQuestions")
+        .eq("sessionId", sessionId)
+        .maybeSingle();
+      if (cand && cand.tailorInterview !== false) {
+        const section = buildCandidateFocusSection(
+          { skills: cand.skills, questions: cand.tailoredQuestions },
+          (interview.questions ?? []).length,
+        );
+        const sys = promptMessages.find((m) => m.role === "system");
+        if (section && sys && typeof sys.content === "string") sys.content += "\n" + section;
+      }
+    }
 
     const response = await provider.generateResponse({
       messages: promptMessages,

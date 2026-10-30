@@ -25,6 +25,7 @@ export interface InterviewContext {
   language: string;
   followUpDepth: string;
   startQuestionIndex?: number;
+  candidateFocus?: { skills?: string[] | null; questions?: Array<{ text: string; skill?: string | null }> | null } | null;
   questions: Array<{
     text: string;
     type: string;
