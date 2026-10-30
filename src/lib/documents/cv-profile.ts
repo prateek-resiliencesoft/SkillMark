@@ -6,7 +6,7 @@
  * model can't back up are dropped and flagged rather than kept as guesses.
  */
 import { extractJson } from "@/lib/ai/extract-json";
-import { GENERATOR_MODEL, getProvider } from "@/lib/ai/registry";
+import { resolveTaskModels } from "@/lib/ai/registry";
 
 export interface ReviewFlag {
   field: string;
@@ -77,19 +77,35 @@ Rules:
 
 export async function extractCandidateProfile(
   markdown: string,
-  options: { defaultCountryCode?: string } = {},
+  options: { defaultCountryCode?: string; organizationId?: string | null } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
-  const provider = getProvider(GENERATOR_MODEL);
-  const res = await provider.generateResponse({
-    model: GENERATOR_MODEL,
-    temperature: 0,
-    maxTokens: 4096,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: source },
-    ],
-  });
+  const { provider, generatorModel } = await resolveTaskModels(options.organizationId);
+  let res;
+  try {
+    res = await provider.generateResponse({
+      model: generatorModel,
+      temperature: 0,
+      maxTokens: 4096,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: source },
+      ],
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
+      throw new Error(
+        "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
+      );
+    }
+    if (/404|no longer available|not found/i.test(msg)) {
+      throw new Error(
+        `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
+      );
+    }
+    throw err;
+  }
 
   const raw = extractJson<Record<string, unknown>>(res.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
   return validateProfile(raw, source, options.defaultCountryCode);

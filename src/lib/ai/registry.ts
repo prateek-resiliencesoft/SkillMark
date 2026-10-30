@@ -19,8 +19,9 @@ function openaiModels() {
 }
 
 function geminiModels() {
-  const d = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-  return Array.from(new Set([d, "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]));
+  // gemini-2.0 / 2.5 Flash shut down for new keys (404). Prefer current Flash.
+  const d = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+  return Array.from(new Set([d, "gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]));
 }
 
 function nvidiaModels() {
@@ -54,7 +55,7 @@ function buildFromCreds(creds: ResolvedAiCredentials): Map<string, LLMProvider> 
       id: "gemini",
       name: "Google Gemini",
       models: geminiModels(),
-      defaultModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      defaultModel: process.env.GEMINI_MODEL || "gemini-3.5-flash",
       apiKey: creds.gemini.apiKey,
       baseURL: creds.gemini.baseUrl,
     }),
@@ -103,9 +104,15 @@ const SETTINGS_ORDER: AiProviderId[] = ["openai", "gemini", "nvidia", "anthropic
 const LEGACY_ORDER = ["kimi", "minimax"] as const;
 
 function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials): LLMProvider {
+  // Org Settings → AI always wins over .env when any org key is present.
+  const preferOrg = SETTINGS_ORDER.some((id) => creds[id].from === "org");
   for (const id of SETTINGS_ORDER) {
-    if (creds[id].from !== "none" && map.has(id)) return map.get(id)!;
+    const from = creds[id].from;
+    if (preferOrg ? from === "org" : from !== "none") {
+      if (map.has(id) && creds[id].apiKey) return map.get(id)!;
+    }
   }
+  // Legacy env-only providers (Kimi / MiniMax) — last resort, never above Settings.
   for (const id of LEGACY_ORDER) {
     if (id === "kimi" && process.env.KIMI_API_KEY) return map.get(id)!;
     if (id === "minimax" && process.env.MINIMAX_API_KEY) return map.get(id)!;
