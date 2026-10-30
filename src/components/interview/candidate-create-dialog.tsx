@@ -3,21 +3,6 @@
 import { useOrg } from "@/components/org-provider";
 import { AiButton } from "@/components/ui/ai-button";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-    Popover,
-    PopoverContent,
-    PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select";
 import {
     Sheet,
     SheetContent,
@@ -26,14 +11,10 @@ import {
     SheetHeader,
     SheetTitle,
 } from "@/components/ui/sheet";
-import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
-    CalendarIcon,
-    ChevronLeft,
-    ChevronRight,
     FileText,
     Loader2,
     Sparkles,
@@ -41,151 +22,15 @@ import {
     X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-const EDUCATION_OPTIONS = ["College", "Bachelor", "Master", "PhD", "MBA", "Other"];
-const WORK_EXPERIENCE_OPTIONS = [
-  "Less than one year",
-  "1 - 3 years",
-  "3 - 5 years",
-  "5 - 10 years",
-  "More than 10 years",
-];
-const GENDER_OPTIONS = ["Male", "Female", "Other"];
-
-const currentYear = new Date().getFullYear();
-const GRADUATION_YEARS = Array.from({ length: 50 }, (_, i) => currentYear - 40 + i);
-
-const MONTH_LABELS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-const BIRTHDAY_YEAR_MIN = currentYear - 78;
-const BIRTHDAY_YEAR_MAX = currentYear - 18;
-
-function MonthYearPicker({
-  year,
-  month,
-  onChangeYear,
-  onChangeMonth,
-  placeholder,
-  yearMin,
-  yearMax,
-}: {
-  year: string;
-  month: string;
-  onChangeYear: (y: string) => void;
-  onChangeMonth: (m: string) => void;
-  placeholder: string;
-  yearMin: number;
-  yearMax: number;
-}) {
-  const [pickerYear, setPickerYear] = useState(
-    year ? parseInt(year) : currentYear - 25,
-  );
-  const [open, setOpen] = useState(false);
-
-  const displayValue =
-    year && month ? `${year}/${month}` : year ? year : "";
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          className={cn(
-            "h-8 w-full justify-start text-left text-sm font-normal",
-            !displayValue && "text-muted-foreground",
-          )}
-        >
-          <CalendarIcon className="mr-2 h-3.5 w-3.5" />
-          {displayValue || placeholder}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-64 p-3" align="start">
-        <div className="mb-2 flex items-center justify-between">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => setPickerYear((y) => Math.max(yearMin, y - 1))}
-            disabled={pickerYear <= yearMin}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <span className="text-sm font-medium">{pickerYear}</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => setPickerYear((y) => Math.min(yearMax, y + 1))}
-            disabled={pickerYear >= yearMax}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
-        <div className="grid grid-cols-3 gap-1.5">
-          {MONTH_LABELS.map((label, i) => {
-            const mVal = String(i + 1).padStart(2, "0");
-            const isSelected = String(pickerYear) === year && mVal === month;
-            return (
-              <Button
-                key={label}
-                type="button"
-                variant={isSelected ? "default" : "ghost"}
-                size="sm"
-                className="h-8 text-xs"
-                onClick={() => {
-                  onChangeYear(String(pickerYear));
-                  onChangeMonth(mVal);
-                  setOpen(false);
-                }}
-              >
-                {label}
-              </Button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-// --- Helpers for streaming resume parse ---
-function applyParsedData(
-  data: Record<string, unknown>,
-  setForm: React.Dispatch<React.SetStateAction<typeof EMPTY_FORM>>,
-) {
-  setForm((prev) => {
-    const next = { ...prev };
-    if (data.name && typeof data.name === "string") next.name = data.name;
-    if (data.email && typeof data.email === "string") next.email = data.email;
-    if (data.phone && typeof data.phone === "string") next.phone = String(data.phone);
-    if (typeof data.gender === "string" && GENDER_OPTIONS.includes(data.gender))
-      next.gender = data.gender;
-    if (typeof data.birthday === "string" && data.birthday) {
-      const parts = data.birthday.split("-");
-      if (parts[0]) next.birthdayYear = parts[0];
-      if (parts[1]) next.birthdayMonth = parts[1].padStart(2, "0");
-    }
-    if (typeof data.education === "string" && EDUCATION_OPTIONS.includes(data.education))
-      next.education = data.education;
-    if (data.school && typeof data.school === "string") next.school = data.school;
-    if (data.major && typeof data.major === "string") next.major = data.major;
-    if (data.graduationYear != null)
-      next.graduationYear = String(data.graduationYear);
-    if (
-      typeof data.workExperience === "string" &&
-      WORK_EXPERIENCE_OPTIONS.includes(data.workExperience)
-    )
-      next.workExperience = data.workExperience;
-    if (data.notes && typeof data.notes === "string") next.notes = data.notes;
-    return next;
-  });
-}
+import {
+    CandidateFormFields,
+    EMPTY_CANDIDATE_FORM,
+    formToCandidateInput,
+    parsedToForm,
+    SendLinkOptions,
+    validateCandidateForm,
+    type CandidateFormState,
+} from "./candidate-form";
 
 // --- Main component ---
 interface CandidateCreateDialogProps {
@@ -195,20 +40,6 @@ interface CandidateCreateDialogProps {
   onCreated: () => void;
 }
 
-const EMPTY_FORM = {
-  name: "",
-  email: "",
-  phone: "",
-  gender: "",
-  birthdayYear: "",
-  birthdayMonth: "",
-  education: "",
-  school: "",
-  major: "",
-  graduationYear: "",
-  workExperience: "",
-  notes: "",
-};
 
 export function CandidateCreateDialog({
   interviewId,
@@ -218,7 +49,7 @@ export function CandidateCreateDialog({
 }: CandidateCreateDialogProps) {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
-  const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [form, setForm] = useState<CandidateFormState>({ ...EMPTY_CANDIDATE_FORM });
   const [resumeFile, setResumeFile] = useState<string>("");
   const [parsingResume, setParsingResume] = useState(false);
   const [streamText, setStreamText] = useState("");
@@ -275,7 +106,7 @@ export function CandidateCreateDialog({
       } else {
         toast({ title: "Session added" });
       }
-      setForm({ ...EMPTY_FORM });
+      setForm({ ...EMPTY_CANDIDATE_FORM });
       setResumeFile("");
       setStreamText("");
       onCreated();
@@ -294,26 +125,10 @@ export function CandidateCreateDialog({
     e.preventDefault();
     if (!form.name.trim()) return;
 
-    const birthday =
-      form.birthdayYear && form.birthdayMonth
-        ? `${form.birthdayYear}-${form.birthdayMonth}`
-        : undefined;
-
+    if (Object.keys(formErrors).length) return;
     createMutation.mutate({
       interviewId,
-      name: form.name.trim(),
-      email: form.email.trim() || undefined,
-      phone: form.phone.trim() || undefined,
-      gender: form.gender || undefined,
-      birthday,
-      education: form.education || undefined,
-      school: form.school.trim() || undefined,
-      major: form.major.trim() || undefined,
-      graduationYear: form.graduationYear
-        ? parseInt(form.graduationYear, 10)
-        : undefined,
-      workExperience: form.workExperience || undefined,
-      notes: form.notes.trim() || undefined,
+      ...formToCandidateInput(form),
       sendVia: {
         email: sendEmail && !!deliveryOptions.data?.email && !!form.email.trim(),
         whatsapp: sendWhatsapp && !!deliveryOptions.data?.whatsapp && !!form.phone.trim(),
@@ -321,11 +136,7 @@ export function CandidateCreateDialog({
     });
   };
 
-  const update = useCallback(
-    (field: string, value: string) =>
-      setForm((prev) => ({ ...prev, [field]: value })),
-    [],
-  );
+  const formErrors = validateCandidateForm(form);
 
   const handleResumeUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -411,7 +222,7 @@ export function CandidateCreateDialog({
 
         try {
           const parsed = JSON.parse(cleaned);
-          applyParsedData(parsed, setForm);
+          setForm((prev) => parsedToForm(parsed, prev));
           toast({ title: "Resume parsed successfully" });
         } catch {
           toast({
@@ -448,149 +259,8 @@ export function CandidateCreateDialog({
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="-mt-2 flex-1 space-y-3">
-          {/* ── Fields ── */}
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-            <div className="space-y-1">
-              <Label htmlFor="c-name" className="text-xs">
-                Name <span className="text-destructive">*</span>
-              </Label>
-              <Input
-                id="c-name"
-                placeholder="Enter name"
-                required
-                value={form.name}
-                onChange={(e) => update("name", e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="c-email" className="text-xs">Email</Label>
-              <Input
-                id="c-email"
-                type="email"
-                placeholder="Enter email"
-                value={form.email}
-                onChange={(e) => update("email", e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="c-phone" className="text-xs">Phone</Label>
-              <Input
-                id="c-phone"
-                placeholder="+91 98765 43210"
-                value={form.phone}
-                onChange={(e) => update("phone", e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Gender</Label>
-              <Select
-                value={form.gender || undefined}
-                onValueChange={(v) => update("gender", v)}
-              >
-                <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Select gender" />
-                </SelectTrigger>
-                <SelectContent>
-                  {GENDER_OPTIONS.map((g) => (
-                    <SelectItem key={g} value={g}>{g}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Birth Date</Label>
-              <MonthYearPicker
-                year={form.birthdayYear}
-                month={form.birthdayMonth}
-                onChangeYear={(y) => update("birthdayYear", y)}
-                onChangeMonth={(m) => update("birthdayMonth", m)}
-                placeholder="Select birth date"
-                yearMin={BIRTHDAY_YEAR_MIN}
-                yearMax={BIRTHDAY_YEAR_MAX}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Degree</Label>
-              <Select
-                value={form.education || undefined}
-                onValueChange={(v) => update("education", v)}
-              >
-                <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Select degree" />
-                </SelectTrigger>
-                <SelectContent>
-                  {EDUCATION_OPTIONS.map((e) => (
-                    <SelectItem key={e} value={e}>{e}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="c-school" className="text-xs">School</Label>
-              <Input
-                id="c-school"
-                placeholder="Enter school"
-                value={form.school}
-                onChange={(e) => update("school", e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label htmlFor="c-major" className="text-xs">Major</Label>
-              <Input
-                id="c-major"
-                placeholder="Enter major"
-                value={form.major}
-                onChange={(e) => update("major", e.target.value)}
-                className="h-8 text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Graduation Year</Label>
-              <Select
-                value={form.graduationYear || undefined}
-                onValueChange={(v) => update("graduationYear", v)}
-              >
-                <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Select year" />
-                </SelectTrigger>
-                <SelectContent>
-                  {GRADUATION_YEARS.map((y) => (
-                    <SelectItem key={y} value={y.toString()}>{y}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Work Experience</Label>
-              <Select
-                value={form.workExperience || undefined}
-                onValueChange={(v) => update("workExperience", v)}
-              >
-                <SelectTrigger className="h-8 text-sm">
-                  <SelectValue placeholder="Select work experience" />
-                </SelectTrigger>
-                <SelectContent>
-                  {WORK_EXPERIENCE_OPTIONS.map((w) => (
-                    <SelectItem key={w} value={w}>{w}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="col-span-2 space-y-1">
-              <Label htmlFor="c-notes" className="text-xs">Notes</Label>
-              <Textarea
-                id="c-notes"
-                placeholder="Enter notes"
-                value={form.notes}
-                onChange={(e) => update("notes", e.target.value)}
-                rows={2}
-                className="text-sm"
-              />
-            </div>
+          <div>
+            <CandidateFormFields form={form} setForm={setForm} errors={Object.fromEntries(Object.entries(formErrors).filter(([k]) => k !== "name"))} />
           </div>
 
           {/* ── Or divider ── */}
@@ -683,45 +353,15 @@ export function CandidateCreateDialog({
             <div ref={streamEndRef} />
           </div>
 
-          <div className="space-y-2 rounded-md border p-3">
-            <p className="text-xs font-medium">Send interview link</p>
-            <label className="flex items-start gap-2 text-sm">
-              <Checkbox
-                checked={sendWhatsapp}
-                disabled={!deliveryOptions.data?.whatsapp}
-                onCheckedChange={(v) => setSendWhatsapp(v === true)}
-              />
-              <span>
-                Send link on WhatsApp
-                <span className="block text-xs text-muted-foreground">
-                  {!deliveryOptions.data?.whatsapp
-                    ? "WhatsApp (ResilioHub) not configured — set it up in Integrations."
-                    : !form.phone.trim()
-                      ? "Add a phone number with country code (e.g. +91…)."
-                      : !form.phone.trim().startsWith("+")
-                        ? "Phone must start with + and country code (e.g. +91…)."
-                        : `To ${form.phone.trim()}`}
-                </span>
-              </span>
-            </label>
-            <label className="flex items-start gap-2 text-sm">
-              <Checkbox
-                checked={sendEmail}
-                disabled={!deliveryOptions.data?.email}
-                onCheckedChange={(v) => setSendEmail(v === true)}
-              />
-              <span>
-                Send link by Email
-                <span className="block text-xs text-muted-foreground">
-                  {!deliveryOptions.data?.email
-                    ? "No email sender (Resend/Brevo) configured — set it up in Integrations."
-                    : !form.email.trim()
-                      ? "Add an email address."
-                      : `To ${form.email.trim()}`}
-                </span>
-              </span>
-            </label>
-          </div>
+          <SendLinkOptions
+            options={deliveryOptions.data}
+            sendEmail={sendEmail}
+            setSendEmail={setSendEmail}
+            sendWhatsapp={sendWhatsapp}
+            setSendWhatsapp={setSendWhatsapp}
+            email={form.email}
+            phone={form.phone}
+          />
 
           <SheetFooter className="pt-2">
             <Button
@@ -735,7 +375,7 @@ export function CandidateCreateDialog({
             <Button
               type="submit"
               size="sm"
-              disabled={createMutation.isLoading || parsingResume}
+              disabled={createMutation.isLoading || parsingResume || Object.keys(formErrors).length > 0}
             >
               {createMutation.isLoading && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

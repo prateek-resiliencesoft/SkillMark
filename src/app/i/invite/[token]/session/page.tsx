@@ -125,6 +125,7 @@ export default function InviteSessionPage() {
   if (!onboardingDone) {
     return (
       <IntervieweeOnboarding
+        sessionId={session?.id}
         interviewTitle={interview.title}
         interviewDescription={interview.description}
         questionCount={interview.questions?.length ?? 0}
@@ -152,6 +153,13 @@ export default function InviteSessionPage() {
       aiTone: interview.aiTone,
       language: interview.language,
       followUpDepth: interview.followUpDepth,
+      candidateFocus:
+        (candidate.data as any).tailorInterview !== false
+          ? {
+              skills: (candidate.data as any).skills ?? [],
+              questions: (candidate.data as any).tailoredQuestions ?? [],
+            }
+          : null,
       questions: interview.questions.map((q: any) => ({
         text: q.text,
         type: q.type,

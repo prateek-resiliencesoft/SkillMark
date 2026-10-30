@@ -46,18 +46,31 @@ function getTTSOptions(language?: string): TTSOptions | undefined {
  * the full utterance.
  */
 export async function POST(req: Request) {
-  const { text, language } = await req.json();
-
-  if (!text || typeof text !== "string") {
-    return NextResponse.json({ error: "Missing text" }, { status: 400 });
-  }
-
+  // Check config first so unconfigured setups never touch the body.
   if (!APP_ID || !ACCESS_TOKEN) {
     return NextResponse.json(
-      { error: "Doubao credentials not configured" },
-      { status: 500 }
+      { error: "Server TTS (Doubao) not configured", fallback: "browser" },
+      { status: 503 }
     );
   }
+
+  // Body can be empty when the client aborts (e.g. its 8s timeout fires during a slow first compile).
+  let text: unknown;
+  let language: unknown;
+  try {
+    const raw = await req.text();
+    if (!raw.trim()) {
+      return NextResponse.json({ error: "Empty request body" }, { status: 400 });
+    }
+    ({ text, language } = JSON.parse(raw) as { text?: unknown; language?: unknown });
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return NextResponse.json({ error: "Missing text" }, { status: 400 });
+  }
+  const lang = typeof language === "string" ? language : undefined;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -96,7 +109,7 @@ export async function POST(req: Request) {
         ws.send(buildStartConnection());
         await waitForEvent(ws, ServerEvent.CONNECTION_STARTED, 5000);
 
-        ws.send(buildStartSession(sessionId, BOT_NAME, SYSTEM_TEXT, getTTSOptions(language)));
+        ws.send(buildStartSession(sessionId, BOT_NAME, SYSTEM_TEXT, getTTSOptions(lang)));
         await waitForEvent(ws, ServerEvent.SESSION_STARTED, 5000);
 
         ws.send(buildSayHello(sessionId, text));

@@ -52,6 +52,8 @@ import { IntervieweeTourProvider, useIntervieweeTour } from "./interviewee-tour-
 import { VoiceInterface } from "./voice-interface";
 
 interface IntervieweeOnboardingProps {
+  /** Lets the voice relay use the interview org's AI key for the mic test. */
+  sessionId?: string;
   interviewTitle: string;
   interviewDescription?: string | null;
   questionCount: number;
@@ -441,7 +443,7 @@ function describeMicError(err: unknown): string {
   return "Unable to access microphone. Please check permissions and retry.";
 }
 
-function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean; onDone: () => void; language?: string; allowSkip?: boolean }) {
+function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { done: boolean; onDone: () => void; language?: string; allowSkip?: boolean; sessionId?: string }) {
   const [phase, setPhase] = useState<MicPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [showSkipDialog, setShowSkipDialog] = useState(false);
@@ -662,7 +664,7 @@ function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean;
         browserProtocol: window.location.protocol,
         browserHost: window.location.host,
       }),
-      buildInitMessage: () => ({ type: "mic_test", language: languageRef.current }),
+      buildInitMessage: () => ({ type: "mic_test", language: languageRef.current, sessionId }),
       onConnected: () => {
         void startMicCapture();
       },
@@ -745,8 +747,8 @@ function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean;
 
     const msg = getMicTestMessage(language);
 
-    // Try S2S streaming endpoint first (same voice as interview)
-    try {
+    // Try S2S streaming endpoint first (same voice as interview); skip if there's nothing to say.
+    if (msg && msg.trim()) try {
       const abort = new AbortController();
       abortRef.current = abort;
 
@@ -764,6 +766,7 @@ function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean;
         const reader = res.body.getReader();
         let playTime = ctx.currentTime;
         let leftover: Uint8Array | null = null;
+        let samplesPlayed = 0;
 
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -795,6 +798,7 @@ function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean;
           const float32 = new Float32Array(aligned);
 
           if (float32.length === 0) continue;
+          samplesPlayed += float32.length;
 
           const buf = ctx.createBuffer(1, float32.length, 24000);
           buf.getChannelData(0).set(float32);
@@ -815,6 +819,8 @@ function MicCheck({ done, onDone, language, allowSkip = true }: { done: boolean;
         ctx.close().catch(() => {});
         audioCtxRef.current = null;
         abortRef.current = null;
+        // Server streamed no audio (TTS provider error) → fall back to browser speech below.
+        if (samplesPlayed === 0) throw new Error("empty tts stream");
         if (relayConnectorRef.current?.isReady) {
           setPhase("listening");
         } else {
@@ -1254,6 +1260,7 @@ function ScreenCheck({
 }
 
 export function IntervieweeOnboarding({
+  sessionId,
   interviewTitle,
   interviewDescription,
   questionCount,
@@ -1503,7 +1510,7 @@ export function IntervieweeOnboarding({
       <StepIndicator current="checklist" />
       <div className="mx-auto w-full max-w-2xl flex-1 space-y-4 px-4 pb-8">
         <CameraCheck done={cameraDone} onDone={() => setCameraDone(true)} allowSkip={!antiCheatingEnabled} />
-        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={language} allowSkip={!antiCheatingEnabled} />
+        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={language} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
         <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} allowSkip={!antiCheatingEnabled} />
 
         <div className="flex items-center justify-center gap-3 pt-4">

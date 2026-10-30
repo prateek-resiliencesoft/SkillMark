@@ -216,22 +216,7 @@ export async function createApplication(opts: {
 
   const publicId = `app_${nanoid(20)}`;
 
-  // Store files (local storage, served only via signed URLs).
-  const storedFiles: Record<string, { name: string; size: number; type: string; path: string }[]> = {};
-  for (const [key, list] of Object.entries(input.files)) {
-    const field = fields.find((f) => f.key === key);
-    if (!field || !isFileField(field.type)) continue;
-    storedFiles[key] = [];
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      const path = `${form.organizationId}/${publicId}/${key}/${i}-${safeName(f.name)}`;
-      const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type });
-      if (error) throw new SubmissionError("STORAGE_ERROR", "Failed to store uploaded file", 500);
-      storedFiles[key].push({ name: f.name, size: f.bytes.length, type: f.type, path });
-    }
-  }
-
-  // Candidate + invite link on the linked interview (reuses existing invite flow).
+  // Candidate first so object keys can use org/project/candidate layout.
   const inviteToken = nanoid(12);
   const { data: candidate, error: candErr } = await supabaseAdmin
     .from("candidates")
@@ -246,6 +231,29 @@ export async function createApplication(opts: {
     .select("id")
     .single();
   if (candErr || !candidate) throw new SubmissionError("INTERNAL_ERROR", "Failed to create candidate", 500);
+
+  const { data: interviewRow } = await supabaseAdmin
+    .from("interviews")
+    .select("projectId")
+    .eq("id", form.interviewId)
+    .maybeSingle();
+  const projectId = interviewRow?.projectId || "unknown";
+
+  // Store files: orgs/{org}/projects/{project}/candidates/{id}/cv|other/...
+  const storedFiles: Record<string, { name: string; size: number; type: string; path: string }[]> = {};
+  for (const [key, list] of Object.entries(input.files)) {
+    const field = fields.find((f) => f.key === key);
+    if (!field || !isFileField(field.type)) continue;
+    const kind = field.type === "resume" || key === "resume" ? "cv" : "other";
+    storedFiles[key] = [];
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candidate.id}/${kind}/${i}-${safeName(f.name)}`;
+      const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type });
+      if (error) throw new SubmissionError("STORAGE_ERROR", "Failed to store uploaded file", 500);
+      storedFiles[key].push({ name: f.name, size: f.bytes.length, type: f.type, path });
+    }
+  }
 
   const { data: app, error: appErr } = await supabaseAdmin
     .from("applications")

@@ -1,0 +1,24 @@
+name: Purge expired set-aside media
+
+on:
+  schedule:
+    # Daily 03:30 UTC — clears B2/S3/local blobs for set-aside sessions past 15 days
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call purge endpoint
+        env:
+          APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "NEXT_PUBLIC_APP_URL or CRON_SECRET missing — skip"
+            exit 0
+          fi
+          curl -fsS -X POST "${APP_URL%/}/api/cron/purge-media" \
+            -H "Authorization: Bearer ${CRON_SECRET}"

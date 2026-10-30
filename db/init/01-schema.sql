@@ -105,6 +105,18 @@ CREATE TYPE public."QuestionType" AS ENUM (
 
 
 --
+-- Name: MediaReviewStatus; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public."MediaReviewStatus" AS ENUM (
+    'pending',
+    'approved',
+    'declined',
+    'set_aside'
+);
+
+
+--
 -- Name: SessionStatus; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -217,7 +229,6 @@ CREATE FUNCTION public.create_organization(org_name text, org_slug text) RETURNS
 DECLARE
   v_user_id uuid;
   v_org     record;
-  v_proj    record;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN
@@ -230,10 +241,6 @@ BEGIN
 
   INSERT INTO organization_members ("workspaceId", "userId", role)
   VALUES (v_org.id, v_user_id, 'OWNER');
-
-  INSERT INTO projects ("organizationId", name, "createdBy")
-  VALUES (v_org.id, 'Default', v_user_id)
-  RETURNING * INTO v_proj;
 
   RETURN json_build_object(
     'id', v_org.id,
@@ -554,7 +561,12 @@ CREATE TABLE public.sessions (
     "createdAt" timestamp with time zone DEFAULT now() NOT NULL,
     "updatedAt" timestamp with time zone DEFAULT now() NOT NULL,
     "activitySegments" jsonb DEFAULT '[]'::jsonb NOT NULL,
-    "audioRecordings" jsonb DEFAULT '[]'::jsonb NOT NULL
+    "audioRecordings" jsonb DEFAULT '[]'::jsonb NOT NULL,
+    "mediaReviewStatus" public."MediaReviewStatus" DEFAULT 'pending'::public."MediaReviewStatus",
+    "mediaReviewAt" timestamp with time zone,
+    "mediaExpiresAt" timestamp with time zone,
+    "mediaClearedAt" timestamp with time zone,
+    "mediaStoragePrefix" text
 );
 
 
