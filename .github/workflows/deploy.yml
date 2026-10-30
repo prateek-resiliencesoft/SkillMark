@@ -123,31 +123,49 @@ jobs:
             # Ports 80/3000 may already be held by our Docker stack — that is OK; compose recreate handles it.
 
             umask 077
+            # URL-encode DB password for PostgREST connection URI (special chars break PGRST_DB_URI)
+            PGRST_DB_URI=$(POSTGRES_USER="$POSTGRES_USER" POSTGRES_PASSWORD="$POSTGRES_PASSWORD" POSTGRES_DB="$POSTGRES_DB" python3 - <<'PY'
+import os, urllib.parse
+u = os.environ["POSTGRES_USER"]
+p = urllib.parse.quote(os.environ["POSTGRES_PASSWORD"], safe="")
+d = os.environ["POSTGRES_DB"]
+print(f"postgres://{u}:{p}@db:5432/{d}")
+PY
+)
+
             cat > .env <<EOF
-            POSTGRES_USER=${POSTGRES_USER}
-            POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-            POSTGRES_DB=${POSTGRES_DB}
-            POSTGRES_PORT=5433
-            POSTGREST_PORT=3001
-            POSTGREST_URL=${POSTGREST_URL}
-            AUTH_SECRET=${AUTH_SECRET}
-            NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
-            STORAGE_DIR=${STORAGE_DIR}
-            SITE_ADDRESS=${SITE_ADDRESS:-:80}
-            VOICE_RELAY_PROVIDER=${VOICE_RELAY_PROVIDER:-auto}
-            GEMINI_API_KEY=${GEMINI_API_KEY:-}
-            OPENAI_API_KEY=${OPENAI_API_KEY:-}
-            DOUBAO_APP_ID=${DOUBAO_APP_ID:-}
-            DOUBAO_ACCESS_TOKEN=${DOUBAO_ACCESS_TOKEN:-}
-            AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
-            AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
-            EOF
+POSTGRES_USER=${POSTGRES_USER}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_DB=${POSTGRES_DB}
+POSTGRES_PORT=5433
+POSTGREST_PORT=3001
+POSTGREST_URL=${POSTGREST_URL}
+PGRST_DB_URI=${PGRST_DB_URI}
+AUTH_SECRET=${AUTH_SECRET}
+NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+STORAGE_DIR=${STORAGE_DIR}
+SITE_ADDRESS=${SITE_ADDRESS:-:80}
+VOICE_RELAY_PROVIDER=${VOICE_RELAY_PROVIDER:-auto}
+GEMINI_API_KEY=${GEMINI_API_KEY:-}
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+DOUBAO_APP_ID=${DOUBAO_APP_ID:-}
+DOUBAO_ACCESS_TOKEN=${DOUBAO_ACCESS_TOKEN:-}
+AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+EOF
+
+            # Keep Postgres role password in sync with GitHub secret (volume may have been inited with older password)
+            docker compose -f docker-compose.prod.yml exec -T db \
+              psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+              -v ON_ERROR_STOP=1 \
+              -c "ALTER USER ${POSTGRES_USER} WITH PASSWORD '${POSTGRES_PASSWORD//\'/\'\'}';" \
+              || true
 
             echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
 
             export IMAGE_TAG
             docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans --force-recreate app voice caddy
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans --force-recreate app voice caddy rest
             docker compose -f docker-compose.prod.yml up -d
 
             docker compose -f docker-compose.prod.yml ps
