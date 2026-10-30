@@ -68,17 +68,22 @@ export async function resolveDefaultProjectId(supabase: Db, userId: string): Pro
 /** Public base URL for invite links (env first, then the request's origin). */
 export function appBaseUrl(): string {
   const env = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
-  if (env) return env;
   try {
     const h = headers();
-    const origin = h.get("origin");
-    if (origin) return origin.replace(/\/$/, "");
     const host = h.get("x-forwarded-host") ?? h.get("host");
-    if (host) return `${h.get("x-forwarded-proto") ?? "http"}://${host}`;
+    const proto = h.get("x-forwarded-proto") ?? "https";
+    if (host && (!env || env.includes("localhost") || env.includes("127.0.0.1"))) {
+      return `${proto}://${host}`;
+    }
+    const origin = h.get("origin");
+    if (origin && (!env || env.includes("localhost") || env.includes("127.0.0.1"))) {
+      return origin.replace(/\/$/, "");
+    }
   } catch {
     /* outside a request */
   }
-  return "http://localhost:3100";
+  if (env) return env;
+  return "http://localhost:3000";
 }
 
 export const inviteLink = (token: string) => `${appBaseUrl()}/i/invite/${token}`;

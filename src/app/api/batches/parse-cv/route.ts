@@ -15,6 +15,7 @@ export async function POST(req: Request) {
   const form = await req.formData();
   const file = form.get("file");
   const defaultCountryCode = (form.get("defaultCountryCode") as string | null)?.trim() || undefined;
+  const organizationId = (form.get("organizationId") as string | null)?.trim() || undefined;
   if (!(file instanceof File)) return Response.json({ error: "No file provided" }, { status: 400 });
   if (file.size > MAX_DOCUMENT_BYTES) {
     return Response.json({ error: `File is larger than ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB` }, { status: 413 });
@@ -22,7 +23,7 @@ export async function POST(req: Request) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const doc = await extractDocument(buffer, file.name, file.type);
+    const doc = await extractDocument(buffer, file.name, file.type, { organizationId });
     if (!doc.markdown.trim()) {
       return Response.json(
         { error: doc.warnings[0] ?? "No readable text found in this document", warnings: doc.warnings },
@@ -30,7 +31,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const { profile, reviewFlags } = await extractCandidateProfile(doc.markdown, { defaultCountryCode });
+    const { profile, reviewFlags } = await extractCandidateProfile(doc.markdown, {
+      defaultCountryCode,
+      organizationId,
+    });
     for (const w of doc.warnings) reviewFlags.push({ field: "document", reason: w });
 
     return Response.json({

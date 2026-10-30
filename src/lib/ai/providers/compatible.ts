@@ -43,38 +43,57 @@ export class CompatibleOpenAIProvider implements LLMProvider {
 
   async generateResponse(params: GenerationParams & { model?: string }): Promise<LLMResponse> {
     const model = params.model ?? this.defaultModel;
-    const response = await this.client.chat.completions.create({
-      model,
-      messages: this.toOpenAIMessages(params.messages),
-      temperature: params.temperature ?? 0.7,
-      max_tokens: params.maxTokens ?? 2048,
-    });
-    const choice = response.choices[0];
-    return {
-      content: choice.message.content ?? "",
-      finishReason: choice.finish_reason ?? "stop",
-      usage: response.usage
-        ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-            totalTokens: response.usage.total_tokens,
-          }
-        : undefined,
-    };
+    try {
+      const response = await this.client.chat.completions.create({
+        model,
+        messages: this.toOpenAIMessages(params.messages),
+        temperature: params.temperature ?? 0.7,
+        max_tokens: params.maxTokens ?? 2048,
+      });
+      const choice = response.choices[0];
+      return {
+        content: choice.message.content ?? "",
+        finishReason: choice.finish_reason ?? "stop",
+        usage: response.usage
+          ? {
+              promptTokens: response.usage.prompt_tokens,
+              completionTokens: response.usage.completion_tokens,
+              totalTokens: response.usage.total_tokens,
+            }
+          : undefined,
+      };
+    } catch (err) {
+      throw enrichOpenAIError(err, this.name, model);
+    }
   }
 
   async *streamResponse(params: GenerationParams & { model?: string }): AsyncIterable<string> {
     const model = params.model ?? this.defaultModel;
-    const stream = await this.client.chat.completions.create({
-      model,
-      messages: this.toOpenAIMessages(params.messages),
-      temperature: params.temperature ?? 0.7,
-      max_tokens: params.maxTokens ?? 2048,
-      stream: true,
-    });
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) yield content;
+    try {
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: this.toOpenAIMessages(params.messages),
+        temperature: params.temperature ?? 0.7,
+        max_tokens: params.maxTokens ?? 2048,
+        stream: true,
+      });
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content;
+        if (content) yield content;
+      }
+    } catch (err) {
+      throw enrichOpenAIError(err, this.name, model);
     }
   }
+}
+
+function enrichOpenAIError(err: unknown, providerName: string, model: string): Error {
+  const e = err as { status?: number; message?: string; error?: { message?: string } };
+  const detail = e?.error?.message || e?.message || String(err);
+  if (e?.status === 404 || /404|no longer available/i.test(detail)) {
+    return new Error(
+      `${providerName} model "${model}" unavailable (404). ${detail}`,
+    );
+  }
+  return err instanceof Error ? err : new Error(detail);
 }
