@@ -112,7 +112,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Free ports used by the old manual host install (PM2 / systemd caddy / bare next)
+            # Stop leftover host services only (do NOT pkill -f — it matches this SSH script and kills the deploy)
             sudo systemctl stop caddy 2>/dev/null || true
             sudo systemctl disable caddy 2>/dev/null || true
             if command -v pm2 >/dev/null 2>&1; then
@@ -120,16 +120,7 @@ jobs:
               pm2 delete all 2>/dev/null || true
               pm2 save --force 2>/dev/null || true
             fi
-            pkill -f "next-server" 2>/dev/null || true
-            pkill -f "next start" 2>/dev/null || true
-            pkill -f "npm run start" 2>/dev/null || true
-            pkill -f "npm exec next" 2>/dev/null || true
-            sleep 2
-            if ss -tln | grep -qE ":(3000|80) "; then
-              echo "ERROR: port 3000 or 80 still in use after cleanup"
-              ss -tlnp | grep -E ":(3000|80) " || true
-              exit 1
-            fi
+            # Ports 80/3000 may already be held by our Docker stack — that is OK; compose recreate handles it.
 
             umask 077
             cat > .env <<EOF
