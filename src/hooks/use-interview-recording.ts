@@ -418,7 +418,8 @@ export function useInterviewRecording({
           });
           if (res.ok) {
             const data = await res.json();
-            audioUrl = data.url;
+            // Prefer durable object key over short-lived signed URL
+            audioUrl = data.path || data.url;
             log.info("Audio uploaded:", audioUrl);
           }
         } catch (err) {
