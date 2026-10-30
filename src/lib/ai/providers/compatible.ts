@@ -49,6 +49,7 @@ export class CompatibleOpenAIProvider implements LLMProvider {
         messages: this.toOpenAIMessages(params.messages),
         temperature: params.temperature ?? 0.7,
         max_tokens: params.maxTokens ?? 2048,
+        ...(params.jsonMode && { response_format: { type: "json_object" as const } }),
       });
       const choice = response.choices[0];
       return {

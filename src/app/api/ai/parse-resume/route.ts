@@ -1,6 +1,7 @@
 import { getAuthUser } from "@/lib/auth";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
+import { parseResumeText } from "@/lib/ai/resume-parse";
 
 const log = createLogger("api/ai/parse-resume");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -8,27 +9,7 @@ const pdfParse = require("pdf-parse") as (
   buffer: Buffer,
 ) => Promise<{ text: string }>;
 
-const SYSTEM_PROMPT = `You are an expert resume parser. Extract candidate information from the uploaded resume and return a JSON object with the following fields (use null for missing fields):
 
-{
-  "name": "Full name",
-  "email": "Email address",
-  "phone": "Phone number",
-  "gender": "Male" | "Female" | "Other" | null,
-  "birthday": "YYYY-MM format" | null,
-  "education": "College" | "Bachelor" | "Master" | "PhD" | "MBA" | "Other" | null,
-  "school": "Most recent school name",
-  "major": "Field of study",
-  "graduationYear": number | null,
-  "workExperience": "Less than one year" | "1 - 3 years" | "3 - 5 years" | "5 - 10 years" | "More than 10 years" | null,
-  "notes": "Brief summary of key skills and experience (1-2 sentences)"
-}
-
-Rules:
-- For workExperience, estimate from the resume dates
-- For education, map the highest degree to one of the exact options listed
-- Extract ALL contact info including email and phone carefully
-- Return ONLY the JSON object, no markdown fences, no explanation`;
 
 export async function POST(req: Request) {
   try {
@@ -64,45 +45,21 @@ export async function POST(req: Request) {
 
     const { provider, generatorModel } = await resolveTaskModels(organizationId);
 
-    const messages = [
-      {
-        role: "system" as const,
-        content: `${SYSTEM_PROMPT}\n\nThe following is the full text extracted from the candidate's resume. Parse it carefully and extract ALL fields including email and phone:\n\n${resumeText}`,
-      },
-      {
-        role: "user" as const,
-        content: "Parse this resume and return the JSON object with all extracted fields.",
-      },
-    ];
-
+    // Non-streamed JSON-mode call with tolerant parsing + one strict retry; the result is
+    // sent as a single SSE token so existing clients keep working.
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const token of provider.streamResponse({
-            messages,
-            model: generatorModel,
-            temperature: 0.1,
-            maxTokens: 1024,
-          })) {
-            if (token) {
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ token })}\n\n`),
-              );
-            }
-          }
+          const parsed = await parseResumeText(provider, generatorModel, resumeText);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: JSON.stringify(parsed) })}\n\n`));
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
         } catch (err) {
-          log.error("Stream error:", err);
-          const msg = err instanceof Error ? err.message : "Stream interrupted";
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ error: msg })}\n\n`,
-            ),
-          );
-          controller.close();
+          log.error("Resume parse failed:", err instanceof Error ? err.message : err);
+          const msg = err instanceof Error ? err.message : "Resume parse failed";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: msg })}\n\n`));
         }
+        controller.close();
       },
     });
 

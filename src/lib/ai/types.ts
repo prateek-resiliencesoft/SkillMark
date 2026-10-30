@@ -12,6 +12,8 @@ export interface GenerationParams {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  /** Ask for a JSON object response (OpenAI-compatible response_format). Ignored by providers without support. */
+  jsonMode?: boolean;
 }
 
 export interface LLMResponse {
