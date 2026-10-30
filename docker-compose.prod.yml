@@ -27,7 +27,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      PGRST_DB_URI: postgres://${POSTGRES_USER:-skillmark}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillmark}
+      # Must be URL-encoded if password has %, @, :, /, etc. Deploy writes PGRST_DB_URI into .env
+      PGRST_DB_URI: ${PGRST_DB_URI:?set PGRST_DB_URI in .env (URL-encoded password)}
       PGRST_DB_SCHEMAS: public,auth
       PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-skillmark}
       PGRST_JWT_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
