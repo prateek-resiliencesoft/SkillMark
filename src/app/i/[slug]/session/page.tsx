@@ -105,6 +105,7 @@ export default function SlugSessionPage() {
   if (!onboardingDone) {
     return (
       <IntervieweeOnboarding
+        sessionId={session.data?.id}
         interviewTitle={interview.data.title}
         interviewDescription={interview.data.description}
         questionCount={interview.data.questions.length}

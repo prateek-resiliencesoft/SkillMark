@@ -29,8 +29,37 @@ const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 if (!GEMINI_API_KEY) {
-  log.error("Missing GEMINI_API_KEY in .env");
-  process.exit(1);
+  log.warn("No GEMINI_API_KEY in .env — relying on organization keys from Settings → AI Providers");
+}
+
+/**
+ * Gemini keys for a session: the .env default key FIRST, then the interview
+ * org's saved key (Settings → AI Providers). Read fresh per interview.
+ */
+async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: string; source: "org" | "env" }[]> {
+  const out: { key: string; source: "org" | "env" }[] = [];
+  if (GEMINI_API_KEY) out.push({ key: GEMINI_API_KEY, source: "env" });
+  if (sessionId) {
+    try {
+      const { supabaseAdmin } = await import("../src/lib/supabase/admin");
+      const { loadOrgAiCredentials } = await import("../src/lib/ai/credentials");
+      const { data } = await supabaseAdmin
+        .from("sessions")
+        .select("interview:interviews(project:projects(organizationId))")
+        .eq("id", sessionId)
+        .maybeSingle();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const orgId = (data as any)?.interview?.project?.organizationId as string | undefined;
+      if (orgId) {
+        const creds = await loadOrgAiCredentials(supabaseAdmin, orgId);
+        const k = creds.gemini.from === "org" ? creds.gemini.apiKey : "";
+        if (k && !out.some((x) => x.key === k)) out.push({ key: k, source: "org" });
+      }
+    } catch (err) {
+      log.warn(`Could not load org Gemini key: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  return out;
 }
 
 // Minimum RMS energy for user audio to be forwarded. 16-bit PCM silence is 0;
@@ -411,16 +440,36 @@ function pcmRms(buf: Buffer): number {
   return Math.sqrt(sum / n);
 }
 
+
 interface GeminiConnectOpts {
+  /** Ordered keys (org first, then env). Each is tried until one connects. */
+  apiKeys?: { key: string; source: "org" | "env" }[];
   systemInstruction?: string;
   tools?: boolean;
   langCode: string;
   resumeHandle?: string | null;
 }
 
-function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
+async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
+  const keys = opts.apiKeys?.length ? opts.apiKeys : GEMINI_API_KEY ? [{ key: GEMINI_API_KEY, source: "env" as const }] : [];
+  if (!keys.length) throw new Error("No Gemini API key configured (Settings → AI Providers or GEMINI_API_KEY)");
+  let lastErr: unknown;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const ws = await connectGeminiWithKey(opts, keys[i].key);
+      log.info(`Gemini Live connected using ${keys[i].source} key`);
+      return ws;
+    } catch (err) {
+      lastErr = err;
+      log.warn(`Gemini Live (${keys[i].source} key) failed: ${err instanceof Error ? err.message.slice(0, 200) : err}${i < keys.length - 1 ? " — trying next key" : ""}`);
+    }
+  }
+  throw lastErr;
+}
+
+function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${GEMINI_WS_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`);
+    const ws = new WebSocket(`${GEMINI_WS_URL}?key=${encodeURIComponent(apiKey)}`);
     const timer = setTimeout(() => { ws.terminate(); reject(new Error("Gemini setup timeout")); }, 15_000);
     ws.once("open", () => {
       const setup: GeminiMsg = {
@@ -486,11 +535,11 @@ wss.on("connection", (browserWs) => {
       if (msg.type === "mic_test") {
         clearTimeout(timeout);
         browserWs.removeListener("message", handler);
-        void handleMicTest(browserWs, msg.language);
+        void handleMicTest(browserWs, msg.language, msg.sessionId);
       } else if (msg.type === "init" && msg.context) {
         clearTimeout(timeout);
         browserWs.removeListener("message", handler);
-        void handleInterview(browserWs, msg.context as InterviewContext);
+        void handleInterview(browserWs, msg.context as InterviewContext, msg.sessionId);
       }
     } catch { /* not JSON */ }
   };
@@ -499,7 +548,8 @@ wss.on("connection", (browserWs) => {
 
 // ── Mic test: transcription only ────────────────────────────────────
 
-async function handleMicTest(browserWs: WebSocket, language?: string) {
+async function handleMicTest(browserWs: WebSocket, language?: string, sessionId?: string) {
+  const apiKeys = await resolveGeminiKeys(sessionId);
   log.info("Mic test mode (Gemini)");
   const send = (m: Record<string, unknown>) => {
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(m));
@@ -507,6 +557,7 @@ async function handleMicTest(browserWs: WebSocket, language?: string) {
   let gem: WebSocket;
   try {
     gem = await connectGemini({
+      apiKeys,
       langCode: languageCode(null, language),
       systemInstruction: "This is a microphone test. Do not speak. Reply with silence.",
     });
@@ -544,7 +595,8 @@ async function handleMicTest(browserWs: WebSocket, language?: string) {
 
 // ── Interview ───────────────────────────────────────────────────────
 
-async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
+async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sessionId?: string) {
+  const apiKeys = await resolveGeminiKeys(sessionId);
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
   const langCode = languageCode(ctx);
@@ -804,7 +856,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
       try {
         const handle = attempt === 1 ? resumeHandle : null;
         const ws = await connectGemini({
-          langCode, tools: true, resumeHandle: handle,
+          apiKeys, langCode, tools: true, resumeHandle: handle,
           systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
         });
         gem = ws;
@@ -830,7 +882,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
 
   // ── Initial connection ──
   try {
-    gem = await connectGemini({ langCode, tools: true, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
+    gem = await connectGemini({ apiKeys, langCode, tools: true, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
     attach(gem);
     log.info("Gemini session established");
     send({ type: "ready", sessionId: "gemini-session" });

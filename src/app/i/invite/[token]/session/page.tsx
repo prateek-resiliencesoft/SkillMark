@@ -125,6 +125,7 @@ export default function InviteSessionPage() {
   if (!onboardingDone) {
     return (
       <IntervieweeOnboarding
+        sessionId={session?.id}
         interviewTitle={interview.title}
         interviewDescription={interview.description}
         questionCount={interview.questions?.length ?? 0}
