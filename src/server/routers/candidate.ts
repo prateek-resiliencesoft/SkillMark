@@ -6,6 +6,7 @@ import {
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
 import { inviteLink } from "../batch-access";
+import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 
@@ -94,6 +95,8 @@ const candidateFields = z.object({
   major: z.string().optional(),
   graduationYear: z.number().int().optional(),
   workExperience: z.string().optional(),
+  skills: z.array(z.string()).max(50).optional(),
+  tailorInterview: z.boolean().optional(),
 });
 
 /* ------------------------------------------------------------------ */
@@ -167,6 +170,8 @@ export const candidateRouter = router({
           interviewId,
           ...fields,
           email: fields.email || null,
+          skills: normalizeSkills(fields.skills),
+          tailorInterview: fields.tailorInterview ?? true,
           inviteToken,
         })
         .select("*")
@@ -175,6 +180,9 @@ export const candidateRouter = router({
       if (error) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       }
+
+      // Tailor questions to resume skills (never fails creation; AI fallback built in).
+      await tailorCandidates(ctx.supabase, organizationId, interviewId, [candidate]);
 
       // Delivery failures never fail session creation.
       const delivery = sendVia
@@ -239,6 +247,8 @@ export const candidateRouter = router({
         interviewId,
         ...c,
         email: c.email?.trim().toLowerCase() || null,
+        skills: normalizeSkills(c.skills),
+        tailorInterview: c.tailorInterview ?? true,
         inviteToken: nanoid(12),
       }));
 
@@ -254,6 +264,8 @@ export const candidateRouter = router({
       if (error) {
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       }
+
+      await tailorCandidates(ctx.supabase, organizationId, interviewId, data ?? []);
 
       // Optional invite delivery — failures never block the import.
       const delivery = { email: { sent: 0, failed: 0 }, whatsapp: { sent: 0, failed: 0 }, errors: [] as string[] };
