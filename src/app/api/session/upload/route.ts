@@ -1,17 +1,13 @@
 import { createLogger } from "@/lib/logger";
+import { candidateMediaPrefix, mediaObjectKey } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/session/upload");
 
 /**
- * Upload a file (audio recording or screenshot) to Supabase Storage.
- *
- * Expects multipart FormData with:
- *   - file: Blob/File
- *   - sessionId: string
- *   - type: "recording" | "screenshot"
- *   - filename: string (optional, used as the storage path suffix)
+ * Upload recording / screenshot for an active session.
+ * Keys: orgs/{org}/projects/{project}/candidates/{candidate}/{kind}/{file}
  */
 export async function POST(req: Request) {
   try {
@@ -35,10 +31,12 @@ export async function POST(req: Request) {
       );
     }
 
-    // Enforce active session verification
     const { data: session } = await supabaseAdmin
       .from("sessions")
-      .select("id, status")
+      .select(
+        `id, status, mediaStoragePrefix,
+         interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
+      )
       .eq("id", sessionId)
       .maybeSingle();
 
@@ -50,9 +48,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Session has ended" }, { status: 403 });
     }
 
-    // Enforce upload size caps
-    const MAX_RECORDING_BYTES = 100 * 1024 * 1024; // 100 MB
-    const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024; // 10 MB
+    const interview = session.interview as unknown as {
+      id: string;
+      projectId: string;
+      project: { id: string; organizationId: string };
+    };
+
+    const { data: candidate } = await supabaseAdmin
+      .from("candidates")
+      .select("id")
+      .eq("sessionId", sessionId)
+      .maybeSingle();
+
+    // Fallback folder when no candidate row linked yet
+    const subjectId = candidate?.id || `session-${sessionId}`;
+    const orgId = interview.project.organizationId;
+    const projectId = interview.projectId;
+
+    const MAX_RECORDING_BYTES = 100 * 1024 * 1024;
+    const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
     const maxBytes = type === "recording" ? MAX_RECORDING_BYTES : MAX_SCREENSHOT_BYTES;
     if (file.size > maxBytes) {
       return NextResponse.json(
@@ -61,58 +75,70 @@ export async function POST(req: Request) {
       );
     }
 
-    const bucket = type === "recording" ? "recordings" : "screenshots";
-    const defaultExt = type === "recording"
-      ? (file.type?.includes("mp4") || file.type?.includes("m4a") ? "m4a" : "webm")
-      : "jpg";
+    const kind = type === "recording" ? "recordings" : "screenshots";
+    const defaultExt =
+      type === "recording"
+        ? file.type?.includes("mp4") || file.type?.includes("m4a")
+          ? "m4a"
+          : "webm"
+        : "jpg";
     const cleanFilename = (filename || `${Date.now()}.${defaultExt}`)
       .replace(/[^a-zA-Z0-9._-]/g, "_")
       .replace(/\.{2,}/g, ".");
-    const storagePath = `${sessionId}/${cleanFilename}`;
+
+    const storagePath = mediaObjectKey({
+      orgId,
+      projectId,
+      candidateId: subjectId,
+      kind,
+      fileName: cleanFilename,
+    });
+    const prefix = candidateMediaPrefix({ orgId, projectId, candidateId: subjectId });
 
     const buffer = Buffer.from(await file.arrayBuffer());
-
-    const defaultContentType = type === "recording"
-      ? (file.type?.includes("mp4") ? "audio/mp4" : "audio/webm")
-      : "image/jpeg";
+    const defaultContentType =
+      type === "recording"
+        ? file.type?.includes("mp4")
+          ? "audio/mp4"
+          : "audio/webm"
+        : "image/jpeg";
 
     const { error: uploadError } = await supabaseAdmin.storage
-      .from(bucket)
+      .from(kind)
       .upload(storagePath, buffer, {
         contentType: file.type || defaultContentType,
         upsert: false,
       });
 
     if (uploadError) {
-      log.error("Storage error:", bucket, uploadError);
-      return NextResponse.json(
-        { error: uploadError.message },
-        { status: 500 },
-      );
+      log.error("Storage error:", kind, uploadError);
+      return NextResponse.json({ error: uploadError.message }, { status: 500 });
+    }
+
+    if (!session.mediaStoragePrefix) {
+      await supabaseAdmin
+        .from("sessions")
+        .update({ mediaStoragePrefix: prefix })
+        .eq("id", sessionId);
     }
 
     const { data: signedData, error: signedError } = await supabaseAdmin.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, 60 * 60 * 24); // 24 hours
+      .from(kind)
+      .createSignedUrl(storagePath, 60 * 60 * 24);
 
     if (signedError || !signedData?.signedUrl) {
-      log.error("Signed URL error:", bucket, signedError);
-      return NextResponse.json(
-        { error: "Failed to generate signed URL" },
-        { status: 500 },
-      );
+      log.error("Signed URL error:", kind, signedError);
+      return NextResponse.json({ error: "Failed to generate signed URL" }, { status: 500 });
     }
 
     return NextResponse.json({
       url: signedData.signedUrl,
       path: storagePath,
-      bucket,
+      bucket: kind,
+      prefix,
     });
   } catch (err) {
     log.error("Unexpected error:", err);
-    return NextResponse.json(
-      { error: "Upload failed" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
   }
 }

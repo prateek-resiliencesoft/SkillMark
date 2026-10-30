@@ -123,13 +123,6 @@ export const organizationRouter = router({
         role: "OWNER" as const,
       });
 
-      // Auto-create default project
-      await ctx.supabase.from("projects").insert({
-        organizationId: org.id,
-        name: "Default",
-        createdBy: ctx.user.id,
-      });
-
       return org;
     }),
 

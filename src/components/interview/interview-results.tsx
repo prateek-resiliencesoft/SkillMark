@@ -70,6 +70,87 @@ interface ResearchFinding {
   dataPoints?: string[];
 }
 
+function MediaReviewActions({
+  sessionId,
+  status,
+  expiresAt,
+  clearedAt,
+}: {
+  sessionId: string;
+  status?: string;
+  expiresAt?: string | null;
+  clearedAt?: string | null;
+}) {
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const mutation = trpc.session.setMediaReview.useMutation({
+    onSuccess: (data) => {
+      void utils.analysis.getSessionSummary.invalidate({ sessionId });
+      void utils.session.listByInterview.invalidate();
+      toast({
+        title:
+          data.status === "approved"
+            ? "Approved — media kept"
+            : data.status === "declined"
+              ? "Declined — media cleared (scores kept)"
+              : "Put aside — media auto-clears in 15 days",
+      });
+    },
+    onError: (err) => {
+      toast({ title: "Failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const current = status ?? "pending";
+  const busy = mutation.isLoading;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {current !== "pending" && (
+        <Badge variant="secondary" className="capitalize">
+          {current === "set_aside" ? "Put aside" : current}
+          {current === "set_aside" && expiresAt
+            ? ` · until ${new Date(expiresAt).toLocaleDateString()}`
+            : ""}
+          {clearedAt ? " · media cleared" : ""}
+        </Badge>
+      )}
+      {current === "pending" && !clearedAt && (
+        <>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => mutation.mutate({ sessionId, action: "approved" })}
+          >
+            {busy && mutation.variables?.action === "approved" ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <UserCheck className="mr-1 h-3.5 w-3.5" />
+            )}
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => mutation.mutate({ sessionId, action: "set_aside" })}
+          >
+            Put aside
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={busy}
+            onClick={() => mutation.mutate({ sessionId, action: "declined" })}
+          >
+            Decline
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function InterviewResults({
   interviewId,
   initialSessionId,
@@ -464,34 +545,42 @@ function SessionDetail({
   return (
     <div className="space-y-6">
       {/* Top bar */}
-      <div className="flex items-center justify-between no-print">
+      <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <Button variant="outline" onClick={onBack}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back to Results
         </Button>
-        {hasReport && (
-          <Button
-            variant="outline"
-            onClick={handleExportPDF}
-            disabled={exporting}
-            className="relative overflow-hidden"
-          >
-            {exporting && (
-              <div
-                className="absolute inset-0 bg-primary/10 transition-all duration-300 ease-out"
-                style={{ width: `${exportPercent}%` }}
-              />
-            )}
-            <span className="relative flex items-center">
-              {exporting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <FileDown className="mr-2 h-4 w-4" />
+        <div className="flex flex-wrap items-center gap-2">
+          <MediaReviewActions
+            sessionId={sessionId}
+            status={(summary.data as { mediaReviewStatus?: string } | undefined)?.mediaReviewStatus}
+            expiresAt={(summary.data as { mediaExpiresAt?: string | null } | undefined)?.mediaExpiresAt}
+            clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}
+          />
+          {hasReport && (
+            <Button
+              variant="outline"
+              onClick={handleExportPDF}
+              disabled={exporting}
+              className="relative overflow-hidden"
+            >
+              {exporting && (
+                <div
+                  className="absolute inset-0 bg-primary/10 transition-all duration-300 ease-out"
+                  style={{ width: `${exportPercent}%` }}
+                />
               )}
-              {exporting ? exportProgress || "Exporting..." : "Export PDF"}
-            </span>
-          </Button>
-        )}
+              <span className="relative flex items-center">
+                {exporting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="mr-2 h-4 w-4" />
+                )}
+                {exporting ? exportProgress || "Exporting..." : "Export PDF"}
+              </span>
+            </Button>
+          )}
+        </div>
       </div>
 
       {summary.isLoading ? (

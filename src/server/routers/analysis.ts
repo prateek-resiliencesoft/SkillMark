@@ -53,23 +53,28 @@ export const analysisRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this project" });
       }
 
-      // Generate fresh signed URLs for recordings and screenshots
+      const mediaClearedAt = (session as { mediaClearedAt?: string | null }).mediaClearedAt ?? null;
+
+      // Generate fresh signed URLs for recordings and screenshots (skip if media wiped)
       let audioRecordingUrl: string | null = null;
-      if (session.audioRecordingUrl) {
-        // Extract path from stored URL or use directly if it's a path
+      if (!mediaClearedAt && session.audioRecordingUrl) {
         const storedUrl = session.audioRecordingUrl as string;
-        const pathMatch = storedUrl.match(/\/recordings\/(.+?)(?:\?|$)/);
-        if (pathMatch) {
-          audioRecordingUrl = await resolveSignedUrl("recordings", pathMatch[1]);
+        if (storedUrl.startsWith("orgs/")) {
+          audioRecordingUrl = await resolveSignedUrl("recordings", storedUrl);
+        } else {
+          const pathMatch = storedUrl.match(/\/recordings\/(.+?)(?:\?|$)/);
+          if (pathMatch) {
+            audioRecordingUrl = await resolveSignedUrl("recordings", pathMatch[1]);
+          }
         }
         if (!audioRecordingUrl) {
-          audioRecordingUrl = storedUrl;
+          audioRecordingUrl = storedUrl.startsWith("http") ? storedUrl : null;
         }
       }
 
       let screenshots: ScreenshotEntry[] | null = null;
       const rawScreenshots = session.screenshots as ScreenshotEntry[] | null;
-      if (rawScreenshots && rawScreenshots.length > 0) {
+      if (!mediaClearedAt && rawScreenshots && rawScreenshots.length > 0) {
         screenshots = await Promise.all(
           rawScreenshots.map(async (s) => {
             const signed = s.path
@@ -99,6 +104,10 @@ export const analysisRouter = router({
         antiCheatingLog: (session as Record<string, unknown>).antiCheatingLog as
           | { type: string; timestamp: number; detail?: string }[]
           | null,
+        mediaReviewStatus:
+          (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
+        mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,
+        mediaClearedAt,
       };
     }),
 

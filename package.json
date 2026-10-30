@@ -66,6 +66,7 @@
     "@visx/group": "^4.0.0",
     "@visx/responsive": "^4.0.0",
     "@visx/shape": "^4.0.0",
+    "aws4fetch": "^1.0.20",
     "bcryptjs": "^2.4.3",
     "bufferutil": "^4.1.0",
     "canvas-confetti": "^1.9.4",
