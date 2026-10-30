@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck · Lint · Test · Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:web
+
+      - name: Production build
+        run: npm run build
+        env:
+          AUTH_SECRET: "ci_dummy_secret_at_least_32_chars_long"
+          NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+          POSTGREST_URL: "http://127.0.0.1:3001"
+          STORAGE_DIR: "./storage"

@@ -1,0 +1,91 @@
+# Production: db + rest + app + voice + caddy (5 services)
+# Local day-to-day: docker-compose.yml (db+rest) + npm run dev
+name: skillmark
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skillmark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-skillmark}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - skillmark-pg:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skillmark} -d ${POSTGRES_DB:-skillmark}"]
+      interval: 5s
+      retries: 20
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://${POSTGRES_USER:-skillmark}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-skillmark}
+      PGRST_DB_SCHEMAS: public,auth
+      PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-skillmark}
+      PGRST_JWT_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      PGRST_DB_MAX_ROWS: "10000"
+    ports:
+      - "127.0.0.1:${POSTGREST_PORT:-3001}:3000"
+
+  app:
+    image: ghcr.io/prateek-resiliencesoft/skillmark-app:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    depends_on:
+      rest:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      POSTGREST_URL: http://rest:3000
+      STORAGE_DIR: /app/storage
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    # Only reachable via caddy on the Docker network (debug bind optional)
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - skillmark-storage:/app/storage
+
+  voice:
+    image: ghcr.io/prateek-resiliencesoft/skillmark-voice:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      VOICE_RELAY_HOST: "0.0.0.0"
+      VOICE_RELAY_PORT: "8082"
+      OPENAI_VOICE_RELAY_PORT: "8082"
+      GEMINI_VOICE_RELAY_PORT: "8082"
+      VOICE_RELAY_PROVIDER: ${VOICE_RELAY_PROVIDER:-auto}
+    # No host ports — caddy proxies /ws/* → voice:8082
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+      - voice
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  skillmark-pg:
+  skillmark-storage:
+  caddy-data:
+  caddy-config:
