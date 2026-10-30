@@ -17,7 +17,6 @@ import { createLogger } from "../src/lib/logger";
 
 const log = createLogger("gemini-relay");
 
-config({ path: ".env.local", override: true });
 config({ path: ".env" });
 
 const RELAY_PORT =
@@ -29,7 +28,7 @@ const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 if (!GEMINI_API_KEY) {
-  log.error("Missing GEMINI_API_KEY in .env.local");
+  log.error("Missing GEMINI_API_KEY in .env");
   process.exit(1);
 }
 
