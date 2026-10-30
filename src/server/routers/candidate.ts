@@ -192,6 +192,20 @@ export const candidateRouter = router({
       return { ...candidate, delivery };
     }),
 
+  /** Full details for the Sessions side panel. */
+  getById: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("*, session:sessions(*), interview:interviews(id, title, timeLimitMinutes)")
+        .eq("id", input.id)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      return c;
+    }),
+
   /** Which invite channels the interview's org has configured (no secrets returned). */
   deliveryOptions: protectedProcedure
     .input(z.object({ interviewId: z.string() }))
@@ -335,8 +349,8 @@ export const candidateRouter = router({
     .input(
       z.object({
         id: z.string(),
-        name: z.string().optional(),
-        email: z.string().email().optional(),
+        name: z.string().min(1).optional(),
+        email: z.string().email().optional().or(z.literal("")),
         phone: z.string().optional(),
         gender: z.string().optional(),
         birthday: z.string().optional(),
@@ -346,15 +360,21 @@ export const candidateRouter = router({
         major: z.string().optional(),
         graduationYear: z.number().int().optional(),
         workExperience: z.string().optional(),
+        skills: z.array(z.string()).max(50).optional(),
+        tailorInterview: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { id, ...fields } = input;
+      const { id, ...rest } = input;
+      const fields: Record<string, unknown> = { ...rest };
+      if (rest.email !== undefined) fields.email = rest.email.trim().toLowerCase() || null;
+      if (rest.phone !== undefined) fields.phone = rest.phone.replace(/[\s()-]/g, "") || null;
+      if (rest.skills !== undefined) fields.skills = normalizeSkills(rest.skills);
 
       // Get candidate's interview to verify access
       const { data: candidate } = await ctx.supabase
         .from("candidates")
-        .select("interviewId")
+        .select("interviewId, skills, tailorInterview, tailoredQuestions")
         .eq("id", id)
         .single();
 
@@ -362,7 +382,7 @@ export const candidateRouter = router({
         throw new TRPCError({ code: "NOT_FOUND" });
       }
 
-      const { role } = await verifyInterviewAccess(
+      const { role, organizationId } = await verifyInterviewAccess(
         ctx.supabase,
         candidate.interviewId,
         ctx.user.id,
@@ -380,7 +400,17 @@ export const candidateRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
       }
 
-      return updated;
+      // Regenerate tailored questions only when skills changed (or tailoring was switched on without questions).
+      const oldSkills = ((candidate.skills as string[] | null) ?? []).map((x) => x.toLowerCase()).sort().join("|");
+      const newSkills = ((updated.skills as string[] | null) ?? []).map((x) => x.toLowerCase()).sort().join("|");
+      const tailorOn = updated.tailorInterview !== false;
+      let retailored = false;
+      if (tailorOn && (oldSkills !== newSkills || (!candidate.tailoredQuestions && newSkills))) {
+        await tailorCandidates(ctx.supabase, organizationId, candidate.interviewId, [updated]);
+        retailored = true;
+      }
+
+      return { ...updated, retailored };
     }),
 
   remove: protectedProcedure
