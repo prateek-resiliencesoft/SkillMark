@@ -269,12 +269,19 @@ async function extractPdf(
   }
 
   try {
-    const md = await visionToMarkdown(vision, [
-      {
-        type: "file",
-        file: { filename: fileName, file_data: `data:application/pdf;base64,${buffer.toString("base64")}` },
-      },
-    ]);
+    // Gemini's OpenAI-compat rejects `type:file`; use native generateContent + inline PDF.
+    const md =
+      vision.kind === "gemini"
+        ? await geminiPdfToMarkdown(vision.apiKey, vision.model, buffer)
+        : await visionToMarkdown(vision, [
+            {
+              type: "file",
+              file: {
+                filename: fileName,
+                file_data: `data:application/pdf;base64,${buffer.toString("base64")}`,
+              },
+            },
+          ]);
     // Keep whichever reading has more content; vision may skip clean text pages.
     if (md.length >= textChars) {
       return { markdown: md, method: "vision", pages: numPages, warnings };
@@ -321,10 +328,15 @@ async function extractImage(buffer: Buffer, organizationId?: string | null): Pro
 /*  Vision helper                                                      */
 /* ------------------------------------------------------------------ */
 
+type VisionClient = {
+  kind: "openai" | "gemini";
+  client: OpenAI;
+  model: string;
+  apiKey: string;
+};
+
 /** Org Settings → AI first (OpenAI, then Gemini); .env only when no org vision key. */
-async function getVisionClient(
-  organizationId?: string | null,
-): Promise<{ client: OpenAI; model: string } | null> {
+async function getVisionClient(organizationId?: string | null): Promise<VisionClient | null> {
   const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
   const preferOrg = (["openai", "gemini"] as const).some((id) => creds[id].from === "org");
 
@@ -336,7 +348,12 @@ async function getVisionClient(
       id === "openai"
         ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
         : process.env.GEMINI_MODEL || "gemini-3.5-flash";
-    return { client: new OpenAI({ apiKey: c.apiKey, baseURL: c.baseUrl }), model };
+    return {
+      kind: id,
+      client: new OpenAI({ apiKey: c.apiKey, baseURL: c.baseUrl }),
+      model,
+      apiKey: c.apiKey,
+    };
   }
   return null;
 }
@@ -364,6 +381,38 @@ async function visionToMarkdown(
   return normalise(
     (res.choices[0]?.message?.content ?? "").replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""),
   );
+}
+
+/** Native Gemini path — OpenAI-compat rejects PDF `type:file` parts. */
+async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: "POST",
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: VISION_PROMPT },
+              { inline_data: { mime_type: "application/pdf", data: buffer.toString("base64") } },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0, maxOutputTokens: 6000 },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    },
+  );
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 300);
+    throw new Error(body || `${res.status} status code (no body)`);
+  }
+  const json = (await res.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  const text = (json.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+  return normalise(text.replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""));
 }
 
 /* ------------------------------------------------------------------ */

@@ -6,7 +6,8 @@
  * model can't back up are dropped and flagged rather than kept as guesses.
  */
 import { extractJson } from "@/lib/ai/extract-json";
-import { resolveTaskModels } from "@/lib/ai/registry";
+import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
+import type { LLMProvider } from "@/lib/ai/types";
 
 export interface ReviewFlag {
   field: string;
@@ -75,36 +76,70 @@ Rules:
 - Keep experience in the order listed. Use "Present" for current roles only if the CV says so.
 - Return only the JSON object.`;
 
+function isDeadModelError(msg: string): boolean {
+  return /410|404|gone|retired|unavailable|no longer (available|supported)|not found/i.test(msg);
+}
+
+async function generateProfileJson(
+  provider: LLMProvider,
+  model: string,
+  source: string,
+) {
+  return provider.generateResponse({
+    model,
+    temperature: 0,
+    maxTokens: 4096,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: source },
+    ],
+  });
+}
+
 export async function extractCandidateProfile(
   markdown: string,
   options: { defaultCountryCode?: string; organizationId?: string | null } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
   const { provider, generatorModel } = await resolveTaskModels(options.organizationId);
-  let res;
-  try {
-    res = await provider.generateResponse({
-      model: generatorModel,
-      temperature: 0,
-      maxTokens: 4096,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: source },
-      ],
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
-      throw new Error(
-        "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
-      );
+
+  const attempts: { provider: LLMProvider; model: string }[] = [
+    { provider, model: generatorModel },
+    ...provider.models
+      .filter((m) => m !== generatorModel)
+      .map((model) => ({ provider, model })),
+  ];
+  for (const fb of await resolveFallbackProviders(options.organizationId, provider.id)) {
+    attempts.push(fb);
+  }
+
+  let res: Awaited<ReturnType<LLMProvider["generateResponse"]>> | undefined;
+  let lastErr: unknown;
+  for (const attempt of attempts) {
+    try {
+      res = await generateProfileJson(attempt.provider, attempt.model, source);
+      break;
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
+        throw new Error(
+          "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
+        );
+      }
+      // Dead/retired model → try next; quota/other → stop (retrying burns more quota).
+      if (!isDeadModelError(msg)) throw err;
     }
-    if (/404|no longer available|not found/i.test(msg)) {
+  }
+
+  if (!res) {
+    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    if (isDeadModelError(msg)) {
       throw new Error(
         `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
       );
     }
-    throw err;
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   const raw = extractJson<Record<string, unknown>>(res.content.replace(/<think>[\s\S]*?<\/think>/g, ""));

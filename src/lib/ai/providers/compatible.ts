@@ -91,9 +91,18 @@ export class CompatibleOpenAIProvider implements LLMProvider {
 function enrichOpenAIError(err: unknown, providerName: string, model: string): Error {
   const e = err as { status?: number; message?: string; error?: { message?: string } };
   const detail = e?.error?.message || e?.message || String(err);
-  if (e?.status === 404 || /404|no longer available/i.test(detail)) {
+  const status = e?.status;
+  if (status === 410 || /410\s+status code|gone|retired|no longer (available|supported)/i.test(detail)) {
     return new Error(
-      `${providerName} model "${model}" unavailable (404). ${detail}`,
+      `${providerName} model "${model}" is gone (410). Set a current model in Settings → AI or GEMINI_MODEL / OPENAI_MODEL.`,
+    );
+  }
+  if (status === 404 || /404|no longer available/i.test(detail)) {
+    return new Error(`${providerName} model "${model}" unavailable (404). ${detail}`);
+  }
+  if (status === 429 || /429|quota|rate.?limit/i.test(detail)) {
+    return new Error(
+      `${providerName} rate/quota limit (429) for "${model}". Wait and retry, or add another key in Settings → AI.`,
     );
   }
   return err instanceof Error ? err : new Error(detail);
