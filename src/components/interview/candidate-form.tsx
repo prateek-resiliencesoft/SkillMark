@@ -234,7 +234,7 @@ export function formToCandidateInput(f: CandidateFormState) {
 /** Upload one PDF to /api/ai/parse-resume and return the parsed JSON (SSE stream). */
 export async function parseResumeFile(
   file: File,
-  opts: { organizationId?: string; interviewId?: string; onStream?: (text: string) => void },
+  opts: { organizationId?: string; interviewId?: string; onStream?: (text: string) => void; onStatus?: (msg: string) => void },
 ): Promise<Record<string, unknown>> {
   const formData = new FormData();
   formData.append("file", file);
@@ -262,7 +262,8 @@ export async function parseResumeFile(
       const payload = line.slice(6).trim();
       if (payload === "[DONE]") continue;
       try {
-        const { token, error } = JSON.parse(payload);
+        const { token, error, status } = JSON.parse(payload);
+        if (status) opts.onStatus?.(String(status));
         if (error) streamError = String(error);
         if (token) {
           accumulated += token;

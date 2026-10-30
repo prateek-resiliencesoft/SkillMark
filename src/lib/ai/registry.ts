@@ -250,3 +250,26 @@ export const GENERATOR_MODEL = process.env.OPENAI_API_KEY
 
 // Re-export legacy class for any direct imports
 export { OpenAIProvider };
+
+/** Other configured providers (in Settings order) to fall back to when the primary is rate-limited. */
+export async function resolveFallbackProviders(
+  organizationId: string | null | undefined,
+  excludeId: string,
+): Promise<{ provider: LLMProvider; model: string }[]> {
+  const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
+  const map = buildFromCreds(creds);
+  const envModel: Record<string, string | undefined> = {
+    openai: process.env.OPENAI_MODEL,
+    gemini: process.env.GEMINI_MODEL,
+    nvidia: process.env.NVIDIA_MODEL,
+    anthropic: process.env.ANTHROPIC_MODEL,
+    custom: process.env.CUSTOM_LLM_MODEL,
+  };
+  const out: { provider: LLMProvider; model: string }[] = [];
+  for (const id of SETTINGS_ORDER) {
+    if (id === excludeId || !creds[id].apiKey || !map.has(id)) continue;
+    const provider = map.get(id)!;
+    out.push({ provider, model: envModel[id] || provider.defaultModel });
+  }
+  return out;
+}
