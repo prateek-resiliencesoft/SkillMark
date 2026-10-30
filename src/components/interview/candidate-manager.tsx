@@ -68,6 +68,7 @@ import {
     Send,
     Settings,
     Trash2,
+    Upload,
     UserCheck,
     UserPlus,
     Users,
@@ -423,6 +424,7 @@ export function CandidateManager({
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [resumeImportOpen, setResumeImportOpen] = useState(false);
+  const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
 
@@ -978,6 +980,10 @@ export function CandidateManager({
                 <FileText className="mr-2 h-4 w-4" />
                 Import by resumes
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setBulkUploadOpen(true)}>
+                <Upload className="mr-2 h-4 w-4" />
+                Bulk upload
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -1436,6 +1442,13 @@ export function CandidateManager({
         open={resumeImportOpen}
         onOpenChange={setResumeImportOpen}
         onImported={invalidateAll}
+      />
+      <ResumeImportDialog
+        interviewId={interviewId}
+        open={bulkUploadOpen}
+        onOpenChange={setBulkUploadOpen}
+        onImported={invalidateAll}
+        bulk
       />
     </div>
   );
