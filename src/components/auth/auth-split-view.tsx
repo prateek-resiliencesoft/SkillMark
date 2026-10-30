@@ -35,9 +35,13 @@ const INTRO_SESSION_KEY = "skillmark_intro_played";
 export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const nextUrl = searchParams.get("next") || "/dashboard";
-  const nextQuery = searchParams.get("next")
-    ? `?next=${encodeURIComponent(searchParams.get("next")!)}`
+  const rawNext = searchParams.get("next");
+  const nextUrl =
+    rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") && !rawNext.includes("://")
+      ? rawNext
+      : "/dashboard";
+  const nextQuery = rawNext && nextUrl === rawNext
+    ? `?next=${encodeURIComponent(rawNext)}`
     : "";
 
   const { toast } = useToast();
