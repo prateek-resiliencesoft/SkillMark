@@ -1,5 +1,6 @@
 import { applyAntiCheatingViolation, countHeadViolations } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
+import { applyMediaReview, clearSessionMediaStorage } from "@/lib/media-review";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
@@ -816,12 +817,57 @@ export const sessionRouter = router({
       return { success: true };
     }),
 
+  /** Approve / decline / put-aside session media. Decline clears object storage; DB scores stay. */
+  setMediaReview: protectedProcedure
+    .input(
+      z.object({
+        sessionId: z.string(),
+        action: z.enum(["approved", "declined", "set_aside"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
+        .eq("id", input.sessionId)
+        .single();
+
+      if (!session) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const interviewData = session.interview as unknown as {
+        projectId: string;
+        project: { organizationId: string };
+      };
+      const membership = await getOrgMembership(
+        ctx.supabase,
+        interviewData.project.organizationId,
+        ctx.user.id,
+      );
+      if (!membership) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      }
+      const projAccess = await hasProjectAccess(
+        ctx.supabase,
+        interviewData.projectId,
+        ctx.user.id,
+      );
+      if (!projAccess) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No access to this project" });
+      }
+
+      return applyMediaReview(ctx.supabase, input.sessionId, input.action);
+    }),
+
   deleteMany: protectedProcedure
     .input(z.object({ ids: z.array(z.string()).min(1) }))
     .mutation(async ({ ctx, input }) => {
       const { data: sessions } = await ctx.supabase
         .from("sessions")
-        .select("id, interview:interviews!inner(projectId, project:projects!inner(organizationId))")
+        .select(
+          "id, mediaStoragePrefix, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
         .in("id", input.ids);
 
       await Promise.all(
@@ -855,7 +901,12 @@ export const sessionRouter = router({
               message: "Not authorized to delete these sessions",
             });
           }
-        })
+
+          // Wipe object storage before DB delete
+          await clearSessionMediaStorage(ctx.supabase, s.id, s.mediaStoragePrefix).catch((err) => {
+            log.warn("media clear on delete failed", s.id, err);
+          });
+        }),
       );
 
       await ctx.supabase.from("sessions").delete().in("id", input.ids);

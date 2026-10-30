@@ -105,6 +105,18 @@ CREATE TYPE public."QuestionType" AS ENUM (
 
 
 --
+-- Name: MediaReviewStatus; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public."MediaReviewStatus" AS ENUM (
+    'pending',
+    'approved',
+    'declined',
+    'set_aside'
+);
+
+
+--
 -- Name: SessionStatus; Type: TYPE; Schema: public; Owner: -
 --
 
@@ -549,7 +561,12 @@ CREATE TABLE public.sessions (
     "createdAt" timestamp with time zone DEFAULT now() NOT NULL,
     "updatedAt" timestamp with time zone DEFAULT now() NOT NULL,
     "activitySegments" jsonb DEFAULT '[]'::jsonb NOT NULL,
-    "audioRecordings" jsonb DEFAULT '[]'::jsonb NOT NULL
+    "audioRecordings" jsonb DEFAULT '[]'::jsonb NOT NULL,
+    "mediaReviewStatus" public."MediaReviewStatus" DEFAULT 'pending'::public."MediaReviewStatus",
+    "mediaReviewAt" timestamp with time zone,
+    "mediaExpiresAt" timestamp with time zone,
+    "mediaClearedAt" timestamp with time zone,
+    "mediaStoragePrefix" text
 );
 
 
