@@ -33,12 +33,11 @@ if (!GEMINI_API_KEY) {
 }
 
 /**
- * Gemini keys for a session: the .env default key FIRST, then the interview
- * org's saved key (Settings → AI Providers). Read fresh per interview.
+ * Gemini keys for a session: the interview org's saved key FIRST, then the
+ * .env default key (Settings → AI Providers). Read fresh per interview.
  */
 async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: string; source: "org" | "env" }[]> {
   const out: { key: string; source: "org" | "env" }[] = [];
-  if (GEMINI_API_KEY) out.push({ key: GEMINI_API_KEY, source: "env" });
   if (sessionId) {
     try {
       const { supabaseAdmin } = await import("../src/lib/supabase/admin");
@@ -59,6 +58,8 @@ async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: stri
       log.warn(`Could not load org Gemini key: ${err instanceof Error ? err.message : err}`);
     }
   }
+  // Default .env key is the fallback after the interview org's own key.
+  if (GEMINI_API_KEY && !out.some((x) => x.key === GEMINI_API_KEY)) out.push({ key: GEMINI_API_KEY, source: "env" });
   return out;
 }
 
