@@ -134,11 +134,23 @@ jobs:
             echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
 
             export IMAGE_TAG
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans --force-recreate app voice caddy rest
-            docker compose -f docker-compose.prod.yml up -d
+            DC="docker compose -f docker-compose.prod.yml"
 
-            docker compose -f docker-compose.prod.yml ps
+            $DC pull
+
+            # --force-recreate fails with "No such container" when the daemon
+            # already lost a service (common for voice after a bad prior deploy).
+            # Stop+rm those services first, then a plain up creates them clean.
+            for svc in app voice caddy rest; do
+              $DC stop "$svc" 2>/dev/null || true
+              $DC rm -f "$svc" 2>/dev/null || true
+            done
+            # Clear any dangling containers compose still thinks exist.
+            docker ps -aq --filter "name=skillmark-voice" | xargs -r docker rm -f 2>/dev/null || true
+
+            $DC up -d --remove-orphans
+
+            $DC ps
             sleep 5
             curl -fsS -o /dev/null -w "caddy:%{http_code}\n" http://127.0.0.1/login || true
             curl -fsS -o /dev/null -w "app:%{http_code}\n" http://127.0.0.1:3000/login || true
