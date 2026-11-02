@@ -4,6 +4,7 @@ import { applyMediaReview, clearSessionMediaStorage } from "@/lib/media-review";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { redactSessionForCandidate } from "@/lib/session-redact";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
 
 const log = createLogger("router/session");
@@ -282,7 +283,10 @@ export const sessionRouter = router({
         throw new TRPCError({ code: "NOT_FOUND" });
       }
 
-      // If caller is authenticated user, verify tenant organization membership
+      // Org members get the full record. Anyone else — anonymous, or a dashboard
+      // user from another org who happens to have a cookie in this browser — gets
+      // exactly the redacted candidate view anonymous access already allows.
+      let isMember = false;
       if (ctx.user) {
         const interviewData = session.interview as { projectId?: string } | null;
         if (interviewData?.projectId) {
@@ -292,37 +296,11 @@ export const sessionRouter = router({
             .eq("id", interviewData.projectId)
             .maybeSingle();
           if (project?.organizationId) {
-            const membership = await getOrgMembership(ctx.supabase, project.organizationId, ctx.user.id);
-            if (!membership) {
-              throw new TRPCError({ code: "FORBIDDEN", message: "You do not have permission to view this session" });
-            }
+            isMember = !!(await getOrgMembership(ctx.supabase, project.organizationId, ctx.user.id));
           }
         }
-      } else {
-        // Redact internal assessment details, scoring rubrics, and interviewer-only data for unauthenticated candidate access
-        const interview = session.interview as Record<string, unknown> | null;
-        const safeInterview = interview
-          ? {
-              ...interview,
-              systemPrompt: undefined,
-              prompt: undefined,
-              invitedEmails: undefined,
-              assessmentCriteria: undefined,
-              scoringRubric: undefined,
-            }
-          : null;
-
-        return {
-          ...session,
-          summary: undefined,
-          insights: undefined,
-          themes: undefined,
-          sentiment: undefined,
-          antiCheatingLog: undefined,
-          activitySegments: undefined,
-          interview: safeInterview,
-        };
       }
+      if (!isMember) return redactSessionForCandidate(session);
 
       return session;
     }),

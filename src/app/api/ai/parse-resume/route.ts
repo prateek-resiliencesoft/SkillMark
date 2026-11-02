@@ -11,9 +11,9 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 async function resolveOrgForUser(userId: string, requested?: string, interviewId?: string): Promise<string | undefined> {
   const { data: memberships } = await supabaseAdmin
     .from("organization_members")
-    .select("organizationId")
+    .select("workspaceId")
     .eq("userId", userId);
-  const mine = new Set((memberships ?? []).map((m: { organizationId: string }) => m.organizationId));
+  const mine = new Set((memberships ?? []).map((m: { workspaceId: string }) => m.workspaceId));
   if (requested && mine.has(requested)) return requested;
   if (interviewId) {
     const { data: iv } = await supabaseAdmin
