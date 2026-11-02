@@ -82,7 +82,7 @@ function WelcomeIllustration() {
     <div className="relative bg-gradient-to-br from-primary/10 via-primary/5 to-orange-50 px-6 pt-6 pb-0">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/images/marketing/channel-screenshot-sm.webp"
+        src="/images/marketing/interview-session-ui.webp"
         alt="Interview interface preview"
         className="block w-full rounded-t-lg"
       />
@@ -429,8 +429,10 @@ function CameraCheck({
 
 type MicPhase = "idle" | "requesting" | "playing" | "listening" | "analyzing" | "confirm";
 
-const MIC_SPEECH_RMS = 0.02;
-const MIC_SPEECH_MS = 1000;
+// Local level-meter detection (no transcription needed). Laptop mics with
+// noise suppression often peak ~0.01–0.03 RMS for normal speech.
+const MIC_SPEECH_RMS = 0.01;
+const MIC_SPEECH_MS = 700;
 
 function describeMicError(err: unknown): string {
   const name = (err as { name?: string })?.name;
@@ -585,6 +587,8 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
 
         const ctx = new AudioContext({ sampleRate: 16000 });
         micCtxRef.current = ctx;
+        // Created after an await, so Chrome may start it suspended → no audio frames.
+        if (ctx.state === "suspended") await ctx.resume().catch(() => {});
 
         const workletCode = `
           class MicProcessor extends AudioWorkletProcessor {
@@ -619,7 +623,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           const rms = Math.sqrt(sum / input.length);
           setLevel(Math.min(1, rms * 8));
           if (rms > peakRef.current) peakRef.current = rms;
-          if (rms > 0.01) setHeardSomething(true);
+          if (rms > 0.004) setHeardSomething(true);
           if (phaseRef.current === "listening" && rms > MIC_SPEECH_RMS) {
             voicedMsRef.current += (input.length / ctx.sampleRate) * 1000;
             if (voicedMsRef.current >= MIC_SPEECH_MS) {
@@ -687,7 +691,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
         } else if (msg.type === "disconnected") {
           if (activeConnector.canFailover) {
             void activeConnector.failover("mic test relay disconnected");
-          } else {
+          } else if (lastAsrText) {
             finish(lastAsrText);
           }
         } else if (msg.type === "error") {
@@ -698,20 +702,18 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           ) {
             return;
           }
-          finish(lastAsrText);
+          // Transcription is optional — keep metering locally.
+          if (lastAsrText) finish(lastAsrText);
         } else if (msg.type === "timeout") {
-          finish(lastAsrText);
+          if (lastAsrText) finish(lastAsrText);
         }
       },
-      onPermanentFailure: () => {
-        if (!handled) finish(lastAsrText);
-      },
+      // Relay down/unreachable: transcription is optional, local meter continues.
+      onPermanentFailure: () => {},
     });
 
     relayConnectorRef.current = connector;
-    void connector.connect().catch(() => {
-      if (!handled) finish(lastAsrText);
-    });
+    void connector.connect().catch(() => { /* optional transcription */ });
 
     // Fallback: give up after ~15s of listening and offer retry / continue.
     const startedAt = Date.now();
@@ -821,7 +823,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
         abortRef.current = null;
         // Server streamed no audio (TTS provider error) → fall back to browser speech below.
         if (samplesPlayed === 0) throw new Error("empty tts stream");
-        if (relayConnectorRef.current?.isReady) {
+        if (relayConnectorRef.current?.isReady || micCtxRef.current) {
           setPhase("listening");
         } else {
           startListening();
@@ -851,8 +853,8 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
     utterance.rate = 1;
     utterance.pitch = 1;
     utterance.lang = getSpeechSynthesisLocale(language);
-    utterance.onend = () => { if (relayConnectorRef.current?.isReady) { setPhase("listening"); } else { startListening(); } };
-    utterance.onerror = () => { if (relayConnectorRef.current?.isReady) { setPhase("listening"); } else { startListening(); } };
+    utterance.onend = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
+    utterance.onerror = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
     // Some browsers/OSes (e.g. Linux without TTS voices) never fire onend.
     setTimeout(() => {
       if (phaseRef.current === "playing") {

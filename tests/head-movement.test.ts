@@ -42,14 +42,14 @@ test("monitor cooldown separates violations", () => {
   const m = new HeadMovementMonitor();
   const hits: number[] = [];
   for (let t = 0; t <= 20000; t += 200) if (m.update("looking_away", t)) hits.push(t);
-  assert.deepEqual(hits, [2000, 8000, 14000, 20000]);
+  assert.deepEqual(hits, [1800, 7800, 13800, 19800]);
 });
 
-test("no_face needs 3s", () => {
+test("no_face needs 2.5s", () => {
   const m = new HeadMovementMonitor();
   let first = -1;
   for (let t = 0; t <= 4000 && first < 0; t += 200) if (m.update("no_face", t)) first = t;
-  assert.equal(first, 3000);
+  assert.equal(first, 2600);
 });
 
 test("violation counter warns twice, disqualifies on 3rd head violation", () => {
@@ -65,4 +65,22 @@ test("violation counter warns twice, disqualifies on 3rd head violation", () => 
   assert.equal(r4.log.length, 5);
   assert.equal(headWarningMessage(1), "Warning 1 of 2: please keep your face toward the screen");
   assert.equal(headWarningMessage(2), "Warning 2 of 2: please keep your face toward the screen");
+});
+
+test("brief ok flicker does not reset a look-away streak", () => {
+  const m = new HeadMovementMonitor();
+  let first = -1;
+  for (let t = 0; t <= 4000 && first < 0; t += 200) {
+    const st = t === 1000 ? "ok" : "looking_away"; // one-frame flicker
+    if (m.update(st, t)) first = t;
+  }
+  assert.equal(first, 1800);
+});
+
+test("reset(until) suppresses violations during grace period", () => {
+  const m = new HeadMovementMonitor();
+  m.reset(3000);
+  let first = -1;
+  for (let t = 0; t <= 6000 && first < 0; t += 200) if (m.update("looking_away", t)) first = t;
+  assert.equal(first, 3000);
 });
