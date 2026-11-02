@@ -260,8 +260,8 @@ async function extractPdf(
   }
 
   // Some or all pages are scans: ask the vision model to read the PDF.
-  const vision = await getVisionClient(organizationId);
-  if (!vision) {
+  const visions = await getVisionClients(organizationId);
+  if (!visions.length) {
     warnings.push(
       `${scannedPages || "All"} page(s) look scanned and no vision model is configured (Settings → AI OpenAI/Gemini, or OPENAI_API_KEY) — review manually.`,
     );
@@ -270,10 +270,10 @@ async function extractPdf(
 
   try {
     // Gemini's OpenAI-compat rejects `type:file`; use native generateContent + inline PDF.
-    const md =
+    const md = await withVisionFailover(visions, async (vision) =>
       vision.kind === "gemini"
-        ? await geminiPdfToMarkdown(vision.apiKey, vision.model, buffer)
-        : await visionToMarkdown(vision, [
+        ? geminiPdfToMarkdown(vision.apiKey, vision.model, buffer)
+        : visionToMarkdown(vision, [
             {
               type: "file",
               file: {
@@ -281,7 +281,8 @@ async function extractPdf(
                 file_data: `data:application/pdf;base64,${buffer.toString("base64")}`,
               },
             },
-          ]);
+          ]),
+    );
     // Keep whichever reading has more content; vision may skip clean text pages.
     if (md.length >= textChars) {
       return { markdown: md, method: "vision", pages: numPages, warnings };
@@ -299,8 +300,8 @@ async function extractPdf(
 /* ------------------------------------------------------------------ */
 
 async function extractImage(buffer: Buffer, organizationId?: string | null): Promise<ExtractedDocument> {
-  const vision = await getVisionClient(organizationId);
-  if (!vision) {
+  const visions = await getVisionClients(organizationId);
+  if (!visions.length) {
     return {
       markdown: "",
       method: "vision",
@@ -317,9 +318,11 @@ async function extractImage(buffer: Buffer, organizationId?: string | null): Pro
     .resize({ width: MAX_VISION_IMAGE_PX, height: MAX_VISION_IMAGE_PX, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer();
-  const md = await visionToMarkdown(vision, [
-    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpeg.toString("base64")}`, detail: "high" } },
-  ]);
+  const md = await withVisionFailover(visions, (vision) =>
+    visionToMarkdown(vision, [
+      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpeg.toString("base64")}`, detail: "high" } },
+    ]),
+  );
   const warnings = md.length < MIN_CHARS_PER_PAGE ? ["Very little text was read from the image."] : [];
   return { markdown: md, method: "vision", pages: 1, warnings };
 }
@@ -335,27 +338,51 @@ type VisionClient = {
   apiKey: string;
 };
 
-/** Org Settings → AI first (OpenAI, then Gemini); .env only when no org vision key. */
-async function getVisionClient(organizationId?: string | null): Promise<VisionClient | null> {
+/** Org Settings → AI: all OpenAI keys then Gemini keys (failover). .env only if no org vision key. */
+async function getVisionClients(organizationId?: string | null): Promise<VisionClient[]> {
   const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
   const preferOrg = (["openai", "gemini"] as const).some((id) => creds[id].from === "org");
+  const out: VisionClient[] = [];
 
   for (const id of ["openai", "gemini"] as const) {
     const c = creds[id];
-    if (!c.apiKey) continue;
+    if (!c.apiKeys.length) continue;
     if (preferOrg && c.from !== "org") continue;
     const model =
       id === "openai"
         ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
         : process.env.GEMINI_MODEL || "gemini-3.5-flash";
-    return {
-      kind: id,
-      client: new OpenAI({ apiKey: c.apiKey, baseURL: c.baseUrl }),
-      model,
-      apiKey: c.apiKey,
-    };
+    for (const apiKey of c.apiKeys) {
+      out.push({
+        kind: id,
+        client: new OpenAI({ apiKey, baseURL: c.baseUrl }),
+        model,
+        apiKey,
+      });
+    }
   }
-  return null;
+  return out;
+}
+
+async function withVisionFailover(
+  clients: VisionClient[],
+  run: (c: VisionClient) => Promise<string>,
+): Promise<string> {
+  let lastErr: unknown;
+  for (let i = 0; i < clients.length; i++) {
+    try {
+      return await run(clients[i]);
+    } catch (err) {
+      lastErr = err;
+      if (i < clients.length - 1) {
+        log.warn(
+          `Vision ${clients[i].kind} key #${i + 1} failed — trying next`,
+          err instanceof Error ? err.message.slice(0, 120) : err,
+        );
+      }
+    }
+  }
+  throw lastErr;
 }
 
 const VISION_PROMPT = `Transcribe this document to GitHub-flavoured Markdown.

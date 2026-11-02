@@ -1,6 +1,7 @@
 import { buildInterviewerPrompt } from "@/lib/ai/prompts/interviewer";
 import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
 import { resolveProvider } from "@/lib/ai/registry";
+import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("api/ai/chat");
@@ -28,9 +29,12 @@ export async function POST(req: Request) {
     }
 
     const organizationId = (interview.project as { organizationId?: string } | null)?.organizationId;
+    // Task routing (Settings → AI) owns provider order. Interview llmProvider is a soft prefer only.
+    // Model: interview.llmModel applied only if it fits the active provider — never send gemini-* to OpenAI.
     const provider = await resolveProvider({
       organizationId,
       idOrModel: interview.llmProvider,
+      task: taskFromFollowUpDepth(interview.followUpDepth as string | undefined),
     });
 
     const conversationHistory: LLMMessage[] = messages.map(
@@ -68,6 +72,7 @@ export async function POST(req: Request) {
       messages: promptMessages,
       temperature: 0.7,
       maxTokens: 1024,
+      // FailoverProvider.modelForEntry drops this when it doesn't fit the active provider.
       model: interview.llmModel ?? undefined,
     });
 

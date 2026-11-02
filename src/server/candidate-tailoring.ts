@@ -53,7 +53,7 @@ export async function generateTailoredQuestions(opts: {
   if (!skills.length) return [];
   const n = tailoredCount(opts.baseQuestions.length);
   try {
-    const { provider, generatorModel } = await resolveTaskModels(opts.organizationId);
+    const { provider, generatorModel } = await resolveTaskModels(opts.organizationId, "generate");
     const prompt = `You tailor an existing interview to one candidate.
 Interview: "${opts.interview.title}"${opts.interview.objective ? `\nObjective: ${opts.interview.objective}` : ""}
 Language: ${opts.interview.language || "en"}

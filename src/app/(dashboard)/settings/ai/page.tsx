@@ -9,6 +9,8 @@ import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   ExternalLink,
   Eye,
@@ -16,12 +18,13 @@ import {
   Globe,
   Key,
   Loader2,
+  Plus,
   Server,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
 
@@ -162,6 +165,24 @@ const PROVIDERS: ProviderMeta[] = [
   },
 ];
 
+const TASK_LABELS: Record<string, { title: string; hint: string }> = {
+  screening: { title: "Screening (light)", hint: "Simple screens · interview follow-up LIGHT" },
+  standard: { title: "Standard", hint: "Default rounds · follow-up MODERATE" },
+  heavy: { title: "Heavy / multi-level", hint: "Deep probes · follow-up DEEP" },
+  interview: { title: "Live interview override", hint: "Optional override for all live turns" },
+  report: { title: "Reports & scoring", hint: "Post-interview analysis" },
+  resume: { title: "Resume / CV parse", hint: "PDF extraction & profiling" },
+  generate: { title: "Question generation", hint: "AI interview builder" },
+};
+
+const PROVIDER_SHORT: Record<ProviderId, string> = {
+  openai: "OpenAI",
+  gemini: "Gemini",
+  nvidia: "NVIDIA",
+  anthropic: "Anthropic",
+  custom: "Custom",
+};
+
 export default function AiSettingsPage() {
   const { currentOrg } = useOrg();
   const orgId = currentOrg?.id ?? "";
@@ -170,12 +191,12 @@ export default function AiSettingsPage() {
   const utils = trpc.useUtils();
   const query = trpc.aiSettings.get.useQuery({ organizationId: orgId }, { enabled: !!orgId });
 
-  const [keys, setKeys] = useState<Record<ProviderId, string>>({
-    openai: "",
-    gemini: "",
-    nvidia: "",
-    anthropic: "",
-    custom: "",
+  const [keySlots, setKeySlots] = useState<Record<ProviderId, string[]>>({
+    openai: [""],
+    gemini: [""],
+    nvidia: [""],
+    anthropic: [""],
+    custom: [""],
   });
   const [showKeys, setShowKeys] = useState<Record<ProviderId, boolean>>({
     openai: false,
@@ -185,28 +206,67 @@ export default function AiSettingsPage() {
     custom: false,
   });
   const [customBase, setCustomBase] = useState("");
-  const [pendingAction, setPendingAction] = useState<{ id: ProviderId; type: "save" | "clear" } | null>(null);
+  const [routing, setRouting] = useState<Record<string, ProviderId[]>>({});
+  const [pendingAction, setPendingAction] = useState<{ id: ProviderId | "routing"; type: "save" | "clear" } | null>(null);
 
   useEffect(() => {
     if (!query.data) return;
     const custom = query.data.providers.find((p) => p.id === "custom");
     setCustomBase(custom?.baseUrl ?? "");
+    const nextSlots: Record<ProviderId, string[]> = {
+      openai: [""],
+      gemini: [""],
+      nvidia: [""],
+      anthropic: [""],
+      custom: [""],
+    };
+    for (const p of query.data.providers) {
+      const id = p.id as ProviderId;
+      const n = Math.max(1, p.keyCount || 0);
+      nextSlots[id] = Array.from({ length: n }, () => "");
+    }
+    setKeySlots(nextSlots);
+    setRouting(query.data.routing as Record<string, ProviderId[]>);
   }, [query.data]);
 
-  const save = trpc.aiSettings.save.useMutation({
+  const saveKeys = trpc.aiSettings.saveProviderKeys.useMutation({
     onSuccess: () => {
-      setKeys({ openai: "", gemini: "", nvidia: "", anthropic: "", custom: "" });
       void utils.aiSettings.get.invalidate();
-      toast({ title: "AI settings saved successfully" });
+      toast({ title: "Provider keys saved" });
       setPendingAction(null);
     },
     onError: (e) => {
-      toast({ title: "Could not save", description: e.message, variant: "destructive" });
+      toast({ title: "Could not save keys", description: e.message, variant: "destructive" });
+      setPendingAction(null);
+    },
+  });
+  const clearProvider = trpc.aiSettings.clearProvider.useMutation({
+    onSuccess: () => {
+      void utils.aiSettings.get.invalidate();
+      toast({ title: "Provider keys cleared" });
+      setPendingAction(null);
+    },
+    onError: (e) => {
+      toast({ title: "Could not clear", description: e.message, variant: "destructive" });
+      setPendingAction(null);
+    },
+  });
+  const saveRouting = trpc.aiSettings.saveRouting.useMutation({
+    onSuccess: () => {
+      void utils.aiSettings.get.invalidate();
+      toast({ title: "Task routing saved" });
+      setPendingAction(null);
+    },
+    onError: (e) => {
+      toast({ title: "Could not save routing", description: e.message, variant: "destructive" });
       setPendingAction(null);
     },
   });
 
-  if (!orgId || query.isLoading) {
+  const busy = saveKeys.isLoading || clearProvider.isLoading || saveRouting.isLoading;
+  const taskKinds = useMemo(() => query.data?.taskKinds ?? Object.keys(TASK_LABELS), [query.data?.taskKinds]);
+
+  if (!orgId || query.isLoading || !query.data) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -214,52 +274,55 @@ export default function AiSettingsPage() {
     );
   }
 
-  const byId = Object.fromEntries(query.data!.providers.map((p) => [p.id, p])) as unknown as Record<
+  const byId = Object.fromEntries(query.data.providers.map((p) => [p.id, p])) as unknown as Record<
     ProviderId,
-    { apiKeyHint: string | null; baseUrl?: string; configured: boolean }
+    {
+      apiKeyHint: string | null;
+      apiKeyHints: (string | null)[];
+      keyCount: number;
+      maxKeys: number;
+      baseUrl?: string;
+      defaultModel?: string;
+      configured: boolean;
+    }
   >;
-  const envFallback = query.data!.envFallback;
+  const envFallback = query.data.envFallback;
+  const maxKeys = query.data.providers[0]?.maxKeys ?? 5;
 
   const configuredCount = PROVIDERS.filter((p) => {
     const row = byId[p.id];
-    const hasOrg = !!row?.apiKeyHint || (p.id === "custom" && !!row?.baseUrl);
+    const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
     const hasEnv = !!envFallback[p.id];
     return hasOrg || hasEnv;
   }).length;
 
-  const handleSave = (p: ProviderMeta) => {
+  const handleSaveKeys = (p: ProviderMeta) => {
     setPendingAction({ id: p.id, type: "save" });
-    save.mutate({
+    saveKeys.mutate({
       organizationId: orgId,
-      providers: {
-        [p.id]: {
-          ...(keys[p.id].trim() ? { apiKey: keys[p.id].trim() } : {}),
-          ...(p.needsBaseUrl ? { baseUrl: customBase.trim() || null } : {}),
-        },
-      },
+      providerId: p.id,
+      keySlots: keySlots[p.id],
+      ...(p.needsBaseUrl ? { baseUrl: customBase.trim() || null } : {}),
     });
   };
 
   const handleClear = (p: ProviderMeta) => {
     setPendingAction({ id: p.id, type: "clear" });
-    save.mutate({
-      organizationId: orgId,
-      providers: {
-        [p.id]: {
-          apiKey: null,
-          ...(p.needsBaseUrl ? { baseUrl: null } : {}),
-        },
-      },
-    });
+    clearProvider.mutate({ organizationId: orgId, providerId: p.id });
   };
 
-  const toggleShowKey = (id: ProviderId) => {
-    setShowKeys((prev) => ({ ...prev, [id]: !prev[id] }));
+  const moveRoute = (task: string, index: number, dir: -1 | 1) => {
+    setRouting((prev) => {
+      const list = [...(prev[task] ?? [])];
+      const j = index + dir;
+      if (j < 0 || j >= list.length) return prev;
+      [list[index], list[j]] = [list[j], list[index]];
+      return { ...prev, [task]: list };
+    });
   };
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 pb-10">
-      {/* Header section */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-0.5 text-xs font-medium text-primary">
@@ -267,24 +330,23 @@ export default function AiSettingsPage() {
             <span>Project AI</span>
           </div>
           <h1 className="text-2xl font-bold tracking-tight">AI Providers</h1>
-          <p className="mt-1 text-sm text-muted-foreground max-w-2xl">
-            Add API keys for the providers you want this organization to use. Models stay on server defaults — you only connect credentials here.
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Add up to {maxKeys} API keys per provider. On errors or rate limits the next key, then the next backup
+            provider, is tried automatically — candidates only see an error if every backup fails.
           </p>
         </div>
-
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs px-2.5 py-1">
-            <span className="font-semibold text-foreground mr-1">{configuredCount} / {PROVIDERS.length}</span>
-            <span className="text-muted-foreground">Active</span>
-          </Badge>
-        </div>
+        <Badge variant="outline" className="px-2.5 py-1 text-xs">
+          <span className="mr-1 font-semibold text-foreground">{configuredCount} / {PROVIDERS.length}</span>
+          <span className="text-muted-foreground">Active</span>
+        </Badge>
       </div>
 
-      {/* Bento Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {PROVIDERS.map((p) => {
           const row = byId[p.id];
-          const hasOrg = !!row?.apiKeyHint || (p.id === "custom" && !!row?.baseUrl);
+          const slots = keySlots[p.id] ?? [""];
+          const hints = row?.apiKeyHints ?? [];
+          const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
           const hasEnv = !!envFallback[p.id];
           const isCustom = p.id === "custom";
           const isCurrentSaving = pendingAction?.id === p.id && pendingAction.type === "save";
@@ -296,45 +358,37 @@ export default function AiSettingsPage() {
               key={p.id}
               className={cn(
                 "group relative flex flex-col justify-between rounded-2xl border bg-card/70 p-5 transition-all duration-200 hover:border-border/80 hover:shadow-sm",
-                isCustom && "md:col-span-2 bg-gradient-to-br from-card/80 to-muted/20"
+                isCustom && "bg-gradient-to-br from-card/80 to-muted/20 md:col-span-2",
               )}
             >
-              {/* Card Header */}
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <div
                     className={cn(
                       "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-transform duration-200 group-hover:scale-105",
-                      p.badgeContainer
+                      p.badgeContainer,
                     )}
                   >
                     <LogoComponent />
                   </div>
                   <div>
-                    <h2 className="text-base font-semibold tracking-tight text-foreground">
-                      {p.name}
-                    </h2>
-                    <p className="text-xs text-muted-foreground line-clamp-1">
-                      {p.hint}
-                    </p>
+                    <h2 className="text-base font-semibold tracking-tight text-foreground">{p.name}</h2>
+                    <p className="line-clamp-1 text-xs text-muted-foreground">{p.hint}</p>
                   </div>
                 </div>
-
-                {/* Status Badge */}
                 <div className="shrink-0">
-                  {(hasOrg || hasEnv) ? (
+                  {hasOrg || hasEnv ? (
                     <Badge
                       variant="outline"
-                      className="border-emerald-500/25 bg-emerald-500/10 text-[11px] font-medium text-emerald-600 dark:text-emerald-400 gap-1 py-0.5"
+                      className="gap-1 border-emerald-500/25 bg-emerald-500/10 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
                     >
                       <Check className="h-3 w-3" />
-                      <span>Connected</span>
+                      <span>
+                        {hasOrg ? `${row?.keyCount ?? 0} key${(row?.keyCount ?? 0) === 1 ? "" : "s"}` : "Env"}
+                      </span>
                     </Badge>
                   ) : (
-                    <Badge
-                      variant="secondary"
-                      className="text-[11px] font-normal text-muted-foreground py-0.5"
-                    >
+                    <Badge variant="secondary" className="py-0.5 text-[11px] font-normal text-muted-foreground">
                       Not configured
                     </Badge>
                   )}
@@ -353,134 +407,125 @@ export default function AiSettingsPage() {
                   <ExternalLink className="h-3 w-3" />
                 </Link>
               </p>
+              {row?.defaultModel && (
+                <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+                  Model on this provider:{" "}
+                  <span className="text-foreground/80">{row.defaultModel}</span>
+                </p>
+              )}
 
-              {/* Card Body / Inputs */}
-              <div className="mt-4 space-y-4">
-                {isCustom ? (
-                  // Custom Provider: Side-by-side inputs
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <Globe className="h-3 w-3 text-muted-foreground" />
-                        <Label className="text-xs font-medium text-muted-foreground">
-                          Base URL
-                        </Label>
-                      </div>
-                      <Input
-                        placeholder={p.basePlaceholder}
-                        value={customBase}
-                        onChange={(e) => setCustomBase(e.target.value)}
-                        disabled={!canEdit || save.isLoading}
-                        className="font-mono text-xs bg-background/80"
-                      />
+              <div className="mt-4 space-y-3">
+                {isCustom && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Globe className="h-3 w-3 text-muted-foreground" />
+                      <Label className="text-xs font-medium text-muted-foreground">Base URL</Label>
                     </div>
+                    <Input
+                      placeholder={p.basePlaceholder}
+                      value={customBase}
+                      onChange={(e) => setCustomBase(e.target.value)}
+                      disabled={!canEdit || busy}
+                      className="bg-background/80 font-mono text-xs"
+                    />
+                  </div>
+                )}
 
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <Key className="h-3 w-3 text-muted-foreground" />
-                          <Label className="text-xs font-medium text-muted-foreground">
-                            API Key (optional)
-                          </Label>
-                        </div>
-                        {row?.apiKeyHint && (
-                          <span className="text-[10px] text-muted-foreground font-mono">
-                            Saved ({row.apiKeyHint})
-                          </span>
-                        )}
-                      </div>
-                      <div className="relative">
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                    <Key className="h-3 w-3" />
+                    API keys (failover order · max {maxKeys})
+                  </Label>
+                  {slots.map((val, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span className="w-5 shrink-0 text-[10px] text-muted-foreground">#{i + 1}</span>
+                      <div className="relative min-w-0 flex-1">
                         <Input
                           type={showKeys[p.id] ? "text" : "password"}
                           autoComplete="off"
                           placeholder={
-                            row?.apiKeyHint
-                              ? `Saved (${row.apiKeyHint}) — leave blank to keep`
+                            hints[i]
+                              ? `Saved (${hints[i]}) — leave blank to keep`
                               : p.keyPlaceholder
                           }
-                          value={keys[p.id]}
-                          onChange={(e) => setKeys((k) => ({ ...k, [p.id]: e.target.value }))}
-                          disabled={!canEdit || save.isLoading}
-                          className="pr-9 font-mono text-xs bg-background/80"
+                          value={val}
+                          onChange={(e) =>
+                            setKeySlots((prev) => {
+                              const next = [...(prev[p.id] ?? [""])];
+                              next[i] = e.target.value;
+                              return { ...prev, [p.id]: next };
+                            })
+                          }
+                          disabled={!canEdit || busy}
+                          className="bg-background/80 pr-9 font-mono text-xs"
                         />
                         <button
                           type="button"
-                          onClick={() => toggleShowKey(p.id)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setShowKeys((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
                           tabIndex={-1}
-                          title={showKeys[p.id] ? "Hide API key" : "Show API key"}
                         >
                           {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                         </button>
                       </div>
-                    </div>
-                  </div>
-                ) : (
-                  // Standard Provider Input
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                        <Key className="h-3 w-3" />
-                        <span>API Key</span>
-                      </Label>
-                      {row?.apiKeyHint && (
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          Saved ({row.apiKeyHint})
-                        </span>
+                      {canEdit && slots.length > 1 && (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                          disabled={busy}
+                          onClick={() =>
+                            setKeySlots((prev) => ({
+                              ...prev,
+                              [p.id]: (prev[p.id] ?? []).filter((_, j) => j !== i),
+                            }))
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       )}
                     </div>
-                    <div className="relative">
-                      <Input
-                        type={showKeys[p.id] ? "text" : "password"}
-                        autoComplete="off"
-                        placeholder={
-                          row?.apiKeyHint
-                            ? `Saved (${row.apiKeyHint}) — leave blank to keep`
-                            : p.keyPlaceholder
-                        }
-                        value={keys[p.id]}
-                        onChange={(e) => setKeys((k) => ({ ...k, [p.id]: e.target.value }))}
-                        disabled={!canEdit || save.isLoading}
-                        className="pr-9 font-mono text-xs bg-background/80"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => toggleShowKey(p.id)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                        tabIndex={-1}
-                        title={showKeys[p.id] ? "Hide API key" : "Show API key"}
-                      >
-                        {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  ))}
+                  {canEdit && slots.length < maxKeys && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs"
+                      disabled={busy}
+                      onClick={() =>
+                        setKeySlots((prev) => ({
+                          ...prev,
+                          [p.id]: [...(prev[p.id] ?? []), ""],
+                        }))
+                      }
+                    >
+                      <Plus className="mr-1.5 h-3.5 w-3.5" />
+                      Add backup key
+                    </Button>
+                  )}
+                </div>
 
-                {/* Card Action Footer */}
                 {canEdit && (
-                  <div className="flex items-center justify-end gap-2 pt-1 border-t border-border/40">
+                  <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
                     {hasOrg && (
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={save.isLoading}
+                        disabled={busy}
                         onClick={() => handleClear(p)}
-                        className="h-8 text-xs text-muted-foreground hover:text-destructive transition-colors"
+                        className="h-8 text-xs text-muted-foreground transition-colors hover:text-destructive"
                       >
                         {isCurrentClearing ? (
                           <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                         )}
-                        Clear key
+                        Clear all
                       </Button>
                     )}
-                    <Button
-                      size="sm"
-                      disabled={save.isLoading}
-                      onClick={() => handleSave(p)}
-                      className="h-8 text-xs font-medium"
-                    >
+                    <Button size="sm" disabled={busy} onClick={() => handleSaveKeys(p)} className="h-8 text-xs font-medium">
                       {isCurrentSaving ? (
                         <>
                           <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
@@ -498,6 +543,97 @@ export default function AiSettingsPage() {
         })}
       </div>
 
+      {/* Task routing */}
+      <div className="rounded-2xl border bg-card/70 p-5">
+        <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold tracking-tight">Task priority &amp; backups</h2>
+            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+              Top of each list = primary provider. Lower entries are backups if the primary hits limits or errors.
+              Example: put Gemini first for screening, OpenAI first for heavy multi-level rounds.
+            </p>
+          </div>
+          {canEdit && (
+            <Button
+              size="sm"
+              className="h-8 text-xs"
+              disabled={busy}
+              onClick={() => {
+                setPendingAction({ id: "routing", type: "save" });
+                saveRouting.mutate({ organizationId: orgId, routing });
+              }}
+            >
+              {pendingAction?.id === "routing" && saveRouting.isLoading ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save routing"
+              )}
+            </Button>
+          )}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          {taskKinds.map((task) => {
+            const meta = TASK_LABELS[task] ?? { title: task, hint: "" };
+            const list = routing[task] ?? [];
+            return (
+              <div key={task} className="rounded-xl border bg-background/50 p-3">
+                <div className="mb-2">
+                  <div className="text-sm font-medium">{meta.title}</div>
+                  <div className="text-[11px] text-muted-foreground">{meta.hint}</div>
+                </div>
+                <ol className="space-y-1.5">
+                  {list.map((pid, index) => (
+                    <li
+                      key={`${task}-${pid}`}
+                      className="flex items-center gap-2 rounded-md border bg-card px-2 py-1.5 text-xs"
+                    >
+                      <span className="w-4 text-muted-foreground">{index + 1}.</span>
+                      <span className="min-w-0 flex-1 font-medium">
+                        {PROVIDER_SHORT[pid] ?? pid}
+                        {index === 0 ? (
+                          <span className="ml-1.5 text-[10px] font-normal text-emerald-600 dark:text-emerald-400">
+                            primary
+                          </span>
+                        ) : (
+                          <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">backup</span>
+                        )}
+                      </span>
+                      {canEdit && (
+                        <span className="flex shrink-0 gap-0.5">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            disabled={index === 0 || busy}
+                            onClick={() => moveRoute(task, index, -1)}
+                          >
+                            <ArrowUp className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            disabled={index === list.length - 1 || busy}
+                            onClick={() => moveRoute(task, index, 1)}
+                          >
+                            <ArrowDown className="h-3 w-3" />
+                          </Button>
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
