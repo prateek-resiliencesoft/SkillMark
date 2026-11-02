@@ -16,6 +16,7 @@ const NAV: { href: string; label: string; exact?: boolean }[] = [
   { href: "/admin/organizations", label: "Organizations" },
   { href: "/admin/people", label: "People" },
   { href: "/admin/activity", label: "Activity" },
+  { href: "/admin/server-logs", label: "Server Logs" },
 ];
 
 export function AdminShell({
