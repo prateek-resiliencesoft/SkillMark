@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { appBaseUrl } from "../batch-access";
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
+import { isPlatformAdmin } from "../tenant";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
 
 async function requireOrgRole(
@@ -14,6 +15,7 @@ async function requireOrgRole(
   userId: string,
   min: "VIEWER" | "ADMIN",
 ) {
+  if (await isPlatformAdmin(supabase, userId)) return;
   const membership = await getOrgMembership(supabase, organizationId, userId);
   if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
   assertMinRole(membership.role, min);

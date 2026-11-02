@@ -15,6 +15,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { formatLimit } from "@/lib/billing/catalog";
+import { FEATURE_FLAG_META } from "@/lib/platform-settings";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -61,6 +62,9 @@ export default function AdminOrganizationDetailPage() {
   const [seats, setSeats] = useState("");
   const [interviews, setInterviews] = useState("");
   const [projects, setProjects] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [orgSlug, setOrgSlug] = useState("");
+  const [flags, setFlags] = useState<Record<string, boolean>>({});
   const [pauseOpen, setPauseOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [removeMemberId, setRemoveMemberId] = useState<string | null>(null);
@@ -72,6 +76,16 @@ export default function AdminOrganizationDetailPage() {
     setSeats(limitInputValue(org.data.limits.seats));
     setInterviews(limitInputValue(org.data.limits.interviews));
     setProjects(limitInputValue(org.data.limits.projects));
+    setOrgName(org.data.name);
+    setOrgSlug(org.data.slug);
+    const ff = org.data.featureFlags as Record<string, unknown>;
+    setFlags({
+      aiSettings: ff.aiSettings !== false,
+      integrations: ff.integrations !== false,
+      voiceInterviews: ff.voiceInterviews !== false,
+      publicForms: ff.publicForms !== false,
+      usageDashboard: ff.usageDashboard !== false,
+    });
   }, [org.data]);
 
   const invalidate = () => {
@@ -176,6 +190,32 @@ export default function AdminOrganizationDetailPage() {
     onError: (err) =>
       toast({
         title: "Could not remove member",
+        description: err.message,
+        variant: "destructive",
+      }),
+  });
+
+  const updateOrg = trpc.platform.updateOrganization.useMutation({
+    onSuccess: () => {
+      toast({ title: "Organization details saved" });
+      invalidate();
+    },
+    onError: (err) =>
+      toast({
+        title: "Could not save details",
+        description: err.message,
+        variant: "destructive",
+      }),
+  });
+
+  const setFlagsMut = trpc.platform.setFeatureFlags.useMutation({
+    onSuccess: () => {
+      toast({ title: "Features updated" });
+      invalidate();
+    },
+    onError: (err) =>
+      toast({
+        title: "Could not update features",
         description: err.message,
         variant: "destructive",
       }),
@@ -294,6 +334,114 @@ export default function AdminOrganizationDetailPage() {
           </div>
         ))}
       </div>
+
+      {!removed ? (
+        <section className="space-y-4 rounded-xl border p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-medium">User-panel config</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Edit the same AI and messaging settings organizations manage in
+                the product.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/admin/organizations/${id}/ai`}>AI settings</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/admin/organizations/${id}/integrations`}>
+                  Integrations
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {!removed ? (
+        <section className="space-y-4 rounded-xl border p-5">
+          <div>
+            <h2 className="text-sm font-medium">Details</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Name and slug shown across the product.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5 text-xs">
+              <span className="text-muted-foreground">Name</span>
+              <Input value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+            </label>
+            <label className="space-y-1.5 text-xs">
+              <span className="text-muted-foreground">Slug</span>
+              <Input value={orgSlug} onChange={(e) => setOrgSlug(e.target.value)} />
+            </label>
+          </div>
+          <Button
+            size="sm"
+            disabled={updateOrg.isPending}
+            onClick={() =>
+              updateOrg.mutate({
+                id,
+                name: orgName.trim(),
+                slug: orgSlug.trim(),
+              })
+            }
+          >
+            Save details
+          </Button>
+        </section>
+      ) : null}
+
+      {!removed ? (
+        <section className="space-y-4 rounded-xl border p-5">
+          <div>
+            <h2 className="text-sm font-medium">Features</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Toggle product areas for this organization.
+            </p>
+          </div>
+          <ul className="space-y-3">
+            {FEATURE_FLAG_META.map((item) => (
+              <li key={item.key} className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border"
+                  checked={Boolean(flags[item.key])}
+                  onChange={(e) =>
+                    setFlags((prev) => ({
+                      ...prev,
+                      [item.key]: e.target.checked,
+                    }))
+                  }
+                />
+                <div>
+                  <p className="text-sm font-medium">{item.label}</p>
+                  <p className="text-xs text-muted-foreground">{item.hint}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <Button
+            size="sm"
+            disabled={setFlagsMut.isPending}
+            onClick={() =>
+              setFlagsMut.mutate({
+                id,
+                featureFlags: {
+                  aiSettings: Boolean(flags.aiSettings),
+                  integrations: Boolean(flags.integrations),
+                  voiceInterviews: Boolean(flags.voiceInterviews),
+                  publicForms: Boolean(flags.publicForms),
+                  usageDashboard: Boolean(flags.usageDashboard),
+                },
+              })
+            }
+          >
+            Save features
+          </Button>
+        </section>
+      ) : null}
 
       {!removed ? (
         <section className="space-y-4 rounded-xl border p-5">
