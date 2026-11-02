@@ -101,7 +101,7 @@ export async function extractCandidateProfile(
   options: { defaultCountryCode?: string; organizationId?: string | null } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
-  const { provider, generatorModel } = await resolveTaskModels(options.organizationId);
+  const { provider, generatorModel } = await resolveTaskModels(options.organizationId, "resume");
 
   const attempts: { provider: LLMProvider; model: string }[] = [
     { provider, model: generatorModel },

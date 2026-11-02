@@ -142,7 +142,7 @@ async function generateSummary(
       sessionMeta?.interview as { project?: { organizationId?: string } } | null
     )?.project?.organizationId;
 
-    const { provider, reportModel } = await resolveTaskModels(organizationId);
+    const { provider, reportModel } = await resolveTaskModels(organizationId, "report");
     const textMessages = allMessages
       .filter((m) => m.contentType === "TEXT")
       .map((m) => ({
