@@ -451,6 +451,7 @@ export default function InterviewsPage() {
     const rows = processedInterviews.map((iv) => ({
       Title: iv.title,
       Description: iv.description || "",
+      Source: iv.formSource ? `Form (${iv.formSource.name})` : "Manual",
       Channels: [
         iv.chatEnabled && "Chat",
         iv.voiceEnabled && "Voice",
@@ -941,7 +942,17 @@ export default function InterviewsPage() {
                     <span>&middot;</span>
                     <span>{formatDateShort(interview.createdAt)}</span>
                   </div>
-                  <div className="mt-3 flex items-center gap-2">
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {interview.formSource && (
+                      <Badge
+                        variant="outline"
+                        className="gap-1 border-transparent bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                        title={`Linked form: ${interview.formSource.name}`}
+                      >
+                        <FileText className="h-3 w-3" />
+                        From form
+                      </Badge>
+                    )}
                     {interview.publicSlug &&
                     interview.isActive &&
                     !interview.requireInvite ? (
@@ -1081,7 +1092,19 @@ export default function InterviewsPage() {
                       />
                     </TableCell>
                     <TableCell className="max-w-md">
-                      <div className="font-medium">{interview.title}</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-medium">{interview.title}</div>
+                        {interview.formSource && (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-transparent bg-sky-500/10 text-[10px] text-sky-700 dark:text-sky-300"
+                            title={`Linked form: ${interview.formSource.name}`}
+                          >
+                            <FileText className="h-3 w-3" />
+                            From form
+                          </Badge>
+                        )}
+                      </div>
                       {interview.description && (
                         <div className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
                           {interview.description}

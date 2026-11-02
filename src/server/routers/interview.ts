@@ -228,6 +228,26 @@ export const interviewRouter = router({
       const { data: raw } = await query;
       const rows = raw ?? [];
 
+      const pageIds = rows.slice(0, limit).map((i) => i.id as string);
+      const formByInterview = new Map<
+        string,
+        { id: string; name: string; publicId: string }
+      >();
+      if (pageIds.length) {
+        const { data: forms } = await ctx.supabase
+          .from("interview_forms")
+          .select("id, name, publicId, interviewId")
+          .in("interviewId", pageIds);
+        for (const f of forms ?? []) {
+          if (!f.interviewId || formByInterview.has(f.interviewId)) continue;
+          formByInterview.set(f.interviewId, {
+            id: f.id,
+            name: f.name,
+            publicId: f.publicId,
+          });
+        }
+      }
+
       const interviews = rows.slice(0, limit).map((i) => ({
         ...i,
         _count: {
@@ -237,6 +257,11 @@ export const interviewRouter = router({
         questions: undefined,
         sessions: undefined,
       }));
+      // Attach after map so tRPC keeps full interview row typing.
+      for (const iv of interviews) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (iv as any).formSource = formByInterview.get(iv.id) ?? null;
+      }
 
       let nextCursor: string | undefined;
       if (rows.length > limit) {
