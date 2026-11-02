@@ -249,8 +249,16 @@ export async function createApplication(opts: {
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candidate.id}/${kind}/${i}-${safeName(f.name)}`;
-      const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type });
-      if (error) throw new SubmissionError("STORAGE_ERROR", "Failed to store uploaded file", 500);
+      const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type || "application/octet-stream" });
+      if (error) {
+        throw new SubmissionError(
+          "STORAGE_ERROR",
+          error.message?.startsWith("S3 ")
+            ? error.message
+            : `Failed to store uploaded file: ${error.message || "unknown storage error"}`,
+          500,
+        );
+      }
       storedFiles[key].push({ name: f.name, size: f.bytes.length, type: f.type, path });
     }
   }
