@@ -1,6 +1,7 @@
 import { applyAntiCheatingViolation, countHeadViolations } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, clearSessionMediaStorage } from "@/lib/media-review";
+import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
@@ -235,6 +236,29 @@ export const sessionRouter = router({
       }
 
       const session = sessionJson as { id: string };
+
+      // Point session at candidate object prefix so form CVs + recordings share
+      // approve / decline / put-aside purge (B2/local under orgs/.../candidates/{id}/).
+      const projectId = interview.projectId as string | undefined;
+      if (projectId && candidate.id) {
+        const { data: project } = await ctx.supabase
+          .from("projects")
+          .select("organizationId")
+          .eq("id", projectId)
+          .maybeSingle();
+        if (project?.organizationId) {
+          const prefix = candidateMediaPrefix({
+            orgId: project.organizationId,
+            projectId,
+            candidateId: candidate.id as string,
+          });
+          await ctx.supabase
+            .from("sessions")
+            .update({ mediaStoragePrefix: prefix })
+            .eq("id", session.id);
+        }
+      }
+
       return { sessionId: session.id, interview, isExisting: false };
     }),
 

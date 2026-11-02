@@ -37,6 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Standalone tracing sometimes drops aws4fetch — copy explicitly for B2/S3 uploads.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/aws4fetch ./node_modules/aws4fetch
 
 USER nextjs
 EXPOSE 3000

@@ -128,8 +128,15 @@ async function s3Put(ok: string, body: Buffer, contentType?: string) {
     headers: contentType ? { "Content-Type": contentType } : undefined,
   });
   if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(t || `S3 upload failed: ${res.status}`);
+    const t = (await res.text().catch(() => "")).slice(0, 400);
+    // Surface B2/S3 codes clearly (e.g. InvalidAccessKeyId)
+    const code = t.match(/<Code>([^<]+)<\/Code>/)?.[1];
+    const msg = t.match(/<Message>([^<]+)<\/Message>/)?.[1];
+    throw new Error(
+      code || msg
+        ? `S3 upload failed (${res.status}): ${code ?? "error"}${msg ? ` — ${msg}` : ""}`
+        : t || `S3 upload failed: ${res.status}`,
+    );
   }
 }
 
