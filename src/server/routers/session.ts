@@ -1,4 +1,4 @@
-import { applyAntiCheatingViolation, countHeadViolations } from "@/lib/head-movement";
+import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, clearSessionMediaStorage } from "@/lib/media-review";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
@@ -8,6 +8,17 @@ import { redactSessionForCandidate } from "@/lib/session-redact";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
 
 const log = createLogger("router/session");
+
+/** Reject candidate writes once a session has been disqualified (server-enforced). */
+async function assertNotDisqualified(
+  supabase: { from: (t: string) => any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+  sessionId: string,
+) {
+  const { data } = await supabase.from("sessions").select("status").eq("id", sessionId).maybeSingle();
+  if (data?.status === "DISQUALIFIED") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "This interview has ended: the session was disqualified." });
+  }
+}
 
 export const sessionRouter = router({
   create: publicProcedure
@@ -317,6 +328,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select("id, status, startedAt, lastActivityAt, activitySegments, interviewId")
@@ -369,6 +381,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select("id")
@@ -430,6 +443,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       await ctx.supabase
         .from("messages")
         .delete()
@@ -450,6 +464,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select("id")
@@ -509,6 +524,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       await ctx.supabase
         .from("messages")
         .delete()
@@ -527,6 +543,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       await ctx.supabase
         .from("sessions")
         .update({
@@ -540,6 +557,7 @@ export const sessionRouter = router({
   complete: publicProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.id);
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select("id, startedAt")
@@ -605,8 +623,16 @@ export const sessionRouter = router({
       const prevLog = Array.isArray(session.antiCheatingLog) ? session.antiCheatingLog : [];
 
       if (session.status === "DISQUALIFIED") {
-        return { success: true, headViolations: countHeadViolations(prevLog), disqualified: true };
+        const strikes = countStrikes(prevLog);
+        return { success: true, strikes, headViolations: strikes, disqualified: true };
       }
+      // Anti-cheating must be on for violations to count toward disqualification.
+      const { data: ivAc } = await ctx.supabase
+        .from("interviews")
+        .select("antiCheatingEnabled")
+        .eq("id", session.interviewId)
+        .single();
+      const antiCheatingOn = !!ivAc?.antiCheatingEnabled;
 
       let headDetectionOn = false;
       if (input.violation.type === "head_movement") {
@@ -622,9 +648,11 @@ export const sessionRouter = router({
       }
 
       const result = applyAntiCheatingViolation(prevLog, input.violation);
+      const disqualify = antiCheatingOn && result.disqualify;
+      const log = disqualify ? result.log : result.log.filter((v) => (v as { type?: string }).type !== "disqualified");
 
-      const update: Record<string, unknown> = { antiCheatingLog: result.log };
-      if (result.disqualify) {
+      const update: Record<string, unknown> = { antiCheatingLog: log };
+      if (disqualify) {
         update.status = "DISQUALIFIED";
         update.completedAt = new Date().toISOString();
       }
@@ -634,7 +662,8 @@ export const sessionRouter = router({
         .update(update)
         .eq("id", input.sessionId);
 
-      return { success: true, headViolations: result.headViolations, disqualified: result.disqualify };
+      // headViolations kept for older clients; it now carries the shared strike count.
+      return { success: true, strikes: result.strikes, headViolations: result.strikes, disqualified: disqualify };
     }),
 
   listAll: protectedProcedure
@@ -789,6 +818,7 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertNotDisqualified(ctx.supabase, input.sessionId);
       const updateData: Record<string, unknown> = {};
       if (input.audioRecordingUrl) {
         updateData.audioRecordingUrl = input.audioRecordingUrl;

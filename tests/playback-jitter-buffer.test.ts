@@ -27,7 +27,7 @@ test("playback queue flushes when low-water playback has enough buffered audio",
   );
 });
 
-test("playback queue waits for more audio when enough playback is already buffered", () => {
+test("playback queue appends immediately while audio is already playing (no gaps)", () => {
   const queuedSamples = Math.ceil((PLAYBACK_SAMPLE_RATE * 80) / 1000);
   assert.equal(
     shouldFlushPlaybackQueue({
@@ -36,6 +36,14 @@ test("playback queue waits for more audio when enough playback is already buffer
       firstChunkQueuedAtMs: 1000,
       nowMs: 1080,
     }),
+    true,
+  );
+});
+
+test("cold start waits for a small cushion before playing", () => {
+  const queuedSamples = Math.ceil((PLAYBACK_SAMPLE_RATE * 80) / 1000);
+  assert.equal(
+    shouldFlushPlaybackQueue({ queuedSamples, bufferedAheadMs: 0, firstChunkQueuedAtMs: 1000, nowMs: 1080 }),
     false,
   );
 });
