@@ -9,6 +9,7 @@ import {
   type HeadFrameState,
 } from "@/lib/head-movement";
 import type { FaceLandmarker, FaceLandmarkerResult } from "@mediapipe/tasks-vision";
+import { detectionsSuppressed, suppressDetections } from "@/lib/anti-cheating-state";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const MP_VERSION = "1.2.0";
@@ -65,6 +66,7 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
     (async () => {
       setStatus("loading");
       try {
+        suppressDetections(15_000); // camera permission prompt steals focus
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
           audio: false,
@@ -100,6 +102,10 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
           if (!landmarker || video.readyState < 2) return;
           if (document.hidden) return; // tab departures are handled by the main anti-cheating guard
           if (pausedRef.current) return; // warning modal open: no stacking / extra counts
+          if (detectionsSuppressed()) {
+            monitor.reset(Date.now() + 3000);
+            return;
+          }
           const now = performance.now();
           let res: FaceLandmarkerResult;
           try {

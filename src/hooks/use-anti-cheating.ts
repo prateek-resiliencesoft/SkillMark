@@ -1,6 +1,9 @@
 "use client";
 
+import { detectionsSuppressed } from "@/lib/anti-cheating-state";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+const DEPARTURE_MIN_MS = 1000;
 
 export interface AntiCheatingViolation {
   type: "page_departure" | "paste" | "multi_screen";
@@ -37,40 +40,45 @@ export function useAntiCheating({
   useEffect(() => {
     if (!enabled) return;
 
-    let blurTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const recordDeparture = () => {
-      setDepartureCount((prev) => prev + 1);
-      addViolation({
-        type: "page_departure",
-        timestamp: Date.now(),
-      });
+    // Debounced departures: only count if the page stays hidden / unfocused
+    // for >= DEPARTURE_MIN_MS (ignores quick blurs, permission bubbles,
+    // fullscreen toggles), never while our own modals are open, and merge a
+    // blur + visibility pair into one departure.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastRecorded = 0;
+    const cancel = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+    };
+    const schedule = (detail: string) => {
+      if (timer || detectionsSuppressed()) return;
+      timer = setTimeout(() => {
+        timer = null;
+        const stillAway = document.hidden || !document.hasFocus();
+        if (!stillAway || detectionsSuppressed()) return;
+        const now = Date.now();
+        if (now - lastRecorded < 3000) return;
+        lastRecorded = now;
+        setDepartureCount((prev) => prev + 1);
+        addViolation({ type: "page_departure", timestamp: now, detail });
+      }, DEPARTURE_MIN_MS);
     };
 
     const handleVisibilityChange = () => {
-      if (document.hidden) {
-        if (blurTimer) {
-          clearTimeout(blurTimer);
-          blurTimer = null;
-        }
-        recordDeparture();
-      }
+      if (document.hidden) schedule("Tab hidden / switched away");
+      else cancel();
     };
-
-    const handleBlur = () => {
-      blurTimer = setTimeout(() => {
-        blurTimer = null;
-        recordDeparture();
-      }, 200);
-    };
+    const handleBlur = () => schedule("Interview window lost focus");
+    const handleFocus = () => cancel();
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
 
     return () => {
-      if (blurTimer) clearTimeout(blurTimer);
+      cancel();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
     };
   }, [enabled, addViolation]);
 

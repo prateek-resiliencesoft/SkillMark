@@ -4,9 +4,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useHeadMovementDetection } from "@/hooks/use-head-movement-detection";
 import {
   HEAD_STATE_LABEL,
-  MAX_HEAD_VIOLATIONS,
+  MAX_STRIKES,
   type HeadFrameState,
 } from "@/lib/head-movement";
+import { detectionsSuppressed, markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -41,7 +42,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
   const handle = useCallback(
     (kind: Exclude<HeadFrameState, "ok">) => {
       // One modal at a time: ignore anything detected while a warning is pending/open.
-      if (done.current || !sessionId || openRef.current) return;
+      if (done.current || !sessionId || openRef.current || detectionsSuppressed()) return;
       openRef.current = true;
       setModal({ phase: "checking", reason: HEAD_STATE_LABEL[kind] });
       busy.current = busy.current.then(async () => {
@@ -70,14 +71,15 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
         }
 
         let count = localCount.current;
-        let disqualified = count >= MAX_HEAD_VIOLATIONS;
+        let disqualified = count >= MAX_STRIKES;
         try {
           const res = await reportRef.current.mutateAsync({
             sessionId,
             violation: { type: "head_movement", timestamp, detail: HEAD_STATE_LABEL[kind], imageUrl, imagePath },
           });
-          if (typeof res.headViolations === "number") {
-            count = res.headViolations;
+          const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;
+          if (typeof strikes === "number") {
+            count = strikes;
             localCount.current = count;
           }
           disqualified = !!res.disqualified;
@@ -103,6 +105,15 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
     graceMs: GRACE_MS,
   });
   captureRef.current = captureSnapshot;
+
+  useEffect(() => {
+    if (!modal) return;
+    markModalOpen(true);
+    return () => markModalOpen(false);
+  }, [modal]);
+  useEffect(() => {
+    if (modal?.phase === "final") markInterviewEnded();
+  }, [modal]);
 
   // Modal is not dismissable by Esc / keyboard shortcuts of the interview UI.
   useEffect(() => {
@@ -131,7 +142,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
 
   if (!enabled) return null;
 
-  const warnings = MAX_HEAD_VIOLATIONS - 1;
+  const warnings = MAX_STRIKES - 1;
   const isFinal = modal?.phase === "final";
 
   return (
@@ -158,7 +169,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
               )}
             </div>
             <h2 id="hm-title" className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">
-              {isFinal ? "Interview ended" : "You looked away from the screen"}
+              {isFinal ? "Interview ended — disqualified" : "You looked away from the screen"}
             </h2>
             {modal.phase === "warning" && (
               <p className="mt-2 inline-block rounded-full bg-red-100 px-3 py-1 text-sm font-semibold text-red-700 dark:bg-red-950/60 dark:text-red-300">
@@ -167,7 +178,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
             )}
             <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
               {isFinal
-                ? `You were disqualified after ${MAX_HEAD_VIOLATIONS} head-movement violations (last: ${modal.reason.toLowerCase()}). Your interview has ended.`
+                ? `You were disqualified after ${MAX_STRIKES} anti-cheating violations (last: ${modal.reason.toLowerCase()}). Your interview has ended and cannot be resumed.`
                 : `Detected: ${modal.reason.toLowerCase()}. A snapshot was recorded.`}
             </p>
             {!isFinal && (
@@ -176,7 +187,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
                 <li>• Look at the screen while answering; don&apos;t turn away or look down for long.</li>
                 <li>• Make sure no one else is in view and your room is well lit.</li>
                 <li className="font-medium text-red-600 dark:text-red-400">
-                  • Violation {MAX_HEAD_VIOLATIONS} will disqualify you and end the interview.
+                  • Violation {MAX_STRIKES} will disqualify you and end the interview.
                 </li>
               </ul>
             )}
@@ -202,9 +213,10 @@ export function DisqualifiedScreen() {
       <Card className="w-full max-w-md">
         <CardContent className="py-12 text-center">
           <Ban className="mx-auto h-16 w-16 text-red-600" />
-          <h2 className="mt-4 text-2xl font-bold">Interview ended</h2>
+          <h2 className="mt-4 text-2xl font-bold">Interview ended — disqualified</h2>
           <p className="mt-2 text-muted-foreground">
-            Interview ended: disqualified for repeated head-movement violations.
+            Interview ended — disqualified after repeated anti-cheating violations
+            (leaving the page, looking away, or similar). This session cannot be resumed.
           </p>
         </CardContent>
       </Card>

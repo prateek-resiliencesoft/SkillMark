@@ -75,6 +75,8 @@ async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: stri
 const MIN_AUDIO_RMS = 160;
 const CONTINUATION_AUDIO_RMS = 100;
 const TTS_BARGE_IN_RMS = 2400;
+// Client jitter buffer adds ~150-250ms; room echo decays after that.
+const ECHO_TAIL_MS = 700;
 const TTS_BARGE_IN_FRAME_COUNT = 3;
 
 // Whisper commonly hallucinates these phrases on silence / low-energy audio.
@@ -390,6 +392,8 @@ When transitioning to a CODING or WHITEBOARD question:
 - Do NOT proactively speak when you receive an update — only reference the content when the participant addresses you.
 
 ## Important Rules
+- TURN-TAKING: Ask ONE question (or one follow-up), then STOP talking and wait silently for the participant to answer. Never answer your own question, never guess what they would say, and never keep talking after a question.
+- Only respond after the participant has finished speaking. If they pause briefly mid-answer, keep waiting. Base your reply on what they actually said.
 - You MUST use the signal_question_change function to transition between questions. NEVER verbally say "let's move on" without also calling the function — the UI only updates when the function is called.
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
@@ -490,11 +494,18 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
           thinkingConfig: { thinkingLevel: "MINIMAL" },
         },
         realtimeInputConfig: {
+          // Let the candidate finish: low end-of-speech sensitivity + ~1.2s of
+          // silence before Gemini treats the turn as over; low start sensitivity
+          // so breaths/room noise don't open a turn.
           automaticActivityDetection: {
             disabled: false,
-            prefixPaddingMs: 200,
-            silenceDurationMs: 700,
+            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+            prefixPaddingMs: 300,
+            silenceDurationMs: 1200,
           },
+          // The interviewer's own voice (speaker echo) must never cut it off.
+          activityHandling: "NO_INTERRUPTION",
         },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
@@ -925,10 +936,11 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
         const pcm = Buffer.from(msg.data as string, "hex");
         // Echo guard: while the browser is still playing our audio, only pass
         // loud speech through (barge-in). Gemini's own VAD handles the rest.
-        const speaking = Date.now() < playbackEndsAt + 300;
-        if (speaking && pcmRms(pcm) < TTS_BARGE_IN_RMS) {
-          return;
-        }
+        // Half-duplex: while the browser is still playing the interviewer's
+        // audio (plus a tail for speaker echo), drop mic audio entirely so
+        // Gemini never hears itself and can't "answer itself".
+        const speaking = Date.now() < playbackEndsAt + ECHO_TAIL_MS;
+        if (speaking) return;
         gemSend({ realtimeInput: { audio: { data: pcm.toString("base64"), mimeType: "audio/pcm;rate=16000" } } });
       } else if (msg.type === "text_input" && msg.content) {
         const text = String(msg.content).trim();
