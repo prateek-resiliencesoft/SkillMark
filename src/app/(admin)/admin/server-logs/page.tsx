@@ -140,7 +140,7 @@ export default function AdminServerLogsPage() {
     {
       staleTime: Math.min(refreshMs || 15_000, 15_000),
       refetchInterval: refreshMs > 0 ? refreshMs : false,
-      placeholderData: (prev) => prev,
+      keepPreviousData: true,
     },
   );
 
