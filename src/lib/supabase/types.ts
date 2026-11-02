@@ -50,12 +50,19 @@ export type Database = {
         };
         Relationships: [];
       };
-      workspaces: {
+      organizations: {
         Row: {
           id: string;
           name: string;
           slug: string;
           ownerId: string;
+          status: Database["public"]["Enums"]["OrgStatus"];
+          plan: Database["public"]["Enums"]["OrgPlan"];
+          limits: Json;
+          featureFlags: Json;
+          stripeCustomerId: string | null;
+          stripeSubscriptionId: string | null;
+          billingEmail: string | null;
           createdAt: string;
           updatedAt: string;
         };
@@ -64,6 +71,13 @@ export type Database = {
           name: string;
           slug: string;
           ownerId: string;
+          status?: Database["public"]["Enums"]["OrgStatus"];
+          plan?: Database["public"]["Enums"]["OrgPlan"];
+          limits?: Json;
+          featureFlags?: Json;
+          stripeCustomerId?: string | null;
+          stripeSubscriptionId?: string | null;
+          billingEmail?: string | null;
           createdAt?: string;
           updatedAt?: string;
         };
@@ -72,29 +86,36 @@ export type Database = {
           name?: string;
           slug?: string;
           ownerId?: string;
+          status?: Database["public"]["Enums"]["OrgStatus"];
+          plan?: Database["public"]["Enums"]["OrgPlan"];
+          limits?: Json;
+          featureFlags?: Json;
+          stripeCustomerId?: string | null;
+          stripeSubscriptionId?: string | null;
+          billingEmail?: string | null;
           createdAt?: string;
           updatedAt?: string;
         };
         Relationships: [];
       };
-      workspace_members: {
+      organization_members: {
         Row: {
           id: string;
-          workspaceId: string;
+          organizationId: string;
           userId: string;
           role: Database["public"]["Enums"]["MemberRole"];
           joinedAt: string;
         };
         Insert: {
           id?: string;
-          workspaceId: string;
+          organizationId: string;
           userId: string;
           role?: Database["public"]["Enums"]["MemberRole"];
           joinedAt?: string;
         };
         Update: {
           id?: string;
-          workspaceId?: string;
+          organizationId?: string;
           userId?: string;
           role?: Database["public"]["Enums"]["MemberRole"];
           joinedAt?: string;
@@ -111,7 +132,7 @@ export type Database = {
           mode: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch: boolean;
           userId: string;
-          workspaceId: string | null;
+          projectId: string | null;
           aiPersona: string | null;
           aiName: string;
           aiTone: Database["public"]["Enums"]["ToneLevel"];
@@ -140,7 +161,7 @@ export type Database = {
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;
           userId: string;
-          workspaceId?: string | null;
+          projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
@@ -169,7 +190,7 @@ export type Database = {
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;
           userId?: string;
-          workspaceId?: string | null;
+          projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
@@ -533,6 +554,8 @@ export type Database = {
     Enums: {
       UserRole: "USER" | "ADMIN" | "ENTERPRISE";
       MemberRole: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
+      OrgStatus: "ACTIVE" | "SUSPENDED" | "DELETED";
+      OrgPlan: "FREE" | "PRO" | "ENTERPRISE" | "SELF_HOSTED";
       InterviewMode: "CHAT" | "VOICE" | "HYBRID";
       ToneLevel: "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY";
       FollowUpDepth: "LIGHT" | "MODERATE" | "DEEP";

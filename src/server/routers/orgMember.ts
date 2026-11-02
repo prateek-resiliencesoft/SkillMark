@@ -1,10 +1,23 @@
-import { z } from "zod";
-import { router, protectedProcedure } from "../trpc";
+import { nanoid } from "@/lib/id";
 import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { appBaseUrl } from "../batch-access";
+import { deliverEmail, loadDeliveryConfig } from "../invite-delivery";
+import { assertQuota } from "../quotas";
+import { requireOrgAccess } from "../tenant";
 import {
-  getOrgMembership,
   assertMinRole,
+  getOrgMembership,
+  protectedProcedure,
+  publicProcedure,
+  router,
 } from "../trpc";
+
+const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
 
 /**
  * Lazily populate project_members for all org members the first time
@@ -25,7 +38,7 @@ async function ensureProjectMembersPopulated(
   const { data: orgMembers } = await supabase
     .from("organization_members")
     .select("userId, role")
-    .eq("workspaceId", organizationId);
+    .eq("organizationId", organizationId);
 
   if (!orgMembers || orgMembers.length === 0) return;
 
@@ -54,7 +67,7 @@ export const orgMemberRouter = router({
       const { data: members } = await ctx.supabase
         .from("organization_members")
         .select("id, userId, role, joinedAt")
-        .eq("workspaceId", input.organizationId)
+        .eq("organizationId", input.organizationId)
         .order("joinedAt", { ascending: true });
 
       const rows = members ?? [];
@@ -84,6 +97,11 @@ export const orgMemberRouter = router({
       }));
     }),
 
+  /**
+   * Create a pending invite. Works for people who do not have an account yet.
+   * If email delivery is configured for the org, a message is sent; otherwise
+   * the invite link is returned for the admin to share.
+   */
   invite: protectedProcedure
     .input(
       z.object({
@@ -93,60 +111,361 @@ export const orgMemberRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const membership = await getOrgMembership(
+      await requireOrgAccess(
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { minRole: "ADMIN", requireActive: true },
       );
-      if (!membership) {
-        throw new TRPCError({ code: "FORBIDDEN" });
+
+      if (input.role === "ADMIN") {
+        const caller = await getOrgMembership(
+          ctx.supabase,
+          input.organizationId,
+          ctx.user.id,
+        );
+        if (caller?.role !== "OWNER") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Only the owner can invite someone as Admin",
+          });
+        }
       }
-      assertMinRole(membership.role, "ADMIN");
+
+      const email = normalizeEmail(input.email);
+
+      const { data: existingProfile } = await ctx.supabase
+        .from("profiles")
+        .select("id")
+        .ilike("email", email)
+        .maybeSingle();
+
+      if (existingProfile) {
+        const already = await getOrgMembership(
+          ctx.supabase,
+          input.organizationId,
+          existingProfile.id,
+        );
+        if (already) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "That person is already in this organization",
+          });
+        }
+      }
+
+      const { data: pending } = await ctx.supabase
+        .from("organization_invites")
+        .select("id")
+        .eq("organizationId", input.organizationId)
+        .eq("status", "PENDING")
+        .ilike("email", email)
+        .maybeSingle();
+
+      if (pending) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "An invite is already waiting for that email",
+        });
+      }
+
+      await assertQuota(ctx.supabase, input.organizationId, "seats", 1);
+
+      const token = nanoid(24);
+      const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+
+      const { data: invite, error } = await ctx.supabase
+        .from("organization_invites")
+        .insert({
+          organizationId: input.organizationId,
+          email,
+          role: input.role,
+          token,
+          invitedBy: ctx.user.id,
+          status: "PENDING",
+          expiresAt,
+        })
+        .select("id, email, role, token, expiresAt, status, createdAt")
+        .single();
+
+      if (error || !invite) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not create the invite",
+        });
+      }
+
+      const inviteUrl = `${appBaseUrl()}/invite/${token}`;
+      let emailStatus: "sent" | "skipped" | "failed" = "skipped";
+
+      try {
+        const { data: org } = await ctx.supabase
+          .from("organizations")
+          .select("name")
+          .eq("id", input.organizationId)
+          .maybeSingle();
+        const cfg = await loadDeliveryConfig(ctx.supabase, input.organizationId);
+        const result = await deliverEmail(
+          {
+            ...cfg,
+            templates: {
+              emailSubject: `You're invited to join {{organization}} on Skillmark`,
+              emailBody:
+                "Hi,\n\n{{organization}} invited you to collaborate on Skillmark.\n\nOpen this link to join: {{link}}\n\nThis invite expires in 14 days.",
+              whatsappBody: "",
+            },
+          },
+          email,
+          {
+            name: email.split("@")[0] || "there",
+            interviewTitle: "",
+            organization: (org?.name as string) || cfg.organizationName,
+            link: inviteUrl,
+            duration: "",
+            batchName: "",
+          },
+          `org-invite-${invite.id}`,
+        );
+        emailStatus = result.status === "sent" ? "sent" : result.status === "failed" ? "failed" : "skipped";
+      } catch {
+        emailStatus = "failed";
+      }
+
+      return {
+        id: invite.id as string,
+        email: invite.email as string,
+        role: invite.role as string,
+        expiresAt: invite.expiresAt as string,
+        status: invite.status as string,
+        inviteUrl,
+        emailStatus,
+      };
+    }),
+
+  listInvites: protectedProcedure
+    .input(z.object({ organizationId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      await requireOrgAccess(
+        ctx.supabase,
+        input.organizationId,
+        ctx.user.id,
+        { minRole: "ADMIN" },
+      );
+
+      const { data } = await ctx.supabase
+        .from("organization_invites")
+        .select("id, email, role, status, expiresAt, createdAt, token")
+        .eq("organizationId", input.organizationId)
+        .eq("status", "PENDING")
+        .order("createdAt", { ascending: false });
+
+      const now = Date.now();
+      return (data ?? []).map((row) => {
+        const expired = new Date(row.expiresAt as string).getTime() < now;
+        return {
+          id: row.id as string,
+          email: row.email as string,
+          role: row.role as string,
+          status: expired ? "EXPIRED" : (row.status as string),
+          expiresAt: row.expiresAt as string,
+          createdAt: row.createdAt as string,
+          inviteUrl: `${appBaseUrl()}/invite/${row.token as string}`,
+        };
+      });
+    }),
+
+  revokeInvite: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        inviteId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgAccess(
+        ctx.supabase,
+        input.organizationId,
+        ctx.user.id,
+        { minRole: "ADMIN", requireActive: true },
+      );
+
+      const { data, error } = await ctx.supabase
+        .from("organization_invites")
+        .update({ status: "REVOKED" })
+        .eq("id", input.inviteId)
+        .eq("organizationId", input.organizationId)
+        .eq("status", "PENDING")
+        .select("id")
+        .maybeSingle();
+
+      if (error || !data) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invite not found",
+        });
+      }
+      return { success: true };
+    }),
+
+  /** Public preview of an invite link (no auth). */
+  getInvite: publicProcedure
+    .input(z.object({ token: z.string().min(8).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const { data: invite } = await ctx.supabase
+        .from("organization_invites")
+        .select(
+          "id, email, role, status, expiresAt, organizationId, organization:organizations(id, name, slug, status)",
+        )
+        .eq("token", input.token)
+        .maybeSingle();
+
+      if (!invite) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "This invite link is not valid",
+        });
+      }
+
+      const orgRaw = invite.organization as unknown;
+      const org = (
+        Array.isArray(orgRaw) ? orgRaw[0] : orgRaw
+      ) as {
+        id: string;
+        name: string;
+        slug: string;
+        status: string;
+      } | null;
+
+      const expired =
+        invite.status !== "PENDING" ||
+        new Date(invite.expiresAt as string).getTime() < Date.now() ||
+        org?.status === "DELETED";
+
+      return {
+        email: invite.email as string,
+        role: invite.role as string,
+        status: expired
+          ? invite.status === "PENDING"
+            ? "EXPIRED"
+            : (invite.status as string)
+          : "PENDING",
+        expiresAt: invite.expiresAt as string,
+        organization: org
+          ? {
+              id: org.id,
+              name: org.name,
+              slug: org.slug,
+              paused: org.status === "SUSPENDED",
+            }
+          : null,
+      };
+    }),
+
+  acceptInvite: protectedProcedure
+    .input(z.object({ token: z.string().min(8).max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: invite } = await ctx.supabase
+        .from("organization_invites")
+        .select(
+          "id, email, role, status, expiresAt, organizationId",
+        )
+        .eq("token", input.token)
+        .maybeSingle();
+
+      if (!invite || invite.status !== "PENDING") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "This invite is no longer available",
+        });
+      }
+
+      if (new Date(invite.expiresAt as string).getTime() < Date.now()) {
+        await ctx.supabase
+          .from("organization_invites")
+          .update({ status: "EXPIRED" })
+          .eq("id", invite.id);
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "This invite has expired. Ask your admin for a new one.",
+        });
+      }
 
       const { data: profile } = await ctx.supabase
         .from("profiles")
-        .select("id")
-        .eq("email", input.email)
-        .single();
+        .select("email")
+        .eq("id", ctx.user.id)
+        .maybeSingle();
 
-      if (!profile) {
+      const userEmail = normalizeEmail(
+        (profile?.email as string) || ctx.user.email || "",
+      );
+      if (!userEmail || userEmail !== normalizeEmail(invite.email as string)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `Sign in as ${invite.email} to accept this invite`,
+        });
+      }
+
+      const { data: org } = await ctx.supabase
+        .from("organizations")
+        .select("id, status")
+        .eq("id", invite.organizationId)
+        .maybeSingle();
+
+      if (!org || org.status === "DELETED") {
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "No user found with that email. They must sign up first.",
+          message: "This organization is no longer available",
+        });
+      }
+      if (org.status === "SUSPENDED") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "This organization is paused. Ask the owner to resume it first.",
         });
       }
 
-      // Check not already a member
       const existing = await getOrgMembership(
         ctx.supabase,
-        input.organizationId,
-        profile.id,
+        invite.organizationId as string,
+        ctx.user.id,
       );
-      if (existing) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "User is already a member of this organization",
-        });
+      if (!existing) {
+        await assertQuota(
+          ctx.supabase,
+          invite.organizationId as string,
+          "seats",
+          1,
+        );
+        const { error: memberErr } = await ctx.supabase
+          .from("organization_members")
+          .insert({
+            organizationId: invite.organizationId,
+            userId: ctx.user.id,
+            role: invite.role,
+          });
+        if (memberErr) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Could not join the organization",
+          });
+        }
       }
 
-      const { data: member, error } = await ctx.supabase
-        .from("organization_members")
-        .insert({
-          workspaceId: input.organizationId,
-          userId: profile.id,
-          role: input.role,
+      await ctx.supabase
+        .from("organization_invites")
+        .update({
+          status: "ACCEPTED",
+          acceptedAt: new Date().toISOString(),
+          acceptedBy: ctx.user.id,
         })
-        .select()
-        .single();
+        .eq("id", invite.id);
 
-      if (error) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error.message,
-        });
-      }
-
-      return member;
+      return {
+        organizationId: invite.organizationId as string,
+        role: invite.role as string,
+      };
     }),
 
   updateRole: protectedProcedure
@@ -199,7 +518,7 @@ export const orgMemberRouter = router({
       const { error } = await ctx.supabase
         .from("organization_members")
         .update({ role: input.role })
-        .eq("workspaceId", input.organizationId)
+        .eq("organizationId", input.organizationId)
         .eq("userId", input.userId);
 
       if (error) {
@@ -249,7 +568,7 @@ export const orgMemberRouter = router({
       await ctx.supabase
         .from("organization_members")
         .delete()
-        .eq("workspaceId", input.organizationId)
+        .eq("organizationId", input.organizationId)
         .eq("userId", input.userId);
 
       return { success: true };
@@ -470,7 +789,7 @@ export const orgMemberRouter = router({
       await ctx.supabase
         .from("organization_members")
         .delete()
-        .eq("workspaceId", input.organizationId)
+        .eq("organizationId", input.organizationId)
         .eq("userId", ctx.user.id);
 
       return { success: true };

@@ -99,6 +99,9 @@ export const projectRouter = router({
       }
       assertMinRole(membership.role, "ADMIN");
 
+      const { assertQuota } = await import("../quotas");
+      await assertQuota(ctx.supabase, input.organizationId, "projects", 1);
+
       const { data: project, error } = await ctx.supabase
         .from("projects")
         .insert({

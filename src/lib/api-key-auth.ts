@@ -73,20 +73,20 @@ export async function validateApiKey(
   if (organizationId) {
     const { data: member } = await supabaseAdmin
       .from("organization_members")
-      .select("workspaceId")
+      .select("organizationId")
       .eq("userId", userId)
-      .eq("workspaceId", organizationId)
+      .eq("organizationId", organizationId)
       .maybeSingle();
     if (!member) organizationId = null;
   } else {
     const { data: membership } = await supabaseAdmin
       .from("organization_members")
-      .select("workspaceId")
+      .select("organizationId")
       .eq("userId", userId)
-      .order("workspaceId")
+      .order("organizationId")
       .limit(1)
       .maybeSingle();
-    organizationId = (membership?.workspaceId as string | undefined) ?? null;
+    organizationId = (membership?.organizationId as string | undefined) ?? null;
   }
 
   if (!organizationId) {
