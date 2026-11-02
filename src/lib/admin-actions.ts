@@ -10,6 +10,11 @@ const LABELS: Record<string, string> = {
   "org.member.set_role": "Changed a member role",
   "org.member.remove": "Removed a member",
   "user.set_platform_role": "Changed platform access",
+  "org.update": "Updated organization details",
+  "org.set_flags": "Updated organization features",
+  "config.instance": "Updated instance settings",
+  "config.plan_limits": "Updated plan limits",
+  "config.feature_flags": "Updated default features",
 };
 
 export function adminActionLabel(action: string): string {

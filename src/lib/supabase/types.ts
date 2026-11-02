@@ -98,6 +98,99 @@ export type Database = {
         };
         Relationships: [];
       };
+      platform_settings: {
+        Row: {
+          key: string;
+          value: Json;
+          updatedAt: string;
+          updatedBy: string | null;
+        };
+        Insert: {
+          key: string;
+          value?: Json;
+          updatedAt?: string;
+          updatedBy?: string | null;
+        };
+        Update: {
+          key?: string;
+          value?: Json;
+          updatedAt?: string;
+          updatedBy?: string | null;
+        };
+        Relationships: [];
+      };
+      platform_audit_logs: {
+        Row: {
+          id: string;
+          actorId: string | null;
+          action: string;
+          targetType: string;
+          targetId: string | null;
+          meta: Json;
+          createdAt: string;
+        };
+        Insert: {
+          id?: string;
+          actorId?: string | null;
+          action: string;
+          targetType: string;
+          targetId?: string | null;
+          meta?: Json;
+          createdAt?: string;
+        };
+        Update: {
+          id?: string;
+          actorId?: string | null;
+          action?: string;
+          targetType?: string;
+          targetId?: string | null;
+          meta?: Json;
+          createdAt?: string;
+        };
+        Relationships: [];
+      };
+      organization_invites: {
+        Row: {
+          id: string;
+          organizationId: string;
+          email: string;
+          role: Database["public"]["Enums"]["MemberRole"];
+          token: string;
+          invitedBy: string | null;
+          status: string;
+          expiresAt: string;
+          acceptedAt: string | null;
+          acceptedBy: string | null;
+          createdAt: string;
+        };
+        Insert: {
+          id?: string;
+          organizationId: string;
+          email: string;
+          role?: Database["public"]["Enums"]["MemberRole"];
+          token: string;
+          invitedBy?: string | null;
+          status?: string;
+          expiresAt: string;
+          acceptedAt?: string | null;
+          acceptedBy?: string | null;
+          createdAt?: string;
+        };
+        Update: {
+          id?: string;
+          organizationId?: string;
+          email?: string;
+          role?: Database["public"]["Enums"]["MemberRole"];
+          token?: string;
+          invitedBy?: string | null;
+          status?: string;
+          expiresAt?: string;
+          acceptedAt?: string | null;
+          acceptedBy?: string | null;
+          createdAt?: string;
+        };
+        Relationships: [];
+      };
       organization_members: {
         Row: {
           id: string;

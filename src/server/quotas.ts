@@ -10,13 +10,15 @@ import {
   type OrgLimits,
   type OrgPlanId,
 } from "@/lib/billing/catalog";
+import { defaultPlanLimitsMap } from "@/lib/platform-settings";
 import type { Context } from "./context";
+import { loadPlatformSettings } from "./platform-settings";
 import type { OrgPlan } from "./tenant";
 
 export type { OrgLimits };
 export type QuotaKind = keyof OrgLimits;
 
-const PLAN_LIMITS: Record<OrgPlanId, OrgLimits> = Object.fromEntries(
+const FALLBACK_PLAN_LIMITS: Record<OrgPlanId, OrgLimits> = Object.fromEntries(
   PLAN_CATALOG.map((p) => [p.id, p.limits]),
 ) as Record<OrgPlanId, OrgLimits>;
 
@@ -45,10 +47,13 @@ function asFiniteLimit(value: unknown): number | null | undefined {
 export function resolveOrgLimits(
   plan: OrgPlan | string | null | undefined,
   overrides?: Record<string, unknown> | null,
+  planDefaults?: Record<OrgPlanId, OrgLimits> | null,
 ): OrgLimits {
+  const catalog = planDefaults ?? FALLBACK_PLAN_LIMITS;
   const base =
-    PLAN_LIMITS[(plan as OrgPlanId) ?? "SELF_HOSTED"] ??
-    PLAN_LIMITS.SELF_HOSTED;
+    catalog[(plan as OrgPlanId) ?? "SELF_HOSTED"] ??
+    catalog.SELF_HOSTED ??
+    defaultPlanLimitsMap().SELF_HOSTED;
   const out: OrgLimits = { ...base };
   if (!overrides) return out;
 
@@ -63,16 +68,20 @@ export async function loadOrgLimits(
   supabase: Context["supabase"],
   organizationId: string,
 ): Promise<{ plan: OrgPlan; limits: OrgLimits }> {
-  const { data } = await supabase
-    .from("organizations")
-    .select("plan, limits")
-    .eq("id", organizationId)
-    .maybeSingle();
+  const [{ data }, platform] = await Promise.all([
+    supabase
+      .from("organizations")
+      .select("plan, limits")
+      .eq("id", organizationId)
+      .maybeSingle(),
+    loadPlatformSettings(supabase),
+  ]);
 
   const plan = ((data?.plan as OrgPlan) ?? "SELF_HOSTED") as OrgPlan;
   const limits = resolveOrgLimits(
     plan,
     (data?.limits as Record<string, unknown> | null) ?? null,
+    platform.planLimits,
   );
   return { plan, limits };
 }
