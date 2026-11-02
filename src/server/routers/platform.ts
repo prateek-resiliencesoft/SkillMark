@@ -6,6 +6,11 @@
  * "pause", "plan", "people" — never tenant/IDOR jargon.
  */
 import { nanoid } from "@/lib/id";
+import {
+  GRAFANA_LOG_SOURCES,
+  queryGrafanaLinuxLogs,
+  type GrafanaLogSource,
+} from "@/lib/grafana/client";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { platformProcedure, router } from "../trpc";
@@ -946,6 +951,32 @@ export const platformRouter = router({
         role,
         roleLabel: PLATFORM_ROLE_LABEL[role] ?? role,
         isPlatformAdmin: role === "ADMIN",
+      };
+    }),
+
+  /** Linux node logs from Grafana Cloud Loki (instance=skillmark). */
+  serverLogs: platformProcedure
+    .input(
+      z.object({
+        source: z
+          .enum(["all", "syslog", "auth", "kern", "ufw", "dpkg"])
+          .default("all"),
+        search: z.string().max(200).optional(),
+        minutes: z.number().int().min(5).max(10_080).default(60),
+        limit: z.number().int().min(1).max(500).default(120),
+      }),
+    )
+    .query(async ({ input }) => {
+      const result = await queryGrafanaLinuxLogs({
+        source: input.source as GrafanaLogSource,
+        search: input.search,
+        minutes: input.minutes,
+        limit: input.limit,
+      });
+      return {
+        ...result,
+        sources: GRAFANA_LOG_SOURCES,
+        instance: process.env.GRAFANA_LOG_INSTANCE || "skillmark",
       };
     }),
 });
