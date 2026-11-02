@@ -122,10 +122,23 @@ export async function readFile(bucket: string, p: string) {
 type Err = { message: string } | null;
 
 async function s3Put(ok: string, body: Buffer, contentType?: string) {
-  const res = await s3Client().fetch(objectUrl(ok), {
+  // B2 requires Content-Length. aws4fetch hashes/streams the body and undici then
+  // sends chunked transfer (no Content-Length) → 411. Sign without reading body,
+  // then PUT with an explicit length.
+  const bytes = Buffer.from(body);
+  const headers: Record<string, string> = {
+    "content-type": contentType || "application/octet-stream",
+    "content-length": String(bytes.byteLength),
+    "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+  };
+  const signed = await s3Client().sign(objectUrl(ok), { method: "PUT", headers });
+  const res = await fetch(signed.url, {
     method: "PUT",
-    body: new Uint8Array(body),
-    headers: contentType ? { "Content-Type": contentType } : undefined,
+    headers: {
+      ...Object.fromEntries(new Headers(signed.headers).entries()),
+      "content-length": String(bytes.byteLength),
+    },
+    body: bytes,
   });
   if (!res.ok) {
     const t = (await res.text().catch(() => "")).slice(0, 400);
