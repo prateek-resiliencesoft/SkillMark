@@ -1,5 +1,4 @@
-# Production reverse proxy (Compose service: caddy)
-# SITE_ADDRESS=:80 until DNS ready; then e.g. skillmark.resiliencesoftinterview.com
+# App SaaS
 {$SITE_ADDRESS::80} {
 	encode gzip
 
@@ -12,4 +11,17 @@
 		header_up X-Forwarded-For {remote_host}
 		header_up X-Forwarded-Proto {scheme}
 	}
+}
+
+# Landing www → apex
+www.resiliencesoftinterview.com {
+	redir https://resiliencesoftinterview.com{uri} permanent
+}
+
+# Landing static (Vite SPA)
+resiliencesoftinterview.com {
+	encode gzip
+	root * /srv/landing
+	try_files {path} /index.html
+	file_server
 }
