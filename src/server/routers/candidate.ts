@@ -5,83 +5,11 @@ import {
     assertMinRole, filterAccessibleProjectIds,
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
-import { inviteLink } from "../batch-access";
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
-import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
-import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
+import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
-
-type ChannelResult = { status: "sent" | "failed" | "skipped"; error?: string };
-export interface InviteDeliveryResult {
-  email?: ChannelResult;
-  whatsapp?: ChannelResult;
-}
-
-/** Send the invite link for one candidate. Never throws — errors are returned per channel. */
-async function sendCandidateInvite(
-  supabase: Parameters<typeof getOrgMembership>[0],
-  organizationId: string,
-  candidateId: string,
-  channels: { email: boolean; whatsapp: boolean },
-): Promise<InviteDeliveryResult> {
-  const out: InviteDeliveryResult = {};
-  if (!channels.email && !channels.whatsapp) return out;
-  try {
-    const { data: c } = await supabase
-      .from("candidates")
-      .select("id, name, email, phone, inviteToken, scheduledAt, expiresAt, interview:interviews(title, timeLimitMinutes)")
-      .eq("id", candidateId)
-      .single();
-    if (!c || !c.inviteToken) {
-      const r: ChannelResult = { status: "failed", error: "Candidate has no invite link" };
-      if (channels.email) out.email = r;
-      if (channels.whatsapp) out.whatsapp = r;
-      return out;
-    }
-    const cfg = await loadDeliveryConfig(supabase, organizationId);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const iv = c.interview as any;
-    const title = ((iv?.title as string | undefined) ?? "Interview").split(" · ")[0];
-    const vars: TemplateVars = {
-      name: c.name,
-      interviewTitle: title,
-      organization: cfg.organizationName,
-      link: inviteLink(c.inviteToken),
-      duration: iv?.timeLimitMinutes ? `${iv.timeLimitMinutes} minutes` : "",
-      batchName: title,
-      scheduledAt: (c.scheduledAt as string | null) ?? undefined,
-      expiresAt: (c.expiresAt as string | null) ?? undefined,
-      scheduleNotice: formatScheduleNotice(c.scheduledAt as string | null, c.expiresAt as string | null),
-    };
-    const update: Record<string, unknown> = {};
-    const errors: string[] = [];
-    if (channels.email) {
-      const r = await deliverEmail(cfg, c.email, vars);
-      out.email = { status: r.status, error: r.error };
-      update.emailStatus = r.status;
-      update.emailProvider = r.provider;
-      if (r.status === "sent") update.emailSentAt = new Date().toISOString();
-      if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
-    }
-    if (channels.whatsapp) {
-      const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
-      const r = await deliverWhatsapp(cfg, phone, vars);
-      out.whatsapp = { status: r.status, error: r.error };
-      update.whatsappStatus = r.status;
-      update.whatsappProvider = r.provider ?? "resilio";
-      if (r.status === "sent") update.whatsappSentAt = new Date().toISOString();
-      if (r.error) errors.push(`WhatsApp: ${r.error}`);
-    }
-    update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;
-    await supabase.from("candidates").update(update).eq("id", c.id);
-  } catch (err) {
-    const r: ChannelResult = { status: "failed", error: err instanceof Error ? err.message : "Send failed" };
-    if (channels.email && !out.email) out.email = r;
-    if (channels.whatsapp && !out.whatsapp) out.whatsapp = r;
-  }
-  return out;
-}
+export type { InviteDeliveryResult };
 
 const candidateFields = z.object({
   name: z.string().min(1),

@@ -99,6 +99,21 @@ export interface FormSettings {
   successMessage?: string;
   redirectToInterview?: boolean;
   allowedOrigins?: string[];
+  /** Send invite email after form submit (default true when email present). */
+  sendInviteEmail?: boolean;
+  /** Send invite WhatsApp after form submit (default true when phone present). */
+  sendInviteWhatsapp?: boolean;
+  /** When to schedule the interview window shown in the invite. */
+  inviteSchedule?: "immediate" | "tomorrow" | "next_week" | "custom";
+  /** ISO datetime when inviteSchedule is custom. */
+  inviteScheduledAt?: string | null;
+  /** Days after schedule (or now) until invite link expires. 0/omit = no expiry. */
+  linkExpiryDays?: number | null;
+  /**
+   * linked = always use form.interviewId.
+   * match_role = prefer project interview whose title matches job role / answers; else linked.
+   */
+  interviewMode?: "linked" | "match_role";
 }
 
 export const MAX_FILE_MB_LIMIT = 20;

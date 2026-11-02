@@ -61,6 +61,13 @@ const configSchema = z.object({
 const settingsSchema = z.object({
   successMessage: z.string().max(1000).optional(),
   redirectToInterview: z.boolean().optional(),
+  sendInviteEmail: z.boolean().optional(),
+  sendInviteWhatsapp: z.boolean().optional(),
+  inviteSchedule: z.enum(["immediate", "tomorrow", "next_week", "custom"]).optional(),
+  inviteScheduledAt: z.string().max(64).nullable().optional(),
+  linkExpiryDays: z.number().int().min(0).max(365).nullable().optional(),
+  interviewMode: z.enum(["linked", "match_role"]).optional(),
+  allowedOrigins: z.array(z.string().max(300)).max(50).optional(),
 });
 
 type Ctx = { supabase: any; user: { id: string } };
@@ -127,7 +134,15 @@ export const interviewFormRouter = router({
           status: "draft",
           fields: input.template === "default" ? defaultFormFields() : [],
           config,
-          settings: { redirectToInterview: true, successMessage: "Thanks for applying! You can start your interview now." },
+          settings: {
+            redirectToInterview: true,
+            successMessage: "Thanks for applying! You can start your interview now.",
+            sendInviteEmail: true,
+            sendInviteWhatsapp: true,
+            inviteSchedule: "immediate",
+            linkExpiryDays: 7,
+            interviewMode: "linked",
+          },
         })
         .select("*")
         .single();
@@ -171,6 +186,46 @@ export const interviewFormRouter = router({
       } catch (err) {
         throw new TRPCError({ code: "BAD_REQUEST", message: err instanceof Error ? err.message : "Failed to prepare interview" });
       }
+    }),
+
+  /** Attach an existing project interview to this form (no question regen). */
+  attachInterview: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), interviewId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const form = await loadForm(ctx, input.id, "MEMBER");
+      if (!form.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "Form has no project" });
+      const { data: interview } = await ctx.supabase
+        .from("interviews")
+        .select("id, projectId, title")
+        .eq("id", input.interviewId)
+        .maybeSingle();
+      if (!interview) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      if (interview.projectId !== form.projectId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Interview must belong to the same project as the form" });
+      }
+      const { data, error } = await ctx.supabase
+        .from("interview_forms")
+        .update({ interviewId: interview.id, updatedAt: new Date().toISOString() })
+        .eq("id", form.id)
+        .select("*")
+        .single();
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return data as FormRow;
+    }),
+
+  /** Interviews in the form's project (for attach picker). */
+  projectInterviews: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const form = await loadForm(ctx, input.id);
+      if (!form.projectId) return [];
+      const { data } = await ctx.supabase
+        .from("interviews")
+        .select("id, title, description, updatedAt")
+        .eq("projectId", form.projectId)
+        .order("updatedAt", { ascending: false })
+        .limit(100);
+      return data ?? [];
     }),
 
   publish: protectedProcedure.input(z.object({ id: z.string().uuid() })).mutation(async ({ ctx, input }) => {

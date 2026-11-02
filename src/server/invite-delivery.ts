@@ -3,12 +3,14 @@ import { decryptSecret } from "@/lib/messaging/secrets";
 import { sendBrevoEmail, sendResendEmail, sendResilioTemplate } from "@/lib/messaging/providers";
 import {
   emailHtml,
+  formatScheduleNotice,
   mergeTemplates,
   renderTemplate,
   whatsappBodyVariables,
   type MessageTemplates,
   type TemplateVars,
 } from "@/lib/messaging/templates";
+import { inviteLink } from "./batch-access";
 import type { Context } from "./context";
 
 type Db = Context["supabase"];
@@ -130,4 +132,116 @@ export async function deliverWhatsapp(cfg: DeliveryConfig, to: string | null, va
     bodyVariables: whatsappBodyVariables(vars),
   });
   return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "resilio" };
+}
+
+type ChannelResult = { status: ChannelOutcome; error?: string };
+export interface InviteDeliveryResult {
+  email?: ChannelResult;
+  whatsapp?: ChannelResult;
+}
+
+/** Send invite link for one candidate. Never throws — errors returned per channel. */
+export async function sendCandidateInvite(
+  supabase: Db,
+  organizationId: string,
+  candidateId: string,
+  channels: { email: boolean; whatsapp: boolean },
+): Promise<InviteDeliveryResult> {
+  const out: InviteDeliveryResult = {};
+  if (!channels.email && !channels.whatsapp) return out;
+  try {
+    const { data: c } = await supabase
+      .from("candidates")
+      .select("id, name, email, phone, inviteToken, scheduledAt, expiresAt, interview:interviews(title, timeLimitMinutes)")
+      .eq("id", candidateId)
+      .single();
+    if (!c || !c.inviteToken) {
+      const r: ChannelResult = { status: "failed", error: "Candidate has no invite link" };
+      if (channels.email) out.email = r;
+      if (channels.whatsapp) out.whatsapp = r;
+      return out;
+    }
+    const cfg = await loadDeliveryConfig(supabase, organizationId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const iv = c.interview as any;
+    const title = ((iv?.title as string | undefined) ?? "Interview").split(" · ")[0];
+    const vars: TemplateVars = {
+      name: c.name,
+      interviewTitle: title,
+      organization: cfg.organizationName,
+      link: inviteLink(c.inviteToken),
+      duration: iv?.timeLimitMinutes ? `${iv.timeLimitMinutes} minutes` : "",
+      batchName: title,
+      scheduledAt: (c.scheduledAt as string | null) ?? undefined,
+      expiresAt: (c.expiresAt as string | null) ?? undefined,
+      scheduleNotice: formatScheduleNotice(c.scheduledAt as string | null, c.expiresAt as string | null),
+    };
+    const update: Record<string, unknown> = {};
+    const errors: string[] = [];
+    if (channels.email) {
+      const r = await deliverEmail(cfg, c.email, vars);
+      out.email = { status: r.status, error: r.error };
+      update.emailStatus = r.status;
+      update.emailProvider = r.provider;
+      if (r.status === "sent") update.emailSentAt = new Date().toISOString();
+      if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
+    }
+    if (channels.whatsapp) {
+      const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
+      const r = await deliverWhatsapp(cfg, phone, vars);
+      out.whatsapp = { status: r.status, error: r.error };
+      update.whatsappStatus = r.status;
+      update.whatsappProvider = r.provider ?? "resilio";
+      if (r.status === "sent") update.whatsappSentAt = new Date().toISOString();
+      if (r.error) errors.push(`WhatsApp: ${r.error}`);
+    }
+    update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;
+    await supabase.from("candidates").update(update).eq("id", c.id);
+  } catch (err) {
+    const r: ChannelResult = { status: "failed", error: err instanceof Error ? err.message : "Send failed" };
+    if (channels.email && !out.email) out.email = r;
+    if (channels.whatsapp && !out.whatsapp) out.whatsapp = r;
+  }
+  return out;
+}
+
+/** Resolve form invite schedule/expiry presets into ISO timestamps. */
+export function resolveInviteSchedule(settings: {
+  inviteSchedule?: "immediate" | "tomorrow" | "next_week" | "custom";
+  inviteScheduledAt?: string | null;
+  linkExpiryDays?: number | null;
+}): { scheduledAt: string | null; expiresAt: string | null } {
+  const now = new Date();
+  let scheduledAt: string | null = null;
+  const schedule = settings.inviteSchedule ?? "immediate";
+  if (schedule === "tomorrow") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(10, 0, 0, 0);
+    scheduledAt = d.toISOString();
+  } else if (schedule === "next_week") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 7);
+    d.setHours(10, 0, 0, 0);
+    scheduledAt = d.toISOString();
+  } else if (schedule === "custom" && settings.inviteScheduledAt) {
+    const t = Date.parse(settings.inviteScheduledAt);
+    if (!Number.isNaN(t)) scheduledAt = new Date(t).toISOString();
+  }
+
+  let expiresAt: string | null = null;
+  // Default 7-day expiry when unset; explicit 0/null = no expiry.
+  const days =
+    settings.linkExpiryDays === undefined || settings.linkExpiryDays === null
+      ? settings.linkExpiryDays === null
+        ? 0
+        : 7
+      : settings.linkExpiryDays;
+  if (typeof days === "number" && days > 0) {
+    const base = scheduledAt ? new Date(scheduledAt) : now;
+    const e = new Date(base);
+    e.setDate(e.getDate() + days);
+    expiresAt = e.toISOString();
+  }
+  return { scheduledAt, expiresAt };
 }
