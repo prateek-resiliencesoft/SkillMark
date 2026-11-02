@@ -1,7 +1,7 @@
 export const PLAYBACK_SAMPLE_RATE = 24_000;
-export const JITTER_BUFFER_TARGET_MS = 120;
+export const JITTER_BUFFER_TARGET_MS = 200;
 export const JITTER_BUFFER_LOW_WATER_MS = 60;
-export const JITTER_BUFFER_MAX_WAIT_MS = 180;
+export const JITTER_BUFFER_MAX_WAIT_MS = 250;
 export const JITTER_BUFFER_MAX_BATCH_MS = 260;
 
 export interface PlaybackFlushDecision {
@@ -35,10 +35,11 @@ export function shouldFlushPlaybackQueue({
       ? Math.max(0, nowMs - firstChunkQueuedAtMs)
       : 0;
 
-  if (queuedMs >= JITTER_BUFFER_MAX_BATCH_MS) return true;
-  if (bufferedAheadMs <= JITTER_BUFFER_LOW_WATER_MS && queuedMs >= JITTER_BUFFER_TARGET_MS) {
-    return true;
-  }
+  // Already playing: append right away so chunks stay back-to-back (holding
+  // them while the buffer drains is what caused audible gaps).
+  if (bufferedAheadMs > JITTER_BUFFER_LOW_WATER_MS) return true;
+  // Cold start / underrun: build up a small cushion first.
+  if (queuedMs >= JITTER_BUFFER_TARGET_MS || queuedMs >= JITTER_BUFFER_MAX_BATCH_MS) return true;
   if (waitMs >= JITTER_BUFFER_MAX_WAIT_MS) return true;
 
   return false;

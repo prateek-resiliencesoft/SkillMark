@@ -179,7 +179,7 @@ export default function InviteSessionPage() {
 
     return (
       <>
-        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} />
+        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={session.id}
@@ -199,7 +199,7 @@ export default function InviteSessionPage() {
 
   return (
     <>
-      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} />
+      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={session.id}
