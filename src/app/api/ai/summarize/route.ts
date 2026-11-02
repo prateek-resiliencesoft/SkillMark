@@ -81,7 +81,7 @@ export async function POST(req: Request) {
       }))
       .filter((s) => s.code.trim().length > 0);
 
-    const { provider, reportModel } = await resolveTaskModels(interview.project?.organizationId);
+    const { provider, reportModel } = await resolveTaskModels(interview.project?.organizationId, "report");
     const textMessages = msgs
       .filter((m) => m.contentType === "TEXT")
       .map((m) => ({ role: m.role, content: m.content }));

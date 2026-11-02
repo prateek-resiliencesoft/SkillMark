@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify({ error: "Interview and feedback are required" }), { status: 400 });
   }
 
-  const { provider, generatorModel } = await resolveTaskModels(organizationId);
+  const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
   const messages = buildImprovePrompt(interview, feedback, language, jobDescription, resumeText);
 
   const encoder = new TextEncoder();
