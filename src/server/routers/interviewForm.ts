@@ -9,7 +9,14 @@ import {
   type FormField,
   type InterviewConfig,
 } from "@/lib/forms/schema";
-import { appBaseUrl, loadApplicationContext, serializeApplication, type FormRow } from "@/server/integrations/applications";
+import {
+  appBaseUrl,
+  applicationHasCv,
+  loadApplicationContext,
+  serializeApplication,
+  signApplicationCv,
+  type FormRow,
+} from "@/server/integrations/applications";
 import { syncFormInterview } from "@/server/integrations/form-interview";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -288,7 +295,7 @@ export const interviewFormRouter = router({
     const form = await loadForm(ctx, input.id);
     const { data } = await ctx.supabase
       .from("applications")
-      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))")
+      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, files, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))")
       .eq("formId", form.id)
       .order("createdAt", { ascending: false })
       .limit(200);
@@ -305,6 +312,7 @@ export const interviewFormRouter = router({
       status: deriveApplicationStatus(a.status, a.candidate?.session),
       sessionId: a.candidate?.sessionId ?? null,
       interviewUrl: a.candidate?.inviteToken ? `${base}/i/invite/${a.candidate.inviteToken}` : null,
+      hasCv: applicationHasCv(a.files),
     }));
   }),
 
@@ -316,6 +324,37 @@ export const interviewFormRouter = router({
     const { candidate, session } = await loadApplicationContext(app);
     return serializeApplication(app, form!, candidate, session, appBaseUrl(), true);
   }),
+
+  /** Signed CV URL for a form application (by application id or candidate id). */
+  cvLink: protectedProcedure
+    .input(
+      z
+        .object({
+          applicationId: z.string().uuid().optional(),
+          candidateId: z.string().uuid().optional(),
+        })
+        .refine((v) => !!v.applicationId || !!v.candidateId, { message: "applicationId or candidateId required" }),
+    )
+    .query(async ({ ctx, input }) => {
+      let app: Record<string, any> | null = null;
+      if (input.applicationId) {
+        const { data } = await ctx.supabase.from("applications").select("id, organizationId, files").eq("id", input.applicationId).maybeSingle();
+        app = data;
+      } else if (input.candidateId) {
+        const { data } = await ctx.supabase
+          .from("applications")
+          .select("id, organizationId, files")
+          .eq("candidateId", input.candidateId)
+          .order("createdAt", { ascending: false })
+          .limit(1);
+        app = Array.isArray(data) ? data[0] ?? null : data;
+      }
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "No application / CV found" });
+      await requireOrg(ctx, app.organizationId);
+      const cv = await signApplicationCv(app.files);
+      if (!cv) throw new TRPCError({ code: "NOT_FOUND", message: "No CV uploaded for this application" });
+      return cv;
+    }),
 
   usageLogs: protectedProcedure.input(z.object({ organizationId: z.string().uuid(), limit: z.number().int().min(1).max(200).default(50) })).query(async ({ ctx, input }) => {
     await requireOrg(ctx, input.organizationId);

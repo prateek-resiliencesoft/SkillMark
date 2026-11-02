@@ -1332,6 +1332,30 @@ export function CandidateManager({
                               <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
+                          {row.type === "candidate" && isFormApplicant(row) && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="View CV"
+                              onClick={async () => {
+                                try {
+                                  const cv = await utils.interviewForm.cvLink.fetch({
+                                    candidateId: row.id,
+                                  });
+                                  window.open(cv.url, "_blank", "noopener,noreferrer");
+                                } catch (e) {
+                                  toast({
+                                    title: "CV unavailable",
+                                    description: e instanceof Error ? e.message : "Could not open CV",
+                                    variant: "destructive",
+                                  });
+                                }
+                              }}
+                            >
+                              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
                           {hasSession && status === "COMPLETED" ? (
                             <Button
                               variant="ghost"
