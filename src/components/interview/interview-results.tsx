@@ -3,6 +3,7 @@
 
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
+import { SessionErrorLogButton } from "@/components/session/session-error-log";
 import { SessionRow, SessionsTable } from "@/components/session/sessions-table";
 import {
   AlertDialog,
@@ -551,6 +552,7 @@ function SessionDetail({
           Back to Results
         </Button>
         <div className="flex flex-wrap items-center gap-2">
+          <SessionErrorLogButton sessionId={sessionId} />
           <MediaReviewActions
             sessionId={sessionId}
             status={(summary.data as { mediaReviewStatus?: string } | undefined)?.mediaReviewStatus}
