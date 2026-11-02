@@ -25,7 +25,7 @@ import {
   type InterviewConfig,
 } from "@/lib/forms/schema";
 import { trpc } from "@/lib/trpc/client";
-import { ArrowDown, ArrowUp, Copy, ExternalLink, Eye, KeyRound, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Copy, ExternalLink, Eye, FileText, KeyRound, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -160,6 +160,19 @@ export function FormBuilder({ formId }: { formId: string }) {
   const attach = trpc.interviewForm.attachInterview.useMutation({ onError: onErr });
   const projectInterviews = trpc.interviewForm.projectInterviews.useQuery({ id: formId });
   const [attachId, setAttachId] = useState("");
+  const [cvLoadingId, setCvLoadingId] = useState<string | null>(null);
+
+  const openCv = async (applicationId: string) => {
+    setCvLoadingId(applicationId);
+    try {
+      const cv = await utils.interviewForm.cvLink.fetch({ applicationId });
+      window.open(cv.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      onErr({ message: e instanceof Error ? e.message : "Could not open CV" });
+    } finally {
+      setCvLoadingId(null);
+    }
+  };
 
   const markDirty = () => setDirty(true);
   const setField = (id: string, f: FormField) => { setFields((p) => p.map((x) => (x.id === id ? f : x))); markDirty(); };
@@ -482,8 +495,24 @@ export function FormBuilder({ formId }: { formId: string }) {
                           <td className="text-xs">{a.source}{a.environment === "test" ? " (test)" : ""}</td>
                           <td className="text-xs">{new Date(a.createdAt).toLocaleString()}</td>
                           <td className="text-right text-xs">
-                            {a.sessionId && form.interviewId ? <Link className="text-primary underline" href={`/interviews/${form.interviewId}/results?session=${a.sessionId}`}>Results</Link>
-                              : a.interviewUrl ? <button className="text-primary underline" onClick={() => { navigator.clipboard.writeText(a.interviewUrl!); toast({ title: "Interview link copied" }); }}>Copy link</button> : null}
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                              {a.hasCv && (
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center gap-1 text-primary underline disabled:opacity-50"
+                                  disabled={cvLoadingId === a.id}
+                                  onClick={() => void openCv(a.id)}
+                                >
+                                  {cvLoadingId === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
+                                  View CV
+                                </button>
+                              )}
+                              {a.sessionId && form.interviewId ? (
+                                <Link className="text-primary underline" href={`/interviews/${form.interviewId}/results?session=${a.sessionId}`}>Results</Link>
+                              ) : a.interviewUrl ? (
+                                <button type="button" className="text-primary underline" onClick={() => { navigator.clipboard.writeText(a.interviewUrl!); toast({ title: "Interview link copied" }); }}>Copy link</button>
+                              ) : null}
+                            </div>
                           </td>
                         </tr>
                       ))}

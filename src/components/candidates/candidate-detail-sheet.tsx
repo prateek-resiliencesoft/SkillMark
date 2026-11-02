@@ -25,6 +25,7 @@ import {
     Check,
     Copy,
     ExternalLink,
+    FileText,
     GraduationCap,
     Loader2,
     Mail,
@@ -113,6 +114,12 @@ export function CandidateDetailSheet({
     { interviewId: c?.interviewId ?? "" },
     { enabled: !!c?.interviewId },
   );
+  const isFormApplicant = typeof c?.notes === "string" && /applied via|hosted form/i.test(c.notes);
+  const cvQ = trpc.interviewForm.cvLink.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId && isFormApplicant, retry: false },
+  );
+  const [cvOpening, setCvOpening] = useState(false);
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<CandidateFormState>(EMPTY_CANDIDATE_FORM);
@@ -294,6 +301,36 @@ export function CandidateDetailSheet({
                   )}
                   {c.lastSendError && <p className="mt-2 text-xs text-destructive">Last send error: {c.lastSendError}</p>}
                 </section>
+
+                {isFormApplicant && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-semibold">Application CV</h4>
+                    {cvQ.isLoading ? (
+                      <p className="text-xs text-muted-foreground">Looking up CV…</p>
+                    ) : cvQ.data?.url ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={cvQ.data.name}>
+                          {cvQ.data.name}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={cvOpening}
+                          onClick={() => {
+                            setCvOpening(true);
+                            window.open(cvQ.data!.url, "_blank", "noopener,noreferrer");
+                            setCvOpening(false);
+                          }}
+                        >
+                          {cvOpening ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <FileText className="mr-1.5 h-3.5 w-3.5" />}
+                          View CV
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No CV on file for this form application.</p>
+                    )}
+                  </section>
+                )}
 
                 {/* Details */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">

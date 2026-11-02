@@ -421,6 +421,40 @@ async function signFiles(files: Record<string, { name: string; size: number; typ
   return out;
 }
 
+type StoredFile = { name: string; size: number; type: string; path: string };
+
+/** Prefer resume/cv field, else any object under a /cv/ path. */
+export function pickCvFile(
+  files: Record<string, StoredFile[]> | null | undefined,
+): StoredFile | null {
+  if (!files || typeof files !== "object") return null;
+  for (const key of ["resume", "cv", "curriculum_vitae"]) {
+    const list = files[key];
+    if (Array.isArray(list) && list[0]?.path) return list[0];
+  }
+  for (const list of Object.values(files)) {
+    if (!Array.isArray(list)) continue;
+    const hit = list.find((f) => typeof f?.path === "string" && f.path.includes("/cv/"));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function applicationHasCv(files: unknown): boolean {
+  return !!pickCvFile(files as Record<string, StoredFile[]>);
+}
+
+/** Signed URL for the CV attached to an application (1h). */
+export async function signApplicationCv(
+  files: Record<string, StoredFile[]> | null | undefined,
+): Promise<{ name: string; url: string; type: string } | null> {
+  const cv = pickCvFile(files);
+  if (!cv) return null;
+  const { data, error } = await storage.from(FILES_BUCKET).createSignedUrl(cv.path, 3600);
+  if (error || !data?.signedUrl) return null;
+  return { name: cv.name, url: data.signedUrl, type: cv.type || "application/octet-stream" };
+}
+
 export async function serializeApplication(
   app: Record<string, any>,
   form: Pick<FormRow, "publicId" | "name">,
