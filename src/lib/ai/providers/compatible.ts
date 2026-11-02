@@ -92,18 +92,31 @@ function enrichOpenAIError(err: unknown, providerName: string, model: string): E
   const e = err as { status?: number; message?: string; error?: { message?: string } };
   const detail = e?.error?.message || e?.message || String(err);
   const status = e?.status;
+  const wrap = (message: string, code: number) => {
+    const out = new Error(message) as Error & { status?: number };
+    out.status = code;
+    return out;
+  };
   if (status === 410 || /410\s+status code|gone|retired|no longer (available|supported)/i.test(detail)) {
-    return new Error(
+    return wrap(
       `${providerName} model "${model}" is gone (410). Set a current model in Settings → AI or GEMINI_MODEL / OPENAI_MODEL.`,
+      410,
     );
   }
   if (status === 404 || /404|no longer available/i.test(detail)) {
-    return new Error(`${providerName} model "${model}" unavailable (404). ${detail}`);
+    return wrap(`${providerName} model "${model}" unavailable (404). ${detail}`, 404);
   }
   if (status === 429 || /429|quota|rate.?limit/i.test(detail)) {
-    return new Error(
+    return wrap(
       `${providerName} rate/quota limit (429) for "${model}". Wait and retry, or add another key in Settings → AI.`,
+      429,
     );
   }
-  return err instanceof Error ? err : new Error(detail);
+  if (err instanceof Error) {
+    if (status && !(err as Error & { status?: number }).status) {
+      (err as Error & { status?: number }).status = status;
+    }
+    return err;
+  }
+  return wrap(detail, status ?? 500);
 }

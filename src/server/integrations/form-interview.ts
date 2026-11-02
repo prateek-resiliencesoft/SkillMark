@@ -38,7 +38,7 @@ export function describeConfig(c: InterviewConfig): string {
 
 /** Generate questions with the same prompt/provider as /api/ai/generate. */
 export async function generateQuestions(c: InterviewConfig, organizationId?: string | null) {
-  const { provider, generatorModel } = await resolveTaskModels(organizationId);
+  const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
   const premade = (c.predefinedQuestions ?? []).filter((q) => q.trim()).map((text) => ({ text, type: "OPEN_ENDED" }));
   const messages = buildGeneratorPrompt(
     describeConfig(c),

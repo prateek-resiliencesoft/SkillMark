@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify({ error: "Description is required" }), { status: 400 });
   }
 
-  const { provider, generatorModel } = await resolveTaskModels(organizationId);
+  const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
   const messages = buildGeneratorPrompt(
     description,
     durationMinutes,

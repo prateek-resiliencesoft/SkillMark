@@ -33,11 +33,17 @@ if (!GEMINI_API_KEY) {
 }
 
 /**
- * Gemini keys for a session: the interview org's saved key FIRST, then the
- * .env default key (Settings → AI Providers). Read fresh per interview.
+ * Gemini keys for a session: org keys first (up to 5 from Settings → AI),
+ * then .env. Failover walks the list when Live connect / quota fails.
  */
 async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: string; source: "org" | "env" }[]> {
   const out: { key: string; source: "org" | "env" }[] = [];
+  const seen = new Set<string>();
+  const push = (key: string, source: "org" | "env") => {
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push({ key, source });
+  };
   if (sessionId) {
     try {
       const { supabaseAdmin } = await import("../src/lib/supabase/admin");
@@ -51,15 +57,15 @@ async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: stri
       const orgId = (data as any)?.interview?.project?.organizationId as string | undefined;
       if (orgId) {
         const creds = await loadOrgAiCredentials(supabaseAdmin, orgId);
-        const k = creds.gemini.from === "org" ? creds.gemini.apiKey : "";
-        if (k && !out.some((x) => x.key === k)) out.push({ key: k, source: "org" });
+        if (creds.gemini.from === "org") {
+          for (const k of creds.gemini.apiKeys) push(k, "org");
+        }
       }
     } catch (err) {
       log.warn(`Could not load org Gemini key: ${err instanceof Error ? err.message : err}`);
     }
   }
-  // Default .env key is the fallback after the interview org's own key.
-  if (GEMINI_API_KEY && !out.some((x) => x.key === GEMINI_API_KEY)) out.push({ key: GEMINI_API_KEY, source: "env" });
+  if (GEMINI_API_KEY) push(GEMINI_API_KEY, "env");
   return out;
 }
 

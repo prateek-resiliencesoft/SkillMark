@@ -218,7 +218,7 @@ export const batchRouter = router({
         settings.premadeQuestions,
       );
 
-      const { provider, generatorModel } = await resolveTaskModels(organizationId);
+      const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
       let generated: GeneratedInterview | null = null;
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !generated; attempt++) {

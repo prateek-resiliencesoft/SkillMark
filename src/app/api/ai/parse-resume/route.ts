@@ -77,7 +77,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { provider, generatorModel } = await resolveTaskModels(organizationId);
+    const { provider, generatorModel } = await resolveTaskModels(organizationId, "resume");
     log.info(`Resume parse for user ${user.id.slice(0, 8)} using org ${organizationId?.slice(0, 8) ?? "none (env keys)"}`);
 
     // Non-streamed JSON-mode call with tolerant parsing + one strict retry; the result is
