@@ -45,7 +45,7 @@ import {
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Plus, Trash2, Pencil } from "lucide-react";
+import { Copy, Loader2, Plus, Trash2, Pencil } from "lucide-react";
 
 export default function OrgSettingsMembersPage() {
   const { toast } = useToast();
@@ -58,21 +58,45 @@ export default function OrgSettingsMembersPage() {
     "MEMBER",
   );
   const [editingRoleUserId, setEditingRoleUserId] = useState<string | null>(null);
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
 
   const membersQuery = trpc.orgMember.list.useQuery(
     { organizationId: currentOrg?.id ?? "" },
     { enabled: !!currentOrg },
   );
 
+  const invitesQuery = trpc.orgMember.listInvites.useQuery(
+    { organizationId: currentOrg?.id ?? "" },
+    { enabled: !!currentOrg && (currentOrg.role === "OWNER" || currentOrg.role === "ADMIN") },
+  );
+
   const inviteMutation = trpc.orgMember.invite.useMutation({
-    onSuccess: () => {
-      toast({ title: "Member invited" });
+    onSuccess: (data) => {
       setInviteOpen(false);
       setInviteEmail("");
-      utils.orgMember.list.invalidate();
+      setLastInviteUrl(data.inviteUrl);
+      utils.orgMember.listInvites.invalidate();
+      if (data.emailStatus === "sent") {
+        toast({ title: "Invite sent", description: `We emailed ${data.email}` });
+      } else {
+        toast({
+          title: "Invite created",
+          description: "Copy the link below and share it with them.",
+        });
+      }
     },
     onError: (err) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
+      toast({ title: "Could not invite", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const revokeInviteMutation = trpc.orgMember.revokeInvite.useMutation({
+    onSuccess: () => {
+      toast({ title: "Invite cancelled" });
+      utils.orgMember.listInvites.invalidate();
+    },
+    onError: (err) => {
+      toast({ title: "Could not cancel invite", description: err.message, variant: "destructive" });
     },
   });
 
@@ -147,9 +171,11 @@ export default function OrgSettingsMembersPage() {
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Invite Member</DialogTitle>
+                <DialogTitle>Invite someone</DialogTitle>
                 <DialogDescription>
-                  They must have an account to be invited.
+                  Send a link by email if messaging is set up, or copy the link
+                  after creating the invite. They can join even without an
+                  account yet.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-2">
@@ -174,7 +200,9 @@ export default function OrgSettingsMembersPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ADMIN">Admin</SelectItem>
+                      {isOwner && (
+                        <SelectItem value="ADMIN">Admin</SelectItem>
+                      )}
                       <SelectItem value="MEMBER">Member</SelectItem>
                       <SelectItem value="VIEWER">Viewer</SelectItem>
                     </SelectContent>
@@ -203,13 +231,103 @@ export default function OrgSettingsMembersPage() {
                   {inviteMutation.isPending && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
-                  Invite
+                  Send invite
                 </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         )}
       </div>
+
+      {lastInviteUrl ? (
+        <div className="flex flex-col gap-2 rounded-xl border bg-muted/40 p-4 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">Invite link ready</p>
+            <p className="truncate text-xs text-muted-foreground">
+              {lastInviteUrl}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(lastInviteUrl);
+                toast({ title: "Link copied" });
+              } catch {
+                toast({
+                  title: "Could not copy",
+                  description: "Select the link and copy it manually.",
+                  variant: "destructive",
+                });
+              }
+            }}
+          >
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            Copy link
+          </Button>
+        </div>
+      ) : null}
+
+      {isAdmin && (invitesQuery.data?.length ?? 0) > 0 ? (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div>
+              <h3 className="text-sm font-medium">Waiting to join</h3>
+              <p className="text-xs text-muted-foreground">
+                Invites expire after 14 days.
+              </p>
+            </div>
+            <ul className="divide-y rounded-lg border">
+              {(invitesQuery.data ?? []).map((inv) => (
+                <li
+                  key={inv.id}
+                  className="flex flex-wrap items-center gap-3 px-3 py-2.5 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{inv.email}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {inv.role.toLowerCase()}
+                      {inv.status === "EXPIRED" ? " · expired" : ""}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(inv.inviteUrl);
+                        toast({ title: "Link copied" });
+                      } catch {
+                        toast({
+                          title: "Could not copy",
+                          variant: "destructive",
+                        });
+                      }
+                    }}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={revokeInviteMutation.isPending}
+                    onClick={() =>
+                      revokeInviteMutation.mutate({
+                        organizationId: currentOrg.id,
+                        inviteId: inv.id,
+                      })
+                    }
+                  >
+                    Cancel
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardContent className="p-0">

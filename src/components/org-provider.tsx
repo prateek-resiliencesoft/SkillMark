@@ -20,6 +20,9 @@ export interface OrgInfo {
   slug: string;
   ownerId: string;
   role: string;
+  /** ACTIVE | SUSPENDED — paused orgs are read-mostly for members. */
+  status?: string;
+  plan?: string;
 }
 
 interface OrgContextValue {

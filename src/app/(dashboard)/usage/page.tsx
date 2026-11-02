@@ -705,10 +705,10 @@ export default function UsagePage() {
         <div className="grid gap-4 sm:grid-cols-3">
           <UsageRing
             used={data.templates.used}
-            limit={null}
+            limit={data.templates.limit ?? null}
             label={isZh ? "面试模板" : "Interview Templates"}
             icon={FileText}
-            hideProgress
+            hideProgress={data.templates.limit == null}
           />
           <UsageRing
             used={Math.round((data.sessionTime.usedSeconds / 3600) * 10) / 10}
@@ -721,10 +721,10 @@ export default function UsagePage() {
           />
           <UsageRing
             used={data.seats.used}
-            limit={null}
-            label={isZh ? "席位" : "Seats"}
+            limit={data.seats.limit ?? null}
+            label={isZh ? "席位" : "People"}
             icon={Users}
-            hideProgress
+            hideProgress={data.seats.limit == null}
           />
         </div>
       ) : null}
