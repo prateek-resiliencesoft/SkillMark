@@ -5,6 +5,8 @@ import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { redactSessionForCandidate } from "@/lib/session-redact";
+import { ERROR_CATEGORIES, ERROR_SEVERITIES, createClientErrorLimiter, summarizeErrorLog, type SessionErrorEntry } from "@/lib/session-error-log";
+import { recordSessionError } from "@/lib/session-error-log-server";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
 
 const log = createLogger("router/session");
@@ -20,7 +22,65 @@ async function assertNotDisqualified(
   }
 }
 
+const allowClientErrorReport = createClientErrorLimiter();
+
 export const sessionRouter = router({
+  /** Candidate browser reports an error (voice WS drop, TTS/STT failure, JS error). */
+  logClientError: publicProcedure
+    .input(
+      z.object({
+        sessionId: z.string().uuid(),
+        category: z.enum(ERROR_CATEGORIES),
+        severity: z.enum(ERROR_SEVERITIES).default("error"),
+        message: z.string().min(1).max(1000),
+        status: z.number().int().min(0).max(999).optional(),
+        code: z.string().max(64).optional(),
+        context: z.record(z.string(), z.unknown()).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!allowClientErrorReport(input.sessionId)) return { ok: false, limited: true };
+      const { data: s } = await ctx.supabase.from("sessions").select("id").eq("id", input.sessionId).maybeSingle();
+      if (!s) throw new TRPCError({ code: "NOT_FOUND" });
+      await recordSessionError({
+        sessionId: input.sessionId,
+        // Client can't claim server-only categories.
+        category: input.category === "report" || input.category === "anti_cheat" ? "client" : input.category,
+        severity: input.severity === "critical" ? "error" : input.severity,
+        source: "client",
+        message: input.message,
+        status: input.status ?? null,
+        code: input.code ?? null,
+        context: input.context ?? {},
+      });
+      return { ok: true, limited: false };
+    }),
+
+  /** Error Log report for a session — org members only. */
+  getErrorLog: protectedProcedure
+    .input(z.object({ sessionId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select("id, interview:interviews!inner(projectId, project:projects!inner(organizationId))")
+        .eq("id", input.sessionId)
+        .maybeSingle();
+      if (!session) throw new TRPCError({ code: "NOT_FOUND" });
+      const iv = session.interview as unknown as { projectId: string; project: { organizationId: string } };
+      const member = await getOrgMembership(ctx.supabase, iv.project.organizationId, ctx.user.id);
+      if (!member || !(await hasProjectAccess(ctx.supabase, iv.projectId, ctx.user.id))) {
+        throw new TRPCError({ code: "FORBIDDEN" });
+      }
+      const { data } = await ctx.supabase
+        .from("session_error_logs")
+        .select("id, sessionId, createdAt, category, severity, source, message, status, code, context")
+        .eq("sessionId", input.sessionId)
+        .order("createdAt", { ascending: true })
+        .limit(1000);
+      const entries = (data ?? []) as SessionErrorEntry[];
+      return { entries, summary: summarizeErrorLog(entries) };
+    }),
+
   create: publicProcedure
     .input(
       z.object({
@@ -653,6 +713,15 @@ export const sessionRouter = router({
 
       const update: Record<string, unknown> = { antiCheatingLog: log };
       if (disqualify) {
+        void recordSessionError({
+          sessionId: input.sessionId,
+          category: "anti_cheat",
+          severity: "warning",
+          source: "anti-cheat",
+          message: `Interview ended automatically: candidate disqualified after ${result.strikes} anti-cheating strikes (last: ${input.violation.type}).`,
+          code: "DISQUALIFIED",
+          context: { strikes: result.strikes, lastViolation: input.violation.type },
+        });
         update.status = "DISQUALIFIED";
         update.completedAt = new Date().toISOString();
       }

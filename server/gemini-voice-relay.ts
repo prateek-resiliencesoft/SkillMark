@@ -14,9 +14,22 @@
 import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
+import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log";
+import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 
 const log = createLogger("gemini-relay");
+
+/** Best-effort write to the per-session Error Log report (never logs key material). */
+function logSessionError(
+  sessionId: string | undefined | null,
+  err: unknown,
+  severity: ErrorSeverity,
+  context: Record<string, unknown> = {},
+) {
+  if (!sessionId) return;
+  void recordSessionError(entryFromError(sessionId, err, { category: "voice", source: "voice-relay/gemini", severity, context }));
+}
 
 config({ path: ".env" });
 
@@ -459,6 +472,9 @@ interface GeminiConnectOpts {
   tools?: boolean;
   langCode: string;
   resumeHandle?: string | null;
+  /** Interview session id — used only for the per-session error log. */
+  sessionId?: string;
+  stage?: string;
 }
 
 async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
@@ -472,6 +488,12 @@ async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
       return ws;
     } catch (err) {
       lastErr = err;
+      logSessionError(opts.sessionId, err, i < keys.length - 1 ? "warning" : "error", {
+        stage: opts.stage ?? "connect",
+        keySource: keys[i].source,
+        keySlot: i + 1,
+        failover: i < keys.length - 1,
+      });
       log.warn(`Gemini Live (${keys[i].source} key) failed: ${err instanceof Error ? err.message.slice(0, 200) : err}${i < keys.length - 1 ? " — trying next key" : ""}`);
     }
   }
@@ -576,6 +598,8 @@ async function handleMicTest(browserWs: WebSocket, language?: string, sessionId?
   try {
     gem = await connectGemini({
       apiKeys,
+      sessionId,
+      stage: "mic_test",
       langCode: languageCode(null, language),
       systemInstruction: "This is a microphone test. Do not speak. Reply with silence.",
     });
@@ -857,9 +881,15 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
     ws.on("close", (code, reason) => {
       if (ws !== gem) return;
       log.warn(`Gemini session closed: ${code} ${reason.toString()}`);
+      if (!intentionalClose && !browserClosed && code !== 1000) {
+        logSessionError(sessionId, new Error(`Gemini Live session dropped: ${code} ${reason.toString()}`), "warning", { stage: "session", closeCode: code });
+      }
       if (!intentionalClose && !browserClosed) void reconnect(`close ${code}`);
     });
-    ws.on("error", (err) => log.error("Gemini WS error:", err.message));
+    ws.on("error", (err) => {
+      log.error("Gemini WS error:", err.message);
+      logSessionError(sessionId, err, "error", { stage: "gemini_ws" });
+    });
   }
 
   async function reconnect(why: string) {
@@ -874,7 +904,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
       try {
         const handle = attempt === 1 ? resumeHandle : null;
         const ws = await connectGemini({
-          apiKeys, langCode, tools: true, resumeHandle: handle,
+          apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
           systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
         });
         gem = ws;
@@ -895,12 +925,13 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
       }
     }
     reconnecting = false;
+    logSessionError(sessionId, new Error(`Voice relay could not reconnect to Gemini after 3 attempts (${why})`), "critical", { stage: "reconnect" });
     send({ type: "disconnected" });
   }
 
   // ── Initial connection ──
   try {
-    gem = await connectGemini({ apiKeys, langCode, tools: true, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
+    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
     attach(gem);
     log.info("Gemini session established");
     send({ type: "ready", sessionId: "gemini-session" });
@@ -911,6 +942,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
       : "[SYSTEM] The participant has just joined. Please greet them and begin with question 1.");
   } catch (err) {
     log.error("Failed to connect to Gemini:", err);
+    logSessionError(sessionId, err, "critical", { stage: "initial", keysTried: apiKeys.length });
     send({ type: "error", message: `Gemini connection failed: ${err instanceof Error ? err.message : err}` });
     browserWs.close();
     return;
@@ -976,6 +1008,9 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
     if (completeTimer) clearTimeout(completeTimer);
     gem?.close();
   });
-  browserWs.on("error", (err) => log.error("Browser WS error:", err.message));
+  browserWs.on("error", (err) => {
+    log.error("Browser WS error:", err.message);
+    logSessionError(sessionId, err, "error", { stage: "browser_ws" });
+  });
   void lastUserSpeech;
 }
