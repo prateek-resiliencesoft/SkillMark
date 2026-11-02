@@ -40,27 +40,34 @@ export default function InviteSessionPage() {
 
   const candidate = trpc.candidate.getByToken.useQuery(
     { token },
-    { retry: false },
+    {
+      retry: false,
+      // Always revalidate — invite page may have cached a pre-session payload.
+      refetchOnMount: "always",
+      staleTime: 0,
+    },
   );
 
   useEffect(() => {
     if (candidate.isError) {
       router.replace(`/i/invite/${token}`);
+      return;
     }
-    if (candidate.data) {
-      const session = (candidate.data as any).session;
-      if (!session) {
-        router.replace(`/i/invite/${token}`);
-      }
+    if (!candidate.data || candidate.isFetching) return;
+    const session = (candidate.data as any).session;
+    // Only bounce after a fresh fetch confirms there is still no session.
+    if (!session) {
+      router.replace(`/i/invite/${token}`);
     }
-  }, [candidate.data, candidate.isError, token, router]);
+  }, [candidate.data, candidate.isError, candidate.isFetching, token, router]);
 
-  if (candidate.isLoading || !candidate.data) {
+  const session = (candidate.data as any)?.session ?? null;
+  const interview = (candidate.data as any)?.interview;
+
+  // Wait through first load / cache refresh until session appears (or redirect).
+  if (candidate.isLoading || !candidate.data || (!session && candidate.isFetching)) {
     return <PreparingScreen />;
   }
-
-  const session = (candidate.data as any).session;
-  const interview = (candidate.data as any).interview;
 
   if (!session) {
     return <PreparingScreen />;

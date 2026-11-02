@@ -3,8 +3,8 @@
 import { useAppLocale } from "@/components/app-locale-provider";
 import { Button } from "@/components/ui/button";
 import { DitheredLogo } from "@/components/ui/dithered-logo";
-import { CursorDrivenParticleTypography } from "@/components/ui/cursor-driven-particle-typography";
 import { LiquidGlassLogoReveal } from "@/components/ui/liquid-glass-logo-reveal";
+import ParticleText from "@/components/ui/particle-text";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -286,29 +286,71 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
             />
           </motion.div>
 
-          {/* Product Brand Title & Tagline with Particle Gathering Typography */}
-          <motion.div
-            key="particle-typography-container"
-            initial={isFirstPlay ? { opacity: 0, y: 20 } : false}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: isFirstPlay ? 0.3 : 0 }}
-            className="mt-6 w-full max-w-lg h-36 sm:h-40"
-          >
-            <CursorDrivenParticleTypography
-              text="SKILLMARK"
-              subtitle="Measure what matters"
-              fontSize={54}
-              subtitleFontSize={14}
-              particleSize={0.7}
-              particleDensity={1.1}
-              dispersionStrength={13}
-              returnSpeed={0.08}
-              interactionRadius={75}
-              className="h-full w-full"
-              gatherOnMount={isFirstPlay}
-              triggerGather={gatherCount}
-            />
-          </motion.div>
+          {/* Product Brand Title & Tagline — React Bits ParticleText after glass reveal */}
+          {(!isFirstPlay || stage !== "glass_center") && (
+            <motion.div
+              key="particle-typography-container"
+              initial={isFirstPlay ? { opacity: 0, y: 20 } : false}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: isFirstPlay ? 0.15 : 0 }}
+              className="mt-4 flex w-full max-w-xl flex-col items-center"
+            >
+              <div className="h-[7.5rem] w-full sm:h-36 md:h-40">
+                <ParticleText
+                  key={`title-${gatherCount}`}
+                  text="SKILLMARK"
+                  particleSize={1.6}
+                  density={3}
+                  color="currentColor"
+                  highlightColor="#5941F2"
+                  highlightMode="motion"
+                  shape="circle"
+                  intro="gather"
+                  scatter={70}
+                  gatherDuration={1500}
+                  stagger={420}
+                  clickBurst
+                  burstStrength={1}
+                  pointerRepel={40}
+                  repelRadius={120}
+                  idleDrift={0.7}
+                  trigger="hover"
+                  fontSize="clamp(2.4rem, 8vw, 4.5rem)"
+                  fontWeight={800}
+                  fontFamily="inherit"
+                  glow
+                  className="h-full w-full text-foreground"
+                />
+              </div>
+              <div className="mt-1 h-12 w-full sm:h-14">
+                <ParticleText
+                  key={`tagline-${gatherCount}`}
+                  text="Measure what matters"
+                  particleSize={1.2}
+                  density={3}
+                  color="currentColor"
+                  highlightColor="#5941F2"
+                  highlightMode="motion"
+                  shape="circle"
+                  intro="gather"
+                  scatter={50}
+                  gatherDuration={1400}
+                  stagger={360}
+                  clickBurst
+                  burstStrength={0.85}
+                  pointerRepel={28}
+                  repelRadius={90}
+                  idleDrift={0.5}
+                  trigger="hover"
+                  fontSize="clamp(0.85rem, 2.4vw, 1.15rem)"
+                  fontWeight={600}
+                  fontFamily="inherit"
+                  glow
+                  className="h-full w-full text-muted-foreground"
+                />
+              </div>
+            </motion.div>
+          )}
 
           {/* Replay intro action */}
           <motion.button

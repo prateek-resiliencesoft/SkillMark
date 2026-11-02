@@ -12,6 +12,7 @@ export default function InvitePage() {
   const params = useParams();
   const token = params.token as string;
   const router = useRouter();
+  const utils = trpc.useUtils();
 
   const [completed, setCompleted] = useState(false);
   const sessionCreationAttempted = useRef(false);
@@ -21,24 +22,28 @@ export default function InvitePage() {
     { retry: false },
   );
 
-  const createSession = trpc.session.createFromInvite.useMutation({
-    onSuccess: () => {
-      goToSession();
-    },
-  });
-
   const sessionPath = `/i/invite/${token}/session`;
-
-  useEffect(() => {
-    router.prefetch(sessionPath);
-  }, [router, sessionPath]);
 
   const goToSession = useCallback(() => {
     router.push(sessionPath);
   }, [router, sessionPath]);
 
+  const createSession = trpc.session.createFromInvite.useMutation({
+    onSuccess: async () => {
+      // Drop stale getByToken cache (no session) so the session page does not
+      // bounce back here and leave the candidate stuck on PreparingScreen.
+      await utils.candidate.getByToken.invalidate({ token });
+      goToSession();
+    },
+  });
+
+  useEffect(() => {
+    router.prefetch(sessionPath);
+  }, [router, sessionPath]);
+
   useEffect(() => {
     if (!candidate.data || completed) return;
+    if (createSession.isPending || createSession.isError) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const session = (candidate.data as any).session;
@@ -64,7 +69,15 @@ export default function InvitePage() {
       sessionCreationAttempted.current = true;
       createSession.mutate({ inviteToken: token });
     }
-  }, [candidate.data, completed, createSession, token, goToSession]);
+  }, [
+    candidate.data,
+    completed,
+    createSession,
+    createSession.isPending,
+    createSession.isError,
+    token,
+    goToSession,
+  ]);
 
   // Loading
   if (candidate.isLoading) {
@@ -141,6 +154,36 @@ export default function InvitePage() {
     );
   }
 
-  // Creating session
+  if (createSession.isError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="py-12 text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+              <Link2Off className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <h2 className="text-xl font-semibold">Could not start interview</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {createSession.error?.message ||
+                "Failed to create your session. Refresh the page or contact the hiring team."}
+            </p>
+            <button
+              type="button"
+              className="mt-4 text-sm font-medium text-primary hover:underline"
+              onClick={() => {
+                sessionCreationAttempted.current = false;
+                createSession.reset();
+                createSession.mutate({ inviteToken: token });
+              }}
+            >
+              Try again
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Creating session / navigating
   return <PreparingScreen />;
 }
