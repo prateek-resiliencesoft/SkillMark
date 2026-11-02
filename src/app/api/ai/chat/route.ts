@@ -4,8 +4,6 @@ import { resolveProvider } from "@/lib/ai/registry";
 import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
 import { recordAiCallErrors } from "@/lib/session-error-log-server";
-
-const log = createLogger("api/ai/chat");
 import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { assertActiveInterviewSession } from "@/lib/session-access";
