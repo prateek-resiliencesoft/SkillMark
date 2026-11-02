@@ -114,7 +114,7 @@ export const sessionRouter = router({
       const { data: membership } = await ctx.supabase
         .from("organization_members")
         .select("role")
-        .eq("workspaceId", project.organizationId)
+        .eq("organizationId", project.organizationId)
         .eq("userId", ctx.user.id)
         .single();
 
@@ -679,11 +679,11 @@ export const sessionRouter = router({
       // Get interviews accessible via org membership
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       const orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
       if (orgIds.length === 0) return { sessions: [] };
 
@@ -755,7 +755,7 @@ export const sessionRouter = router({
       const { data: membership } = await ctx.supabase
         .from("organization_members")
         .select("role")
-        .eq("workspaceId", project.organizationId)
+        .eq("organizationId", project.organizationId)
         .eq("userId", ctx.user.id)
         .single();
 
@@ -819,14 +819,73 @@ export const sessionRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await assertNotDisqualified(ctx.supabase, input.sessionId);
+
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, status, interview:interviews!inner(project:projects!inner(organizationId))",
+        )
+        .eq("id", input.sessionId)
+        .maybeSingle();
+
+      if (!session || session.status !== "IN_PROGRESS") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "This interview session is not available.",
+        });
+      }
+
+      const interviewRaw = session.interview as unknown;
+      const interview = (
+        Array.isArray(interviewRaw) ? interviewRaw[0] : interviewRaw
+      ) as {
+        project: { organizationId: string } | { organizationId: string }[];
+      } | null;
+      const projectRaw = interview?.project;
+      const project = (
+        Array.isArray(projectRaw) ? projectRaw[0] : projectRaw
+      ) as { organizationId: string } | null;
+      const organizationId = project?.organizationId;
+      if (!organizationId) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Session is missing organization context.",
+        });
+      }
+
+      const { pathBelongsToSession, objectPathFromSignedUrl } = await import(
+        "@/lib/tenant-storage"
+      );
+
       const updateData: Record<string, unknown> = {};
       if (input.audioRecordingUrl) {
+        const audioPath =
+          objectPathFromSignedUrl("recordings", input.audioRecordingUrl) ??
+          input.audioRecordingUrl.split("?")[0];
+        if (
+          !pathBelongsToSession(audioPath, input.sessionId, organizationId)
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Recording path does not match this session.",
+          });
+        }
         updateData.audioRecordingUrl = input.audioRecordingUrl;
       }
       if (input.audioDuration !== undefined) {
         updateData.audioDuration = input.audioDuration;
       }
       if (input.screenshots) {
+        for (const shot of input.screenshots) {
+          if (
+            !pathBelongsToSession(shot.path, input.sessionId, organizationId)
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "Screenshot path does not match this session.",
+            });
+          }
+        }
         updateData.screenshots = input.screenshots;
       }
 
@@ -915,7 +974,7 @@ export const sessionRouter = router({
           const { data: membership } = await ctx.supabase
             .from("organization_members")
             .select("role")
-            .eq("workspaceId", orgId)
+            .eq("organizationId", orgId)
             .eq("userId", ctx.user.id)
             .single();
 

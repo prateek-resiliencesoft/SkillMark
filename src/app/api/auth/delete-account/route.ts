@@ -17,7 +17,7 @@ export async function POST() {
 
     await Promise.all([
       supabaseAdmin.from("interviews").delete().eq("userId", userId),
-      supabaseAdmin.from("workspaces").delete().eq("ownerId", userId),
+      supabaseAdmin.from("organizations").delete().eq("ownerId", userId),
       supabaseAdmin.from("audit_logs").delete().eq("userId", userId),
     ]);
 

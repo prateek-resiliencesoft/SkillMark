@@ -13,6 +13,7 @@ const PROTECTED = [
   "/account",
   "/usage",
   "/integrations",
+  "/admin",
   "/batches",
 ];
 

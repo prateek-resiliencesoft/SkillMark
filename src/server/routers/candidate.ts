@@ -438,11 +438,11 @@ export const candidateRouter = router({
       // Get org IDs for the user
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       let orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
 
       if (input.organizationId) {

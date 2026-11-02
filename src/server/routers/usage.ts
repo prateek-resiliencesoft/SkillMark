@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "../trpc";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { countOrgSeats, loadOrgLimits } from "../quotas";
+import { requireOrgAccess } from "../tenant";
 
 const periodEnum = z.enum([
   "current",
@@ -24,15 +26,26 @@ function toLocalDate(iso: string, tzOffset = 0): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-async function resolveOrgId(userId: string, orgId?: string) {
-  if (orgId) return orgId;
-  const { data } = await supabaseAdmin
+/**
+ * Resolve a usable org id for the caller.
+ * When the client passes organizationId, membership is required (no IDOR).
+ */
+async function resolveOrgId(
+  supabase: typeof supabaseAdmin,
+  userId: string,
+  orgId?: string,
+) {
+  if (orgId) {
+    await requireOrgAccess(supabase, orgId, userId, { minRole: "VIEWER" });
+    return orgId;
+  }
+  const { data } = await supabase
     .from("organization_members")
-    .select("workspaceId")
+    .select("organizationId")
     .eq("userId", userId)
     .limit(1)
-    .single();
-  return data?.workspaceId ?? undefined;
+    .maybeSingle();
+  return data?.organizationId ?? undefined;
 }
 
 function resolveCalendarPeriod(period: Period | undefined): { start: Date; end: Date } {
@@ -86,7 +99,11 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
 
       const range = resolveCalendarPeriod(input.period);
 
@@ -124,14 +141,10 @@ export const usageRouter = router({
         }
       }
 
-      // --- Seats ---
+      // --- Seats (members + pending invites) ---
       let seatsUsed = 1;
       if (orgId) {
-        const { count } = await supabaseAdmin
-          .from("organization_members")
-          .select("id", { count: "exact", head: true })
-          .eq("workspaceId", orgId);
-        seatsUsed = count ?? 1;
+        seatsUsed = await countOrgSeats(ctx.supabase, orgId);
       }
 
       // --- Daily breakdowns ---
@@ -188,17 +201,31 @@ export const usageRouter = router({
         templates: templatesByDay[day] ?? 0,
       }));
 
+      let seatsLimit: number | null = null;
+      let interviewsLimit: number | null = null;
+      let plan: string = "SELF_HOSTED";
+      if (orgId) {
+        const resolved = await loadOrgLimits(ctx.supabase, orgId);
+        plan = resolved.plan;
+        seatsLimit = resolved.limits.seats;
+        interviewsLimit = resolved.limits.interviews;
+      }
+
       return {
         periodStart: range.start.toISOString(),
         periodEnd: range.end.toISOString(),
+        plan,
         templates: {
           used: templatesUsed,
+          limit: interviewsLimit,
         },
         sessionTime: {
           usedSeconds: sessionSecondsUsed,
+          limit: null as number | null,
         },
         seats: {
           used: seatsUsed,
+          limit: seatsLimit,
         },
         daily,
       };
@@ -214,7 +241,11 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
       if (!orgId) return [];
 
       const range = resolveCalendarPeriod(input.period);
@@ -258,7 +289,11 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
       if (!orgId) return [];
 
       const range = resolveCalendarPeriod(input.period);
