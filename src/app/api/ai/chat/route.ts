@@ -3,6 +3,9 @@ import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
 import { resolveProvider } from "@/lib/ai/registry";
 import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
+import { recordAiCallErrors } from "@/lib/session-error-log-server";
+
+const log = createLogger("api/ai/chat");
 import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { assertActiveInterviewSession } from "@/lib/session-access";
@@ -14,6 +17,7 @@ export async function POST(req: Request) {
   const { sessionId, interviewId, messages, currentQuestionIndex } =
     await req.json();
 
+  let provider: Awaited<ReturnType<typeof resolveProvider>> | null = null;
   try {
     const access = await assertActiveInterviewSession(sessionId, interviewId);
     if (!access.ok) {
@@ -40,7 +44,7 @@ export async function POST(req: Request) {
     const organizationId = (interview.project as { organizationId?: string } | null)?.organizationId;
     // Task routing (Settings → AI) owns provider order. Interview llmProvider is a soft prefer only.
     // Model: interview.llmModel applied only if it fits the active provider — never send gemini-* to OpenAI.
-    const provider = await resolveProvider({
+    provider = await resolveProvider({
       organizationId,
       idOrModel: interview.llmProvider,
       task: taskFromFollowUpDepth(interview.followUpDepth as string | undefined),
@@ -85,6 +89,8 @@ export async function POST(req: Request) {
       model: interview.llmModel ?? undefined,
     });
 
+    void recordAiCallErrors({ sessionId, provider, source: "api/ai/chat" });
+
     const isComplete = response.content.includes("[INTERVIEW_COMPLETE]");
     const questionAdvanced = response.content.includes("[NEXT_QUESTION]");
 
@@ -119,6 +125,7 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     log.error("Chat AI error:", error);
+    await recordAiCallErrors({ sessionId, provider, source: "api/ai/chat", finalError: error });
     return NextResponse.json(
       { error: "Failed to generate response" },
       { status: 500 },

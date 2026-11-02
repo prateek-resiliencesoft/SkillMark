@@ -14,6 +14,7 @@ import {
   shouldFlushPlaybackQueue,
 } from "@/lib/voice/playback-jitter-buffer";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { reportSessionError } from "@/lib/session-error-report-client";
 
 const PLAYBACK_START_LEAD_S = 0.12;
 
@@ -411,9 +412,21 @@ export function useVoice({
               to.kind
             )} (${reason})`
           );
+          reportSessionError(sessionId, {
+            category: "voice",
+            severity: "warning",
+            message: `Voice relay failover: ${relayDisplayName(from.kind)} -> ${relayDisplayName(to.kind)} (${reason})`,
+            context: { stage: "relay_failover", from: from.kind, to: to.kind },
+          });
         },
         onPermanentFailure: (error) => {
           log.error("Voice relay exhausted all targets:", error.message);
+          reportSessionError(sessionId, {
+            category: "voice",
+            severity: "error",
+            message: error.message || "Voice relay websocket error (all relays failed)",
+            context: { stage: "relay_permanent_failure" },
+          });
           setState((s) => ({ ...s, isConnected: false }));
           onError?.(
             error.message || "Voice connection error. Is the relay server running?"
@@ -426,6 +439,7 @@ export function useVoice({
     } catch (error) {
       const msg =
         error instanceof Error ? error.message : "Voice connection failed";
+      reportSessionError(sessionId, { category: "voice", message: msg, context: { stage: "connect" } });
       onError?.(msg);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -471,6 +485,12 @@ export function useVoice({
         );
       } catch (err) {
         log.error("Failed to save progress:", err);
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "warning",
+          message: `Failed to save voice progress: ${err instanceof Error ? err.message : String(err)}`,
+          context: { stage: "voice_save", questionIndex: currentQuestionIndex },
+        });
       }
     },
     [sessionId]
@@ -695,6 +715,12 @@ export function useVoice({
 
         case "error": {
           const message = (msg.message as string) || "Relay error";
+          reportSessionError(sessionId, {
+            category: /tts|speech|asr|stt/i.test(message) ? "tts_stt" : "voice",
+            severity: isRecoverableRelayErrorMessage(message) ? "warning" : "error",
+            message,
+            context: { stage: "relay_error_message" },
+          });
           if (
             isRecoverableRelayErrorMessage(message) &&
             relayConnectorRef.current?.canFailover
@@ -707,6 +733,12 @@ export function useVoice({
         }
 
         case "disconnected":
+          reportSessionError(sessionId, {
+            category: "voice",
+            severity: "warning",
+            message: "Voice relay reported disconnected",
+            context: { stage: "relay_disconnected" },
+          });
           setState((s) => ({ ...s, isConnected: false }));
           if (relayConnectorRef.current?.canFailover) {
             void relayConnectorRef.current.failover("relay disconnected message");
@@ -714,7 +746,7 @@ export function useVoice({
           break;
       }
     },
-    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress]
+    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId]
   );
 
   /** Start capturing microphone audio and sending to relay */
@@ -785,9 +817,10 @@ export function useVoice({
     } catch (error) {
       const msg =
         error instanceof Error ? error.message : "Microphone access failed";
+      reportSessionError(sessionId, { category: "tts_stt", message: `Microphone: ${msg}`, context: { stage: "mic" } });
       onError?.(msg);
     }
-  }, [onError]);
+  }, [onError, sessionId]);
 
   /** Stop capturing microphone */
   const stopListening = useCallback(() => {

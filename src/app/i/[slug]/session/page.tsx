@@ -11,6 +11,7 @@ import { PreparingScreen } from "@/components/session/preparing-screen";
 import { Card, CardContent } from "@/components/ui/card";
 import type { InterviewContext } from "@/hooks/use-voice";
 import { trpc } from "@/lib/trpc/client";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import { CheckCircle2 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -66,6 +67,31 @@ export default function SlugSessionPage() {
       router.replace(`/i/${slug}`);
     }
   }, [sessionId, session.isError, slug, router]);
+
+  // Report uncaught browser errors to this session's Error Log report.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onErr = (e: ErrorEvent) =>
+      reportSessionError(sessionId, {
+        category: "client",
+        message: e.message || "Uncaught error",
+        context: { stage: "window.onerror", file: e.filename?.split("?")[0], line: e.lineno, col: e.colno },
+      });
+    const onRej = (e: PromiseRejectionEvent) => {
+      const r = e.reason as { message?: string } | string | undefined;
+      reportSessionError(sessionId, {
+        category: "client",
+        message: typeof r === "string" ? r : r?.message || "Unhandled promise rejection",
+        context: { stage: "unhandledrejection" },
+      });
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, [sessionId]);
 
 
   if (interview.isLoading || session.isLoading || !interview.data || !session.data) {
