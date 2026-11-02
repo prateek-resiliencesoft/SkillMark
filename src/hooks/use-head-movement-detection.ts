@@ -3,6 +3,7 @@
 import {
   DEFAULT_HEAD_THRESHOLDS,
   HeadMovementMonitor,
+  PoseSmoother,
   classifyFrame,
   matrixToYawPitch,
   type HeadFrameState,
@@ -29,12 +30,23 @@ async function exists(url: string): Promise<boolean> {
 
 interface Options {
   enabled: boolean;
+  /** While true (warning modal open), detection is suspended; on resume a grace period applies. */
+  paused?: boolean;
+  graceMs?: number;
   onViolation: (kind: Exclude<HeadFrameState, "ok">) => void;
 }
 
 /** Webcam head-pose tracking with MediaPipe Face Landmarker (runs fully in the browser). */
-export function useHeadMovementDetection({ enabled, onViolation }: Options) {
+export function useHeadMovementDetection({ enabled, onViolation, paused = false, graceMs = 3000 }: Options) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pausedRef = useRef(paused);
+  const monitorRef = useRef<HeadMovementMonitor | null>(null);
+  const smootherRef = useRef<PoseSmoother | null>(null);
+  useEffect(() => {
+    pausedRef.current = paused;
+    monitorRef.current?.reset(paused ? 0 : Date.now() + graceMs);
+    smootherRef.current?.reset();
+  }, [paused, graceMs]);
   const onViolationRef = useRef(onViolation);
   onViolationRef.current = onViolation;
   const [status, setStatus] = useState<"idle" | "loading" | "active" | "error">("idle");
@@ -46,6 +58,9 @@ export function useHeadMovementDetection({ enabled, onViolation }: Options) {
     let timer: ReturnType<typeof setInterval> | null = null;
     let landmarker: FaceLandmarker | null = null;
     const monitor = new HeadMovementMonitor(DEFAULT_HEAD_THRESHOLDS);
+    const smoother = new PoseSmoother();
+    monitorRef.current = monitor;
+    smootherRef.current = smoother;
 
     (async () => {
       setStatus("loading");
@@ -84,6 +99,7 @@ export function useHeadMovementDetection({ enabled, onViolation }: Options) {
         timer = setInterval(() => {
           if (!landmarker || video.readyState < 2) return;
           if (document.hidden) return; // tab departures are handled by the main anti-cheating guard
+          if (pausedRef.current) return; // warning modal open: no stacking / extra counts
           const now = performance.now();
           let res: FaceLandmarkerResult;
           try {
@@ -93,10 +109,12 @@ export function useHeadMovementDetection({ enabled, onViolation }: Options) {
           }
           const matrices = res.facialTransformationMatrixes ?? [];
           const faceCount = res.faceLandmarks?.length ?? matrices.length;
-          const faces =
+          let faces =
             matrices.length > 0
               ? matrices.map((m) => matrixToYawPitch(m.data))
               : Array.from({ length: faceCount }, () => ({ yaw: 0, pitch: 0 }));
+          if (faces.length === 1) faces = [smoother.update(faces[0])];
+          else if (faces.length === 0) smoother.reset();
           const kind = monitor.update(classifyFrame(faces), Date.now());
           if (kind) onViolationRef.current(kind);
         }, FRAME_INTERVAL_MS);
