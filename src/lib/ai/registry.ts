@@ -47,9 +47,9 @@ async function loadCredsPair(organizationId?: string | null) {
 }
 
 /**
- * Ordered candidates: the .env default keys FIRST (Settings order), then the
- * org's saved AI Provider keys (skipping keys identical to an env key). Legacy
- * Kimi/MiniMax last. Failover moves down this list on quota/auth errors.
+ * Ordered candidates: the owning org's saved AI Provider keys FIRST (Settings
+ * order), then the .env default keys (skipping duplicates). Legacy Kimi/MiniMax
+ * last. Failover moves down this list on quota/auth errors.
  */
 export async function resolveProviderChain(organizationId?: string | null): Promise<ChainEntry[]> {
   const { merged, envOnly } = await loadCredsPair(organizationId);
@@ -58,16 +58,16 @@ export async function resolveProviderChain(organizationId?: string | null): Prom
   const chain: ChainEntry[] = [];
   const seenKeys = new Set<string>();
   for (const id of SETTINGS_ORDER) {
-    const k = envOnly[id].apiKey;
-    if (envOnly[id].from === "env" && k && envMap.has(id)) {
-      chain.push({ provider: envMap.get(id)!, model: modelFor(envMap.get(id)!), source: "env" });
+    const k = merged[id].apiKey;
+    if (merged[id].from === "org" && k && !seenKeys.has(`${id}:${k}`) && orgMap.has(id)) {
+      chain.push({ provider: orgMap.get(id)!, model: modelFor(orgMap.get(id)!), source: "org" });
       seenKeys.add(`${id}:${k}`);
     }
   }
   for (const id of SETTINGS_ORDER) {
-    const k = merged[id].apiKey;
-    if (merged[id].from === "org" && k && !seenKeys.has(`${id}:${k}`) && orgMap.has(id)) {
-      chain.push({ provider: orgMap.get(id)!, model: modelFor(orgMap.get(id)!), source: "org" });
+    const k = envOnly[id].apiKey;
+    if (envOnly[id].from === "env" && k && !seenKeys.has(`${id}:${k}`) && envMap.has(id)) {
+      chain.push({ provider: envMap.get(id)!, model: modelFor(envMap.get(id)!), source: "env" });
       seenKeys.add(`${id}:${k}`);
     }
   }
