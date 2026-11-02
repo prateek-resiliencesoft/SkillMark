@@ -258,6 +258,20 @@ export class FailoverProvider implements LLMProvider {
   models: string[];
   defaultModel: string;
   private last: ChainEntry;
+  /** Per-key failures seen by this instance (no key material — provider/source/slot only). */
+  failures: { provider: string; source: "org" | "env"; keyIndex: number; status?: number; message: string; at: string }[] = [];
+  /** Which entry finally served the call. */
+  served: { provider: string; source: "org" | "env"; keyIndex: number; failover: boolean } | null = null;
+  private noteFailure(e: ChainEntry, err: unknown) {
+    this.failures.push({
+      provider: e.provider.id,
+      source: e.source,
+      keyIndex: e.keyIndex,
+      status: (err as { status?: number })?.status,
+      message: err instanceof Error ? err.message : String(err),
+      at: new Date().toISOString(),
+    });
+  }
   constructor(private chain: ChainEntry[]) {
     this.last = chain[0];
     this.id = chain[0].provider.id;
@@ -299,12 +313,14 @@ export class FailoverProvider implements LLMProvider {
       this.last = e;
       try {
         const res = await e.provider.generateResponse({ ...params, model: this.modelForEntry(i, params.model) });
+        this.served = { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, failover: i > 0 };
         log.info(
           `AI call served by ${e.provider.id} (${e.source} key #${e.keyIndex + 1})${i > 0 ? " after failover" : ""}`,
         );
         return res;
       } catch (err) {
         lastErr = err;
+        this.noteFailure(e, err);
         if (!shouldFailover(err)) throw err;
         if (i === this.chain.length - 1) throw this.allFailed(err);
         log.warn(
@@ -325,9 +341,11 @@ export class FailoverProvider implements LLMProvider {
           yielded = true;
           yield t;
         }
+        this.served = { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, failover: i > 0 };
         return;
       } catch (err) {
         lastErr = err;
+        this.noteFailure(e, err);
         // Mid-stream failure after tokens were sent cannot silently switch providers.
         if (yielded || !shouldFailover(err)) throw err;
         if (i === this.chain.length - 1) throw this.allFailed(err);

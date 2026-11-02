@@ -1,6 +1,7 @@
 import { svgDataUrlToPng } from "@/lib/ai/convert-svg";
 import { extractJson } from "@/lib/ai/extract-json";
 import { createLogger } from "@/lib/logger";
+import { recordAiCallErrors } from "@/lib/session-error-log-server";
 import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { getAuthUser } from "@/lib/auth";
@@ -17,6 +18,7 @@ export async function POST(req: Request) {
 
   const { sessionId } = await req.json();
 
+  let reportProvider: unknown = null;
   try {
     const { data: interviewSession } = await supabaseAdmin
       .from("sessions")
@@ -82,6 +84,7 @@ export async function POST(req: Request) {
       .filter((s) => s.code.trim().length > 0);
 
     const { provider, reportModel } = await resolveTaskModels(interview.project?.organizationId, "report");
+    reportProvider = provider;
     const textMessages = msgs
       .filter((m) => m.contentType === "TEXT")
       .map((m) => ({ role: m.role, content: m.content }));
@@ -141,6 +144,8 @@ export async function POST(req: Request) {
       }
     }
 
+    void recordAiCallErrors({ sessionId, provider, source: "api/ai/summarize", category: "report" });
+
     const parsed = extractJson(response.content);
 
     const insightsData: Record<string, unknown> = {
@@ -172,6 +177,7 @@ export async function POST(req: Request) {
     return NextResponse.json(parsed);
   } catch (error) {
     log.error("Summary generation error:", error);
+    await recordAiCallErrors({ sessionId, provider: reportProvider, source: "api/ai/summarize", category: "report", finalError: error });
     return NextResponse.json(
       { error: "Failed to generate summary" },
       { status: 500 },
