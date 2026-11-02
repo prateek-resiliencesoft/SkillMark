@@ -308,6 +308,18 @@ function getCandidateField(row: UnifiedRow): CandidateRow | null {
   return row.type === "candidate" ? (row as CandidateRow) : null;
 }
 
+function isFormApplicant(row: UnifiedRow): boolean {
+  if (row.type !== "candidate") return false;
+  const n = (row.notes ?? "").toLowerCase();
+  return n.includes("applied via") || n.includes("hosted form");
+}
+
+function getSourceLabel(row: UnifiedRow): "Walk-in" | "Form" | "Invited" {
+  if (row.type === "walkin") return "Walk-in";
+  if (isFormApplicant(row)) return "Form";
+  return "Invited";
+}
+
 function getSessionScore(row: UnifiedRow): number | null {
   const session = row.session;
   if (!session?.insights) return null;
@@ -357,7 +369,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
         ? new Date(row.session.completedAt).getTime()
         : -1;
     case "source":
-      return row.type === "walkin" ? "Walk-in" : "Invited";
+      return getSourceLabel(row);
     case "status":
       return getSessionStatus(row);
   }
@@ -818,7 +830,7 @@ export function CandidateManager({
                 : "";
             break;
           case "source":
-            record[col.label] = row.type === "walkin" ? "Walk-in" : "Invited";
+            record[col.label] = getSourceLabel(row);
             break;
           case "status":
             record[col.label] =
@@ -1218,22 +1230,34 @@ export function CandidateManager({
                             : "-"}
                         </span>
                       ),
-                      source:
-                        row.type === "walkin" ? (
-                          <Badge
-                            variant="secondary"
-                            className="whitespace-nowrap text-xs"
-                          >
-                            Walk-in
-                          </Badge>
-                        ) : (
+                      source: (() => {
+                        const src = getSourceLabel(row);
+                        if (src === "Walk-in") {
+                          return (
+                            <Badge variant="secondary" className="whitespace-nowrap text-xs">
+                              Walk-in
+                            </Badge>
+                          );
+                        }
+                        if (src === "Form") {
+                          return (
+                            <Badge
+                              variant="outline"
+                              className="whitespace-nowrap border-transparent bg-sky-500/10 text-xs text-sky-700 dark:text-sky-300"
+                            >
+                              Form
+                            </Badge>
+                          );
+                        }
+                        return (
                           <Badge
                             variant="outline"
                             className="whitespace-nowrap border-transparent bg-primary/5 text-xs text-primary"
                           >
                             Invited
                           </Badge>
-                        ),
+                        );
+                      })(),
                       status: (
                         <Badge
                           variant={getSessionBadgeVariant(status)}

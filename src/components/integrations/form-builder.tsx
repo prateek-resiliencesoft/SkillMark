@@ -157,6 +157,9 @@ export function FormBuilder({ formId }: { formId: string }) {
   const unpublish = trpc.interviewForm.unpublish.useMutation({ onError: onErr });
   const duplicate = trpc.interviewForm.duplicate.useMutation({ onError: onErr });
   const sync = trpc.interviewForm.syncInterview.useMutation({ onError: onErr });
+  const attach = trpc.interviewForm.attachInterview.useMutation({ onError: onErr });
+  const projectInterviews = trpc.interviewForm.projectInterviews.useQuery({ id: formId });
+  const [attachId, setAttachId] = useState("");
 
   const markDirty = () => setDirty(true);
   const setField = (id: string, f: FormField) => { setFields((p) => p.map((x) => (x.id === id ? f : x))); markDirty(); };
@@ -335,6 +338,37 @@ export function FormBuilder({ formId }: { formId: string }) {
                   </>
                 )}
               </div>
+              <div className="mt-4 space-y-2 rounded-md border p-3">
+                <Label className="text-sm font-medium">Or attach an existing interview</Label>
+                <p className="text-xs text-muted-foreground">Use a project interview you already created. Applicants go to that interview after submit.</p>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[220px] flex-1 space-y-1">
+                    <select className={sel} value={attachId || form.interviewId || ""} onChange={(e) => setAttachId(e.target.value)}>
+                      <option value="">Select interview…</option>
+                      {(projectInterviews.data ?? []).map((iv) => (
+                        <option key={iv.id} value={iv.id}>
+                          {iv.title}{form.interviewId === iv.id ? " (linked)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={attach.isLoading || !(attachId || form.interviewId)}
+                    onClick={async () => {
+                      const interviewId = attachId || form.interviewId;
+                      if (!interviewId) return;
+                      await attach.mutateAsync({ id: formId, interviewId });
+                      toast({ title: "Interview attached" });
+                      setAttachId("");
+                      utils.interviewForm.get.invalidate({ id: formId });
+                    }}
+                  >
+                    {attach.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Attach selected
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -346,6 +380,89 @@ export function FormBuilder({ formId }: { formId: string }) {
               <div className="space-y-1"><Label>Candidate-facing intro</Label><Textarea rows={2} value={description} onChange={(e) => { setDescription(e.target.value); markDirty(); }} /></div>
               <div className="space-y-1"><Label>Success message</Label><Input value={settings.successMessage ?? ""} onChange={(e) => { setSettings((s) => ({ ...s, successMessage: e.target.value })); markDirty(); }} /></div>
               <label className="flex items-center gap-2 text-sm"><Switch checked={settings.redirectToInterview !== false} onCheckedChange={(v) => { setSettings((s) => ({ ...s, redirectToInterview: v })); markDirty(); }} /> Redirect candidate to the interview after submitting (hosted form)</label>
+
+              <div className="space-y-3 border-t pt-4">
+                <div className="text-sm font-medium">Invite delivery after submit</div>
+                <p className="text-xs text-muted-foreground">Requires Email / WhatsApp under Integrations. Phone needs country code (+91…).</p>
+                <label className="flex items-center gap-2 text-sm"><Switch checked={settings.sendInviteEmail !== false} onCheckedChange={(v) => { setSettings((s) => ({ ...s, sendInviteEmail: v })); markDirty(); }} /> Send interview link via email</label>
+                <label className="flex items-center gap-2 text-sm"><Switch checked={settings.sendInviteWhatsapp !== false} onCheckedChange={(v) => { setSettings((s) => ({ ...s, sendInviteWhatsapp: v })); markDirty(); }} /> Send interview link via WhatsApp</label>
+              </div>
+
+              <div className="space-y-3 border-t pt-4">
+                <div className="text-sm font-medium">Schedule &amp; link expiry</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label>Interview schedule</Label>
+                    <select
+                      className={sel}
+                      value={settings.inviteSchedule ?? "immediate"}
+                      onChange={(e) => {
+                        setSettings((s) => ({ ...s, inviteSchedule: e.target.value as FormSettings["inviteSchedule"] }));
+                        markDirty();
+                      }}
+                    >
+                      <option value="immediate">Immediate (now)</option>
+                      <option value="tomorrow">Tomorrow 10:00</option>
+                      <option value="next_week">Next week 10:00</option>
+                      <option value="custom">Custom datetime</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Link expiry</Label>
+                    <select
+                      className={sel}
+                      value={String(settings.linkExpiryDays ?? 7)}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setSettings((s) => ({ ...s, linkExpiryDays: n === 0 ? null : n }));
+                        markDirty();
+                      }}
+                    >
+                      <option value="0">No expiry</option>
+                      <option value="1">1 day</option>
+                      <option value="3">3 days</option>
+                      <option value="7">7 days</option>
+                      <option value="14">14 days</option>
+                      <option value="30">30 days</option>
+                    </select>
+                  </div>
+                </div>
+                {(settings.inviteSchedule ?? "immediate") === "custom" && (
+                  <div className="space-y-1">
+                    <Label>Custom schedule (local)</Label>
+                    <Input
+                      type="datetime-local"
+                      value={settings.inviteScheduledAt ? settings.inviteScheduledAt.slice(0, 16) : ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSettings((s) => ({
+                          ...s,
+                          inviteScheduledAt: v ? new Date(v).toISOString() : null,
+                        }));
+                        markDirty();
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3 border-t pt-4">
+                <div className="text-sm font-medium">Interview routing</div>
+                <div className="space-y-1">
+                  <Label>On submit</Label>
+                  <select
+                    className={sel}
+                    value={settings.interviewMode ?? "linked"}
+                    onChange={(e) => {
+                      setSettings((s) => ({ ...s, interviewMode: e.target.value as FormSettings["interviewMode"] }));
+                      markDirty();
+                    }}
+                  >
+                    <option value="linked">Always use linked interview</option>
+                    <option value="match_role">Match existing project interview by role/title, else linked</option>
+                  </select>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>

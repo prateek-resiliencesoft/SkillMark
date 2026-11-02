@@ -13,6 +13,8 @@ import {
 } from "@/lib/forms/schema";
 import { storage } from "@/lib/storage";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
+import { resolveInviteSchedule, sendCandidateInvite, type InviteDeliveryResult } from "@/server/invite-delivery";
 
 export const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
 export const FILES_BUCKET = "applications";
@@ -172,7 +174,13 @@ export async function createApplication(opts: {
   environment?: "test" | "live";
   ip?: string | null;
   baseUrl: string;
-}) {
+}): Promise<{
+  id: string;
+  status: string;
+  interview_url: string | null;
+  delivery: InviteDeliveryResult;
+  [key: string]: unknown;
+}> {
   const { form, input } = opts;
   if (form.status !== "published") {
     throw new SubmissionError("FORM_NOT_PUBLISHED", "This form is not published", 409);
@@ -210,10 +218,14 @@ export async function createApplication(opts: {
     throw new SubmissionError("VALIDATION_ERROR", "Submission failed validation", 422, errors);
   }
 
-  if (!form.interviewId) {
+  const settings = (form.settings ?? {}) as FormSettings;
+  const config = (form.config ?? {}) as unknown as InterviewConfig;
+  const interviewId = await resolveFormInterviewId(form, result.values, settings, config);
+  if (!interviewId) {
     throw new SubmissionError("FORM_NOT_READY", "This form has no interview configured yet", 409);
   }
 
+  const { scheduledAt, expiresAt } = resolveInviteSchedule(settings);
   const publicId = `app_${nanoid(20)}`;
 
   // Candidate first so object keys can use org/project/candidate layout.
@@ -221,11 +233,13 @@ export async function createApplication(opts: {
   const { data: candidate, error: candErr } = await supabaseAdmin
     .from("candidates")
     .insert({
-      interviewId: form.interviewId,
+      interviewId,
       name,
       email: email || null,
       phone: phone || null,
       inviteToken,
+      scheduledAt,
+      expiresAt,
       notes: `Applied via ${opts.source === "api" ? "API" : "hosted form"} (${form.name})`,
     })
     .select("id")
@@ -235,9 +249,9 @@ export async function createApplication(opts: {
   const { data: interviewRow } = await supabaseAdmin
     .from("interviews")
     .select("projectId")
-    .eq("id", form.interviewId)
+    .eq("id", interviewId)
     .maybeSingle();
-  const projectId = interviewRow?.projectId || "unknown";
+  const projectId = interviewRow?.projectId || form.projectId || "unknown";
 
   // Store files: orgs/{org}/projects/{project}/candidates/{id}/cv|other/...
   const storedFiles: Record<string, { name: string; size: number; type: string; path: string }[]> = {};
@@ -269,7 +283,7 @@ export async function createApplication(opts: {
       publicId,
       formId: form.id,
       organizationId: form.organizationId,
-      interviewId: form.interviewId,
+      interviewId,
       candidateId: candidate.id,
       candidateName: name,
       candidateEmail: email || null,
@@ -286,7 +300,94 @@ export async function createApplication(opts: {
     .single();
   if (appErr || !app) throw new SubmissionError("INTERNAL_ERROR", "Failed to save application", 500);
 
-  return serializeApplication(app, form, { inviteToken, sessionId: null }, null, opts.baseUrl, false);
+  // Deliver invite (email / WhatsApp). Failures never fail the application itself.
+  const wantEmail = settings.sendInviteEmail !== false && !!email;
+  const wantWhatsapp = settings.sendInviteWhatsapp !== false && !!phone;
+  let delivery: Awaited<ReturnType<typeof sendCandidateInvite>> = {};
+  if (wantEmail || wantWhatsapp) {
+    delivery = await sendCandidateInvite(supabaseAdmin, form.organizationId, candidate.id, {
+      email: wantEmail,
+      whatsapp: wantWhatsapp,
+    });
+  }
+
+  const serialized = (await serializeApplication(
+    app,
+    form,
+    { inviteToken, sessionId: null },
+    null,
+    opts.baseUrl,
+    false,
+  )) as Record<string, unknown>;
+  return {
+    id: String(serialized.id ?? ""),
+    status: String(serialized.status ?? "pending"),
+    interview_url: (serialized.interview_url as string | null) ?? null,
+    form_id: serialized.form_id,
+    form_name: serialized.form_name,
+    source: serialized.source,
+    environment: serialized.environment,
+    candidate: serialized.candidate,
+    created_at: serialized.created_at,
+    updated_at: serialized.updated_at,
+    delivery,
+  };
+}
+
+/** Pick interview for a form submission: linked, or match by role/title in the same project. */
+async function resolveFormInterviewId(
+  form: FormRow,
+  answers: Record<string, unknown>,
+  settings: FormSettings,
+  config: InterviewConfig,
+): Promise<string | null> {
+  const linked = form.interviewId;
+  if (settings.interviewMode !== "match_role" || !form.projectId) return linked;
+
+  const roleHints = [
+    config.jobRole,
+    config.title,
+    answers.job_role,
+    answers.role,
+    answers.position,
+    answers.job_title,
+  ]
+    .map((v) => String(v ?? "").trim().toLowerCase())
+    .filter((s) => s.length >= 2);
+
+  if (!roleHints.length) return linked;
+
+  const { data: inProject } = await supabaseAdmin
+    .from("interviews")
+    .select("id, title, description")
+    .eq("projectId", form.projectId)
+    .order("updatedAt", { ascending: false })
+    .limit(80);
+  if (inProject?.length) {
+    const hit = matchInterviewByRole(inProject, roleHints);
+    if (hit) return hit;
+  }
+
+  return linked;
+}
+
+function matchInterviewByRole(
+  rows: { id: string; title: string | null; description: string | null }[],
+  roleHints: string[],
+): string | null {
+  for (const hint of roleHints) {
+    const exact = rows.find((r) => (r.title ?? "").toLowerCase() === hint);
+    if (exact) return exact.id;
+  }
+  for (const hint of roleHints) {
+    const partial = rows.find((r) => {
+      const t = (r.title ?? "").toLowerCase();
+      const d = (r.description ?? "").toLowerCase();
+      return t.includes(hint) || hint.includes(t) || d.includes(hint);
+    });
+    if (partial) return partial.id;
+  }
+  return null;
 }
 
 export async function loadApplicationContext(app: Record<string, any>) {

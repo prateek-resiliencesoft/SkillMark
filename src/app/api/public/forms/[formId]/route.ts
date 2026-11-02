@@ -68,7 +68,14 @@ export async function POST(request: Request, { params }: { params: { formId: str
     }
     delete input.answers["_hp"];
     const app = await createApplication({ form, input, source: "hosted", ip, baseUrl: appBaseUrl(request) });
-    return Response.json({ data: { id: app.id, status: app.status, interview_url: app.interview_url } }, { status: 201 });
+    return Response.json({
+      data: {
+        id: app.id,
+        status: app.status,
+        interview_url: app.interview_url,
+        delivery: app.delivery,
+      },
+    }, { status: 201 });
   } catch (err) {
     return submissionErrorResponse(err);
   }
