@@ -1,4 +1,8 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  objectPathFromSignedUrl,
+  pathBelongsToSession,
+} from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getOrgMembership, hasProjectAccess, protectedProcedure, router } from "../trpc";
@@ -10,10 +14,28 @@ interface ScreenshotEntry {
   type: "camera" | "screen";
 }
 
-async function resolveSignedUrl(bucket: string, path: string): Promise<string | null> {
+/**
+ * Re-sign only when the object path is owned by this session's organization.
+ * Prevents a poisoned path/URL from minting access to another tenant's media.
+ */
+async function resolveSessionSignedUrl(
+  bucket: string,
+  urlOrPath: string,
+  sessionId: string,
+  organizationId: string,
+): Promise<string | null> {
+  const objectPath =
+    objectPathFromSignedUrl(bucket, urlOrPath) ??
+    (urlOrPath.includes("/") || !urlOrPath.includes("://")
+      ? urlOrPath.replace(/^\/+/, "").split("?")[0]
+      : null);
+  if (!objectPath) return null;
+  if (!pathBelongsToSession(objectPath, sessionId, organizationId)) {
+    return null;
+  }
   const { data, error } = await supabaseAdmin.storage
     .from(bucket)
-    .createSignedUrl(path, 60 * 60 * 24); // 24 hours
+    .createSignedUrl(objectPath, 60 * 60 * 24); // 24 hours
   if (error || !data?.signedUrl) return null;
   return data.signedUrl;
 }
@@ -53,22 +75,29 @@ export const analysisRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this project" });
       }
 
+      const organizationId = interview.project.organizationId;
       const mediaClearedAt = (session as { mediaClearedAt?: string | null }).mediaClearedAt ?? null;
 
       // Generate fresh signed URLs for recordings and screenshots (skip if media wiped)
       let audioRecordingUrl: string | null = null;
       if (!mediaClearedAt && session.audioRecordingUrl) {
         const storedUrl = session.audioRecordingUrl as string;
-        if (storedUrl.startsWith("orgs/")) {
-          audioRecordingUrl = await resolveSignedUrl("recordings", storedUrl);
-        } else {
-          const pathMatch = storedUrl.match(/\/recordings\/(.+?)(?:\?|$)/);
-          if (pathMatch) {
-            audioRecordingUrl = await resolveSignedUrl("recordings", pathMatch[1]);
-          }
-        }
+        audioRecordingUrl = await resolveSessionSignedUrl(
+          "recordings",
+          storedUrl,
+          input.sessionId,
+          organizationId,
+        );
+        // Legacy fallback: keep the stored URL only when it already belongs
+        // to this session (never re-sign a foreign path).
         if (!audioRecordingUrl) {
-          audioRecordingUrl = storedUrl.startsWith("http") ? storedUrl : null;
+          const bare = objectPathFromSignedUrl("recordings", storedUrl);
+          if (bare && pathBelongsToSession(bare, input.sessionId, organizationId)) {
+            audioRecordingUrl = storedUrl;
+          } else if (!bare && storedUrl.startsWith("http")) {
+            // Last resort for opaque absolute URLs with no extractable path.
+            audioRecordingUrl = null;
+          }
         }
       }
 
@@ -78,7 +107,12 @@ export const analysisRouter = router({
         screenshots = await Promise.all(
           rawScreenshots.map(async (s) => {
             const signed = s.path
-              ? await resolveSignedUrl("screenshots", s.path)
+              ? await resolveSessionSignedUrl(
+                  "screenshots",
+                  s.path,
+                  input.sessionId,
+                  organizationId,
+                )
               : null;
             return { ...s, url: signed || s.url };
           }),

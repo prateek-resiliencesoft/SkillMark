@@ -3,6 +3,7 @@
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useAuth } from "@/components/auth-provider";
 import { OrgRequireGate } from "@/components/org-require-gate";
+import { useOrg } from "@/components/org-provider";
 import { TourCelebration } from "@/components/tour/tour-celebration";
 import { TourOverlay } from "@/components/tour/tour-overlay";
 import { TourProvider } from "@/components/tour/tour-provider";
@@ -471,6 +472,14 @@ export function Sidebar({
                 {t("sidebar.accountSettings")}
               </Link>
             </DropdownMenuItem>
+            {profile?.role === "ADMIN" ? (
+              <DropdownMenuItem asChild>
+                <Link href="/admin" className="flex items-center gap-2">
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4" />
+                  {t("sidebar.controlCenter")}
+                </Link>
+              </DropdownMenuItem>
+            ) : null}
             <ThemeToggle />
             <DropdownMenuItem
               className="flex items-center gap-2 text-destructive"
@@ -528,6 +537,20 @@ export function SidebarToggle({
   );
 }
 
+function PausedOrgBanner() {
+  const { currentOrg } = useOrg();
+  const { t } = useAppLocale();
+  if (!currentOrg || currentOrg.status !== "SUSPENDED") return null;
+  return (
+    <div
+      role="status"
+      className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-center text-xs text-amber-800 dark:text-amber-200"
+    >
+      {t("org.pausedBanner")}
+    </div>
+  );
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -547,6 +570,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 />
               }
             />
+            <PausedOrgBanner />
             <main className="flex-1 overflow-y-auto p-6 code-scrollbar bg-background">
               <OrgRequireGate>{children}</OrgRequireGate>
             </main>

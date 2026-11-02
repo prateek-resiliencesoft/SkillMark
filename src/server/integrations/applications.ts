@@ -14,6 +14,7 @@ import {
 import { storage } from "@/lib/storage";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
+import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { resolveInviteSchedule, sendCandidateInvite, type InviteDeliveryResult } from "@/server/invite-delivery";
 
 export const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
@@ -409,11 +410,18 @@ export async function loadApplicationContext(app: Record<string, any>) {
   return { candidate, session };
 }
 
-async function signFiles(files: Record<string, { name: string; size: number; type: string; path: string }[]>) {
+async function signFiles(
+  files: Record<string, { name: string; size: number; type: string; path: string }[]>,
+  organizationId: string,
+) {
   const out: Record<string, { name: string; size: number; type: string; url: string | null }[]> = {};
   for (const [k, list] of Object.entries(files ?? {})) {
     out[k] = [];
     for (const f of list) {
+      if (!pathBelongsToOrganization(f.path, organizationId)) {
+        out[k].push({ name: f.name, size: f.size, type: f.type, url: null });
+        continue;
+      }
       const { data } = await storage.from(FILES_BUCKET).createSignedUrl(f.path, 3600);
       out[k].push({ name: f.name, size: f.size, type: f.type, url: data?.signedUrl ?? null });
     }
@@ -447,9 +455,13 @@ export function applicationHasCv(files: unknown): boolean {
 /** Signed URL for the CV attached to an application (1h). */
 export async function signApplicationCv(
   files: Record<string, StoredFile[]> | null | undefined,
+  organizationId?: string,
 ): Promise<{ name: string; url: string; type: string } | null> {
   const cv = pickCvFile(files);
   if (!cv) return null;
+  if (organizationId && !pathBelongsToOrganization(cv.path, organizationId)) {
+    return null;
+  }
   const { data, error } = await storage.from(FILES_BUCKET).createSignedUrl(cv.path, 3600);
   if (error || !data?.signedUrl) return null;
   return { name: cv.name, url: data.signedUrl, type: cv.type || "application/octet-stream" };
@@ -478,7 +490,7 @@ export async function serializeApplication(
   };
   if (!detailed) return base;
   base.answers = app.answers ?? {};
-  base.files = await signFiles(app.files ?? {});
+  base.files = await signFiles(app.files ?? {}, String(app.organizationId ?? ""));
   base.interview = session
     ? {
         session_id: session.id,

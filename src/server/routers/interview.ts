@@ -104,7 +104,7 @@ async function resolveDefaultProject(
 ): Promise<string | null> {
   const { data: membership } = await supabase
     .from("organization_members")
-    .select("workspaceId")
+    .select("organizationId")
     .eq("userId", userId)
     .limit(1)
     .single();
@@ -114,7 +114,7 @@ async function resolveDefaultProject(
   const { data: defaultProject } = await supabase
     .from("projects")
     .select("id")
-    .eq("organizationId", membership.workspaceId)
+    .eq("organizationId", membership.organizationId)
     .order("createdAt", { ascending: true })
     .limit(1)
     .single();
@@ -190,11 +190,11 @@ export const interviewRouter = router({
       } else {
         const { data: memberships } = await ctx.supabase
           .from("organization_members")
-          .select("workspaceId")
+          .select("organizationId")
           .eq("userId", ctx.user.id);
 
         const orgIds = (memberships ?? []).map(
-          (m: { workspaceId: string }) => m.workspaceId,
+          (m: { organizationId: string }) => m.organizationId,
         );
         if (orgIds.length === 0)
           return { interviews: [], nextCursor: undefined };
@@ -366,7 +366,7 @@ export const interviewRouter = router({
         // Auto-resolve: pick the user's first org's first project
         const { data: membership } = await ctx.supabase
           .from("organization_members")
-          .select("workspaceId")
+          .select("organizationId")
           .eq("userId", ctx.user.id)
           .limit(1)
           .single();
@@ -381,7 +381,7 @@ export const interviewRouter = router({
         const { data: defaultProject } = await ctx.supabase
           .from("projects")
           .select("id")
-          .eq("organizationId", membership.workspaceId)
+          .eq("organizationId", membership.organizationId)
           .order("createdAt", { ascending: true })
           .limit(1)
           .single();
@@ -441,6 +441,8 @@ export const interviewRouter = router({
       );
       assertMinRole(effectiveRole, "MEMBER");
 
+      const { assertQuota } = await import("../quotas");
+      await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
 
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { projectId: _pid, ...rest } = input;
@@ -521,6 +523,9 @@ export const interviewRouter = router({
         membership.role,
       );
       assertMinRole(effectiveRole, "MEMBER");
+
+      const { assertQuota } = await import("../quotas");
+      await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
 
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
@@ -876,11 +881,11 @@ export const interviewRouter = router({
       // Get all org IDs for the user
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       let orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
 
       if (input?.organizationId) {
@@ -986,11 +991,11 @@ export const interviewRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       const orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
       if (orgIds.length === 0) return emptyDashboard();
 

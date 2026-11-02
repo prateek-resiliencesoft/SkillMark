@@ -38,6 +38,25 @@ const enforceUserIsAuthed = middleware(async ({ ctx, next }) => {
 
 export const protectedProcedure = t.procedure.use(enforceUserIsAuthed);
 
+/**
+ * Platform admin only. Checks profiles.role === 'ADMIN'.
+ * Imported lazily inside the middleware to keep module init order clean.
+ */
+const enforcePlatformAdmin = middleware(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED" });
+  }
+  const { requirePlatformAdmin } = await import("./tenant");
+  await requirePlatformAdmin(ctx.supabase, ctx.user.id);
+  return next({
+    ctx: {
+      user: ctx.user,
+    },
+  });
+});
+
+export const platformProcedure = t.procedure.use(enforcePlatformAdmin);
+
 /* ------------------------------------------------------------------ */
 /*  RBAC helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -75,7 +94,7 @@ export async function getOrgMembership(
   const { data } = await supabase
     .from("organization_members")
     .select("role")
-    .eq("workspaceId", organizationId)
+    .eq("organizationId", organizationId)
     .eq("userId", userId)
     .single();
 

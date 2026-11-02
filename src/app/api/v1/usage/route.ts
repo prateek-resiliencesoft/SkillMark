@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   const { count: seatCount } = await supabaseAdmin
     .from("organization_members")
     .select("id", { count: "exact", head: true })
-    .eq("workspaceId", auth.organizationId);
+    .eq("organizationId", auth.organizationId);
 
   return Response.json({
     data: {

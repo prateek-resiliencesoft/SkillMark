@@ -4,7 +4,7 @@ import { useAppLocale } from "@/components/app-locale-provider";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Settings, Users } from "lucide-react";
+import { CreditCard, Settings, Users } from "lucide-react";
 
 export default function OrgSettingsLayout({
   children,
@@ -25,6 +25,11 @@ export default function OrgSettingsLayout({
       name: isZh ? "成员" : "Members",
       href: "/org/settings/members",
       icon: Users,
+    },
+    {
+      name: isZh ? "计划" : "Plan",
+      href: "/org/settings/plan",
+      icon: CreditCard,
     },
   ];
 

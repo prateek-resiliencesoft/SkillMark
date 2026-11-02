@@ -3,21 +3,30 @@ import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
 import { resolveProvider } from "@/lib/ai/registry";
 import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
-
-const log = createLogger("api/ai/chat");
 import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { assertActiveInterviewSession } from "@/lib/session-access";
 import { NextResponse } from "next/server";
+
+const log = createLogger("api/ai/chat");
 
 export async function POST(req: Request) {
   const { sessionId, interviewId, messages, currentQuestionIndex } =
     await req.json();
 
   try {
+    const access = await assertActiveInterviewSession(sessionId, interviewId);
+    if (!access.ok) {
+      return NextResponse.json(
+        { error: access.error },
+        { status: access.status },
+      );
+    }
+
     const { data: interview } = await supabaseAdmin
       .from("interviews")
       .select("*, questions(*), project:projects(organizationId)")
-      .eq("id", interviewId)
+      .eq("id", access.interviewId)
       .order("order", { referencedTable: "questions", ascending: true })
       .single();
 
@@ -85,7 +94,7 @@ export async function POST(req: Request) {
       .trim();
 
     await supabaseAdmin.from("messages").insert({
-      sessionId,
+      sessionId: access.sessionId,
       role: "ASSISTANT" as const,
       content: cleanContent,
       wordCount: cleanContent.split(/\s+/).length,
@@ -99,7 +108,7 @@ export async function POST(req: Request) {
         await supabaseAdmin
           .from("sessions")
           .update({ currentQuestionId: nextQuestion.id })
-          .eq("id", sessionId);
+          .eq("id", access.sessionId);
       }
     }
 

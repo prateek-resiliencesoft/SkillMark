@@ -48,7 +48,7 @@ export async function verifyBatchAccess(supabase: Db, batchId: string, userId: s
 export async function resolveDefaultProjectId(supabase: Db, userId: string): Promise<string> {
   const { data: membership } = await supabase
     .from("organization_members")
-    .select("workspaceId")
+    .select("organizationId")
     .eq("userId", userId)
     .limit(1)
     .single();
@@ -57,7 +57,7 @@ export async function resolveDefaultProjectId(supabase: Db, userId: string): Pro
   const { data: project } = await supabase
     .from("projects")
     .select("id")
-    .eq("organizationId", membership.workspaceId)
+    .eq("organizationId", membership.organizationId)
     .order("createdAt", { ascending: true })
     .limit(1)
     .single();

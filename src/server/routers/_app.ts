@@ -17,6 +17,8 @@ import { batchRouter } from "./batch";
 import { integrationRouter } from "./integration";
 import { interviewFormRouter } from "./interviewForm";
 import { aiSettingsRouter } from "./aiSettings";
+import { platformRouter } from "./platform";
+import { billingRouter } from "./billing";
 
 export const appRouter = router({
   auth: authRouter,
@@ -37,6 +39,8 @@ export const appRouter = router({
   integration: integrationRouter,
   interviewForm: interviewFormRouter,
   aiSettings: aiSettingsRouter,
+  platform: platformRouter,
+  billing: billingRouter,
 });
 
 export type AppRouter = typeof appRouter;

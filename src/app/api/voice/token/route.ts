@@ -1,23 +1,34 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createLogger } from "@/lib/logger";
+import { assertActiveInterviewSession } from "@/lib/session-access";
 
 const log = createLogger("api/voice/token");
 
 /**
  * POST /api/voice/token
- * Validate the interview exists and return session metadata.
+ * Bind voice init to an in-progress session for the given interview.
  */
 export async function POST(req: Request) {
-  const { interviewId, sessionId } = await req.json();
-
   try {
+    const body = await req.json();
+    const access = await assertActiveInterviewSession(
+      body.sessionId,
+      body.interviewId,
+    );
+    if (!access.ok) {
+      return NextResponse.json(
+        { error: access.error },
+        { status: access.status },
+      );
+    }
+
     const { data: interview } = await supabaseAdmin
       .from("interviews")
-      .select("*, questions(*)")
-      .eq("id", interviewId)
+      .select("id, title, aiName, questions(id)")
+      .eq("id", access.interviewId)
       .order("order", { referencedTable: "questions", ascending: true })
-      .single();
+      .maybeSingle();
 
     if (!interview) {
       return NextResponse.json(
@@ -29,7 +40,7 @@ export async function POST(req: Request) {
     const questions = (interview.questions ?? []) as unknown[];
 
     return NextResponse.json({
-      sessionId,
+      sessionId: access.sessionId,
       interviewTitle: interview.title,
       aiName: interview.aiName,
       questionCount: questions.length,
