@@ -1,5 +1,6 @@
 "use client";
 
+import { adminActionLabel } from "@/lib/admin-actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,19 +35,6 @@ function Stat({
       ) : null}
     </div>
   );
-}
-
-function actionLabel(action: string): string {
-  switch (action) {
-    case "org.pause":
-      return "Paused an organization";
-    case "org.resume":
-      return "Resumed an organization";
-    case "org.set_plan":
-      return "Changed a plan";
-    default:
-      return action.replace(/\./g, " ");
-  }
 }
 
 export default function AdminOverviewPage() {
@@ -138,7 +126,7 @@ export default function AdminOverviewPage() {
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">
-                      {actionLabel(row.action)}
+                      {adminActionLabel(row.action)}
                     </p>
                     <p className="truncate text-xs text-muted-foreground">
                       {row.actorName}

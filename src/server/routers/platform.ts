@@ -5,6 +5,7 @@
  * `platformProcedure` (profiles.role = ADMIN). User-facing copy stays plain —
  * "pause", "plan", "people" — never tenant/IDOR jargon.
  */
+import { nanoid } from "@/lib/id";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { platformProcedure, router } from "../trpc";
@@ -16,6 +17,8 @@ import {
 
 const orgStatusEnum = z.enum(["ACTIVE", "SUSPENDED", "DELETED"]);
 const orgPlanEnum = z.enum(["FREE", "PRO", "ENTERPRISE", "SELF_HOSTED"]);
+const memberRoleEnum = z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
+const platformRoleEnum = z.enum(["USER", "ADMIN", "ENTERPRISE"]);
 
 const PLAN_LABEL: Record<OrgPlan, string> = {
   FREE: "Free",
@@ -29,6 +32,21 @@ const STATUS_LABEL: Record<OrgStatus, string> = {
   SUSPENDED: "Paused",
   DELETED: "Removed",
 };
+
+const MEMBER_ROLE_LABEL: Record<string, string> = {
+  OWNER: "Owner",
+  ADMIN: "Admin",
+  MEMBER: "Member",
+  VIEWER: "Viewer",
+};
+
+const PLATFORM_ROLE_LABEL: Record<string, string> = {
+  USER: "Standard",
+  ADMIN: "Platform admin",
+  ENTERPRISE: "Enterprise",
+};
+
+const limitValue = z.number().int().min(0).nullable();
 
 export const platformRouter = router({
   /** Lightweight gate for the admin UI shell. */
@@ -100,12 +118,13 @@ export const platformRouter = router({
           "id, name, slug, ownerId, status, plan, limits, featureFlags, createdAt, updatedAt",
           { count: "exact" },
         )
-        .neq("status", "DELETED")
         .order("createdAt", { ascending: false })
         .range(offset, offset + limit - 1);
 
       if (input?.status) {
         req = req.eq("status", input.status);
+      } else {
+        req = req.neq("status", "DELETED");
       }
       if (q) {
         // PostgREST or() filter — name/slug ilike
@@ -178,7 +197,7 @@ export const platformRouter = router({
       const { data: org } = await ctx.supabase
         .from("organizations")
         .select(
-          "id, name, slug, ownerId, status, plan, limits, featureFlags, createdAt, updatedAt",
+          "id, name, slug, ownerId, status, plan, limits, featureFlags, stripeCustomerId, stripeSubscriptionId, billingEmail, createdAt, updatedAt",
         )
         .eq("id", input.id)
         .maybeSingle();
@@ -190,25 +209,89 @@ export const platformRouter = router({
         });
       }
 
-      const [{ count: memberCount }, { count: projectCount }, { data: owner }] =
-        await Promise.all([
-          ctx.supabase
-            .from("organization_members")
-            .select("id", { count: "exact", head: true })
-            .eq("organizationId", input.id),
-          ctx.supabase
-            .from("projects")
-            .select("id", { count: "exact", head: true })
-            .eq("organizationId", input.id),
-          ctx.supabase
-            .from("profiles")
-            .select("id, email, name")
-            .eq("id", org.ownerId)
-            .maybeSingle(),
-        ]);
+      const [
+        { data: memberRows },
+        { data: projectRows },
+        { count: pendingInviteCount },
+        { data: owner },
+        { data: auditRows },
+      ] = await Promise.all([
+        ctx.supabase
+          .from("organization_members")
+          .select("id, userId, role, createdAt")
+          .eq("organizationId", input.id)
+          .order("createdAt", { ascending: true }),
+        ctx.supabase
+          .from("projects")
+          .select("id")
+          .eq("organizationId", input.id),
+        ctx.supabase
+          .from("organization_invites")
+          .select("id", { count: "exact", head: true })
+          .eq("organizationId", input.id)
+          .eq("status", "PENDING"),
+        ctx.supabase
+          .from("profiles")
+          .select("id, email, name, role")
+          .eq("id", org.ownerId)
+          .maybeSingle(),
+        ctx.supabase
+          .from("platform_audit_logs")
+          .select("id, actorId, action, meta, createdAt")
+          .eq("targetType", "organization")
+          .eq("targetId", input.id)
+          .order("createdAt", { ascending: false })
+          .limit(20),
+      ]);
+
+      const projectIds = (projectRows ?? []).map((p) => p.id as string);
+      let interviewCount = 0;
+      if (projectIds.length > 0) {
+        const { count } = await ctx.supabase
+          .from("interviews")
+          .select("id", { count: "exact", head: true })
+          .in("projectId", projectIds);
+        interviewCount = count ?? 0;
+      }
+
+      const members = memberRows ?? [];
+      const userIds = Array.from(new Set(members.map((m) => m.userId as string)));
+      const profileMap: Record<
+        string,
+        { email: string; name: string | null; role: string }
+      > = {};
+      if (userIds.length > 0) {
+        const { data: profiles } = await ctx.supabase
+          .from("profiles")
+          .select("id, email, name, role")
+          .in("id", userIds);
+        for (const p of profiles ?? []) {
+          profileMap[p.id as string] = {
+            email: p.email as string,
+            name: (p.name as string | null) ?? null,
+            role: p.role as string,
+          };
+        }
+      }
+
+      const actorIds = Array.from(
+        new Set((auditRows ?? []).map((r) => r.actorId as string)),
+      );
+      const actorMap: Record<string, string> = {};
+      if (actorIds.length > 0) {
+        const { data: actors } = await ctx.supabase
+          .from("profiles")
+          .select("id, email, name")
+          .in("id", actorIds);
+        for (const a of actors ?? []) {
+          actorMap[a.id as string] =
+            (a.name as string) || (a.email as string) || "Someone";
+        }
+      }
 
       const status = (org.status as OrgStatus) ?? "ACTIVE";
       const plan = (org.plan as OrgPlan) ?? "SELF_HOSTED";
+      const limits = (org.limits as Record<string, unknown>) ?? {};
 
       return {
         id: org.id as string,
@@ -218,17 +301,53 @@ export const platformRouter = router({
         statusLabel: STATUS_LABEL[status],
         plan,
         planLabel: PLAN_LABEL[plan],
-        limits: (org.limits as Record<string, unknown>) ?? {},
+        limits: {
+          seats: typeof limits.seats === "number" ? limits.seats : null,
+          interviews:
+            typeof limits.interviews === "number" ? limits.interviews : null,
+          projects:
+            typeof limits.projects === "number" ? limits.projects : null,
+        },
         featureFlags: (org.featureFlags as Record<string, unknown>) ?? {},
-        memberCount: memberCount ?? 0,
-        projectCount: projectCount ?? 0,
+        billing: {
+          email: (org.billingEmail as string | null) ?? null,
+          stripeCustomerId: (org.stripeCustomerId as string | null) ?? null,
+          stripeSubscriptionId:
+            (org.stripeSubscriptionId as string | null) ?? null,
+        },
+        memberCount: members.length,
+        projectCount: projectIds.length,
+        interviewCount,
+        pendingInviteCount: pendingInviteCount ?? 0,
         owner: owner
           ? {
               id: owner.id as string,
               email: owner.email as string,
               name: (owner.name as string | null) ?? null,
+              platformRole: owner.role as string,
             }
           : null,
+        members: members.map((m) => {
+          const profile = profileMap[m.userId as string];
+          const role = m.role as string;
+          return {
+            id: m.id as string,
+            userId: m.userId as string,
+            role,
+            roleLabel: MEMBER_ROLE_LABEL[role] ?? role,
+            email: profile?.email ?? "Unknown",
+            name: profile?.name ?? null,
+            platformRole: profile?.role ?? "USER",
+            createdAt: m.createdAt as string,
+          };
+        }),
+        recentAudit: (auditRows ?? []).map((r) => ({
+          id: r.id as string,
+          action: r.action as string,
+          meta: (r.meta as Record<string, unknown>) ?? {},
+          actorName: actorMap[r.actorId as string] ?? "Someone",
+          createdAt: r.createdAt as string,
+        })),
         createdAt: org.createdAt as string,
         updatedAt: org.updatedAt as string,
       };
@@ -379,16 +498,27 @@ export const platformRouter = router({
       z
         .object({
           limit: z.number().int().min(1).max(100).default(30),
+          actionPrefix: z.string().max(40).optional(),
+          targetType: z.enum(["organization", "user", "member"]).optional(),
+          targetId: z.string().uuid().optional(),
         })
         .optional(),
     )
     .query(async ({ ctx, input }) => {
       const limit = input?.limit ?? 30;
-      const { data } = await ctx.supabase
+      let req = ctx.supabase
         .from("platform_audit_logs")
         .select("id, actorId, action, targetType, targetId, meta, createdAt")
         .order("createdAt", { ascending: false })
         .limit(limit);
+
+      if (input?.targetType) req = req.eq("targetType", input.targetType);
+      if (input?.targetId) req = req.eq("targetId", input.targetId);
+      if (input?.actionPrefix?.trim()) {
+        req = req.like("action", `${input.actionPrefix.trim()}%`);
+      }
+
+      const { data } = await req;
 
       const rows = data ?? [];
       const actorIds = Array.from(new Set(rows.map((r) => r.actorId as string)));
@@ -413,5 +543,409 @@ export const platformRouter = router({
         actorName: actorMap[r.actorId as string] ?? "Someone",
         createdAt: r.createdAt as string,
       }));
+    }),
+
+  setOrganizationLimits: platformProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        seats: limitValue,
+        interviews: limitValue,
+        projects: limitValue,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const limits = {
+        seats: input.seats,
+        interviews: input.interviews,
+        projects: input.projects,
+      };
+      const { data: org, error } = await ctx.supabase
+        .from("organizations")
+        .update({ limits })
+        .eq("id", input.id)
+        .neq("status", "DELETED")
+        .select("id, name, limits")
+        .maybeSingle();
+
+      if (error || !org) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Organization not found.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.set_limits",
+        targetType: "organization",
+        targetId: org.id as string,
+        meta: { name: org.name, limits },
+      });
+
+      return { id: org.id as string, limits };
+    }),
+
+  softDeleteOrganization: platformProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        /** Must match current org name — typed confirm from the UI. */
+        confirmName: z.string().min(1).max(200),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: existing } = await ctx.supabase
+        .from("organizations")
+        .select("id, name, slug, status")
+        .eq("id", input.id)
+        .maybeSingle();
+
+      if (!existing || existing.status === "DELETED") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Organization not found.",
+        });
+      }
+      if (existing.name !== input.confirmName) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Name does not match. Removal cancelled.",
+        });
+      }
+
+      const previousName = existing.name as string;
+      const previousSlug = existing.slug as string;
+      const { data: org, error } = await ctx.supabase
+        .from("organizations")
+        .update({
+          status: "DELETED",
+          name: "Deleted organization",
+          slug: `deleted-${input.id.slice(0, 8)}-${nanoid(4)}`,
+        })
+        .eq("id", input.id)
+        .neq("status", "DELETED")
+        .select("id")
+        .maybeSingle();
+
+      if (error || !org) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Organization not found.",
+        });
+      }
+
+      await ctx.supabase
+        .from("organization_invites")
+        .update({ status: "REVOKED" })
+        .eq("organizationId", input.id)
+        .eq("status", "PENDING");
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.delete",
+        targetType: "organization",
+        targetId: org.id as string,
+        meta: { name: previousName, slug: previousSlug },
+      });
+
+      return { id: org.id as string, status: "DELETED" as const };
+    }),
+
+  restoreOrganization: platformProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        name: z.string().min(1).max(100),
+        slug: z
+          .string()
+          .min(3)
+          .max(50)
+          .regex(/^[a-z0-9-]+$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: org, error } = await ctx.supabase
+        .from("organizations")
+        .update({
+          status: "ACTIVE",
+          name: input.name,
+          slug: input.slug,
+        })
+        .eq("id", input.id)
+        .eq("status", "DELETED")
+        .select("id, name, slug, status")
+        .maybeSingle();
+
+      if (error || !org) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Removed organization not found.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.restore",
+        targetType: "organization",
+        targetId: org.id as string,
+        meta: { name: org.name, slug: org.slug },
+      });
+
+      return {
+        id: org.id as string,
+        status: "ACTIVE" as const,
+        statusLabel: STATUS_LABEL.ACTIVE,
+        name: org.name as string,
+        slug: org.slug as string,
+      };
+    }),
+
+  setMemberRole: platformProcedure
+    .input(
+      z.object({
+        organizationId: z.string().uuid(),
+        userId: z.string().uuid(),
+        role: memberRoleEnum,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.role === "OWNER") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Transfer ownership from the organization settings instead.",
+        });
+      }
+
+      const { data: membership } = await ctx.supabase
+        .from("organization_members")
+        .select("id, role")
+        .eq("organizationId", input.organizationId)
+        .eq("userId", input.userId)
+        .maybeSingle();
+
+      if (!membership) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Member not found.",
+        });
+      }
+      if (membership.role === "OWNER") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot change the owner's role here.",
+        });
+      }
+
+      const { data: updated, error } = await ctx.supabase
+        .from("organization_members")
+        .update({ role: input.role })
+        .eq("id", membership.id)
+        .select("id, role, userId")
+        .maybeSingle();
+
+      if (error || !updated) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not update member role.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.member.set_role",
+        targetType: "member",
+        targetId: updated.id as string,
+        meta: {
+          organizationId: input.organizationId,
+          userId: input.userId,
+          role: updated.role,
+        },
+      });
+
+      const role = updated.role as string;
+      return {
+        id: updated.id as string,
+        role,
+        roleLabel: MEMBER_ROLE_LABEL[role] ?? role,
+      };
+    }),
+
+  removeMember: platformProcedure
+    .input(
+      z.object({
+        organizationId: z.string().uuid(),
+        userId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: membership } = await ctx.supabase
+        .from("organization_members")
+        .select("id, role")
+        .eq("organizationId", input.organizationId)
+        .eq("userId", input.userId)
+        .maybeSingle();
+
+      if (!membership) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Member not found.",
+        });
+      }
+      if (membership.role === "OWNER") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot remove the organization owner.",
+        });
+      }
+
+      const { error } = await ctx.supabase
+        .from("organization_members")
+        .delete()
+        .eq("id", membership.id);
+
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not remove member.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.member.remove",
+        targetType: "member",
+        targetId: membership.id as string,
+        meta: {
+          organizationId: input.organizationId,
+          userId: input.userId,
+        },
+      });
+
+      return { success: true };
+    }),
+
+  getPerson: platformProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data: person } = await ctx.supabase
+        .from("profiles")
+        .select("id, email, name, role, createdAt")
+        .eq("id", input.id)
+        .maybeSingle();
+
+      if (!person) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Person not found.",
+        });
+      }
+
+      const { data: memberships } = await ctx.supabase
+        .from("organization_members")
+        .select("id, role, organizationId, createdAt")
+        .eq("userId", input.id);
+
+      const orgIds = Array.from(
+        new Set((memberships ?? []).map((m) => m.organizationId as string)),
+      );
+      const orgMap: Record<
+        string,
+        { name: string; slug: string; status: string }
+      > = {};
+      if (orgIds.length > 0) {
+        const { data: orgs } = await ctx.supabase
+          .from("organizations")
+          .select("id, name, slug, status")
+          .in("id", orgIds);
+        for (const o of orgs ?? []) {
+          orgMap[o.id as string] = {
+            name: o.name as string,
+            slug: o.slug as string,
+            status: (o.status as string) ?? "ACTIVE",
+          };
+        }
+      }
+
+      const role = person.role as string;
+      return {
+        id: person.id as string,
+        email: person.email as string,
+        name: (person.name as string | null) ?? null,
+        role,
+        roleLabel: PLATFORM_ROLE_LABEL[role] ?? role,
+        isPlatformAdmin: role === "ADMIN",
+        createdAt: person.createdAt as string,
+        memberships: (memberships ?? []).map((m) => {
+          const org = orgMap[m.organizationId as string];
+          const memberRole = m.role as string;
+          return {
+            id: m.id as string,
+            organizationId: m.organizationId as string,
+            organizationName: org?.name ?? "Unknown",
+            organizationSlug: org?.slug ?? "",
+            organizationStatus: org?.status ?? "ACTIVE",
+            role: memberRole,
+            roleLabel: MEMBER_ROLE_LABEL[memberRole] ?? memberRole,
+            createdAt: m.createdAt as string,
+          };
+        }),
+      };
+    }),
+
+  setPlatformRole: platformProcedure
+    .input(
+      z.object({
+        userId: z.string().uuid(),
+        role: platformRoleEnum,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (input.userId === ctx.user.id && input.role !== "ADMIN") {
+        const { count } = await ctx.supabase
+          .from("profiles")
+          .select("id", { count: "exact", head: true })
+          .eq("role", "ADMIN");
+        if ((count ?? 0) <= 1) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "You are the last platform admin. Promote someone else first.",
+          });
+        }
+      }
+
+      const { data: person, error } = await ctx.supabase
+        .from("profiles")
+        .update({ role: input.role })
+        .eq("id", input.userId)
+        .select("id, email, name, role")
+        .maybeSingle();
+
+      if (error || !person) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Person not found.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "user.set_platform_role",
+        targetType: "user",
+        targetId: person.id as string,
+        meta: {
+          email: person.email,
+          name: person.name,
+          role: person.role,
+        },
+      });
+
+      const role = person.role as string;
+      return {
+        id: person.id as string,
+        role,
+        roleLabel: PLATFORM_ROLE_LABEL[role] ?? role,
+        isPlatformAdmin: role === "ADMIN",
+      };
     }),
 });

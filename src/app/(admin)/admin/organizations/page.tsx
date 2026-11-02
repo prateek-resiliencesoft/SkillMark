@@ -1,5 +1,6 @@
 "use client";
 
+import { ConfirmAction } from "@/components/admin/confirm-action";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 import { useDeferredValue, useState } from "react";
 
 const PLAN_OPTIONS = [
@@ -29,8 +31,13 @@ export default function AdminOrganizationsPage() {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [statusFilter, setStatusFilter] = useState<
-    "all" | "ACTIVE" | "SUSPENDED"
+    "all" | "ACTIVE" | "SUSPENDED" | "DELETED"
   >("all");
+  const [pauseTarget, setPauseTarget] = useState<{
+    id: string;
+    name: string;
+    paused: boolean;
+  } | null>(null);
 
   const list = trpc.platform.listOrganizations.useQuery(
     {
@@ -49,6 +56,7 @@ export default function AdminOrganizationsPage() {
             ? "Organization paused"
             : "Organization resumed",
       });
+      setPauseTarget(null);
       utils.platform.listOrganizations.invalidate();
       utils.platform.overview.invalidate();
       utils.platform.recentAudit.invalidate();
@@ -84,7 +92,8 @@ export default function AdminOrganizationsPage() {
           Organizations
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pause access, change plans, and see who owns each workspace.
+          Open any organization for members, limits, billing, and danger-zone
+          controls.
         </p>
       </div>
 
@@ -99,7 +108,7 @@ export default function AdminOrganizationsPage() {
         <Select
           value={statusFilter}
           onValueChange={(v) =>
-            setStatusFilter(v as "all" | "ACTIVE" | "SUSPENDED")
+            setStatusFilter(v as "all" | "ACTIVE" | "SUSPENDED" | "DELETED")
           }
         >
           <SelectTrigger className="w-[160px]" aria-label="Filter by status">
@@ -109,6 +118,7 @@ export default function AdminOrganizationsPage() {
             <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="ACTIVE">Active</SelectItem>
             <SelectItem value="SUSPENDED">Paused</SelectItem>
+            <SelectItem value="DELETED">Removed</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground sm:ml-auto">
@@ -131,6 +141,7 @@ export default function AdminOrganizationsPage() {
           <ul className="divide-y">
             {(list.data?.items ?? []).map((org) => {
               const paused = org.status === "SUSPENDED";
+              const removed = org.status === "DELETED";
               const busy =
                 (setStatus.isPending &&
                   setStatus.variables?.id === org.id) ||
@@ -143,13 +154,19 @@ export default function AdminOrganizationsPage() {
                 >
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="truncate font-medium">{org.name}</h2>
+                      <Link
+                        href={`/admin/organizations/${org.id}`}
+                        className="truncate font-medium hover:underline"
+                      >
+                        {org.name}
+                      </Link>
                       <Badge
-                        variant={paused ? "secondary" : "outline"}
+                        variant={paused || removed ? "secondary" : "outline"}
                         className={cn(
                           "text-[10px] font-normal",
                           paused &&
                             "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                          removed && "bg-destructive/10 text-destructive",
                         )}
                       >
                         {org.statusLabel}
@@ -170,40 +187,48 @@ export default function AdminOrganizationsPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <Select
-                      value={org.plan}
-                      disabled={busy}
-                      onValueChange={(plan) =>
-                        setPlan.mutate({
-                          id: org.id,
-                          plan: plan as (typeof PLAN_OPTIONS)[number]["value"],
-                        })
-                      }
-                    >
-                      <SelectTrigger className="h-8 w-[140px] text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PLAN_OPTIONS.map((p) => (
-                          <SelectItem key={p.value} value={p.value}>
-                            {p.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    {!removed ? (
+                      <>
+                        <Select
+                          value={org.plan}
+                          disabled={busy}
+                          onValueChange={(plan) =>
+                            setPlan.mutate({
+                              id: org.id,
+                              plan: plan as (typeof PLAN_OPTIONS)[number]["value"],
+                            })
+                          }
+                        >
+                          <SelectTrigger className="h-8 w-[140px] text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PLAN_OPTIONS.map((p) => (
+                              <SelectItem key={p.value} value={p.value}>
+                                {p.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
 
-                    <Button
-                      size="sm"
-                      variant={paused ? "default" : "outline"}
-                      disabled={busy}
-                      onClick={() =>
-                        setStatus.mutate({
-                          id: org.id,
-                          status: paused ? "ACTIVE" : "SUSPENDED",
-                        })
-                      }
-                    >
-                      {paused ? "Resume" : "Pause"}
+                        <Button
+                          size="sm"
+                          variant={paused ? "default" : "outline"}
+                          disabled={busy}
+                          onClick={() =>
+                            setPauseTarget({
+                              id: org.id,
+                              name: org.name,
+                              paused,
+                            })
+                          }
+                        >
+                          {paused ? "Resume" : "Pause"}
+                        </Button>
+                      </>
+                    ) : null}
+                    <Button asChild size="sm" variant="ghost">
+                      <Link href={`/admin/organizations/${org.id}`}>Open</Link>
                     </Button>
                   </div>
                 </li>
@@ -212,6 +237,34 @@ export default function AdminOrganizationsPage() {
           </ul>
         )}
       </div>
+
+      <ConfirmAction
+        open={Boolean(pauseTarget)}
+        onOpenChange={(open) => {
+          if (!open) setPauseTarget(null);
+        }}
+        title={
+          pauseTarget?.paused
+            ? `Resume “${pauseTarget.name}”?`
+            : `Pause “${pauseTarget?.name ?? ""}”?`
+        }
+        description={
+          pauseTarget?.paused
+            ? "Members can use the product again for this organization."
+            : "Members keep their data but cannot create or change work until you resume."
+        }
+        confirmLabel={
+          pauseTarget?.paused ? "Resume organization" : "Pause organization"
+        }
+        pending={setStatus.isPending}
+        onConfirm={() => {
+          if (!pauseTarget) return;
+          setStatus.mutate({
+            id: pauseTarget.id,
+            status: pauseTarget.paused ? "ACTIVE" : "SUSPENDED",
+          });
+        }}
+      />
     </div>
   );
 }
