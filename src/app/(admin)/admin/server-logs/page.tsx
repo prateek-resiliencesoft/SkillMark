@@ -23,12 +23,30 @@ import {
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 type Source = "all" | "syslog" | "auth" | "kern" | "ufw" | "dpkg";
+type LevelFilter =
+  | "all"
+  | "problems"
+  | "error"
+  | "warn"
+  | "info"
+  | "debug"
+  | "unknown";
 
 const RANGES: { label: string; minutes: number }[] = [
   { label: "15m", minutes: 15 },
   { label: "1h", minutes: 60 },
   { label: "6h", minutes: 360 },
   { label: "24h", minutes: 1440 },
+];
+
+const LEVEL_FILTERS: { id: LevelFilter; label: string }[] = [
+  { id: "all", label: "All levels" },
+  { id: "problems", label: "Errors + warns" },
+  { id: "error", label: "Error" },
+  { id: "warn", label: "Warn" },
+  { id: "info", label: "Info" },
+  { id: "debug", label: "Debug" },
+  { id: "unknown", label: "Unknown" },
 ];
 
 const REFRESH_PRESETS: { label: string; ms: number | "custom" }[] = [
@@ -42,6 +60,15 @@ const REFRESH_PRESETS: { label: string; ms: number | "custom" }[] = [
 ];
 
 const PAGE_SIZES = [25, 50, 100] as const;
+
+function matchesLevel(
+  level: string,
+  filter: LevelFilter,
+): boolean {
+  if (filter === "all") return true;
+  if (filter === "problems") return level === "error" || level === "warn";
+  return level === filter;
+}
 
 function levelClass(level: string) {
   switch (level) {
@@ -91,6 +118,8 @@ export default function AdminServerLogsPage() {
   const [searchInput, setSearchInput] = useState("");
   const deferredSearch = useDeferredValue(searchInput.trim());
 
+  const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
+  const [fileFilter, setFileFilter] = useState<string>("all");
   const [refreshPreset, setRefreshPreset] = useState<number | "custom">(5_000);
   const [customSeconds, setCustomSeconds] = useState("10");
   const [page, setPage] = useState(1);
@@ -116,11 +145,38 @@ export default function AdminServerLogsPage() {
   );
 
   const sources = logs.data?.sources ?? [];
-  const entries = logs.data?.entries ?? [];
+  const rawEntries = logs.data?.entries ?? [];
+
+  const fileOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const e of rawEntries) {
+      const name = shortFile(e.filename);
+      if (name !== "—") names.add(name);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [rawEntries]);
+
+  const entries = useMemo(
+    () =>
+      rawEntries.filter((e) => {
+        if (!matchesLevel(e.level, levelFilter)) return false;
+        if (fileFilter !== "all" && shortFile(e.filename) !== fileFilter) {
+          return false;
+        }
+        return true;
+      }),
+    [rawEntries, levelFilter, fileFilter],
+  );
 
   useEffect(() => {
     setPage(1);
-  }, [source, minutes, deferredSearch, pageSize]);
+  }, [source, minutes, deferredSearch, pageSize, levelFilter, fileFilter]);
+
+  useEffect(() => {
+    if (fileFilter !== "all" && !fileOptions.includes(fileFilter)) {
+      setFileFilter("all");
+    }
+  }, [fileFilter, fileOptions]);
 
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize));
   const safePage = Math.min(page, pageCount);
@@ -131,11 +187,13 @@ export default function AdminServerLogsPage() {
 
   const stats = useMemo(
     () => ({
-      total: entries.length,
-      warn: entries.filter((e) => e.level === "warn").length,
-      error: entries.filter((e) => e.level === "error").length,
+      total: rawEntries.length,
+      shown: entries.length,
+      warn: rawEntries.filter((e) => e.level === "warn").length,
+      error: rawEntries.filter((e) => e.level === "error").length,
+      info: rawEntries.filter((e) => e.level === "info").length,
     }),
-    [entries],
+    [rawEntries, entries.length],
   );
 
   const rangeStart = entries.length === 0 ? 0 : (safePage - 1) * pageSize + 1;
@@ -219,6 +277,36 @@ export default function AdminServerLogsPage() {
           </SelectContent>
         </Select>
 
+        <Select
+          value={levelFilter}
+          onValueChange={(v) => setLevelFilter(v as LevelFilter)}
+        >
+          <SelectTrigger className="w-[160px]" aria-label="Log level">
+            <SelectValue placeholder="Level" />
+          </SelectTrigger>
+          <SelectContent>
+            {LEVEL_FILTERS.map((l) => (
+              <SelectItem key={l.id} value={l.id}>
+                {l.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select value={fileFilter} onValueChange={setFileFilter}>
+          <SelectTrigger className="w-[150px]" aria-label="Log file">
+            <SelectValue placeholder="File" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All files</SelectItem>
+            {fileOptions.map((name) => (
+              <SelectItem key={name} value={name}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
         <div className="flex rounded-md border p-0.5">
           {RANGES.map((r) => (
             <button
@@ -287,23 +375,87 @@ export default function AdminServerLogsPage() {
 
       <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <Badge variant="outline" className="font-normal">
-          {stats.total} lines
+          {levelFilter === "all" && fileFilter === "all"
+            ? `${stats.total} lines`
+            : `${stats.shown} shown / ${stats.total}`}
         </Badge>
-        <Badge
-          variant="outline"
-          className={cn("font-normal", levelClass("warn"))}
+        <button
+          type="button"
+          onClick={() =>
+            setLevelFilter((v) => (v === "error" ? "all" : "error"))
+          }
+          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {stats.warn} warn
-        </Badge>
-        <Badge
-          variant="outline"
-          className={cn("font-normal", levelClass("error"))}
+          <Badge
+            variant="outline"
+            className={cn(
+              "cursor-pointer font-normal",
+              levelClass("error"),
+              levelFilter === "error" && "ring-2 ring-red-500/40",
+            )}
+          >
+            {stats.error} error
+          </Badge>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setLevelFilter((v) => (v === "warn" ? "all" : "warn"))
+          }
+          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {stats.error} error
-        </Badge>
+          <Badge
+            variant="outline"
+            className={cn(
+              "cursor-pointer font-normal",
+              levelClass("warn"),
+              levelFilter === "warn" && "ring-2 ring-amber-500/40",
+            )}
+          >
+            {stats.warn} warn
+          </Badge>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setLevelFilter((v) => (v === "info" ? "all" : "info"))
+          }
+          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Badge
+            variant="outline"
+            className={cn(
+              "cursor-pointer font-normal",
+              levelClass("info"),
+              levelFilter === "info" && "ring-2 ring-sky-500/40",
+            )}
+          >
+            {stats.info} info
+          </Badge>
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setLevelFilter((v) => (v === "problems" ? "all" : "problems"))
+          }
+          className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Badge
+            variant="outline"
+            className={cn(
+              "cursor-pointer font-normal",
+              levelFilter === "problems" && "bg-muted ring-2 ring-foreground/20",
+            )}
+          >
+            problems
+          </Badge>
+        </button>
         {refreshMs > 0 ? (
           <Badge variant="outline" className="font-normal">
-            every {refreshMs >= 60_000 ? `${refreshMs / 60_000}m` : `${refreshMs / 1000}s`}
+            every{" "}
+            {refreshMs >= 60_000
+              ? `${refreshMs / 60_000}m`
+              : `${refreshMs / 1000}s`}
           </Badge>
         ) : null}
         {logs.data?.query ? (
@@ -331,9 +483,15 @@ export default function AdminServerLogsPage() {
         ) : !entries.length ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">
             <ScrollText className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium">No log lines in this range</p>
+            <p className="text-sm font-medium">
+              {rawEntries.length
+                ? "No lines match these filters"
+                : "No log lines in this range"}
+            </p>
             <p className="text-xs text-muted-foreground">
-              Try a wider window or clear the search.
+              {rawEntries.length
+                ? "Clear level/file filters or broaden search."
+                : "Try a wider window or clear the search."}
             </p>
           </div>
         ) : (
