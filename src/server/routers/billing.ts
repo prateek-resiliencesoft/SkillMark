@@ -102,6 +102,16 @@ export const billingRouter = router({
         });
       }
 
+      const { loadPlatformSettings } = await import("../platform-settings");
+      const platform = await loadPlatformSettings(ctx.supabase);
+      if (!platform.instance.allowOrgSelfServeBilling) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message:
+            "Self-serve billing is turned off. Ask your platform admin to change the plan.",
+        });
+      }
+
       await requireOrgAccess(
         ctx.supabase,
         input.organizationId,

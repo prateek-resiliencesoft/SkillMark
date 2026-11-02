@@ -286,6 +286,22 @@ export function Sidebar({
 
           {/* Bottom section: Support */}
           <div className="space-y-1 px-3 pb-2">
+            {profile?.role === "ADMIN" ? (
+              <Button
+                asChild
+                variant="outline"
+                size={collapsed ? "icon" : "sm"}
+                className={cn(
+                  "mb-1 w-full",
+                  collapsed ? "justify-center" : "justify-start gap-2",
+                )}
+              >
+                <Link href="/admin" onClick={() => setNavigatingTo("/admin")}>
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4 shrink-0" />
+                  {!collapsed ? t("sidebar.enterControlCenter") : null}
+                </Link>
+              </Button>
+            ) : null}
             <button
               onClick={() => setSupportOpen(true)}
               className={cn(
@@ -374,6 +390,22 @@ export function Sidebar({
 
           {/* Bottom section: Settings + Support */}
           <div className="space-y-1 px-3 pb-2">
+            {profile?.role === "ADMIN" ? (
+              <Button
+                asChild
+                variant="outline"
+                size={collapsed ? "icon" : "sm"}
+                className={cn(
+                  "mb-1 w-full",
+                  collapsed ? "justify-center" : "justify-start gap-2",
+                )}
+              >
+                <Link href="/admin" onClick={() => setNavigatingTo("/admin")}>
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4 shrink-0" />
+                  {!collapsed ? t("sidebar.enterControlCenter") : null}
+                </Link>
+              </Button>
+            ) : null}
             <SidebarLink
               href="/settings"
               icon={createHugeicon(Settings01Icon)}

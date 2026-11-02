@@ -11,8 +11,17 @@ import {
   queryGrafanaLinuxLogs,
   type GrafanaLogSource,
 } from "@/lib/grafana/client";
+import {
+  parseDefaultFeatureFlags,
+  parseInstanceSettings,
+  parsePlanLimitsMap,
+} from "@/lib/platform-settings";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import {
+  loadPlatformSettings,
+  upsertPlatformSetting,
+} from "../platform-settings";
 import { platformProcedure, router } from "../trpc";
 import {
   type OrgPlan,
@@ -223,9 +232,9 @@ export const platformRouter = router({
       ] = await Promise.all([
         ctx.supabase
           .from("organization_members")
-          .select("id, userId, role, createdAt")
+          .select("id, userId, role, joinedAt")
           .eq("organizationId", input.id)
-          .order("createdAt", { ascending: true }),
+          .order("joinedAt", { ascending: true }),
         ctx.supabase
           .from("projects")
           .select("id")
@@ -343,7 +352,7 @@ export const platformRouter = router({
             email: profile?.email ?? "Unknown",
             name: profile?.name ?? null,
             platformRole: profile?.role ?? "USER",
-            createdAt: m.createdAt as string,
+            createdAt: m.joinedAt as string,
           };
         }),
         recentAudit: (auditRows ?? []).map((r) => ({
@@ -848,7 +857,7 @@ export const platformRouter = router({
 
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("id, role, organizationId, createdAt")
+        .select("id, role, organizationId, joinedAt")
         .eq("userId", input.id);
 
       const orgIds = Array.from(
@@ -892,7 +901,7 @@ export const platformRouter = router({
             organizationStatus: org?.status ?? "ACTIVE",
             role: memberRole,
             roleLabel: MEMBER_ROLE_LABEL[memberRole] ?? memberRole,
-            createdAt: m.createdAt as string,
+            createdAt: m.joinedAt as string,
           };
         }),
       };
@@ -978,5 +987,187 @@ export const platformRouter = router({
         sources: GRAFANA_LOG_SOURCES,
         instance: process.env.GRAFANA_LOG_INSTANCE || "skillmark",
       };
+    }),
+
+  getSettings: platformProcedure.query(async ({ ctx }) => {
+    return loadPlatformSettings(ctx.supabase);
+  }),
+
+  updateInstanceSettings: platformProcedure
+    .input(
+      z.object({
+        maxOrgsPerAccount: z.number().int().min(1).max(100),
+        allowOrgSelfDelete: z.boolean(),
+        allowOrgSelfServeBilling: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = parseInstanceSettings(input);
+      await upsertPlatformSetting(
+        ctx.supabase,
+        "instance",
+        value,
+        ctx.user.id,
+      );
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "config.instance",
+        targetType: "organization",
+        targetId: null,
+        meta: value as unknown as Record<string, unknown>,
+      });
+      return value;
+    }),
+
+  updatePlanLimits: platformProcedure
+    .input(
+      z.object({
+        planLimits: z.record(
+          z.enum(["FREE", "PRO", "ENTERPRISE", "SELF_HOSTED"]),
+          z.object({
+            seats: limitValue,
+            interviews: limitValue,
+            projects: limitValue,
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = parsePlanLimitsMap(input.planLimits);
+      await upsertPlatformSetting(
+        ctx.supabase,
+        "planLimits",
+        value,
+        ctx.user.id,
+      );
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "config.plan_limits",
+        targetType: "organization",
+        targetId: null,
+        meta: { planLimits: value },
+      });
+      return value;
+    }),
+
+  updateDefaultFeatureFlags: platformProcedure
+    .input(
+      z.object({
+        aiSettings: z.boolean(),
+        integrations: z.boolean(),
+        voiceInterviews: z.boolean(),
+        publicForms: z.boolean(),
+        usageDashboard: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const value = parseDefaultFeatureFlags(input);
+      await upsertPlatformSetting(
+        ctx.supabase,
+        "defaultFeatureFlags",
+        value,
+        ctx.user.id,
+      );
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "config.feature_flags",
+        targetType: "organization",
+        targetId: null,
+        meta: value as unknown as Record<string, unknown>,
+      });
+      return value;
+    }),
+
+  updateOrganization: platformProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        name: z.string().min(1).max(100).optional(),
+        slug: z
+          .string()
+          .min(3)
+          .max(50)
+          .regex(/^[a-z0-9-]+$/)
+          .optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const patch: Record<string, unknown> = {};
+      if (input.name !== undefined) patch.name = input.name;
+      if (input.slug !== undefined) patch.slug = input.slug;
+      if (Object.keys(patch).length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Nothing to update.",
+        });
+      }
+
+      const { data: org, error } = await ctx.supabase
+        .from("organizations")
+        .update(patch)
+        .eq("id", input.id)
+        .select("id, name, slug")
+        .maybeSingle();
+
+      if (error || !org) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Organization not found.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.update",
+        targetType: "organization",
+        targetId: org.id as string,
+        meta: { name: org.name, slug: org.slug },
+      });
+
+      return {
+        id: org.id as string,
+        name: org.name as string,
+        slug: org.slug as string,
+      };
+    }),
+
+  setFeatureFlags: platformProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        featureFlags: z.object({
+          aiSettings: z.boolean(),
+          integrations: z.boolean(),
+          voiceInterviews: z.boolean(),
+          publicForms: z.boolean(),
+          usageDashboard: z.boolean(),
+        }),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const flags = parseDefaultFeatureFlags(input.featureFlags);
+      const { data: org, error } = await ctx.supabase
+        .from("organizations")
+        .update({ featureFlags: flags })
+        .eq("id", input.id)
+        .select("id, name, featureFlags")
+        .maybeSingle();
+
+      if (error || !org) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Organization not found.",
+        });
+      }
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "org.set_flags",
+        targetType: "organization",
+        targetId: org.id as string,
+        meta: { name: org.name, featureFlags: flags },
+      });
+
+      return { id: org.id as string, featureFlags: flags };
     }),
 });
