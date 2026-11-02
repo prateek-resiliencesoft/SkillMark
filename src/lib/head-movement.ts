@@ -14,14 +14,17 @@ export interface HeadMovementThresholds {
   holdMs: number;
   noFaceHoldMs: number;
   cooldownMs: number;
+  /** Brief "ok" frames shorter than this don't reset a bad streak (tracking flicker). */
+  okGapMs: number;
 }
 
 export const DEFAULT_HEAD_THRESHOLDS: HeadMovementThresholds = {
-  yawDeg: 30,
-  pitchDeg: 25,
-  holdMs: 2000,
-  noFaceHoldMs: 3000,
+  yawDeg: 28,
+  pitchDeg: 22,
+  holdMs: 1800, // ignore brief glances
+  noFaceHoldMs: 2500,
   cooldownMs: 6000,
+  okGapMs: 500,
 };
 
 /** Yaw/pitch (degrees) from MediaPipe's 4x4 column-major facial transformation matrix. */
@@ -60,16 +63,33 @@ export class HeadMovementMonitor {
   private badState: HeadFrameState = "ok";
   private badSince: number | null = null;
   private lastViolationAt = -Infinity;
+  private okSince: number | null = null;
 
   constructor(private t: HeadMovementThresholds = DEFAULT_HEAD_THRESHOLDS) {}
 
+  /** Forget any in-progress streak and suppress violations until `until`. */
+  reset(until = 0) {
+    this.badState = "ok";
+    this.badSince = null;
+    this.okSince = null;
+    this.lastViolationAt = until - this.t.cooldownMs;
+  }
+
   update(state: HeadFrameState, now: number): Exclude<HeadFrameState, "ok"> | null {
     if (state === "ok") {
-      this.badState = "ok";
-      this.badSince = null;
+      if (this.okSince === null) this.okSince = now;
+      if (now - this.okSince >= (this.t.okGapMs ?? 0)) {
+        this.badState = "ok";
+        this.badSince = null;
+      }
       return null;
     }
-    if (state !== this.badState || this.badSince === null) {
+    this.okSince = null;
+    // no_face ↔ looking_away flicker during a head turn is one continuous streak
+    const sameStreak =
+      this.badState === state ||
+      (this.badState !== "ok" && state !== "multiple_faces" && this.badState !== "multiple_faces");
+    if (!sameStreak || this.badSince === null) {
       this.badState = state;
       this.badSince = now;
     }
@@ -101,6 +121,19 @@ export function applyAntiCheatingViolation(prevLog: unknown[], violation: Logged
   const headViolations = countHeadViolations(log);
   const disqualify = violation.type === "head_movement" && headViolations >= MAX_HEAD_VIOLATIONS;
   return { log, headViolations, disqualify };
+}
+
+/** Exponential smoothing of head pose across frames (reduces jitter). */
+export class PoseSmoother {
+  private yaw: number | null = null;
+  private pitch: number | null = null;
+  constructor(private alpha = 0.45) {}
+  reset() { this.yaw = this.pitch = null; }
+  update(p: { yaw: number; pitch: number }) {
+    this.yaw = this.yaw === null ? p.yaw : this.alpha * p.yaw + (1 - this.alpha) * this.yaw;
+    this.pitch = this.pitch === null ? p.pitch : this.alpha * p.pitch + (1 - this.alpha) * this.pitch;
+    return { yaw: this.yaw, pitch: this.pitch };
+  }
 }
 
 export function headWarningMessage(count: number): string {
