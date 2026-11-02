@@ -1,14 +1,14 @@
 import { nanoid } from "@/lib/id";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { loadPlatformSettings } from "../platform-settings";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
 import { requireOrgAccess } from "../tenant";
 
-const MAX_ORGS_PER_ACCOUNT = 10;
-
 export const organizationRouter = router({
-  orgLimit: protectedProcedure.query(async () => {
-    return { limit: MAX_ORGS_PER_ACCOUNT };
+  orgLimit: protectedProcedure.query(async ({ ctx }) => {
+    const settings = await loadPlatformSettings(ctx.supabase);
+    return { limit: settings.instance.maxOrgsPerAccount };
   }),
 
   list: protectedProcedure.query(async ({ ctx }) => {
@@ -100,16 +100,19 @@ export const organizationRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const settings = await loadPlatformSettings(ctx.supabase);
+      const maxOrgs = settings.instance.maxOrgsPerAccount;
+
       const { count: ownedCount } = await ctx.supabase
         .from("organizations")
         .select("*", { count: "exact", head: true })
         .eq("ownerId", ctx.user.id)
         .neq("status", "DELETED");
 
-      if ((ownedCount ?? 0) >= MAX_ORGS_PER_ACCOUNT) {
+      if ((ownedCount ?? 0) >= maxOrgs) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: `You have reached the maximum of ${MAX_ORGS_PER_ACCOUNT} organizations per account.`,
+          message: `You have reached the maximum of ${maxOrgs} organizations per account.`,
         });
       }
 
@@ -121,6 +124,8 @@ export const organizationRouter = router({
           name: input.name,
           slug,
           ownerId: ctx.user.id,
+          featureFlags: settings.defaultFeatureFlags,
+          limits: settings.planLimits.SELF_HOSTED,
         })
         .select()
         .single();
@@ -186,6 +191,14 @@ export const organizationRouter = router({
   delete: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      const settings = await loadPlatformSettings(ctx.supabase);
+      if (!settings.instance.allowOrgSelfDelete) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Organization removal is disabled on this instance. Contact support.",
+        });
+      }
+
       const membership = await getOrgMembership(
         ctx.supabase,
         input.id,

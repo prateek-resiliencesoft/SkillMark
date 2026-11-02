@@ -16,6 +16,7 @@ import {
 } from "@/lib/ai/credentials";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { isPlatformAdmin } from "../tenant";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
 
 async function requireOrgAdmin(
@@ -23,6 +24,7 @@ async function requireOrgAdmin(
   organizationId: string,
   userId: string,
 ) {
+  if (await isPlatformAdmin(supabase, userId)) return;
   const membership = await getOrgMembership(supabase, organizationId, userId);
   if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
   assertMinRole(membership.role, "ADMIN");
@@ -41,8 +43,10 @@ const taskKindSchema = z.enum([
 
 export const aiSettingsRouter = router({
   get: protectedProcedure.input(z.object({ organizationId: z.string() })).query(async ({ ctx, input }) => {
-    const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
-    if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+    if (!(await isPlatformAdmin(ctx.supabase, ctx.user.id))) {
+      const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+      if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+    }
 
     const raw = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
     const masked = maskAiProviders(raw);
