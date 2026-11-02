@@ -1,0 +1,21 @@
+# Enforce: only PRs from `dev` may target `main`.
+name: Require dev → main
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  source-must-be-dev:
+    name: PR source must be dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-dev heads
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ]; then
+            echo "::error::PRs into main must come from 'dev' (got '${HEAD_REF}'). Merge into dev first, then open/update the dev → main PR."
+            exit 1
+          fi
+          echo "OK: ${HEAD_REF} → main"

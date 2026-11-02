@@ -1,0 +1,39 @@
+# GitHub repository ruleset (apply with scripts/apply-main-ruleset.sh).
+# Effect:
+#   - no direct pushes to main (PR required)
+#   - no force-push to main
+#   - required workflow rejects PRs whose head is not `dev`
+name: Protect main — only from dev
+target: branch
+enforcement: active
+
+conditions:
+  ref_name:
+    include:
+      - refs/heads/main
+    exclude: []
+
+rules:
+  - type: pull_request
+    parameters:
+      required_approving_review_count: 0
+      dismiss_stale_reviews_on_push: false
+      require_code_owner_review: false
+      require_last_push_approval: false
+      required_review_thread_resolution: false
+      allowed_merge_methods:
+        - merge
+        - squash
+        - rebase
+
+  - type: non_fast_forward
+
+  - type: workflows
+    parameters:
+      do_not_enforce_on_create: true
+      workflows:
+        - path: .github/workflows/require-dev-pr-to-main.yml
+          # SkillMark repo id (gh api repos/OWNER/REPO --jq .id)
+          repository_id: 1436937155
+
+bypass_actors: []
