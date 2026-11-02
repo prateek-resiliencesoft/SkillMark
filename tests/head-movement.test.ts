@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   HeadMovementMonitor,
   applyAntiCheatingViolation,
+  countStrikes,
   classifyFrame,
   headWarningMessage,
   matrixToYawPitch,
@@ -52,19 +53,27 @@ test("no_face needs 2.5s", () => {
   assert.equal(first, 2600);
 });
 
-test("violation counter warns twice, disqualifies on 3rd head violation", () => {
-  let log: unknown[] = [{ type: "paste", timestamp: 1 }];
+test("shared 3-strike policy: any violation types count, 3rd disqualifies", () => {
+  let log: unknown[] = [];
   const r1 = applyAntiCheatingViolation(log, { type: "head_movement", timestamp: 2 });
-  assert.equal(r1.headViolations, 1); assert.equal(r1.disqualify, false); log = r1.log;
+  assert.equal(r1.strikes, 1); assert.equal(r1.disqualify, false); log = r1.log;
   const r2 = applyAntiCheatingViolation(log, { type: "page_departure", timestamp: 3 });
-  assert.equal(r2.disqualify, false); log = r2.log;
+  assert.equal(r2.strikes, 2); assert.equal(r2.disqualify, false); log = r2.log;
   const r3 = applyAntiCheatingViolation(log, { type: "head_movement", timestamp: 4 });
-  assert.equal(r3.headViolations, 2); assert.equal(r3.disqualify, false); log = r3.log;
-  const r4 = applyAntiCheatingViolation(log, { type: "head_movement", timestamp: 5 });
-  assert.equal(r4.headViolations, 3); assert.equal(r4.disqualify, true);
-  assert.equal(r4.log.length, 5);
+  assert.equal(r3.strikes, 3); assert.equal(r3.disqualify, true);
+  assert.equal(r3.headViolations, 2);
+  const last = r3.log.at(-1) as { type: string; detail: string };
+  assert.equal(last.type, "disqualified");
+  assert.match(last.detail, /Disqualified after 3/);
+  assert.equal(countStrikes(r3.log), 3); // the "disqualified" marker is not a strike
   assert.equal(headWarningMessage(1), "Warning 1 of 2: please keep your face toward the screen");
   assert.equal(headWarningMessage(2), "Warning 2 of 2: please keep your face toward the screen");
+});
+
+test("non-strike log entries don't count", () => {
+  const r = applyAntiCheatingViolation([{ type: "note", timestamp: 1 }], { type: "paste", timestamp: 2 });
+  assert.equal(r.strikes, 1);
+  assert.equal(r.disqualify, false);
 });
 
 test("brief ok flicker does not reset a look-away streak", () => {

@@ -15,6 +15,8 @@ import {
 } from "@/lib/voice/playback-jitter-buffer";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+const PLAYBACK_START_LEAD_S = 0.12;
+
 const log = createLogger("voice");
 
 export interface InterviewContext {
@@ -273,11 +275,13 @@ export function useVoice({
     source.connect(ctx.destination);
 
     // Schedule playback sequentially
-    const startAt = Math.max(now, playTimeRef.current);
+    // Contiguous when already playing; after an underrun / at turn start add a
+    // small lead so the next chunks can arrive before this one runs out.
+    const startAt = playTimeRef.current > now ? playTimeRef.current : now + PLAYBACK_START_LEAD_S;
     source.start(startAt);
     playTimeRef.current = startAt + audioBuffer.duration;
     micHoldUntilRef.current =
-      performance.now() + Math.max(0, (playTimeRef.current - now) * 1000) + 250;
+      performance.now() + Math.max(0, (playTimeRef.current - now) * 1000) + 500;
     bargeInFramesRef.current = 0;
 
     audioSourcesRef.current.push(source);
@@ -750,22 +754,14 @@ export function useVoice({
         const level = Math.min(1, rms * 5);
         setState((s) => ({ ...s, audioLevel: level }));
 
+        // Half-duplex: don't upload mic audio while the interviewer is speaking
+        // (plus a short echo tail) — speaker echo would otherwise be heard as the
+        // candidate and make the AI interrupt or answer itself.
         if (performance.now() < micHoldUntilRef.current) {
-          if (rms < BARGE_IN_RMS_THRESHOLD) {
-            bargeInFramesRef.current = 0;
-            return;
-          }
-
-          bargeInFramesRef.current += 1;
-          if (bargeInFramesRef.current < BARGE_IN_FRAME_COUNT) {
-            return;
-          }
-
-          // Sustained near-field speech should still be able to interrupt TTS.
-          micHoldUntilRef.current = 0;
-        } else {
           bargeInFramesRef.current = 0;
+          return;
         }
+        bargeInFramesRef.current = 0;
 
         // Convert float32 to int16 PCM
         const pcm = new Int16Array(inputData.length);

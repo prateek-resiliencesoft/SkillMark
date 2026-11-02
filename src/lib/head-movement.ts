@@ -5,6 +5,21 @@
  */
 
 export const MAX_HEAD_VIOLATIONS = 3; // 1st & 2nd = warning, 3rd = disqualify
+/** Strict shared 3-strike policy: every anti-cheating violation type counts. */
+export const MAX_STRIKES = MAX_HEAD_VIOLATIONS;
+export const STRIKE_TYPES = new Set([
+  "page_departure", "tab_switch", "focus_lost", "head_movement", "multi_screen", "paste", "copy", "cut",
+]);
+export const STRIKE_LABEL: Record<string, string> = {
+  page_departure: "Left the interview page",
+  tab_switch: "Switched tabs",
+  focus_lost: "Left the interview window",
+  head_movement: "Looked away from the screen",
+  multi_screen: "Additional display detected",
+  paste: "Pasted external content",
+  copy: "Copied content",
+  cut: "Cut content",
+};
 
 export type HeadFrameState = "ok" | "looking_away" | "no_face" | "multiple_faces";
 
@@ -115,12 +130,29 @@ export function countHeadViolations(log: unknown[]): number {
   return log.filter((v) => (v as { type?: string })?.type === "head_movement").length;
 }
 
-/** Server-side: append a violation and decide whether the session is disqualified. */
+export function countStrikes(log: unknown[]): number {
+  return log.filter((v) => STRIKE_TYPES.has(String((v as { type?: string })?.type))).length;
+}
+
+/**
+ * Server-side: append a violation and decide whether the session is
+ * disqualified. All violation types share one 3-strike count.
+ */
 export function applyAntiCheatingViolation(prevLog: unknown[], violation: LoggedViolation) {
-  const log = [...prevLog, violation];
-  const headViolations = countHeadViolations(log);
-  const disqualify = violation.type === "head_movement" && headViolations >= MAX_HEAD_VIOLATIONS;
-  return { log, headViolations, disqualify };
+  let log = [...prevLog, violation];
+  const strikes = countStrikes(log);
+  const disqualify = STRIKE_TYPES.has(violation.type) && strikes >= MAX_STRIKES;
+  if (disqualify) {
+    log = [
+      ...log,
+      {
+        type: "disqualified",
+        timestamp: violation.timestamp,
+        detail: `Disqualified after ${strikes} anti-cheating violations (last: ${STRIKE_LABEL[violation.type] ?? violation.type})`,
+      },
+    ];
+  }
+  return { log, strikes, headViolations: countHeadViolations(log), disqualify };
 }
 
 /** Exponential smoothing of head pose across frames (reduces jitter). */

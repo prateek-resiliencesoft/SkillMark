@@ -2,120 +2,154 @@
 
 import type { AntiCheatingViolation } from "@/hooks/use-anti-cheating";
 import { useAntiCheating } from "@/hooks/use-anti-cheating";
-import { useToast } from "@/hooks/use-toast";
+import { markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
+import { MAX_STRIKES, STRIKE_LABEL } from "@/lib/head-movement";
 import { trpc } from "@/lib/trpc/client";
-import { AlertTriangle } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { AlertTriangle, Ban } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface AntiCheatingGuardProps {
   enabled: boolean;
   sessionId?: string;
+  /** Called after the candidate acknowledges the final (3rd) violation. */
+  onDisqualified?: () => void;
 }
 
-export function AntiCheatingGuard({ enabled, sessionId }: AntiCheatingGuardProps) {
-  const { toast } = useToast();
-  const [warningOpen, setWarningOpen] = useState(false);
-  const [departureCount, setDepartureCount] = useState(0);
-  const lastDepartureTs = useRef(0);
-  const lastPasteToast = useRef(0);
+type ModalState =
+  | { phase: "checking"; reason: string }
+  | { phase: "warning"; count: number; reason: string }
+  | { phase: "final"; reason: string };
 
-  const reportMutation = trpc.session.reportAntiCheatingViolation.useMutation();
-
-  const persistViolation = useCallback(
-    (violation: AntiCheatingViolation) => {
-      if (!sessionId) return;
-      reportMutation.mutate({
-        sessionId,
-        violation: {
-          type: violation.type,
-          timestamp: violation.timestamp,
-          detail: violation.detail,
-        },
-      });
-    },
-    [sessionId, reportMutation],
-  );
-
-  const recordDeparture = useCallback(() => {
-    const now = Date.now();
-    if (now - lastDepartureTs.current < 500) return;
-    lastDepartureTs.current = now;
-    setDepartureCount((prev) => prev + 1);
-    setWarningOpen(true);
-  }, []);
+/**
+ * Page departure / paste / multi-screen violations. Shares one strict
+ * 3-strike count (server-side) with head-movement detection: warnings 1 and 2
+ * need OK, the 3rd ends and disqualifies the session.
+ */
+export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCheatingGuardProps) {
+  const [modal, setModal] = useState<ModalState | null>(null);
+  const openRef = useRef(false);
+  const done = useRef(false);
+  const localCount = useRef(0);
+  const okBtnRef = useRef<HTMLButtonElement | null>(null);
+  const report = trpc.session.reportAntiCheatingViolation.useMutation();
+  const reportRef = useRef(report);
+  reportRef.current = report;
+  const onDqRef = useRef(onDisqualified);
+  onDqRef.current = onDisqualified;
 
   const handleViolation = useCallback(
     (violation: AntiCheatingViolation) => {
-      persistViolation(violation);
-
-      switch (violation.type) {
-        case "page_departure":
-          recordDeparture();
-          break;
-
-        case "paste": {
-          const now = Date.now();
-          if (now - lastPasteToast.current < 3000) return;
-          lastPasteToast.current = now;
-          toast({
-            title: ((<span className="text-red-600 dark:text-red-400">External paste blocked</span>) as unknown as string),
-            description:
-              "Pasting content from outside the interview is not allowed.",
+      if (!sessionId || done.current || openRef.current) return;
+      openRef.current = true;
+      const reason = STRIKE_LABEL[violation.type] ?? "Anti-cheating violation";
+      setModal({ phase: "checking", reason });
+      void (async () => {
+        localCount.current += 1;
+        let count = localCount.current;
+        let disqualified = count >= MAX_STRIKES;
+        try {
+          const res = await reportRef.current.mutateAsync({
+            sessionId,
+            violation: { type: violation.type, timestamp: violation.timestamp, detail: violation.detail },
           });
-          break;
+          const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;
+          if (typeof strikes === "number") {
+            count = strikes;
+            localCount.current = strikes;
+          }
+          disqualified = !!res.disqualified;
+        } catch (err) {
+          console.warn("[anti-cheating] report failed", err);
         }
-
-        case "multi_screen":
-          toast({
-            title: ((<span className="text-red-600 dark:text-red-400">Additional display detected</span>) as unknown as string),
-            description:
-              "For the best experience, please use a single screen during this interview.",
-          });
-          break;
-      }
+        if (disqualified) {
+          done.current = true;
+          markInterviewEnded();
+          setModal({ phase: "final", reason });
+        } else {
+          setModal({ phase: "warning", count, reason });
+        }
+      })();
     },
-    [toast, recordDeparture, persistViolation],
+    [sessionId],
   );
 
   useAntiCheating({ enabled, onViolation: handleViolation });
 
-  if (!enabled || !warningOpen) return null;
+  useEffect(() => {
+    if (!modal) return;
+    markModalOpen(true);
+    okBtnRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target === okBtnRef.current && (e.key === "Enter" || e.key === " ")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      okBtnRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      markModalOpen(false);
+    };
+  }, [modal]);
+
+  const acknowledge = useCallback(() => {
+    if (!modal || modal.phase === "checking") return;
+    if (modal.phase === "final") {
+      setModal(null);
+      onDqRef.current?.();
+      return;
+    }
+    openRef.current = false;
+    setModal(null);
+  }, [modal]);
+
+  if (!enabled || !modal) return null;
+  const warnings = MAX_STRIKES - 1;
+  const isFinal = modal.phase === "final";
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="mx-4 w-full max-w-md rounded-xl border border-red-200 bg-white p-6 shadow-2xl dark:border-red-900 dark:bg-gray-900">
-        <div className="flex flex-col items-center text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/50">
-            <AlertTriangle className="h-7 w-7 text-red-600 dark:text-red-400" />
-          </div>
-
-          <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
-            Page departure detected
-          </h2>
-
-          <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-            You have left the interview page{" "}
-            <span className="font-semibold text-red-600 dark:text-red-400">
-              {departureCount} {departureCount === 1 ? "time" : "times"}
-            </span>
-            . All departures are recorded and may be reviewed. Excessive
-            departures could affect the evaluation of your session.
-          </p>
-
-          {departureCount >= 3 && (
-            <div className="mt-3 w-full rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:bg-red-950/30 dark:text-red-300">
-              Warning: You have reached the maximum number of allowed
-              departures. Further departures will be flagged for review.
-            </div>
+    <div
+      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="ac-title"
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div className="mx-4 w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 text-center shadow-2xl dark:border-red-900 dark:bg-gray-900">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/50">
+          {isFinal ? (
+            <Ban className="h-8 w-8 text-red-600 dark:text-red-400" />
+          ) : (
+            <AlertTriangle className="h-8 w-8 text-red-600 dark:text-red-400" />
           )}
-
-          <button
-            onClick={() => setWarningOpen(false)}
-            className="mt-5 w-full rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:bg-red-700 dark:hover:bg-red-600"
-          >
-            I understand, continue interview
-          </button>
         </div>
+        <h2 id="ac-title" className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">
+          {isFinal ? "Interview ended — disqualified" : "Anti-cheating violation"}
+        </h2>
+        {modal.phase === "warning" && (
+          <p className="mt-2 inline-block rounded-full bg-red-100 px-3 py-1 text-sm font-semibold text-red-700 dark:bg-red-950/60 dark:text-red-300">
+            Warning {Math.min(modal.count, warnings)} of {warnings}
+          </p>
+        )}
+        <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
+          {isFinal
+            ? `You were disqualified after ${MAX_STRIKES} anti-cheating violations (last: ${modal.reason.toLowerCase()}). Your interview has ended and cannot be resumed.`
+            : `Detected: ${modal.reason.toLowerCase()}. This has been recorded.`}
+        </p>
+        {!isFinal && (
+          <p className="mt-2 text-sm font-medium text-red-600 dark:text-red-400">
+            Stay on this page and keep facing the screen. Violation {MAX_STRIKES} will disqualify you and end the interview.
+          </p>
+        )}
+        <button
+          ref={okBtnRef}
+          type="button"
+          onClick={acknowledge}
+          disabled={modal.phase === "checking"}
+          className="mt-6 w-full rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+        >
+          {modal.phase === "checking" ? "Recording violation…" : "OK"}
+        </button>
       </div>
     </div>
   );

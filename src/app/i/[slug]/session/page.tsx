@@ -227,7 +227,7 @@ export default function SlugSessionPage() {
 
     return (
       <>
-        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} />
+        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={sessionId!}
@@ -249,7 +249,7 @@ export default function SlugSessionPage() {
 
   return (
     <>
-      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} />
+      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={sessionId!}
