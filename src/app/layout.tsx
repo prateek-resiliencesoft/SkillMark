@@ -1,7 +1,7 @@
 import { Providers } from "@/components/providers";
 import { Toaster } from "@/components/ui/toaster";
 import type { Metadata, Viewport } from "next";
-import { Inter, Plus_Jakarta_Sans, IBM_Plex_Sans_Condensed } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 export const viewport: Viewport = {
@@ -9,27 +9,66 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-const inter = Inter({
-  subsets: ["latin"],
+/** Self-hosted — no Google Fonts fetch at build (CI/Docker safe). */
+const inter = localFont({
+  src: "../fonts/inter-latin-wght-normal.woff2",
+  weight: "100 900",
   display: "swap",
   variable: "--font-inter",
-  fallback: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "sans-serif"],
+  fallback: [
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "Segoe UI",
+    "Roboto",
+    "sans-serif",
+  ],
 });
 
-const plusJakartaSans = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  weight: ["500", "600", "700", "800"],
+const plusJakartaSans = localFont({
+  src: "../fonts/plus-jakarta-sans-latin-wght-normal.woff2",
+  weight: "200 800",
   display: "swap",
   variable: "--font-heading",
-  fallback: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+  fallback: [
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "Segoe UI",
+    "sans-serif",
+  ],
 });
 
-const ibmPlexSansCondensed = IBM_Plex_Sans_Condensed({
-  weight: ["400", "500", "600", "700"],
-  subsets: ["latin"],
+const ibmPlexSansCondensed = localFont({
+  src: [
+    {
+      path: "../fonts/ibm-plex-sans-condensed-latin-400-normal.woff2",
+      weight: "400",
+      style: "normal",
+    },
+    {
+      path: "../fonts/ibm-plex-sans-condensed-latin-500-normal.woff2",
+      weight: "500",
+      style: "normal",
+    },
+    {
+      path: "../fonts/ibm-plex-sans-condensed-latin-600-normal.woff2",
+      weight: "600",
+      style: "normal",
+    },
+    {
+      path: "../fonts/ibm-plex-sans-condensed-latin-700-normal.woff2",
+      weight: "700",
+      style: "normal",
+    },
+  ],
   display: "swap",
   variable: "--font-ibm-plex",
-  fallback: ["system-ui", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+  fallback: [
+    "system-ui",
+    "-apple-system",
+    "BlinkMacSystemFont",
+    "Segoe UI",
+    "sans-serif",
+  ],
 });
 
 const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://aural-ai.com";
