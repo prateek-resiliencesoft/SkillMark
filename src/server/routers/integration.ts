@@ -194,7 +194,7 @@ export const integrationRouter = router({
           test: true,
           candidateName: ctx.user.email?.split("@")[0] ?? "Test Candidate",
           interviewTitle: "Sample Interview",
-          message: "Skillmark outbound webhook test ping",
+          message: "Resiliencesoft Interview AI outbound webhook test ping",
         },
       });
       if (result.skipped) {

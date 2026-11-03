@@ -6,7 +6,7 @@
  *   GRAFANA_URL                      https://grayparlor153.grafana.net
  *   GRAFANA_SERVICE_ACCOUNT_TOKEN    glsa_…
  *   GRAFANA_LOKI_DATASOURCE_UID      grafanacloud-logs (default)
- *   GRAFANA_LOG_INSTANCE             skillmark (default)
+ *   GRAFANA_LOG_INSTANCE             resiliencesoft-interview-ai (default)
  */
 
 export type GrafanaLogSource =

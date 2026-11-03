@@ -85,7 +85,7 @@ function McpTab({ baseUrl }: { baseUrl: string }) {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">MCP server for AI assistants</CardTitle>
-          <CardDescription>Connect Cursor, Claude, VS Code Copilot, Windsurf, Antigravity, ChatGPT and other MCP clients to Skillmark. They can list forms, read form schemas, submit candidates, check application status and results, list/create interviews and read session results — all scoped to your organization and your key&apos;s permissions. Every call appears in the API usage log.</CardDescription>
+          <CardDescription>Connect Cursor, Claude, VS Code Copilot, Windsurf, Antigravity, ChatGPT and other MCP clients to Resiliencesoft Interview AI. They can list forms, read form schemas, submit candidates, check application status and results, list/create interviews and read session results — all scoped to your organization and your key&apos;s permissions. Every call appears in the API usage log.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <CodeBlock label="MCP server URL (Streamable HTTP)" code={mcpUrl} />
@@ -113,7 +113,7 @@ function McpTab({ baseUrl }: { baseUrl: string }) {
             <TabsContent value="chatgpt" className="mt-3 space-y-3">
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                 <p className="font-medium">ChatGPT limitation</p>
-                <p className="mt-1">ChatGPT custom MCP apps/connectors (developer mode, Business/Enterprise/Edu workspaces; web only) support only <strong>OAuth</strong> or <strong>No authentication</strong> — there is no field for a static API key header. Skillmark does not implement OAuth yet. As a workaround you can choose <em>No authentication</em> and put the key in the URL below. The key then lives inside the connector URL (and may appear in proxy/server logs): create a <strong>dedicated read-only key</strong> just for ChatGPT and rotate it if the URL is shared. The server must be reachable over public HTTPS.</p>
+                <p className="mt-1">ChatGPT custom MCP apps/connectors (developer mode, Business/Enterprise/Edu workspaces; web only) support only <strong>OAuth</strong> or <strong>No authentication</strong> — there is no field for a static API key header. Resiliencesoft Interview AI does not implement OAuth yet. As a workaround you can choose <em>No authentication</em> and put the key in the URL below. The key then lives inside the connector URL (and may appear in proxy/server logs): create a <strong>dedicated read-only key</strong> just for ChatGPT and rotate it if the URL is shared. The server must be reachable over public HTTPS.</p>
               </div>
               <CodeBlock label="ChatGPT → Settings → Apps → Create (developer mode) → Server URL" code={c.chatgptUrl} />
             </TabsContent>
@@ -149,7 +149,7 @@ function MyIntegrationsInner() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Interview Form Integration</h1>
-          <p className="text-sm text-muted-foreground">How to connect your website, CRM, ATS or AI assistant to Skillmark interview forms.</p>
+          <p className="text-sm text-muted-foreground">How to connect your website, CRM, ATS or AI assistant to Resiliencesoft Interview AI interview forms.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" asChild><Link href="/integrations/api-keys"><KeyRound className="mr-1.5 h-4 w-4" />Manage API keys</Link></Button>

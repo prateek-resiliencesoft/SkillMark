@@ -227,19 +227,19 @@ otp_expiry = 3600
 # sender_name = "Admin"
 
 [auth.email.template.confirmation]
-subject = "Your Skillmark verification code"
+subject = "Your Resiliencesoft Interview AI verification code"
 content_path = "./supabase/templates/confirm-signup.html"
 
 [auth.email.template.invite]
-subject = "You've been invited to Skillmark"
+subject = "You've been invited to Resiliencesoft Interview AI"
 content_path = "./supabase/templates/invite.html"
 
 [auth.email.template.magic_link]
-subject = "Sign in to Skillmark"
+subject = "Sign in to Resiliencesoft Interview AI"
 content_path = "./supabase/templates/magic-link.html"
 
 [auth.email.template.recovery]
-subject = "Your Skillmark password reset code"
+subject = "Your Resiliencesoft Interview AI password reset code"
 content_path = "./supabase/templates/reset-password.html"
 
 [auth.email.template.email_change]
@@ -247,7 +247,7 @@ subject = "Confirm email change"
 content_path = "./supabase/templates/change-email.html"
 
 [auth.email.template.reauthentication]
-subject = "Your Skillmark verification code"
+subject = "Your Resiliencesoft Interview AI verification code"
 content_path = "./supabase/templates/reauthentication.html"
 
 [auth.sms]

@@ -11,7 +11,7 @@
 ---
 
 ### Task 1: Create Interactive Split Auth Component (`src/components/auth/auth-split-view.tsx`)
-- Implement left hero column with `DitheredLogo`, radial glow, "SKILLMARK", "Measure what matters", and feature chips.
+- Implement left hero column with `DitheredLogo`, radial glow, "RESILIENCESOFT INTERVIEW AI", "Measure what matters", and feature chips.
 - Implement right auth column with animated sliding segmented pill: `[ Sign In | Create Account ]`.
 - Include full credentials validation, loading state, error toasts, and password toggle.
 

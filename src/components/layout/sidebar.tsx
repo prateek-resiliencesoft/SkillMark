@@ -265,7 +265,7 @@ export function Sidebar({
           {!collapsed && (
             <div className="flex flex-col">
               <span className="font-heading text-sm font-bold tracking-[2px] leading-none">
-                SKILLMARK
+                RESILIENCESOFT INTERVIEW AI
               </span>
               <span className="text-[10px] text-muted-foreground font-medium tracking-tight mt-0.5">
                 Measure what matters

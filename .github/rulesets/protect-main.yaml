@@ -33,7 +33,7 @@ rules:
       do_not_enforce_on_create: true
       workflows:
         - path: .github/workflows/require-dev-pr-to-main.yml
-          # SkillMark repo id (gh api repos/OWNER/REPO --jq .id)
+          # Resiliencesoft Interview AI repo id (gh api repos/OWNER/REPO --jq .id)
           repository_id: 1436937155
 
 bypass_actors: []

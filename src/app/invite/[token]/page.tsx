@@ -85,7 +85,7 @@ export default function AcceptOrgInvitePage() {
         <div className="flex flex-col items-center gap-2 text-center">
           <AuralLogo size={36} priority />
           <p className="font-heading text-xs font-bold tracking-[2px]">
-            SKILLMARK
+            RESILIENCESOFT INTERVIEW AI
           </p>
         </div>
 
@@ -144,7 +144,7 @@ export default function AcceptOrgInvitePage() {
 
             {!pending ? (
               <Button asChild className="w-full">
-                <Link href="/organizations">Back to Skillmark</Link>
+                <Link href="/organizations">Back to Resiliencesoft Interview AI</Link>
               </Button>
             ) : !user ? (
               <div className="space-y-3">

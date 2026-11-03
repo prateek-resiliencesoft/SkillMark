@@ -18,7 +18,7 @@ export async function generateMetadata({
   const category = getCategory(slug);
   if (!category) return {};
   return {
-    title: `${category.title} | Skillmark Docs`,
+    title: `${category.title} | Resiliencesoft Interview AI Docs`,
     description: category.description,
   };
 }

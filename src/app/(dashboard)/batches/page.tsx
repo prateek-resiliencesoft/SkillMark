@@ -40,7 +40,7 @@ export default function BatchesPage() {
             <Files className="h-8 w-8 text-muted-foreground" />
             <p className="font-medium">No batches yet</p>
             <p className="max-w-sm text-sm text-muted-foreground">
-              Upload a stack of CVs and Skillmark creates a personalised interview and private link for each candidate.
+              Upload a stack of CVs and Resiliencesoft Interview AI creates a personalised interview and private link for each candidate.
             </p>
             <Button asChild variant="outline" className="mt-2">
               <Link href="/interviews/new?tab=bulk">Create your first batch</Link>

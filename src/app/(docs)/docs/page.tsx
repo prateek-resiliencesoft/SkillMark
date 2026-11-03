@@ -5,9 +5,9 @@ import { categories, getCategoryArticles } from "@/content/docs";
 import Link from "next/link";
 
 export const metadata = {
-  title: "Docs | Skillmark",
+  title: "Docs | Resiliencesoft Interview AI",
   description:
-    "Learn how to use Skillmark — guides for interview creators and interviewees.",
+    "Learn how to use Resiliencesoft Interview AI — guides for interview creators and interviewees.",
 };
 
 export default function DocsHomePage() {
@@ -46,7 +46,7 @@ export default function DocsHomePage() {
 
       <footer className="border-t border-mk-border/60 px-8 py-5">
         <div className="max-w-5xl mx-auto flex items-center justify-between text-xs text-mk-text-muted">
-          <span>&copy; {new Date().getFullYear()} Skillmark. All rights reserved.</span>
+          <span>&copy; {new Date().getFullYear()} Resiliencesoft Interview AI. All rights reserved.</span>
           <Link href="/" className="hover:text-mk-terracotta transition-colors">
             aural-ai.com
           </Link>

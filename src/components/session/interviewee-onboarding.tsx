@@ -1296,7 +1296,7 @@ export function IntervieweeOnboarding({
     <header className="sticky top-0 z-50 flex h-14 items-center border-b bg-card px-4 sm:px-6">
       <div className="flex items-center gap-1">
         <AuralLogo size={28} className="shrink-0" />
-        <span className="font-heading text-base font-bold tracking-[2px]">SKILLMARK</span>
+        <span className="font-heading text-base font-bold tracking-[2px]">RESILIENCESOFT INTERVIEW AI</span>
       </div>
     </header>
   );

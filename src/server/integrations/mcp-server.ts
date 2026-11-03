@@ -76,11 +76,11 @@ async function interviewInScope(id: string, auth: ApiKeyAuth) {
   return { interview: data };
 }
 
-const INSTRUCTIONS = `Skillmark AI interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
+const INSTRUCTIONS = `Resiliencesoft Interview AI platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
 
 /** Build an MCP server bound to one authenticated API key (stateless, per request). */
 export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
-  const server = new McpServer({ name: "skillmark", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "resiliencesoft-interview-ai", version: "1.0.0" }, { instructions: INSTRUCTIONS });
   const base = appBaseUrl(request);
 
   const tool = <S extends z.ZodRawShape>(

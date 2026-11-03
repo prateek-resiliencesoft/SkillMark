@@ -1,4 +1,4 @@
-# Skillmark voice WebSocket relay (Doubao / Azure OpenAI / Gemini)
+# Resiliencesoft Interview AI voice WebSocket relay (Doubao / Azure OpenAI / Gemini)
 FROM node:20-bookworm-slim
 WORKDIR /app
 

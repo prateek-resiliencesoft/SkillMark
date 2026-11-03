@@ -1,5 +1,5 @@
 {
-  "name": "skillmark",
+  "name": "resiliencesoft-interview-ai",
   "version": "0.1.0",
   "private": true,
   "description": "Open-source AI interview platform for voice, chat, and video",
@@ -12,7 +12,7 @@
     "url": "https://github.com/1146345502/aural-oss/issues"
   },
   "license": "MIT",
-  "author": "Skillmark",
+  "author": "Resiliencesoft Interview AI",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

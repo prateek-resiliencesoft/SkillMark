@@ -29,7 +29,7 @@ export default function AppleIcon() {
           width="140"
           height="140"
           style={{ objectFit: "contain" }}
-          alt="Skillmark"
+          alt="Resiliencesoft Interview AI"
         />
       </div>
     ),

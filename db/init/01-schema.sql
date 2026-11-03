@@ -1,4 +1,4 @@
--- Skillmark public schema (generated from the original supabase/migrations 001-003).
+-- Resiliencesoft Interview AI public schema (generated from the original supabase/migrations 001-003).
 --
 -- PostgreSQL database dump
 --

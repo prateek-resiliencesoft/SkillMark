@@ -30,7 +30,7 @@ export async function generateMetadata({
   if (!article) return {};
   const category = getCategory(catSlug);
   return {
-    title: `${article.title} | ${category?.title} | Skillmark Docs`,
+    title: `${article.title} | ${category?.title} | Resiliencesoft Interview AI Docs`,
     description: article.description,
   };
 }

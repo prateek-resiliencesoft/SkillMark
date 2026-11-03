@@ -58,11 +58,11 @@ export async function dispatchOutboundWebhook(opts: {
   const body = JSON.stringify(payload);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Skillmark-Event": opts.event,
+    "X-RSI-Event": opts.event,
   };
 
   if (opts.secret) {
-    headers["X-Skillmark-Signature"] = computeWebhookSignature(body, opts.secret);
+    headers["X-RSI-Signature"] = computeWebhookSignature(body, opts.secret);
   }
 
   try {

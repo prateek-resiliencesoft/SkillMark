@@ -75,7 +75,7 @@ export function AdminShell({
             {!collapsed ? (
               <div className="flex min-w-0 flex-col leading-none">
                 <span className="font-heading text-sm font-bold tracking-[2px]">
-                  SKILLMARK
+                  RESILIENCESOFT INTERVIEW AI
                 </span>
                 <span className="mt-0.5 text-[10px] font-medium text-muted-foreground">
                   Control center

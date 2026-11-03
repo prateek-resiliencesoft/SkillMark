@@ -186,19 +186,19 @@ test("mobile auth callback page hands OAuth params back to the app", async () =>
   await page.goto(`${baseUrl}/mobile-auth/callback?code=oauth-code&state=xyz`, {
     waitUntil: "domcontentloaded",
   });
-  await waitForText(page, "Returning you to Skillmark");
+  await waitForText(page, "Returning you to Resiliencesoft Interview AI");
 
   const expected =
     "com.aural.mobile://login-callback?code=oauth-code&state=xyz";
 
   await waitForCondition(async () => {
     const href = await page
-      .getByRole("link", { name: "Open Skillmark" })
+      .getByRole("link", { name: "Open Resiliencesoft Interview AI" })
       .getAttribute("href");
     return href === expected;
   });
   assert.equal(
-    await page.getByRole("link", { name: "Open Skillmark" }).getAttribute("href"),
+    await page.getByRole("link", { name: "Open Resiliencesoft Interview AI" }).getAttribute("href"),
     expected,
   );
 
@@ -211,19 +211,19 @@ test("marketing landing page falls back to the same mobile auth handoff", async 
   await page.goto(`${baseUrl}/?code=oauth-code&state=xyz`, {
     waitUntil: "domcontentloaded",
   });
-  await waitForText(page, "Returning you to Skillmark");
+  await waitForText(page, "Returning you to Resiliencesoft Interview AI");
 
   const expected =
     "com.aural.mobile://login-callback?code=oauth-code&state=xyz";
 
   await waitForCondition(async () => {
     const href = await page
-      .getByRole("link", { name: "Open Skillmark" })
+      .getByRole("link", { name: "Open Resiliencesoft Interview AI" })
       .getAttribute("href");
     return href === expected;
   });
   assert.equal(
-    await page.getByRole("link", { name: "Open Skillmark" }).getAttribute("href"),
+    await page.getByRole("link", { name: "Open Resiliencesoft Interview AI" }).getAttribute("href"),
     expected,
   );
 

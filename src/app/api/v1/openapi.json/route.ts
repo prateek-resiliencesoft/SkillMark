@@ -6,7 +6,7 @@
 const spec = {
   openapi: "3.1.0",
   info: {
-    title: "Skillmark Developer API",
+    title: "Resiliencesoft Interview AI Developer API",
     version: "1.0.0",
     description: `This Developer API lets you create, configure, and manage AI-powered interviews programmatically—define templates, attach structured questions, publish shareable links, track candidate sessions, and retrieve transcripts and scoring-style outputs without using the web UI.
 
@@ -644,7 +644,7 @@ To run an interview: 1. Create interview (\`POST /interviews\`), 2. Add question
       bearerAuth: {
         type: "http",
         scheme: "bearer",
-        bearerFormat: "Skillmark developer key",
+        bearerFormat: "Resiliencesoft Interview AI developer key",
         description:
           "Use a developer API key with the `dlv_` prefix. Example: `Authorization: Bearer dlv_your_key_here`. Keys are issued from your deployment's settings UI; treat them like secrets.",
       },
@@ -747,7 +747,7 @@ To run an interview: 1. Create interview (\`POST /interviews\`), 2. Add question
           chatEnabled: { type: "boolean", example: true },
           voiceEnabled: { type: "boolean", example: false },
           videoEnabled: { type: "boolean", example: false },
-          aiName: { type: "string", example: "Skillmark" },
+          aiName: { type: "string", example: "Resiliencesoft Interview AI" },
           aiTone: {
             type: "string",
             enum: ["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"],
@@ -818,7 +818,7 @@ To run an interview: 1. Create interview (\`POST /interviews\`), 2. Add question
           chatEnabled: { type: "boolean", default: true },
           voiceEnabled: { type: "boolean", default: false },
           videoEnabled: { type: "boolean", default: false },
-          aiName: { type: "string", default: "Skillmark", example: "Alex" },
+          aiName: { type: "string", default: "Resiliencesoft Interview AI", example: "Alex" },
           aiTone: {
             type: "string",
             enum: ["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"],
