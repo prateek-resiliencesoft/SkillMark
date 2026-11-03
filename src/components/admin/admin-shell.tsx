@@ -11,6 +11,7 @@ import { motion } from "motion/react";
 import {
   Activity,
   Building2,
+  HeartPulse,
   LayoutDashboard,
   PanelLeft,
   ScrollText,
@@ -32,6 +33,7 @@ const NAV: {
   { href: "/admin/people", label: "People", icon: Users },
   { href: "/admin/config", label: "Config", icon: Settings2 },
   { href: "/admin/activity", label: "Activity", icon: Activity },
+  { href: "/admin/status", label: "Status", icon: HeartPulse },
   { href: "/admin/server-logs", label: "Server Logs", icon: ScrollText },
 ];
 
