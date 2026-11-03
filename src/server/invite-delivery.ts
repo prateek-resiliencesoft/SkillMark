@@ -37,7 +37,7 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
   const resilioKey = decryptSecret(row?.resilioApiKey);
 
   return {
-    organizationName: org?.name && org.name !== "Personal" ? org.name : "Skillmark",
+    organizationName: org?.name && org.name !== "Personal" ? org.name : "Resiliencesoft Interview AI",
     templates: mergeTemplates(row?.messageTemplates),
     defaultEmailProvider: (row?.defaultEmailProvider as "resend" | "brevo") || "resend",
     defaultWhatsappProvider: "resilio",

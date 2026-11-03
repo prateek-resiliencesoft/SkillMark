@@ -18,7 +18,7 @@ export function AuralLogo({ size = 32, className, priority }: AuralLogoProps) {
     >
       <Image
         src="/images/skillmark-logo.png"
-        alt="Skillmark logo"
+        alt="Resiliencesoft Interview AI logo"
         width={size}
         height={size}
         className="h-full w-full object-contain"
@@ -28,4 +28,4 @@ export function AuralLogo({ size = 32, className, priority }: AuralLogoProps) {
   );
 }
 
-export { AuralLogo as SkillmarkLogo };
+export { AuralLogo as ProductLogo };

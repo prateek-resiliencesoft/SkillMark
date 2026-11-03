@@ -167,7 +167,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
         title: "Connection Error",
         description:
           msg ||
-          "Unable to reach the Skillmark server. Ensure the app and database (docker compose up -d) are running.",
+          "Unable to reach the Resiliencesoft Interview AI server. Ensure the app and database (docker compose up -d) are running.",
         variant: "destructive",
       });
       setLoading(false);
@@ -199,7 +199,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       } else if (data.session) {
         toast({
           title: "Account Created",
-          description: "Welcome to Skillmark! Redirecting...",
+          description: "Welcome to Resiliencesoft Interview AI! Redirecting...",
         });
         window.location.href = nextUrl;
       } else {
@@ -298,7 +298,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
               <div className="h-[7.5rem] w-full sm:h-36 md:h-40">
                 <ParticleText
                   key={`title-${gatherCount}`}
-                  text="SKILLMARK"
+                  text="RESILIENCESOFT INTERVIEW AI"
                   particleSize={1.6}
                   density={3}
                   color="currentColor"
@@ -426,7 +426,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
               <h2 className="font-heading text-2xl font-bold tracking-tight text-foreground">
                 {activeTab === "login"
                   ? t("auth.welcomeBack") || "Welcome back"
-                  : t("auth.createAccount") || "Get started with Skillmark"}
+                  : t("auth.createAccount") || "Get started with Resiliencesoft Interview AI"}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {activeTab === "login"
@@ -541,7 +541,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
           {/* Footer details */}
           <div className="text-center text-xs text-muted-foreground/80 leading-relaxed">
-            By continuing, you agree to Skillmark&apos;s Terms of Service and Privacy Policy.
+            By continuing, you agree to Resiliencesoft Interview AI&apos;s Terms of Service and Privacy Policy.
           </div>
         </motion.div>
       </div>

@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-The following versions of Skillmark are currently supported with security updates:
+The following versions of Resiliencesoft Interview AI are currently supported with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |

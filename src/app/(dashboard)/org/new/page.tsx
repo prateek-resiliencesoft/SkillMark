@@ -93,8 +93,8 @@ export default function NewOrgPage() {
           <CardDescription>
             {mustCreate
               ? isZh
-                ? "Skillmark 是多租户产品。请输入组织名称后继续——此步骤不能跳过。"
-                : "Skillmark is multitenant. Enter your organization name to continue — this step cannot be skipped."
+                ? "Resiliencesoft Interview AI 是多租户产品。请输入组织名称后继续——此步骤不能跳过。"
+                : "Resiliencesoft Interview AI is multitenant. Enter your organization name to continue — this step cannot be skipped."
               : isZh
                 ? "创建一个新组织以与你的团队协作。"
                 : "Create a new organization to collaborate with your team."}

@@ -44,7 +44,7 @@
 - [ ] **Step 1: Write test for HMAC SHA-256 signature computation and payload formatting**
 - [ ] **Step 2: Run test and verify failure**
 - [ ] **Step 3: Implement `dispatchOutboundWebhook` in `src/lib/messaging/webhooks.ts`**
-  Check subscribed events, generate signature `X-Skillmark-Signature`, and dispatch with timeout.
+  Check subscribed events, generate signature `X-RSI-Signature`, and dispatch with timeout.
 - [ ] **Step 4: Run test and verify it passes**
 
 ---

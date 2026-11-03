@@ -8,13 +8,13 @@
 
 ## 1. Executive Summary
 
-This feature redesigns the Skillmark opening and authentication experience (`/login` and `/register`) with a multi-stage cinematic animation sequence:
+This feature redesigns the Resiliencesoft Interview AI opening and authentication experience (`/login` and `/register`) with a multi-stage cinematic animation sequence:
 1. **Stage 1 (Liquid Glass Reveal in Center, 0.0s – 2.4s)**:
-   A WebGL2 liquid glass droplet effect renders in the center of the viewport. The glass droplet lands, stretches into a squircle, bends the Skillmark logo into spectral colors with optical dispersion, sweeps a light sheen across the surface, and releases the logo.
+   A WebGL2 liquid glass droplet effect renders in the center of the viewport. The glass droplet lands, stretches into a squircle, bends the Resiliencesoft Interview AI logo into spectral colors with optical dispersion, sweeps a light sheen across the surface, and releases the logo.
 2. **Stage 2 (Glide to Left Branding Column, 2.4s – 3.2s)**:
-   The logo smoothly glides from the screen center `(50vw, 50vh)` to its settled position in the left branding column, seamlessly transitioning into the interactive [`DitheredLogo`](file:///home/dewashish/Projects/workprojects/Skillmark/src/components/ui/dithered-logo.tsx).
+   The logo smoothly glides from the screen center `(50vw, 50vh)` to its settled position in the left branding column, seamlessly transitioning into the interactive [`DitheredLogo`](file:///home/dewashish/Projects/workprojects/Resiliencesoft Interview AI/src/components/ui/dithered-logo.tsx).
 3. **Stage 3 (Particle Gathering Typography, 2.8s – 3.8s)**:
-   Below the logo, particles scatter across the canvas and magnetically assemble into the title `"SKILLMARK"` and subtitle `"Measure what matters"` using spring physics in [`CursorDrivenParticleTypography`](file:///home/dewashish/Projects/workprojects/Skillmark/src/components/ui/cursor-driven-particle-typography.tsx).
+   Below the logo, particles scatter across the canvas and magnetically assemble into the title `"RESILIENCESOFT INTERVIEW AI"` and subtitle `"Measure what matters"` using spring physics in [`CursorDrivenParticleTypography`](file:///home/dewashish/Projects/workprojects/Resiliencesoft Interview AI/src/components/ui/cursor-driven-particle-typography.tsx).
 4. **Stage 4 (Auth Container Entrance, 3.4s – 4.2s)**:
    The right-hand authentication container (segmented tabs and login/register card) smoothly slides into view from the right with spring damping.
 5. **Session Persistence & Replay**:
@@ -31,7 +31,7 @@ This feature redesigns the Skillmark opening and authentication experience (`/lo
 +--------------------------------------------------------+
 | Liquid Glass Reveal (WebGL2 Canvas)                    |
 | - Optical dispersion, light sheen, squircle boundary   |
-| - Renders Skillmark logo mark                          |
+| - Renders Resiliencesoft Interview AI logo mark                          |
 +--------------------------------------------------------+
         |
         v  (2.4s - 3.2s)
@@ -43,7 +43,7 @@ This feature redesigns the Skillmark opening and authentication experience (`/lo
         v  (2.8s - 3.8s)
 +--------------------------------------------------------+
 | Particle Typography Assembles (Gather Animation)       |
-| - Particles coalesce into "SKILLMARK" & Tagline        |
+| - Particles coalesce into "RESILIENCESOFT INTERVIEW AI" & Tagline        |
 | - Transitions into cursor-driven interactive physics   |
 +--------------------------------------------------------+
         |

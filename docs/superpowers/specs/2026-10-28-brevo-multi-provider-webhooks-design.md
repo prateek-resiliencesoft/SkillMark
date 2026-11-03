@@ -136,8 +136,8 @@ Response: `{ "messageId": "<...>" }` on success, or HTTP 4xx/5xx with error mess
 
 ### Outbound Webhooks (`src/lib/messaging/webhooks.ts`)
 - Dispatches HTTP `POST` requests to `outboundWebhookUrl`.
-- Header: `X-Skillmark-Signature: sha256=<HMAC_HEX>` computed with `outboundWebhookSecret`.
-- Header: `X-Skillmark-Event: <EVENT_NAME>`.
+- Header: `X-RSI-Signature: sha256=<HMAC_HEX>` computed with `outboundWebhookSecret`.
+- Header: `X-RSI-Event: <EVENT_NAME>`.
 - Payload structure:
   ```json
   {

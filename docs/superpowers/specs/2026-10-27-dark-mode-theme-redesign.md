@@ -8,7 +8,7 @@
 
 ## 1. Overview & Objectives
 
-Transform Skillmark's visual identity from the previous earthy terracotta/sand palette to a sleek, modern, high-contrast dark theme based directly on the provided reference design. In addition, introduce a matching contemporary light theme that shares the same electric violet brand accent and refined container geometry.
+Transform Resiliencesoft Interview AI's visual identity from the previous earthy terracotta/sand palette to a sleek, modern, high-contrast dark theme based directly on the provided reference design. In addition, introduce a matching contemporary light theme that shares the same electric violet brand accent and refined container geometry.
 
 Key Objectives:
 1. **Default Dark Mode:** Set dark mode as the default experience across all views (dashboard, management portals, and candidate interview sessions).

@@ -1,4 +1,4 @@
-# Skillmark Next.js app — multi-stage production image
+# Resiliencesoft Interview AI Next.js app — multi-stage production image
 FROM node:20-bookworm-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \

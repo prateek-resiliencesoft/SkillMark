@@ -344,7 +344,7 @@ export const interviewRouter = router({
         chatEnabled: z.boolean().default(true),
         voiceEnabled: z.boolean().default(false),
         videoEnabled: z.boolean().default(false),
-        aiName: z.string().default("Skillmark"),
+        aiName: z.string().default("Resiliencesoft Interview AI"),
         aiTone: z
           .enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"])
           .default("PROFESSIONAL"),

@@ -18,7 +18,7 @@ export function DocsHeader() {
             className="transition-transform duration-300 group-hover:scale-110"
           />
           <span className="font-heading text-base font-bold tracking-[1.5px] text-mk-text">
-            SKILLMARK
+            RESILIENCESOFT INTERVIEW AI
           </span>
         </Link>
 

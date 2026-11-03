@@ -8,7 +8,7 @@ export function buildNodeSnippet(base: string, formId: string, fields: FormField
     `// Node 18+ (server-side only — never ship the key to the browser)`,
     `import { readFile } from "node:fs/promises";`,
     ``,
-    `const SKILLMARK_API_KEY = process.env.SKILLMARK_API_KEY; // dlv_live_… / dlv_test_…`,
+    `const RSI_API_KEY = process.env.RSI_API_KEY; // dlv_live_… / dlv_test_…`,
     `const url = "${base}/api/v1/interview-forms/${formId}/applications";`,
     ``,
     `const form = new FormData();`,
@@ -26,7 +26,7 @@ export function buildNodeSnippet(base: string, formId: string, fields: FormField
   }
   lines.push(
     ``,
-    `const res = await fetch(url, { method: "POST", headers: { Authorization: \`Bearer \${SKILLMARK_API_KEY}\` }, body: form });`,
+    `const res = await fetch(url, { method: "POST", headers: { Authorization: \`Bearer \${RSI_API_KEY}\` }, body: form });`,
     `const json = await res.json();`,
     `if (!res.ok) throw new Error(\`\${json.error.code}: \${json.error.message}\`); // json.error.details = per-field errors`,
     `console.log(json.data.id, json.data.interview_url); // send interview_url to the candidate`,
@@ -55,7 +55,7 @@ export function buildPythonSnippet(base: string, formId: string, fields: FormFie
     `import os, requests`,
     ``,
     `url = "${base}/api/v1/interview-forms/${formId}/applications"`,
-    `headers = {"Authorization": f"Bearer {os.environ['SKILLMARK_API_KEY']}"}`,
+    `headers = {"Authorization": f"Bearer {os.environ['RSI_API_KEY']}"}`,
     `data = [`,
     ...data,
     `]`,
@@ -93,7 +93,7 @@ export function buildPhpSnippet(base: string, formId: string, fields: FormField[
     `curl_setopt_array($ch, [`,
     `  CURLOPT_POST => true,`,
     `  CURLOPT_RETURNTRANSFER => true,`,
-    `  CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . getenv('SKILLMARK_API_KEY')],`,
+    `  CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . getenv('RSI_API_KEY')],`,
     `  CURLOPT_POSTFIELDS => [`,
     ...rows.map((r) => "  " + r),
     `  ],`,
@@ -107,12 +107,13 @@ export function buildPhpSnippet(base: string, formId: string, fields: FormField[
 
 export function mcpConfigs(mcpUrl: string) {
   const key = "YOUR_API_KEY";
+  const mcpName = "resiliencesoft-interview-ai"
   return {
-    cursor: JSON.stringify({ mcpServers: { skillmark: { url: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
-    vscode: JSON.stringify({ servers: { skillmark: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
-    claudeCode: `claude mcp add --transport http skillmark ${mcpUrl} --header "Authorization: Bearer ${key}"`,
-    remoteBridge: JSON.stringify({ mcpServers: { skillmark: { command: "npx", args: ["-y", "mcp-remote", mcpUrl, "--header", "Authorization:Bearer ${SKILLMARK_API_KEY}"], env: { SKILLMARK_API_KEY: key } } } }, null, 2),
-    windsurf: JSON.stringify({ mcpServers: { skillmark: { serverUrl: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
+    cursor: JSON.stringify({ mcpServers: { [mcpName]: { url: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
+    vscode: JSON.stringify({ servers: { [mcpName]: { type: "http", url: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
+    claudeCode: `claude mcp add --transport http ${mcpName} ${mcpUrl} --header "Authorization: Bearer ${key}"`,
+    remoteBridge: JSON.stringify({ mcpServers: { [mcpName]: { command: "npx", args: ["-y", "mcp-remote", mcpUrl, "--header", "Authorization:Bearer ${RSI_API_KEY}"], env: { RSI_API_KEY: key } } } }, null, 2),
+    windsurf: JSON.stringify({ mcpServers: { [mcpName]: { serverUrl: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
     chatgptUrl: `${mcpUrl}?key=${key}`,
     curlInit: `curl -X POST "${mcpUrl}" \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Content-Type: application/json" \\\n  -H "Accept: application/json, text/event-stream" \\\n  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`,
     inspector: `npx @modelcontextprotocol/inspector --cli ${mcpUrl} --transport http --header "Authorization: Bearer ${key}" --method tools/list`,
