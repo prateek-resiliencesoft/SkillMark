@@ -62,6 +62,7 @@ export async function middleware(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-pathname", path);
+  requestHeaders.set("x-search", request.nextUrl.search);
   const res = NextResponse.next({ request: { headers: requestHeaders } });
   if (token && !user) res.cookies.delete(SESSION_COOKIE);
   return res;

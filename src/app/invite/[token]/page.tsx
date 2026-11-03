@@ -1,5 +1,6 @@
 "use client";
 
+import { writeActiveOrgCookie } from "@/lib/active-org";
 import { useAuth } from "@/components/auth-provider";
 import { AuralLogo } from "@/components/ui/aural-logo";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +45,7 @@ export default function AcceptOrgInvitePage() {
       // Keep org id for the client switcher
       try {
         localStorage.setItem("aural:currentOrgId", data.organizationId);
+        writeActiveOrgCookie(data.organizationId);
       } catch {
         /* ignore */
       }
