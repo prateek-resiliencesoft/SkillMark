@@ -21,11 +21,16 @@ const DEFAULT_SEARCH_TARGETS: {
 }[] = [
   { label: "Dashboard", href: "/dashboard", keywords: ["home", "app"] },
   { label: "Organizations", href: "/organizations", keywords: ["org", "team"] },
-  { label: "Admin", href: "/admin", keywords: ["control", "platform"] },
   {
     label: "Status",
-    href: "/admin/status",
+    href: "/status",
     keywords: ["uptime", "monitors", "health"],
+  },
+  { label: "Admin", href: "/admin", keywords: ["control", "platform"] },
+  {
+    label: "Admin status",
+    href: "/admin/status",
+    keywords: ["uptime", "monitors", "control"],
   },
   { label: "Server logs", href: "/admin/server-logs", keywords: ["logs", "loki"] },
   { label: "Login", href: "/login", keywords: ["sign in", "auth"] },
