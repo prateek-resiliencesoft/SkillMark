@@ -120,6 +120,7 @@ export const analysisRouter = router({
       }
 
       return {
+        organizationId,
         interviewTitle: interview.title,
         interviewObjective: interview.objective,
         participantName: session.participantName,

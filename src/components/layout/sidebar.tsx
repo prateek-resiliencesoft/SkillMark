@@ -44,7 +44,11 @@ import {
   Loading03Icon,
 } from "@/components/ui/hugeicon";
 import { useTheme } from "next-themes";
-import { FileText as LucideFileText, Plug as LucidePlug } from "lucide-react";
+import {
+  FileText as LucideFileText,
+  HeartPulse as LucideHeartPulse,
+  Plug as LucidePlug,
+} from "lucide-react";
 import { useThemeTransition } from "@/components/ui/theme-transition";
 import { motion } from "motion/react";
 import Link from "next/link";
@@ -216,6 +220,7 @@ export function Sidebar({
       "/settings",
       "/organizations",
       "/usage",
+      "/status",
     ];
     mainRoutes.forEach((route) => {
       try {
@@ -312,6 +317,14 @@ export function Sidebar({
               <Hugeicon icon={CustomerService01Icon} className="h-4 w-4 shrink-0" />
               {!collapsed && t("sidebar.support")}
             </button>
+            <SidebarLink
+              href="/status"
+              icon={LucideHeartPulse}
+              label={t("sidebar.status")}
+              active={currentPath.startsWith("/status")}
+              collapsed={collapsed}
+              onClick={() => setNavigatingTo("/status")}
+            />
             <SidebarLink
               href="/usage"
               icon={createHugeicon(GaugeIcon)}
@@ -424,6 +437,14 @@ export function Sidebar({
               <Hugeicon icon={CustomerService01Icon} className="h-4 w-4 shrink-0" />
               {!collapsed && t("sidebar.support")}
             </button>
+            <SidebarLink
+              href="/status"
+              icon={LucideHeartPulse}
+              label={t("sidebar.status")}
+              active={currentPath.startsWith("/status")}
+              collapsed={collapsed}
+              onClick={() => setNavigatingTo("/status")}
+            />
             <SidebarLink
               href="/usage"
               icon={createHugeicon(GaugeIcon)}

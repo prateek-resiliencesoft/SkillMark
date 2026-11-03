@@ -11,7 +11,16 @@ import {
   queryGrafanaLinuxLogs,
   type GrafanaLogSource,
 } from "@/lib/grafana/client";
-import { getUptimeStatus } from "@/lib/uptime/client";
+import {
+  createUptimeMonitor,
+  getUptimeStatus,
+  invalidateUptimeCache,
+} from "@/lib/uptime/client";
+import {
+  loadUptimeVisibility,
+  saveUptimeVisibility,
+  seedUptimeVisibilityIfNeeded,
+} from "@/lib/uptime/visibility";
 import {
   parseDefaultFeatureFlags,
   parseInstanceSettings,
@@ -993,6 +1002,123 @@ export const platformRouter = router({
   /** UptimeRobot monitors (all, including /admin probes). */
   statusMonitors: platformProcedure.query(async () => {
     return getUptimeStatus();
+  }),
+
+  /** Create HTTP(s) checkbot monitor + optional public visibility. */
+  createStatusMonitor: platformProcedure
+    .input(
+      z.object({
+        url: z.string().url().max(2000),
+        friendlyName: z.string().trim().min(1).max(120).optional(),
+        intervalSeconds: z.number().int().min(60).max(3600).default(300),
+        isPublic: z.boolean().default(true),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const created = await createUptimeMonitor({
+        url: input.url,
+        friendlyName: input.friendlyName,
+        intervalSeconds: input.intervalSeconds,
+      });
+      if (!created.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: created.error,
+        });
+      }
+
+      const status = await getUptimeStatus();
+      const heuristicPublicIds = status.monitors
+        .filter((m) => m.audience === "public")
+        .map((m) => m.id);
+      let vis = await seedUptimeVisibilityIfNeeded(
+        heuristicPublicIds,
+        ctx.user.id,
+      );
+      const ids = new Set(vis.publicIds);
+      if (input.isPublic) ids.add(created.id);
+      else ids.delete(created.id);
+      vis = await saveUptimeVisibility(
+        { publicIds: [...ids], seeded: true },
+        ctx.user.id,
+      );
+      invalidateUptimeCache();
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "uptime.monitor.create",
+        targetType: "uptime_monitor",
+        targetId: String(created.id),
+        meta: {
+          url: created.url,
+          name: created.name,
+          isPublic: input.isPublic,
+        },
+      });
+
+      return {
+        ...created,
+        isPublic: vis.publicIds.includes(created.id),
+        status: await getUptimeStatus(),
+      };
+    }),
+
+  /** Toggle whether a monitor appears on landing + user /status. */
+  setStatusMonitorPublic: platformProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        isPublic: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const status = await getUptimeStatus();
+      const monitor = status.monitors.find((m) => m.id === input.id);
+      if (!monitor) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Monitor not found",
+        });
+      }
+
+      const heuristicPublicIds = status.monitors
+        .filter((m) => m.audience === "public")
+        .map((m) => m.id);
+      let vis = await seedUptimeVisibilityIfNeeded(
+        heuristicPublicIds,
+        ctx.user.id,
+      );
+      const ids = new Set(vis.publicIds);
+      if (input.isPublic) ids.add(input.id);
+      else ids.delete(input.id);
+      vis = await saveUptimeVisibility(
+        { publicIds: [...ids], seeded: true },
+        ctx.user.id,
+      );
+      invalidateUptimeCache();
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "uptime.monitor.visibility",
+        targetType: "uptime_monitor",
+        targetId: String(input.id),
+        meta: {
+          url: monitor.url,
+          name: monitor.name,
+          isPublic: input.isPublic,
+        },
+      });
+
+      return {
+        id: input.id,
+        isPublic: vis.publicIds.includes(input.id),
+        status: await getUptimeStatus(),
+      };
+    }),
+
+  /** Read current public-visibility allowlist (debug / settings). */
+  statusVisibility: platformProcedure.query(async () => {
+    return loadUptimeVisibility();
   }),
 
   getSettings: platformProcedure.query(async ({ ctx }) => {
