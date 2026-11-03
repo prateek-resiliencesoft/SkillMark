@@ -234,7 +234,7 @@ export function ResumeImportDialog({
       await Promise.all(Array.from({ length: concurrency }, worker));
       setIsParsing(false);
     },
-    [entries, bulk, parseEntry],
+    [entries, parseEntry],
   );
 
   const doneEntries = entries.filter((e) => e.status === "done" && e.form);

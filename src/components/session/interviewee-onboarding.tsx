@@ -728,7 +728,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
         finish(lastAsrText);
       }
     }, 500);
-  }, [analyzeResponse, stopTtsPlayback]);
+  }, [analyzeResponse, sessionId, stopTtsPlayback]);
 
   const playTTS = useCallback(async () => {
     setError(null);

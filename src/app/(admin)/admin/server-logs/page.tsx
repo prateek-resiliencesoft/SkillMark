@@ -145,7 +145,10 @@ export default function AdminServerLogsPage() {
   );
 
   const sources = logs.data?.sources ?? [];
-  const rawEntries = logs.data?.entries ?? [];
+  const rawEntries = useMemo(
+    () => logs.data?.entries ?? [],
+    [logs.data?.entries],
+  );
 
   const fileOptions = useMemo(() => {
     const names = new Set<string>();
