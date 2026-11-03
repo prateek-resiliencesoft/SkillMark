@@ -1096,9 +1096,9 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
           {/* Premade Section Questions */}
           <div className="space-y-2">
             <Label className="font-semibold text-sm">Premade Section Questions</Label>
-            <div className="rounded-xl border border-border/80 bg-card/60 p-4 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="space-y-0.5">
+            <div className="rounded-xl border border-border/80 bg-card/60 p-3 sm:p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3 sm:items-center">
+                <div className="min-w-0 space-y-0.5">
                   <p className="text-sm font-semibold text-foreground">
                     Include Standard Round Questions
                   </p>
@@ -1107,6 +1107,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
                   </p>
                 </div>
                 <Switch
+                  className="mt-0.5 shrink-0 sm:mt-0"
                   checked={includePremade}
                   onCheckedChange={setIncludePremade}
                 />
@@ -1136,14 +1137,14 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
                             });
                           }}
                           className={cn(
-                            "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer",
+                            "flex max-w-full min-h-[36px] items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer",
                             isSelected
                               ? "bg-primary/10 border-primary text-primary"
                               : "bg-muted/40 border-border text-muted-foreground hover:text-foreground",
                           )}
                         >
                           <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
-                          <span>{sec.name}</span>
+                          <span className="truncate">{sec.name}</span>
                           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-background/80 border">
                             {count}
                           </span>

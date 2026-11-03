@@ -3,7 +3,7 @@ import { AuralLogo } from "@/components/ui/aural-logo";
 
 export function PreparingScreen() {
   return (
-    <div className="flex min-h-screen flex-col bg-muted/30">
+    <div className="flex min-h-[100dvh] flex-col bg-muted/30">
       <header className="sticky top-0 z-50 flex h-14 items-center border-b bg-card px-6">
         <div className="flex items-center gap-1">
           <AuralLogo size={28} className="shrink-0" />

@@ -1074,7 +1074,7 @@ export function ChatInterface({
   // ── CODING / WHITEBOARD question: split layout with problem panel ──
   if (isCodingQuestion || isWhiteboardQuestion) {
     return (
-      <div className="flex h-screen flex-col bg-background">
+      <div className="flex h-[100dvh] flex-col bg-background">
         {/* Compact header */}
         <div className="flex items-center justify-between border-b bg-card px-3 py-2 md:px-4">
           <div className="mr-2 flex min-w-0 items-center gap-2 md:gap-3">
@@ -1397,7 +1397,7 @@ export function ChatInterface({
 
   // ── Normal (non-coding) layout ────────────────────────────────
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-[100dvh] flex-col bg-background">
       {/* Header */}
       <div className="border-b bg-card px-3 py-2 md:px-4 md:py-3">
         <div className="mx-auto flex max-w-3xl items-center justify-between">

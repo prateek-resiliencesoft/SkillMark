@@ -1310,7 +1310,7 @@ export function VoiceInterface({
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
   const completionScreen = (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md">
         <CardContent className="py-12 text-center">
           <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
@@ -1500,7 +1500,7 @@ export function VoiceInterface({
 
   // ── Render ──────────────────────────────────────────────────────
   return shouldShowCompletionScreen ? completionScreen : (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
       {/* Saving overlay */}
       {isSaving && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
@@ -1513,7 +1513,7 @@ export function VoiceInterface({
       )}
 
       {/* Header */}
-      <div className="shrink-0 border-b bg-card px-3 py-2 md:px-6 md:py-3">
+      <div className="shrink-0 border-b bg-card px-3 pb-1.5 pt-[max(0.375rem,env(safe-area-inset-top))] md:px-6 md:py-3">
         <div className="flex items-center justify-between">
           <div className="mr-2 min-w-0 flex-1">
             <h1 className="truncate text-sm font-semibold md:text-base">{interviewTitle}</h1>
@@ -1535,7 +1535,7 @@ export function VoiceInterface({
           </div>
         </div>
         {/* Question progress + timer (mobile: timer in header to avoid blocking bottom buttons) */}
-        <div className="mt-2 flex items-center gap-3">
+        <div className="mt-1.5 flex items-center gap-3 md:mt-2">
           <Progress value={progress} className="h-1.5 flex-1" />
           <span className="shrink-0 text-xs font-medium text-muted-foreground">
             Q{voice.currentQuestionIndex + 1} / {voice.totalQuestions}
@@ -1557,7 +1557,7 @@ export function VoiceInterface({
 
       {/* Error display */}
       {error && (
-        <div className="mx-6 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">
+        <div className="mx-3 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive md:mx-6 md:px-4">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {error}
         </div>
@@ -2351,7 +2351,7 @@ export function VoiceInterface({
 
       {/* ── Bottom control bar (Zoom-like) ──────────────────── */}
       {(voice.isConnected || preview) && (
-        <div className={`relative flex items-center justify-center gap-2 border-t bg-card px-3 py-2 md:gap-6 md:px-6${preview ? " pointer-events-none" : ""}`}>
+        <div className={`relative flex shrink-0 items-center justify-center gap-1 border-t bg-card px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:gap-6 md:px-6 md:py-2${preview ? " pointer-events-none" : ""}`}>
           {/* Timer — right-aligned on desktop only (mobile shows it in header) */}
           {remainingSeconds !== null && !isMobile && (
             <div className={`absolute right-3 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium tabular-nums md:right-6 md:px-2.5 ${isTimeLow ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"}`}>
@@ -2364,7 +2364,7 @@ export function VoiceInterface({
             <Button
               size="icon"
               variant={voice.isListening ? "default" : "secondary"}
-              className={`h-9 w-9 rounded-full transition-all ${
+              className={`h-11 w-11 rounded-full md:h-9 md:w-9 transition-all ${
                 voice.isListening
                   ? "bg-secondary-500 hover:bg-secondary-600 border-secondary-500"
                   : ""
@@ -2394,7 +2394,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant={chatOpen ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={() => setChatOpen((prev) => !prev)}
               >
                 <MessageSquare className="h-4 w-4" />
@@ -2404,12 +2404,12 @@ export function VoiceInterface({
           )}
 
           {/* Whiteboard + Code Editor toggles */}
-          <div data-tour="voice-tools" className="flex items-center gap-2 md:gap-6">
+          <div data-tour="voice-tools" className="flex items-center gap-1 md:gap-6">
             <div className="flex flex-col items-center gap-0.5">
               <Button
                 size="icon"
                 variant={whiteboardActive ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleToggleWhiteboard}
               >
                 <PenLine className="h-4 w-4" />
@@ -2421,7 +2421,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant={codeEditorActive ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleToggleCodeEditor}
               >
                 <Code2 className="h-4 w-4" />
@@ -2431,12 +2431,12 @@ export function VoiceInterface({
           </div>
 
           {/* Previous / Next / End */}
-          <div data-tour="voice-progress" className="flex items-center gap-2 md:gap-6">
+          <div data-tour="voice-progress" className="flex items-center gap-1 md:gap-6">
             <div className="flex flex-col items-center gap-0.5">
               <Button
                 size="icon"
                 variant="secondary"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handlePreviousQuestion}
                 disabled={
                   voice.isTransitioning ||
@@ -2456,7 +2456,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant="secondary"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleNextQuestion}
                 disabled={
                   voice.isTransitioning ||
@@ -2476,7 +2476,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant="destructive"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={() => setShowEndDialog(true)}
               >
                 <PhoneOff className="h-4 w-4" />
@@ -2495,7 +2495,7 @@ export function VoiceInterface({
             autoPlay
             playsInline
             muted
-            className="h-28 w-36 object-cover"
+            className="h-20 w-[6.5rem] object-cover sm:h-28 sm:w-36"
             style={{ transform: "scaleX(-1)" }}
           />
           <div className="absolute bottom-1 left-1 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5">
@@ -2531,7 +2531,7 @@ export function VoiceInterface({
         <Sheet open={chatOpen} onOpenChange={setChatOpen}>
           <SheetContent
             side="bottom"
-            className="flex h-[60vh] flex-col p-0"
+            className="flex h-[70dvh] max-h-[calc(100dvh-3rem)] flex-col p-0 pb-[env(safe-area-inset-bottom)] md:h-[60vh]"
             onOpenAutoFocus={(e) => e.preventDefault()}
           >
             <SheetHeader className="shrink-0 border-b px-4 py-3">

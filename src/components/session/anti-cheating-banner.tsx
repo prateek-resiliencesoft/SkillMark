@@ -115,7 +115,7 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
       aria-labelledby="ac-title"
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className="mx-4 w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 text-center shadow-2xl dark:border-red-900 dark:bg-gray-900">
+      <div className="mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-red-200 bg-white p-5 text-center shadow-2xl sm:p-6 dark:border-red-900 dark:bg-gray-900">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/50">
           {isFinal ? (
             <Ban className="h-8 w-8 text-red-600 dark:text-red-400" />

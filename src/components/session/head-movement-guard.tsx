@@ -160,7 +160,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
           aria-labelledby="hm-title"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="mx-4 w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 text-center shadow-2xl dark:border-red-900 dark:bg-gray-900">
+          <div className="mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-red-200 bg-white p-5 text-center shadow-2xl sm:p-6 dark:border-red-900 dark:bg-gray-900">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/50">
               {isFinal ? (
                 <Ban className="h-8 w-8 text-red-600 dark:text-red-400" />
@@ -209,7 +209,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
 
 export function DisqualifiedScreen() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md">
         <CardContent className="py-12 text-center">
           <Ban className="mx-auto h-16 w-16 text-red-600" />

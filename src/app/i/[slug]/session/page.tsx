@@ -106,7 +106,7 @@ export default function SlugSessionPage() {
   if (session.data.status === "COMPLETED" || completed) {
     try { localStorage.removeItem(STORAGE_PREFIX + slug); } catch { /* noop */ }
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md">
           <CardContent className="py-12 text-center">
             <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
