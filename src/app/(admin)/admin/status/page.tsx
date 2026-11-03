@@ -1,5 +1,6 @@
 "use client";
 
+import { MonitorLatencySparkline } from "@/components/admin/monitor-latency-sparkline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -45,6 +46,19 @@ function statusClass(status: number) {
       return "border-border bg-muted text-muted-foreground";
     default:
       return "border-border bg-background text-muted-foreground";
+  }
+}
+
+function sparkColor(status: number) {
+  switch (status) {
+    case 2:
+      return "rgb(16 185 129)";
+    case 8:
+      return "rgb(245 158 11)";
+    case 9:
+      return "rgb(239 68 68)";
+    default:
+      return "hsl(var(--muted-foreground))";
   }
 }
 
@@ -148,7 +162,7 @@ export default function AdminStatusPage() {
                 {data.monitors.map((m) => (
                   <li
                     key={m.id}
-                    className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5"
+                    className="grid gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.9fr)_auto] sm:items-center"
                   >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -174,23 +188,34 @@ export default function AdminStatusPage() {
                         <span className="truncate">{m.url}</span>
                         <ExternalLink className="size-3 shrink-0 opacity-60" />
                       </a>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                        {m.uptimeRatio != null ? (
+                          <span className="tabular-nums">
+                            {m.uptimeRatio.toFixed(3)}% · 30d
+                          </span>
+                        ) : null}
+                        {m.averageResponseMs != null ? (
+                          <span className="tabular-nums">
+                            avg {Math.round(m.averageResponseMs)}ms
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                      {m.uptimeRatio != null ? (
-                        <span className="tabular-nums text-xs text-muted-foreground">
-                          {m.uptimeRatio.toFixed(3)}% · 30d
-                        </span>
-                      ) : null}
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "min-w-[5.5rem] justify-center",
-                          statusClass(m.status),
-                        )}
-                      >
-                        {m.statusLabel}
-                      </Badge>
-                    </div>
+
+                    <MonitorLatencySparkline
+                      points={m.responseTimes}
+                      color={sparkColor(m.status)}
+                    />
+
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "h-fit min-w-[5.5rem] justify-center justify-self-start sm:justify-self-end",
+                        statusClass(m.status),
+                      )}
+                    >
+                      {m.statusLabel}
+                    </Badge>
                   </li>
                 ))}
               </ul>

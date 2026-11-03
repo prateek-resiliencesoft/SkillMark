@@ -9,6 +9,13 @@ export type UptimeStatusCode = 0 | 1 | 2 | 8 | 9;
 
 export type MonitorAudience = "public" | "admin";
 
+export type UptimeResponsePoint = {
+  /** Unix seconds */
+  at: number;
+  /** Response time in ms */
+  ms: number;
+};
+
 export type UptimeMonitor = {
   id: number;
   name: string;
@@ -17,6 +24,10 @@ export type UptimeMonitor = {
   statusLabel: string;
   /** 0–100 when available */
   uptimeRatio: number | null;
+  /** Average response time (ms) when available */
+  averageResponseMs: number | null;
+  /** Recent response samples (oldest → newest) for BarSparkline */
+  responseTimes: UptimeResponsePoint[];
   intervalSeconds: number;
   audience: MonitorAudience;
 };
@@ -37,6 +48,8 @@ const STATUS_LABEL: Record<number, string> = {
   8: "Seems down",
   9: "Down",
 };
+
+const RESPONSE_TIMES_LIMIT = 24;
 
 function cfg() {
   const apiKey = (process.env.UPTIMEROBOT_API_KEY || "").trim();
@@ -72,6 +85,8 @@ type RawMonitor = {
   status: number;
   interval: number;
   custom_uptime_ratio?: string;
+  average_response_time?: number | string;
+  response_times?: { datetime: number; value: number }[];
 };
 
 let cache: { at: number; result: UptimeStatusResult } | null = null;
@@ -99,14 +114,14 @@ async function fetchAllMonitors(): Promise<UptimeStatusResult> {
       api_key: apiKey,
       format: "json",
       logs: "0",
-      // last 30 days ratio
       custom_uptime_ratios: "30",
+      response_times: "1",
+      response_times_limit: String(RESPONSE_TIMES_LIMIT),
     });
     const res = await fetch("https://api.uptimerobot.com/v2/getMonitors", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body,
-      // Node fetch; avoid hanging the public route
       signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) {
@@ -137,6 +152,15 @@ async function fetchAllMonitors(): Promise<UptimeStatusResult> {
       const status = mapStatus(m.status);
       const ratioRaw = m.custom_uptime_ratio?.split("-")[0]?.trim();
       const ratio = ratioRaw ? Number.parseFloat(ratioRaw) : NaN;
+      const avgRaw =
+        typeof m.average_response_time === "string"
+          ? Number.parseFloat(m.average_response_time)
+          : m.average_response_time;
+      // API returns newest-first; charts want oldest → newest
+      const responseTimes = [...(m.response_times ?? [])]
+        .reverse()
+        .map((p) => ({ at: p.datetime, ms: p.value }));
+
       return {
         id: m.id,
         name: m.friendly_name,
@@ -144,6 +168,9 @@ async function fetchAllMonitors(): Promise<UptimeStatusResult> {
         status,
         statusLabel: STATUS_LABEL[status] ?? "Unknown",
         uptimeRatio: Number.isFinite(ratio) ? ratio : null,
+        averageResponseMs:
+          avgRaw != null && Number.isFinite(avgRaw) ? avgRaw : null,
+        responseTimes,
         intervalSeconds: m.interval,
         audience: isAdminMonitor(m.friendly_name, m.url) ? "admin" : "public",
       };

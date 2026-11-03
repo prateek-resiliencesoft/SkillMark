@@ -45,6 +45,8 @@ export async function GET(request: Request) {
           status: m.status,
           statusLabel: m.statusLabel,
           uptimeRatio: m.uptimeRatio,
+          averageResponseMs: m.averageResponseMs,
+          responseTimes: m.responseTimes,
         })),
         ...(status.error ? { error: status.error } : {}),
       },
