@@ -18,16 +18,22 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { getSessionOverallScore } from "@/lib/session-score";
+import { buildReportData } from "@/lib/report-data";
+import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
+import {
+  ReportHero,
+  ReportIntegrity,
+  ReportQuestions,
+  ReportSkills,
+  ReportStrengths,
+  ReportSummary,
+} from "@/components/report/session-report-view";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
-  AlertTriangle,
   ArrowLeft,
   BarChart3,
   Camera,
@@ -36,8 +42,6 @@ import {
   Clock,
   Code2,
   FileDown,
-  FileText,
-  HelpCircle,
   Lightbulb,
   Loader2,
   MessageCircle,
@@ -46,16 +50,16 @@ import {
   Monitor,
   PenLine,
   Search,
+  Settings2,
   SmilePlus,
   Sparkles,
   Tags,
-  Target,
   UserCheck,
   Users,
   Volume2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 interface QuestionEvaluation {
   question: string;
   score: number;
@@ -525,7 +529,6 @@ function SessionDetail({
     imageUrl?: string;
   }[];
   const headMovementEvents = antiCheatingLog.filter((v) => v.type === "head_movement");
-  const isDisqualified = (summary.data as { status?: string } | undefined)?.status === "DISQUALIFIED";
 
   const hasReport = !!(
     summary.data?.summary ||
@@ -536,12 +539,8 @@ function SessionDetail({
     (summary.data?.themes && summary.data.themes.length > 0)
   );
 
-  const overallScore = getSessionOverallScore({
-    questionEvaluations,
-    criteriaEvaluations,
-  });
-  const avgQuestionScore =
-    overallScore !== null ? overallScore.toFixed(1) : null;
+  const report = useMemo(() => buildReportData(summary.data), [summary.data]);
+  const [pdfBuilderOpen, setPdfBuilderOpen] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -560,8 +559,15 @@ function SessionDetail({
             clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}
           />
           {hasReport && (
+            <Button onClick={() => setPdfBuilderOpen(true)}>
+              <Settings2 className="mr-2 h-4 w-4" />
+              Customize PDF
+            </Button>
+          )}
+          {hasReport && (
             <Button
               variant="outline"
+              title="Quick export of the on-screen report"
               onClick={handleExportPDF}
               disabled={exporting}
               className="relative overflow-hidden"
@@ -578,7 +584,7 @@ function SessionDetail({
                 ) : (
                   <FileDown className="mr-2 h-4 w-4" />
                 )}
-                {exporting ? exportProgress || "Exporting..." : "Export PDF"}
+                {exporting ? exportProgress || "Exporting..." : "Quick export"}
               </span>
             </Button>
           )}
@@ -597,159 +603,8 @@ function SessionDetail({
               pdfCapture && "pdf-capture",
             )}
           >
-            {/* Report header */}
-            {(() => {
-              const screenshots = summary.data?.screenshots as
-                | {
-                    url: string;
-                    path: string;
-                    timestamp: string;
-                    type: "camera" | "screen";
-                  }[]
-                | null;
-              const avatarUrl =
-                screenshots?.find((s) => s.type === "camera")?.url ?? null;
-              const participantName =
-                summary.data?.participantName ||
-                summary.data?.participantEmail ||
-                "Anonymous";
+            <ReportHero data={report} />
 
-              return (
-                <div className="space-y-4">
-                  <h1 className="text-2xl font-bold">
-                    {summary.data?.interviewTitle ?? "Interview"} — Session
-                    Report
-                  </h1>
-
-                  <div className="flex flex-col items-stretch gap-4 sm:flex-row">
-                    {/* Profile card */}
-                    <Card className="flex-1">
-                      <CardContent className="flex h-full items-center gap-5 p-5">
-                        <div className="h-20 w-20 shrink-0 overflow-hidden rounded-full border-2 border-muted bg-muted">
-                          {avatarUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={avatarUrl}
-                              alt={participantName}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-muted-foreground">
-                              {participantName.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1 space-y-1.5">
-                          <div className="flex items-center gap-2">
-                            <p className="truncate text-lg font-semibold">
-                              {participantName}
-                            </p>
-                            {summary.data?.status && (
-                              <Badge
-                                variant={
-                                  summary.data.status === "COMPLETED"
-                                    ? "default"
-                                    : "secondary"
-                                }
-                              >
-                                {summary.data.status}
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                            {summary.data?.createdAt && (
-                              <span className="flex items-center gap-1">
-                                <Clock className="h-3.5 w-3.5" />
-                                {new Date(
-                                  summary.data.createdAt,
-                                ).toLocaleDateString(undefined, {
-                                  year: "numeric",
-                                  month: "long",
-                                  day: "numeric",
-                                })}
-                              </span>
-                            )}
-                            {summary.data?.totalDurationSeconds != null && (
-                              <span className="flex items-center gap-1">
-                                <Clock className="h-3.5 w-3.5" />
-                                {Math.round(
-                                  summary.data.totalDurationSeconds / 60,
-                                )}{" "}
-                                min
-                              </span>
-                            )}
-                            {summary.data?.messages && (
-                              <span className="flex items-center gap-1">
-                                <MessageCircle className="h-3.5 w-3.5" />
-                                {summary.data.messages.length} messages
-                              </span>
-                            )}
-                          </div>
-                          {summary.data?.interviewObjective && (
-                            <p className="text-xs text-muted-foreground/80">
-                              <span className="font-medium text-muted-foreground">
-                                Objective:
-                              </span>{" "}
-                              {summary.data.interviewObjective}
-                            </p>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    {/* Score card */}
-                    {avgQuestionScore && (
-                      <Card className="shrink-0 sm:w-40">
-                        <CardContent className="flex h-full flex-col items-center justify-center p-5">
-                          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground/60">
-                            Avg Score
-                          </p>
-                          <div className="relative mt-2 flex h-24 w-24 items-center justify-center">
-                            <svg
-                              className="absolute inset-0 h-full w-full -rotate-90"
-                              viewBox="0 0 100 100"
-                            >
-                              <circle
-                                cx="50"
-                                cy="50"
-                                r="42"
-                                fill="none"
-                                stroke="hsl(var(--muted))"
-                                strokeWidth="8"
-                              />
-                              <circle
-                                cx="50"
-                                cy="50"
-                                r="42"
-                                fill="none"
-                                stroke={
-                                  parseFloat(avgQuestionScore) >= 7
-                                    ? "hsl(142, 60%, 45%)"
-                                    : parseFloat(avgQuestionScore) >= 4
-                                      ? "hsl(24, 80%, 55%)"
-                                      : "hsl(var(--destructive))"
-                                }
-                                strokeWidth="8"
-                                strokeLinecap="round"
-                                strokeDasharray={`${parseFloat(avgQuestionScore) * 10 * 2.64} 264`}
-                              />
-                            </svg>
-                            <span className="text-2xl font-bold">
-                              {avgQuestionScore}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            out of 10
-                          </p>
-                        </CardContent>
-                      </Card>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            <Separator />
 
             {/* Generate report if no summary yet */}
             {!summary.data?.summary && (
@@ -786,108 +641,11 @@ function SessionDetail({
               </Card>
             )}
 
-            {/* Summary */}
-            {summary.data?.summary && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    Summary
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="whitespace-pre-line text-sm leading-relaxed">
-                    {summary.data.summary}
-                  </p>
-                </CardContent>
-              </Card>
-            )}
+            <ReportSummary data={report} />
+            <ReportSkills data={report} />
+            <ReportStrengths data={report} />
 
-            {/* Per-Question Evaluations */}
-            {questionEvaluations.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <HelpCircle className="h-4 w-4" />
-                    Question-by-Question Evaluation
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-6">
-                  {questionEvaluations.map((qe, i) => (
-                    <div key={i} className="space-y-3 rounded-lg border p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">
-                            Q{i + 1}. {qe.question}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <span className="text-lg font-bold">
-                            {qe.score}/10
-                          </span>
-                        </div>
-                      </div>
-                      <Progress value={(qe.score || 0) * 10} className="h-2" />
-                      <p className="text-sm text-muted-foreground">
-                        {qe.evaluation}
-                      </p>
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        {qe.highlights && qe.highlights.length > 0 && (
-                          <div>
-                            <p className="mb-1 text-xs font-medium text-secondary-600 dark:text-secondary-400">
-                              Strengths
-                            </p>
-                            <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
-                              {qe.highlights.map((h, j) => (
-                                <li key={j}>{String(h)}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        {qe.improvements && qe.improvements.length > 0 && (
-                          <div>
-                            <p className="mb-1 text-xs font-medium text-tertiary-600 dark:text-tertiary-300">
-                              Areas for Improvement
-                            </p>
-                            <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
-                              {qe.improvements.map((imp, j) => (
-                                <li key={j}>{String(imp)}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Assessment Scores */}
-            {criteriaEvaluations.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Target className="h-4 w-4" />
-                    Assessment Scores
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {criteriaEvaluations.map((ce, i) => (
-                    <div key={i} className="space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">{ce.name}</span>
-                        <span className="text-sm font-bold">{ce.score}/10</span>
-                      </div>
-                      <Progress value={ce.score * 10} className="h-2" />
-                      <p className="text-xs text-muted-foreground">
-                        {ce.reasoning}
-                      </p>
-                    </div>
-                  ))}
-                </CardContent>
-              </Card>
-            )}
+            <ReportQuestions data={report} />
 
             {/* Research Findings */}
             {researchFindings.length > 0 && (
@@ -1164,84 +922,33 @@ function SessionDetail({
               );
             })()}
 
-            {isDisqualified && (
-              <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
-                Candidate was disqualified: the interview was ended automatically after repeated head-movement violations.
-              </div>
-            )}
-
-            {/* Anti-cheating integrity log */}
-            {antiCheatingLog.length > 0 && (
-              <Card className="border-amber-200 dark:border-amber-900">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-500" />
-                    Integrity Log
-                    <Badge variant="outline" className="ml-1 font-normal">
-                      {antiCheatingLog.length}{" "}
-                      {antiCheatingLog.length === 1 ? "event" : "events"}
-                    </Badge>
+            <ReportIntegrity data={report} sessionId={sessionId} />
+            {headMovementEvents.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Camera className="h-4 w-4 text-amber-600" /> Head movement snapshots
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-1.5">
-                    {(() => {
-                      const counts: Record<string, number> = {};
-                      for (const v of antiCheatingLog) {
-                        const label =
-                          v.type === "page_departure"
-                            ? "Page departure"
-                            : v.type === "tab_switch"
-                              ? "Page departure"
-                              : v.type === "focus_lost"
-                                ? "Page departure"
-                                : v.type === "paste"
-                                  ? "External paste blocked"
-                                  : v.type === "multi_screen"
-                                    ? "Multi-screen detected"
-                                    : v.type === "head_movement"
-                                      ? "Head movement / looking away"
-                                      : v.type;
-                        counts[label] = (counts[label] || 0) + 1;
-                      }
-                      return Object.entries(counts).map(([label, count]) => (
-                        <div
-                          key={label}
-                          className="flex items-center justify-between rounded-md bg-amber-50 px-3 py-1.5 text-sm dark:bg-amber-950/20"
-                        >
-                          <span className="text-amber-800 dark:text-amber-300">
-                            {label}
-                          </span>
-                          <Badge variant="secondary" className="text-xs">
-                            {count}
-                          </Badge>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {headMovementEvents.map((v, i) => (
+                      <div key={`${v.timestamp}-${i}`} className="overflow-hidden rounded-md border">
+                        {v.imageUrl ? (
+                          <a href={v.imageUrl} target="_blank" rel="noreferrer">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={v.imageUrl} alt={`Head movement violation ${i + 1}`} className="aspect-video w-full object-cover" />
+                          </a>
+                        ) : (
+                          <div className="flex aspect-video items-center justify-center bg-muted text-xs text-muted-foreground">No snapshot</div>
+                        )}
+                        <div className="px-2 py-1 text-xs text-muted-foreground">
+                          #{i + 1} · {new Date(v.timestamp).toLocaleTimeString()}
+                          {v.detail ? ` · ${v.detail}` : ""}
                         </div>
-                      ));
-                    })()}
-                  </div>
-                  {headMovementEvents.length > 0 && (
-                    <div className="mt-4">
-                      <p className="mb-2 text-sm font-medium">Head movement snapshots</p>
-                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        {headMovementEvents.map((v, i) => (
-                          <div key={`${v.timestamp}-${i}`} className="overflow-hidden rounded-md border">
-                            {v.imageUrl ? (
-                              <a href={v.imageUrl} target="_blank" rel="noreferrer">
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img src={v.imageUrl} alt={`Head movement violation ${i + 1}`} className="aspect-video w-full object-cover" />
-                              </a>
-                            ) : (
-                              <div className="flex aspect-video items-center justify-center bg-muted text-xs text-muted-foreground">No snapshot</div>
-                            )}
-                            <div className="px-2 py-1 text-xs text-muted-foreground">
-                              #{i + 1} · {new Date(v.timestamp).toLocaleTimeString()}
-                              {v.detail ? ` · ${v.detail}` : ""}
-                            </div>
-                          </div>
-                        ))}
                       </div>
-                    </div>
-                  )}
+                    ))}
+                  </div>
                 </CardContent>
               </Card>
             )}
@@ -1611,6 +1318,14 @@ function SessionDetail({
           </div>
         </>
       )}
+
+      <PdfBuilderDialog
+        open={pdfBuilderOpen}
+        onOpenChange={setPdfBuilderOpen}
+        data={report}
+        organizationId={(summary.data as { organizationId?: string } | undefined)?.organizationId ?? currentOrg?.id}
+        sessionId={sessionId}
+      />
 
       {/* End interview confirmation for in-progress sessions */}
       <AlertDialog open={showEndConfirm} onOpenChange={setShowEndConfirm}>

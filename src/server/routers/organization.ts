@@ -4,6 +4,7 @@ import { z } from "zod";
 import { loadPlatformSettings } from "../platform-settings";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
 import { requireOrgAccess } from "../tenant";
+import { normalizeReportTemplate, reportTemplateSchema } from "@/lib/report-template";
 
 export const organizationRouter = router({
   orgLimit: protectedProcedure.query(async ({ ctx }) => {
@@ -78,6 +79,35 @@ export const organizationRouter = router({
     }
     return out;
   }),
+
+  /** Org default PDF report template (any member may read). */
+  getReportTemplate: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+      if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      const { data, error } = await ctx.supabase
+        .from("organizations")
+        .select("reportTemplate")
+        .eq("id", input.organizationId)
+        .maybeSingle();
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return normalizeReportTemplate((data as { reportTemplate?: unknown } | null)?.reportTemplate);
+    }),
+
+  /** Save the org default PDF report template — org members only. */
+  saveReportTemplate: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(), template: reportTemplateSchema }))
+    .mutation(async ({ ctx, input }) => {
+      const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+      if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Only organization members can edit the report template" });
+      const { error } = await ctx.supabase
+        .from("organizations")
+        .update({ reportTemplate: input.template })
+        .eq("id", input.organizationId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { ok: true as const };
+    }),
 
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
