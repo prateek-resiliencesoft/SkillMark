@@ -11,6 +11,7 @@ import {
   queryGrafanaLinuxLogs,
   type GrafanaLogSource,
 } from "@/lib/grafana/client";
+import { getUptimeStatus } from "@/lib/uptime/client";
 import {
   parseDefaultFeatureFlags,
   parseInstanceSettings,
@@ -988,6 +989,11 @@ export const platformRouter = router({
         instance: process.env.GRAFANA_LOG_INSTANCE || "skillmark",
       };
     }),
+
+  /** UptimeRobot monitors (all, including /admin probes). */
+  statusMonitors: platformProcedure.query(async () => {
+    return getUptimeStatus();
+  }),
 
   getSettings: platformProcedure.query(async ({ ctx }) => {
     return loadPlatformSettings(ctx.supabase);
