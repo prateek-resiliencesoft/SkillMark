@@ -1,6 +1,6 @@
 # Implementation Plan: Liquid Glass Opening Animation & Auth Sequence
 
-**Goal:** Integrate `liquid-glass-logo-reveal.tsx` and build the coordinated opening animation for Skillmark where the logo reveals inside liquid glass in the center, glides to the left column, typography particles assemble from surrounding space, and the auth card slides in from the right.
+**Goal:** Integrate `liquid-glass-logo-reveal.tsx` and build the coordinated opening animation for Resiliencesoft Interview AI where the logo reveals inside liquid glass in the center, glides to the left column, typography particles assemble from surrounding space, and the auth card slides in from the right.
 
 ---
 

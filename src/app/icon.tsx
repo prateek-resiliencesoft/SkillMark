@@ -29,7 +29,7 @@ export default function Icon() {
           width="26"
           height="26"
           style={{ objectFit: "contain" }}
-          alt="Skillmark"
+          alt="Resiliencesoft Interview AI"
         />
       </div>
     ),

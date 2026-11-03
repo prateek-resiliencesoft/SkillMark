@@ -1,4 +1,4 @@
--- Skillmark: minimal replacement for the Supabase "auth" schema.
+-- Resiliencesoft Interview AI: minimal replacement for the Supabase "auth" schema.
 -- Keeps auth.users (FK target) and auth.uid() so the original schema/policies work.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

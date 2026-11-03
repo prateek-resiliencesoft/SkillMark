@@ -1,11 +1,11 @@
 <!doctype html>
 <!--
-  Skillmark sample: careers page that submits candidates through YOUR backend.
+  Resiliencesoft Interview AI sample: careers page that submits candidates through YOUR backend.
   The browser never sees the API key. Run the tiny proxy below with Node 18+:
 
-    SKILLMARK_URL=https://your-skillmark-host \
-    SKILLMARK_API_KEY=dlv_test_xxx \
-    SKILLMARK_FORM_ID=frm_xxx \
+    RSI_URL=https://your-resiliencesoft-interview-ai-host \
+    RSI_API_KEY=dlv_test_xxx \
+    RSI_FORM_ID=frm_xxx \
     node examples/backend-proxy-server.mjs
 
   then open http://localhost:4000
@@ -25,7 +25,7 @@
 <body>
   <h1>Apply: Flutter Developer</h1>
   <p>Option A (API via backend proxy). For Option B just embed:
-    <code>&lt;iframe src="https://your-skillmark-host/f/frm_xxx?embed=1"&gt;</code></p>
+    <code>&lt;iframe src="https://your-resiliencesoft-interview-ai-host/f/frm_xxx?embed=1"&gt;</code></p>
   <form id="apply" enctype="multipart/form-data">
     <label>Full name <input name="candidate[name]" required /></label>
     <label>Email <input name="candidate[email]" type="email" required /></label>

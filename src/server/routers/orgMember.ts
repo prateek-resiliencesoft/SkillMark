@@ -209,9 +209,9 @@ export const orgMemberRouter = router({
           {
             ...cfg,
             templates: {
-              emailSubject: `You're invited to join {{organization}} on Skillmark`,
+              emailSubject: `You're invited to join {{organization}} on Resiliencesoft Interview AI`,
               emailBody:
-                "Hi,\n\n{{organization}} invited you to collaborate on Skillmark.\n\nOpen this link to join: {{link}}\n\nThis invite expires in 14 days.",
+                "Hi,\n\n{{organization}} invited you to collaborate on Resiliencesoft Interview AI.\n\nOpen this link to join: {{link}}\n\nThis invite expires in 14 days.",
               whatsappBody: "",
             },
           },

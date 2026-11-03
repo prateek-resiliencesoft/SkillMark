@@ -1,12 +1,12 @@
-> **Update (Oct 2026): Supabase has been removed.** Skillmark now runs on plain Postgres (Docker), PostgREST, its own cookie/JWT auth and local-disk storage. For the current setup, run commands and VPS deploy steps, see [docs/RUN.md](docs/RUN.md). Any Supabase instructions below are out of date.
+> **Update (Oct 2026): Supabase has been removed.** Resiliencesoft Interview AI now runs on plain Postgres (Docker), PostgREST, its own cookie/JWT auth and local-disk storage. For the current setup, run commands and VPS deploy steps, see [docs/RUN.md](docs/RUN.md). Any Supabase instructions below are out of date.
 
 <p align="center">
   <a href="https://aural-ai.com">
-    <img src="public/images/skillmark-logo.png" alt="Skillmark" width="80" height="80" />
+    <img src="public/images/skillmark-logo.png" alt="Resiliencesoft Interview AI" width="80" height="80" />
   </a>
 </p>
 
-<h1 align="center">Skillmark</h1>
+<h1 align="center">Resiliencesoft Interview AI</h1>
 
 <p align="center">
   <strong>Measure what matters.</strong><br/>
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/prateek-resiliencesoft/SkillMark"><img src="https://img.shields.io/badge/GitHub-SkillMark-181717?logo=github" alt="GitHub" /></a>
+  <a href="https://github.com/prateek-resiliencesoft/SkillMark"><img src="https://img.shields.io/badge/GitHub-Resiliencesoft Interview AI-181717?logo=github" alt="GitHub" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen" alt="Node 18+" />
   <img src="https://img.shields.io/badge/Next.js-14-black" alt="Next.js 14" />
@@ -33,12 +33,12 @@
 
 <p align="center">
   <a href="https://aural-ai.com">
-    <img src="public/images/marketing/hero-screenshots.webp" alt="Skillmark — AI-powered interview platform" width="820" />
+    <img src="public/images/marketing/hero-screenshots.webp" alt="Resiliencesoft Interview AI — interview platform" width="820" />
   </a>
 </p>
 
 <p align="center">
-  Design an interview in plain language. Share a link. Skillmark's AI conducts the conversation —<br/>
+  Design an interview in plain language. Share a link. Resiliencesoft Interview AI conducts the conversation —<br/>
   asking questions, probing with follow-ups, and generating detailed analysis when the session ends.
 </p>
 
@@ -79,11 +79,11 @@
 
 ---
 
-## See Skillmark in Action
+## See Resiliencesoft Interview AI in Action
 
 <p align="center">
   <a href="https://youtu.be/Mmn1tjTzuwQ">
-    <img src="https://img.youtube.com/vi/Mmn1tjTzuwQ/maxresdefault.jpg" alt="Skillmark Demo Video" width="720" />
+    <img src="https://img.youtube.com/vi/Mmn1tjTzuwQ/maxresdefault.jpg" alt="Resiliencesoft Interview AI Demo Video" width="720" />
   </a>
   <br/>
   <sub>Click to watch the 3-minute product demo on YouTube</sub>
@@ -94,7 +94,7 @@
 <br/>
 <p align="center">
   <a href="https://youtu.be/iPZL9aWXp-Q">
-    <img src="https://img.youtube.com/vi/iPZL9aWXp-Q/maxresdefault.jpg" alt="Skillmark Product Promotion (Chinese)" width="720" />
+    <img src="https://img.youtube.com/vi/iPZL9aWXp-Q/maxresdefault.jpg" alt="Resiliencesoft Interview AI Product Promotion (Chinese)" width="720" />
   </a>
 </p>
 </details>
@@ -103,7 +103,7 @@
 
 ## Product Tour
 
-Skillmark is an AI-powered interview platform that conducts structured interviews autonomously. You design an interview, share a link, and Skillmark's AI handles the conversation — asking questions, probing with follow-ups, and generating detailed analysis when the session is complete.
+Resiliencesoft Interview AI is an AI-powered interview platform that conducts structured interviews autonomously. You design an interview, share a link, and Resiliencesoft Interview AI handles the conversation — asking questions, probing with follow-ups, and generating detailed analysis when the session is complete.
 
 ### Design Your Interview
 
@@ -344,11 +344,11 @@ Connect email, WhatsApp, and webhooks from the **Integrations** sidebar. Configu
 
 ## Deployment
 
-You can use Skillmark as a managed cloud service or self-host the entire platform on your own infrastructure.
+You can use Resiliencesoft Interview AI as a managed cloud service or self-host the entire platform on your own infrastructure.
 
 ### Self-Hosted (recommended)
 
-Run Skillmark on your own servers with Docker Postgres + PostgREST.
+Run Resiliencesoft Interview AI on your own servers with Docker Postgres + PostgREST.
 
 #### Prerequisites
 
@@ -361,7 +361,7 @@ Run Skillmark on your own servers with Docker Postgres + PostgREST.
 
 ```bash
 git clone https://github.com/prateek-resiliencesoft/SkillMark.git
-cd SkillMark
+cd Resiliencesoft Interview AI
 npm install
 ```
 
@@ -387,14 +387,14 @@ npm run dev:voice:gemini
 
 Open [http://localhost:3000/login](http://localhost:3000/login) or [http://localhost:3000/register](http://localhost:3000/register).
 
-> **Note:** Managed cloud at [aural-ai.com](https://aural-ai.com) is the upstream Aural SaaS — Skillmark is the Resiliencesoft fork for self-host and customization.
+> **Note:** Managed cloud at [aural-ai.com](https://aural-ai.com) is the upstream Aural SaaS — Resiliencesoft Interview AI is the Resiliencesoft fork for self-host and customization.
 
 ---
 
 ## Project Structure
 
 ```
-SkillMark/
+Resiliencesoft Interview AI/
 ├── src/
 │   ├── app/                # Next.js App Router pages and API routes
 │   │   ├── (auth)/         # Login, register
@@ -417,7 +417,7 @@ SkillMark/
 
 ## AI Provider System
 
-Skillmark uses a pluggable LLM provider architecture. Configure keys in **Project Settings → AI** (encrypted per organization) **or** via `.env`. Org keys win; empty org key falls back to env.
+Resiliencesoft Interview AI uses a pluggable LLM provider architecture. Configure keys in **Project Settings → AI** (encrypted per organization) **or** via `.env`. Org keys win; empty org key falls back to env.
 
 You need **at least one** provider. Default pick order: OpenAI → Gemini → NVIDIA → Anthropic → Custom/local → Kimi → MiniMax.
 
@@ -448,7 +448,7 @@ Models stay on the server (env defaults such as `OPENAI_MODEL`, `GEMINI_MODEL`, 
 
 ## Voice Relay
 
-Skillmark supports real-time AI voice interviews via WebSocket relay servers. Two relay implementations are provided.
+Resiliencesoft Interview AI supports real-time AI voice interviews via WebSocket relay servers. Two relay implementations are provided.
 
 > **Recommendation:** We strongly recommend using **Volcengine Doubao** as your primary voice relay. It delivers a noticeably better interview experience than the OpenAI Realtime model — lower latency, more natural speech-to-speech flow, superior Chinese language support, and built-in server-side auto-reconnect for reliability. The OpenAI relay is provided as a backup for environments where Volcengine credentials are unavailable.
 
@@ -478,7 +478,7 @@ npm run dev:openai-voice   # starts on port 8082
 
 ## Developer API
 
-Skillmark includes a full REST API for programmatic access to interviews, questions, sessions, and candidates. Use it to integrate Skillmark into your existing workflows, automate interview creation, or build custom integrations.
+Resiliencesoft Interview AI includes a full REST API for programmatic access to interviews, questions, sessions, and candidates. Use it to integrate Resiliencesoft Interview AI into your existing workflows, automate interview creation, or build custom integrations.
 
 ### Authentication
 
@@ -570,13 +570,13 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Credits & upstream
 
-Skillmark is maintained by **Resiliencesoft** as a fork of the open-source **Aural** project.
+Resiliencesoft Interview AI is maintained by **Resiliencesoft** as a fork of the open-source **Aural** project.
 
 - Official upstream: [github.com/1146345502/aural-oss](https://github.com/1146345502/aural-oss)
 - Product site: [aural-ai.com](https://aural-ai.com)
 - Built originally by [AuraTerra Nexus](https://aural-ai.com) — thank you for releasing Aural under MIT so the community can build on it.
 
-We keep attribution and the MIT license intact. New Skillmark work (Postgres/PostgREST stack, Integrations UI, Settings → AI keys, Interview Form Integration, and related product changes) is developed by Resiliencesoft.
+We keep attribution and the MIT license intact. New Resiliencesoft Interview AI work (Postgres/PostgREST stack, Integrations UI, Settings → AI keys, Interview Form Integration, and related product changes) is developed by Resiliencesoft.
 
 ---
 

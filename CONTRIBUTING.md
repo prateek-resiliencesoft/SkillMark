@@ -1,4 +1,4 @@
-# Contributing to Skillmark
+# Contributing to Resiliencesoft Interview AI
 
 Thanks for your interest in contributing! This guide will help you get started.
 

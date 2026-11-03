@@ -1,4 +1,4 @@
-# Skillmark local/production data services: plain Postgres + PostgREST.
+# Resiliencesoft Interview AI local/production data services: plain Postgres + PostgREST.
 name: skillmark
 # PostgREST only listens on 127.0.0.1 and is used by the Next.js server (never the browser).
 services:

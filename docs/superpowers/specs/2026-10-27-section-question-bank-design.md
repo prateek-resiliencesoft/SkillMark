@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-Skillmark recruiters need to establish standardized, reusable questions organized into interview stages/rounds:
+Resiliencesoft Interview AI recruiters need to establish standardized, reusable questions organized into interview stages/rounds:
 - **Screening Round** (e.g. background check, communication, salary expectations, timeline)
 - **Technical Round** (e.g. coding challenge, architecture principles, problem solving)
 - **HR Round** (e.g. culture fit, collaboration, conflict resolution, work preferences)

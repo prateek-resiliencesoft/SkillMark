@@ -59,7 +59,7 @@ export default function ApiKeysPage() {
       <div>
         <h2 className="text-xl font-semibold">API Keys</h2>
         <p className="text-sm text-muted-foreground">
-          Keys authenticate server-to-server calls to the Skillmark API. Only a SHA-256 hash is stored — the secret is shown once at creation.{" "}
+          Keys authenticate server-to-server calls to the Resiliencesoft Interview AI API. Only a SHA-256 hash is stored — the secret is shown once at creation.{" "}
           <Link href="/integrations/forms/connect" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">Integration docs <ExternalLink className="h-3 w-3" /></Link>
         </p>
       </div>

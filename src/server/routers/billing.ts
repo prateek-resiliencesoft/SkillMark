@@ -153,7 +153,7 @@ export const billingRouter = router({
         }
         const customer = await createStripeCustomer({
           email,
-          name: (org.name as string) || "Skillmark organization",
+          name: (org.name as string) || "Resiliencesoft Interview AI organization",
           organizationId: input.organizationId,
         });
         customerId = customer.id;
