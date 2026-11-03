@@ -242,7 +242,7 @@ function ProviderTile({
 }
 
 function CategoryRail({
-  id,
+  id: _id,
   open,
   onToggle,
   icon,

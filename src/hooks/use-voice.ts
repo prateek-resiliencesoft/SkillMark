@@ -133,9 +133,6 @@ export function useVoice({
   const micHoldUntilRef = useRef(0);
   const bargeInFramesRef = useRef(0);
 
-  const BARGE_IN_RMS_THRESHOLD = 0.02;
-  const BARGE_IN_FRAME_COUNT = 2;
-
   const onInterruptRef = useRef(onInterrupt);
   useEffect(() => { onInterruptRef.current = onInterrupt; }, [onInterrupt]);
   const lastFinalUserTranscriptRef = useRef<{ text: string; at: number } | null>(null);
