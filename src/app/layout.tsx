@@ -2,6 +2,7 @@ import { Providers } from "@/components/providers";
 import { Toaster } from "@/components/ui/toaster";
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+// @ts-ignore -- Next.js handles global CSS imports; keep TS from requiring a declaration.
 import "./globals.css";
 
 export const viewport: Viewport = {

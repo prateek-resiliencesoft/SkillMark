@@ -45,6 +45,40 @@ export const organizationRouter = router({
       .filter((o): o is NonNullable<typeof o> => o !== null);
   }),
 
+  /** Cheap per-org counts for the org picker (members, projects, interviews). */
+  pickerSummary: protectedProcedure.query(async ({ ctx }) => {
+    const { data: mine } = await ctx.supabase
+      .from("organization_members")
+      .select("organizationId")
+      .eq("userId", ctx.user.id);
+    const orgIds = (mine ?? []).map((m) => m.organizationId as string);
+    const out: Record<string, { members: number; projects: number; interviews: number }> = {};
+    if (orgIds.length === 0) return out;
+    for (const id of orgIds) out[id] = { members: 0, projects: 0, interviews: 0 };
+
+    const [{ data: members }, { data: projects }] = await Promise.all([
+      ctx.supabase.from("organization_members").select("organizationId").in("organizationId", orgIds),
+      ctx.supabase.from("projects").select("id, organizationId").in("organizationId", orgIds),
+    ]);
+    for (const m of members ?? []) out[m.organizationId as string].members += 1;
+    const projectOrg = new Map<string, string>();
+    for (const p of projects ?? []) {
+      projectOrg.set(p.id as string, p.organizationId as string);
+      out[p.organizationId as string].projects += 1;
+    }
+    if (projectOrg.size) {
+      const { data: interviews } = await ctx.supabase
+        .from("interviews")
+        .select("projectId")
+        .in("projectId", Array.from(projectOrg.keys()));
+      for (const iv of interviews ?? []) {
+        const orgId = projectOrg.get(iv.projectId as string);
+        if (orgId) out[orgId].interviews += 1;
+      }
+    }
+    return out;
+  }),
+
   getById: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {
