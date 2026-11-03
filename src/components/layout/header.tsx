@@ -56,7 +56,7 @@ function OrgSwitcher() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button className="flex items-center gap-1 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-muted outline-none">
-          <span className="truncate max-w-[160px]">{currentOrg.name}</span>
+          <span className="truncate max-w-[72px] sm:max-w-[120px] lg:max-w-[160px]">{currentOrg.name}</span>
           <Hugeicon icon={ArrowDown01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
@@ -116,7 +116,7 @@ function ProjectSwitcher() {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button className="flex items-center gap-1 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-muted outline-none">
-            <span className="truncate max-w-[160px]">
+            <span className="truncate max-w-[72px] sm:max-w-[120px] lg:max-w-[160px]">
               {currentProject.name}
             </span>
             <Hugeicon icon={ArrowDown01Icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -254,8 +254,8 @@ export function Header({ sidebarToggle }: { sidebarToggle?: React.ReactNode }) {
   }
 
   return (
-    <header className="flex h-14 items-center border-b bg-background px-4">
-      <div className="flex items-center gap-1">
+    <header className="flex h-14 items-center gap-2 border-b bg-background px-2 sm:px-4 lg:gap-0">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden lg:flex-none lg:overflow-visible">
         {sidebarToggle}
 
         {!isOrgLevelPage ? (
@@ -268,25 +268,25 @@ export function Header({ sidebarToggle }: { sidebarToggle?: React.ReactNode }) {
         ) : null}
 
         {breadcrumbs.length > 0 && (
-          <nav className="flex items-center text-sm">
+          <nav className="flex min-w-0 items-center text-sm">
             {breadcrumbs.map((crumb, i) => (
               <React.Fragment key={i}>
                 {(i > 0 ||
                   !isOrgLevelPage ||
                   segments[0] === "usage") && (
-                  <span className="mx-1 text-muted-foreground/50 text-sm">
+                  <span className={`mx-1 text-muted-foreground/50 text-sm ${i < breadcrumbs.length - 1 ? "hidden lg:inline" : ""}`}>
                     /
                   </span>
                 )}
                 {i < breadcrumbs.length - 1 ? (
                   <Link
                     href={crumb.href}
-                    className="px-1.5 text-foreground hover:text-foreground/80 transition-colors truncate max-w-[160px]"
+                    className="hidden lg:inline px-1.5 text-foreground hover:text-foreground/80 transition-colors truncate max-w-[160px]"
                   >
                     {crumb.label}
                   </Link>
                 ) : (
-                  <span className="px-1.5 text-foreground truncate max-w-[200px]">
+                  <span className="block px-1.5 text-foreground truncate max-w-[120px] sm:max-w-[200px]">
                     {crumb.label}
                   </span>
                 )}
@@ -295,7 +295,7 @@ export function Header({ sidebarToggle }: { sidebarToggle?: React.ReactNode }) {
           </nav>
         )}
       </div>
-      <div className="ml-auto flex items-center gap-2 relative" style={{ zIndex: 10002 }}>
+      <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2 relative" style={{ zIndex: 10002 }}>
         <ThemeSwitcherButton />
         <TourHeaderButton />
       </div>

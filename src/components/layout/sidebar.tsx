@@ -11,6 +11,8 @@ import { TourWelcome } from "@/components/tour/tour-welcome";
 import { AuralLogo } from "@/components/ui/aural-logo";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Menu } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -606,25 +608,63 @@ function PausedOrgBanner() {
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const shellPathname = usePathname();
+
+  // Close the mobile drawer on every route change.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [shellPathname]);
 
   return (
     <TourProvider>
-      <div className="dashboard-shell flex h-screen overflow-hidden bg-background">
-        <Sidebar
-          collapsed={collapsed}
-          onToggle={() => setCollapsed(!collapsed)}
+      <div className="dashboard-shell flex h-[100dvh] overflow-hidden bg-background">
+        {/* Desktop (lg+): permanent sidebar, unchanged */}
+        <div className="hidden lg:flex">
+          <Sidebar
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed)}
           />
-          <div className="flex flex-1 flex-col overflow-hidden">
+        </div>
+        {/* Below lg: off-canvas drawer (backdrop tap / Esc / nav click / route change close it) */}
+        <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+          <SheetContent
+            side="left"
+            className="w-52 max-w-[85vw] p-0 lg:hidden [&>button]:hidden"
+            onClickCapture={(e) => {
+              if ((e.target as HTMLElement).closest("a")) setMobileNavOpen(false);
+            }}
+          >
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <div className="flex h-full [&>aside]:w-full [&>aside]:border-r-0">
+              <Sidebar collapsed={false} onToggle={() => setMobileNavOpen(false)} />
+            </div>
+          </SheetContent>
+        </Sheet>
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             <Header
               sidebarToggle={
-                <SidebarToggle
-                  collapsed={collapsed}
-                  onToggle={() => setCollapsed(!collapsed)}
-                />
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-10 w-10 shrink-0 lg:hidden"
+                    aria-label="Open navigation"
+                    onClick={() => setMobileNavOpen(true)}
+                  >
+                    <Menu className="h-5 w-5" />
+                  </Button>
+                  <span className="hidden lg:contents">
+                    <SidebarToggle
+                      collapsed={collapsed}
+                      onToggle={() => setCollapsed(!collapsed)}
+                    />
+                  </span>
+                </>
               }
             />
             <PausedOrgBanner />
-            <main className="flex-1 overflow-y-auto p-6 code-scrollbar bg-background">
+            <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 sm:p-4 lg:p-6 code-scrollbar bg-background">
               <OrgRequireGate>{children}</OrgRequireGate>
             </main>
           </div>

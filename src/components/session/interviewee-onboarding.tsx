@@ -114,13 +114,13 @@ export function PreviewWrapper({
   }, [tour]);
 
   return (
-    <div className="relative flex h-screen flex-col bg-background">
+    <div className="relative flex h-[100dvh] flex-col bg-background">
       {children}
 
       {/* Welcome overlay */}
       {showWelcome && (
         <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-          <div className="mx-4 w-full max-w-md overflow-hidden rounded-2xl border border-border/30 bg-white shadow-2xl">
+          <div className="mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-border/30 bg-white shadow-2xl">
             <WelcomeIllustration />
             <div className="space-y-3 px-8 pb-8 pt-2 text-center">
               <h3 className="text-xl font-bold text-gray-900">Welcome to your interview!</h3>
@@ -1303,7 +1303,7 @@ export function IntervieweeOnboarding({
 
   if (step === "info") {
     return (
-      <div className="flex min-h-screen flex-col bg-muted/30">
+      <div className="flex min-h-[100dvh] flex-col bg-muted/30">
         {header}
         <StepIndicator current="info" />
         <div className="mx-auto w-full max-w-2xl flex-1 px-4 pb-8 sm:px-6">
@@ -1424,7 +1424,7 @@ export function IntervieweeOnboarding({
             </CardContent>
           </Card>
 
-          <div className="mt-6 flex flex-col items-center gap-4">
+          <div className="sticky bottom-0 -mx-4 mt-6 flex flex-col items-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:gap-4 sm:border-0 sm:bg-transparent sm:p-0 sm:backdrop-blur-none">
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={agreed}
@@ -1435,7 +1435,7 @@ export function IntervieweeOnboarding({
             <Button
               disabled={!agreed}
               onClick={() => setStep("checklist")}
-              className="w-40"
+              className="h-11 w-40 sm:h-10"
             >
               Next
             </Button>
@@ -1507,7 +1507,7 @@ export function IntervieweeOnboarding({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-muted/30">
+    <div className="flex min-h-[100dvh] flex-col bg-muted/30">
       {header}
       <StepIndicator current="checklist" />
       <div className="mx-auto w-full max-w-2xl flex-1 space-y-4 px-4 pb-8">
@@ -1515,7 +1515,7 @@ export function IntervieweeOnboarding({
         <MicCheck done={micDone} onDone={() => setMicDone(true)} language={language} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
         <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} allowSkip={!antiCheatingEnabled} />
 
-        <div className="flex items-center justify-center gap-3 pt-4">
+        <div className="sticky bottom-0 -mx-4 flex items-center justify-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-4 sm:backdrop-blur-none">
           <Button variant="outline" onClick={() => setStep("info")}>
             Back
           </Button>

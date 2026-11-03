@@ -7,6 +7,7 @@ import "./globals.css";
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
 };
 
 /** Self-hosted — no Google Fonts fetch at build (CI/Docker safe). */

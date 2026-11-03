@@ -80,7 +80,7 @@ export default function InviteSessionPage() {
 
   if (isExpired && session.status !== "COMPLETED") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md border-amber-200/50 shadow-sm">
           <CardContent className="py-12 text-center">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
@@ -109,7 +109,7 @@ export default function InviteSessionPage() {
 
   if (completed || session.status === "COMPLETED") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md">
           <CardContent className="py-12 text-center">
             <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
