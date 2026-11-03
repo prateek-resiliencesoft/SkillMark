@@ -19,6 +19,7 @@ import { interviewFormRouter } from "./interviewForm";
 import { aiSettingsRouter } from "./aiSettings";
 import { platformRouter } from "./platform";
 import { billingRouter } from "./billing";
+import { statusRouter } from "./status";
 
 export const appRouter = router({
   auth: authRouter,
@@ -41,6 +42,7 @@ export const appRouter = router({
   aiSettings: aiSettingsRouter,
   platform: platformRouter,
   billing: billingRouter,
+  status: statusRouter,
 });
 
 export type AppRouter = typeof appRouter;

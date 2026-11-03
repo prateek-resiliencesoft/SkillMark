@@ -3,10 +3,14 @@
 import { MonitorLatencySparkline } from "@/components/admin/monitor-latency-sparkline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc/client";
-import { ExternalLink, HeartPulse, RefreshCw } from "lucide-react";
+import { ExternalLink, HeartPulse, Plus, RefreshCw } from "lucide-react";
+import { useState } from "react";
 
 function overallLabel(overall: string) {
   switch (overall) {
@@ -88,13 +92,46 @@ function displayName(name: string, url: string) {
 }
 
 export default function AdminStatusPage() {
+  const utils = trpc.useUtils();
   const status = trpc.platform.statusMonitors.useQuery(undefined, {
     staleTime: 30_000,
     refetchInterval: 60_000,
     keepPreviousData: true,
   });
 
+  const createMonitor = trpc.platform.createStatusMonitor.useMutation({
+    onSuccess: async () => {
+      await utils.platform.statusMonitors.invalidate();
+      setUrl("");
+      setName("");
+      setFormError(null);
+    },
+    onError: (err) => setFormError(err.message),
+  });
+
+  const setPublic = trpc.platform.setStatusMonitorPublic.useMutation({
+    onSuccess: async () => {
+      await utils.platform.statusMonitors.invalidate();
+    },
+  });
+
+  const [url, setUrl] = useState("");
+  const [name, setName] = useState("");
+  const [isPublic, setIsPublic] = useState(true);
+  const [formError, setFormError] = useState<string | null>(null);
+
   const data = status.data;
+
+  function onCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    createMonitor.mutate({
+      url: url.trim(),
+      friendlyName: name.trim() || undefined,
+      intervalSeconds: 300,
+      isPublic,
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -104,7 +141,8 @@ export default function AdminStatusPage() {
             Status
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Live UptimeRobot monitors for the app and admin surfaces.
+            Add checkbot URLs, choose what is public on the landing page and
+            in-app status.
           </p>
         </div>
         <Button
@@ -120,6 +158,62 @@ export default function AdminStatusPage() {
           Refresh
         </Button>
       </div>
+
+      <form
+        onSubmit={onCreate}
+        className="space-y-4 rounded-xl border p-4 sm:p-5"
+      >
+        <div className="flex items-center gap-2">
+          <Plus className="size-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold">Add checkbot URL</h2>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-[1.4fr_1fr_auto]">
+          <div className="space-y-1.5">
+            <Label htmlFor="monitor-url">URL</Label>
+            <Input
+              id="monitor-url"
+              type="url"
+              required
+              placeholder="https://app.resiliencesoftinterview.com/login"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="monitor-name">Name (optional)</Label>
+            <Input
+              id="monitor-name"
+              placeholder="Login page"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div className="flex items-end">
+            <Button
+              type="submit"
+              disabled={createMonitor.isLoading || !url.trim()}
+              className="w-full sm:w-auto"
+            >
+              {createMonitor.isLoading ? "Adding…" : "Add monitor"}
+            </Button>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Switch
+            id="monitor-public"
+            checked={isPublic}
+            onCheckedChange={setIsPublic}
+          />
+          <Label htmlFor="monitor-public" className="cursor-pointer font-normal">
+            Show on landing page + user status
+          </Label>
+        </div>
+        {formError ? (
+          <p className="text-sm text-destructive" role="alert">
+            {formError}
+          </p>
+        ) : null}
+      </form>
 
       {status.isLoading && !data ? (
         <div className="space-y-3">
@@ -148,34 +242,35 @@ export default function AdminStatusPage() {
               {data.error ? ` · ${data.error}` : ""}
             </span>
             <span className="text-xs text-muted-foreground">
-              {data.monitors.length} monitors
+              {data.monitors.length} monitors ·{" "}
+              {data.monitors.filter((m) => m.isPublic).length} public
             </span>
           </div>
 
           <div className="overflow-hidden rounded-xl border">
             {data.monitors.length === 0 ? (
               <p className="p-8 text-center text-sm text-muted-foreground">
-                No monitors returned from UptimeRobot.
+                No monitors yet. Add a checkbot URL above.
               </p>
             ) : (
               <ul className="divide-y">
                 {data.monitors.map((m) => (
                   <li
                     key={m.id}
-                    className="grid gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1.2fr)_minmax(10rem,0.9fr)_auto] sm:items-center"
+                    className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(9rem,0.8fr)_auto_auto] lg:items-center"
                   >
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="truncate text-sm font-medium">
                           {displayName(m.name, m.url)}
                         </p>
-                        {m.audience === "admin" ? (
-                          <Badge variant="secondary" className="text-[10px]">
-                            Admin
-                          </Badge>
-                        ) : (
+                        {m.isPublic ? (
                           <Badge variant="outline" className="text-[10px]">
                             Public
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Internal
                           </Badge>
                         )}
                       </div>
@@ -207,10 +302,30 @@ export default function AdminStatusPage() {
                       color={sparkColor(m.status)}
                     />
 
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id={`pub-${m.id}`}
+                        checked={m.isPublic}
+                        disabled={
+                          setPublic.isLoading &&
+                          setPublic.variables?.id === m.id
+                        }
+                        onCheckedChange={(checked) => {
+                          setPublic.mutate({ id: m.id, isPublic: checked });
+                        }}
+                      />
+                      <Label
+                        htmlFor={`pub-${m.id}`}
+                        className="cursor-pointer text-xs font-normal text-muted-foreground"
+                      >
+                        Landing / app
+                      </Label>
+                    </div>
+
                     <Badge
                       variant="outline"
                       className={cn(
-                        "h-fit min-w-[5.5rem] justify-center justify-self-start sm:justify-self-end",
+                        "h-fit min-w-[5.5rem] justify-center justify-self-start lg:justify-self-end",
                         statusClass(m.status),
                       )}
                     >
