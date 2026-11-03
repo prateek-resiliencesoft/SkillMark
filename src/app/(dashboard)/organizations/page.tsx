@@ -34,8 +34,9 @@ import { useToast } from "@/hooks/use-toast";
 import { trpc, trpc as trpcClient } from "@/lib/trpc/client";
 import { FolderKanban, Loader2, Plus, Settings, Users } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { OrgPicker } from "@/components/org-picker";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 
 function OrgSection({ org, isCurrent }: { org: OrgInfo; isCurrent: boolean }) {
   const { toast } = useToast();
@@ -280,6 +281,22 @@ function OrgSection({ org, isCurrent }: { org: OrgInfo; isCurrent: boolean }) {
 }
 
 export default function OrganizationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <OrganizationsRouter />
+    </Suspense>
+  );
+}
+
+function OrganizationsRouter() {
+  const searchParams = useSearchParams();
+  if (searchParams.get("pick") === "1") {
+    return <OrgPicker next={searchParams.get("next")} />;
+  }
+  return <OrganizationsManager />;
+}
+
+function OrganizationsManager() {
   const { orgs, currentOrg } = useOrg();
   const { locale } = useAppLocale();
   const ownedCount = orgs.filter((o) => o.role === "OWNER").length;
@@ -320,7 +337,7 @@ export default function OrganizationsPage() {
             </Tooltip>
           </TooltipProvider>
         ) : (
-          <Link href="/org/new">
+          <Link href="/org/new?create=1">
             <Button>
               <Plus className="mr-2 h-4 w-4" />
               {isZh ? "新建组织" : "New Organization"}

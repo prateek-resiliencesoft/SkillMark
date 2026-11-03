@@ -27,6 +27,7 @@ CREATE INDEX IF NOT EXISTS organization_invites_org_idx
 CREATE INDEX IF NOT EXISTS organization_invites_token_idx
   ON public.organization_invites (token);
 
+DROP TRIGGER IF EXISTS set_updated_at_organization_invites ON public.organization_invites;
 CREATE TRIGGER set_updated_at_organization_invites
   BEFORE UPDATE ON public.organization_invites
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();

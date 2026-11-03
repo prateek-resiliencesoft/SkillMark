@@ -85,7 +85,7 @@ function OrgSwitcher() {
         ))}
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
-          <Link href="/org/new" className="flex items-center gap-2">
+          <Link href="/org/new?create=1" className="flex items-center gap-2">
             <Hugeicon icon={PlusSignIcon} className="h-4 w-4" />
             {t("header.newOrganization")}
           </Link>
