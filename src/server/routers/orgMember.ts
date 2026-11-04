@@ -19,6 +19,134 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+type Supabase = Parameters<typeof getOrgMembership>[0];
+type InviteRole = "ADMIN" | "MEMBER" | "VIEWER";
+
+function inviteInsertError(error: { code?: string; message?: string } | null) {
+  if (error?.code === "23505") {
+    return new TRPCError({
+      code: "CONFLICT",
+      message: "An invite is already waiting for that email.",
+    });
+  }
+  if (error?.code === "42P01" || error?.code === "PGRST205") {
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message:
+        "Invites are not set up on this server yet. Ask your administrator to run the database migrations (npm run db:migrate).",
+    });
+  }
+  console.error("[orgMember] invite insert failed", error);
+  return new TRPCError({
+    code: "INTERNAL_SERVER_ERROR",
+    message: "Could not create the invite because of a server error. Try again in a moment.",
+  });
+}
+
+/**
+ * Create a pending org invite (optionally granting one project on accept)
+ * and email it when delivery is configured.
+ */
+async function createInvite(
+  supabase: Supabase,
+  invitedBy: string,
+  input: {
+    organizationId: string;
+    email: string;
+    role: InviteRole;
+    project?: { id: string; name: string; role: InviteRole };
+  },
+) {
+  const { organizationId, email, role, project } = input;
+
+  const { data: pending, error: pendingErr } = await supabase
+    .from("organization_invites")
+    .select("id")
+    .eq("organizationId", organizationId)
+    .eq("status", "PENDING")
+    .eq("email", email)
+    .maybeSingle();
+
+  if (pendingErr && !pending) throw inviteInsertError(pendingErr);
+  if (pending) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `An invite for ${email} is already pending. Cancel it in Organization settings → Members to send a new one.`,
+    });
+  }
+
+  await assertQuota(supabase, organizationId, "seats", 1);
+
+  const token = nanoid(24);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+
+  const { data: invite, error } = await supabase
+    .from("organization_invites")
+    .insert({
+      organizationId,
+      email,
+      role,
+      token,
+      invitedBy,
+      status: "PENDING",
+      expiresAt,
+      projectId: project?.id ?? null,
+      projectRole: project?.role ?? null,
+    })
+    .select("id, email, role, token, expiresAt, status, createdAt")
+    .single();
+
+  if (error || !invite) throw inviteInsertError(error);
+
+  const inviteUrl = `${appBaseUrl()}/invite/${token}`;
+  let emailStatus: "sent" | "skipped" | "failed" = "skipped";
+
+  try {
+    const { data: org } = await supabase
+      .from("organizations")
+      .select("name")
+      .eq("id", organizationId)
+      .maybeSingle();
+    const cfg = await loadDeliveryConfig(supabase, organizationId);
+    const where = project
+      ? `the "${project.name}" project in {{organization}}`
+      : "{{organization}}";
+    const result = await deliverEmail(
+      {
+        ...cfg,
+        templates: {
+          emailSubject: `You're invited to join {{organization}} on ResilienceSoft Interview`,
+          emailBody: `Hi,\n\nYou were invited to collaborate on ${where} on ResilienceSoft Interview.\n\nOpen this link to join: {{link}}\n\nThis invite expires in 14 days.`,
+          whatsappBody: "",
+        },
+      },
+      email,
+      {
+        name: email.split("@")[0] || "there",
+        interviewTitle: "",
+        organization: (org?.name as string) || cfg.organizationName,
+        link: inviteUrl,
+        duration: "",
+        batchName: "",
+      },
+      `org-invite-${invite.id}`,
+    );
+    emailStatus = result.status === "sent" ? "sent" : result.status === "failed" ? "failed" : "skipped";
+  } catch {
+    emailStatus = "failed";
+  }
+
+  return {
+    id: invite.id as string,
+    email: invite.email as string,
+    role: invite.role as string,
+    expiresAt: invite.expiresAt as string,
+    status: invite.status as string,
+    inviteUrl,
+    emailStatus,
+  };
+}
+
 /**
  * Lazily populate project_members for all org members the first time
  * project-level membership is explicitly managed (role change or removal).
@@ -134,10 +262,17 @@ export const orgMemberRouter = router({
 
       const email = normalizeEmail(input.email);
 
+      if (email === normalizeEmail(ctx.user.email ?? "")) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "You're already a member of this organization.",
+        });
+      }
+
       const { data: existingProfile } = await ctx.supabase
         .from("profiles")
         .select("id")
-        .ilike("email", email)
+        .eq("email", email)
         .maybeSingle();
 
       if (existingProfile) {
@@ -149,97 +284,16 @@ export const orgMemberRouter = router({
         if (already) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "That person is already in this organization",
+            message: `${email} is already a member of this organization (${already.role.toLowerCase()}).`,
           });
         }
       }
 
-      const { data: pending } = await ctx.supabase
-        .from("organization_invites")
-        .select("id")
-        .eq("organizationId", input.organizationId)
-        .eq("status", "PENDING")
-        .ilike("email", email)
-        .maybeSingle();
-
-      if (pending) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "An invite is already waiting for that email",
-        });
-      }
-
-      await assertQuota(ctx.supabase, input.organizationId, "seats", 1);
-
-      const token = nanoid(24);
-      const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
-
-      const { data: invite, error } = await ctx.supabase
-        .from("organization_invites")
-        .insert({
-          organizationId: input.organizationId,
-          email,
-          role: input.role,
-          token,
-          invitedBy: ctx.user.id,
-          status: "PENDING",
-          expiresAt,
-        })
-        .select("id, email, role, token, expiresAt, status, createdAt")
-        .single();
-
-      if (error || !invite) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Could not create the invite",
-        });
-      }
-
-      const inviteUrl = `${appBaseUrl()}/invite/${token}`;
-      let emailStatus: "sent" | "skipped" | "failed" = "skipped";
-
-      try {
-        const { data: org } = await ctx.supabase
-          .from("organizations")
-          .select("name")
-          .eq("id", input.organizationId)
-          .maybeSingle();
-        const cfg = await loadDeliveryConfig(ctx.supabase, input.organizationId);
-        const result = await deliverEmail(
-          {
-            ...cfg,
-            templates: {
-              emailSubject: `You're invited to join {{organization}} on ResilienceSoft Interview`,
-              emailBody:
-                "Hi,\n\n{{organization}} invited you to collaborate on ResilienceSoft Interview.\n\nOpen this link to join: {{link}}\n\nThis invite expires in 14 days.",
-              whatsappBody: "",
-            },
-          },
-          email,
-          {
-            name: email.split("@")[0] || "there",
-            interviewTitle: "",
-            organization: (org?.name as string) || cfg.organizationName,
-            link: inviteUrl,
-            duration: "",
-            batchName: "",
-          },
-          `org-invite-${invite.id}`,
-        );
-        emailStatus = result.status === "sent" ? "sent" : result.status === "failed" ? "failed" : "skipped";
-      } catch {
-        emailStatus = "failed";
-      }
-
-      return {
-        id: invite.id as string,
-        email: invite.email as string,
-        role: invite.role as string,
-        expiresAt: invite.expiresAt as string,
-        status: invite.status as string,
-        inviteUrl,
-        emailStatus,
-      };
+      return createInvite(ctx.supabase, ctx.user.id, {
+        organizationId: input.organizationId,
+        email,
+        role: input.role,
+      });
     }),
 
   listInvites: protectedProcedure
@@ -254,7 +308,7 @@ export const orgMemberRouter = router({
 
       const { data } = await ctx.supabase
         .from("organization_invites")
-        .select("id, email, role, status, expiresAt, createdAt, token")
+        .select("id, email, role, status, expiresAt, createdAt, token, projectId, projectRole")
         .eq("organizationId", input.organizationId)
         .eq("status", "PENDING")
         .order("createdAt", { ascending: false });
@@ -269,6 +323,8 @@ export const orgMemberRouter = router({
           status: expired ? "EXPIRED" : (row.status as string),
           expiresAt: row.expiresAt as string,
           createdAt: row.createdAt as string,
+          projectId: (row.projectId as string | null) ?? null,
+          projectRole: (row.projectRole as string | null) ?? null,
           inviteUrl: `${appBaseUrl()}/invite/${row.token as string}`,
         };
       });
@@ -314,7 +370,7 @@ export const orgMemberRouter = router({
       const { data: invite } = await ctx.supabase
         .from("organization_invites")
         .select(
-          "id, email, role, status, expiresAt, organizationId, organization:organizations(id, name, slug, status)",
+          "id, email, role, status, expiresAt, organizationId, projectRole, organization:organizations(id, name, slug, status), project:projects(id, name)",
         )
         .eq("token", input.token)
         .maybeSingle();
@@ -350,6 +406,16 @@ export const orgMemberRouter = router({
             : (invite.status as string)
           : "PENDING",
         expiresAt: invite.expiresAt as string,
+        project: (() => {
+          const raw = invite.project as unknown;
+          const p = (Array.isArray(raw) ? raw[0] : raw) as {
+            id: string;
+            name: string;
+          } | null;
+          return p
+            ? { name: p.name, role: (invite.projectRole as string) ?? invite.role }
+            : null;
+        })(),
         organization: org
           ? {
               id: org.id,
@@ -367,15 +433,26 @@ export const orgMemberRouter = router({
       const { data: invite } = await ctx.supabase
         .from("organization_invites")
         .select(
-          "id, email, role, status, expiresAt, organizationId",
+          "id, email, role, status, expiresAt, organizationId, projectId, projectRole",
         )
         .eq("token", input.token)
         .maybeSingle();
 
-      if (!invite || invite.status !== "PENDING") {
+      if (!invite) {
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "This invite is no longer available",
+          message: "This invite link is not valid. Ask your admin to send a new one.",
+        });
+      }
+      if (invite.status !== "PENDING") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            invite.status === "ACCEPTED"
+              ? "This invite has already been used."
+              : invite.status === "REVOKED"
+                ? "This invite was cancelled by an admin. Ask them to send a new one."
+                : "This invite has expired. Ask your admin for a new one.",
         });
       }
 
@@ -402,7 +479,7 @@ export const orgMemberRouter = router({
       if (!userEmail || userEmail !== normalizeEmail(invite.email as string)) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: `Sign in as ${invite.email} to accept this invite`,
+          message: `This invite was sent to ${invite.email}, but you're signed in as ${userEmail || "another account"}. Switch to ${invite.email} to accept it.`,
         });
       }
 
@@ -426,6 +503,17 @@ export const orgMemberRouter = router({
         });
       }
 
+      const projectId = invite.projectId as string | null;
+      if (projectId) {
+        // Snapshot current access before the newcomer joins, so the project
+        // becomes explicitly scoped and they only get this project.
+        await ensureProjectMembersPopulated(
+          ctx.supabase,
+          invite.organizationId as string,
+          projectId,
+        );
+      }
+
       const existing = await getOrgMembership(
         ctx.supabase,
         invite.organizationId as string,
@@ -446,10 +534,27 @@ export const orgMemberRouter = router({
             role: invite.role,
           });
         if (memberErr) {
+          console.error("[orgMember] accept insert failed", memberErr);
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: "Could not join the organization",
+            message: "Could not add you to the organization because of a server error. Try again in a moment.",
           });
+        }
+      }
+
+      if (projectId) {
+        const { error: projectErr } = await ctx.supabase
+          .from("project_members")
+          .upsert(
+            {
+              projectId,
+              userId: ctx.user.id,
+              role: (invite.projectRole as string) ?? invite.role,
+            },
+            { onConflict: "projectId,userId" },
+          );
+        if (projectErr) {
+          console.error("[orgMember] accept project insert failed", projectErr);
         }
       }
 
@@ -670,29 +775,47 @@ export const orgMemberRouter = router({
       }
       assertMinRole(callerMembership.role, "ADMIN");
 
-      const { data: profile } = await ctx.supabase
-        .from("profiles")
-        .select("id")
-        .eq("email", input.email)
-        .single();
+      const email = normalizeEmail(input.email);
 
-      if (!profile) {
+      const { data: project } = await ctx.supabase
+        .from("projects")
+        .select("id, name")
+        .eq("id", input.projectId)
+        .eq("organizationId", input.organizationId)
+        .maybeSingle();
+      if (!project) {
         throw new TRPCError({
           code: "NOT_FOUND",
-          message: "No user found with that email. They must sign up first.",
+          message: "This project no longer exists in this organization. Refresh the page and pick another project.",
         });
       }
 
-      const orgMembership = await getOrgMembership(
-        ctx.supabase,
-        input.organizationId,
-        profile.id,
-      );
-      if (!orgMembership) {
+      const { data: profile } = await ctx.supabase
+        .from("profiles")
+        .select("id")
+        .eq("email", email)
+        .maybeSingle();
+
+      const orgMembership = profile
+        ? await getOrgMembership(ctx.supabase, input.organizationId, profile.id)
+        : null;
+
+      // Not in the org yet (or no account): send an org invite that grants
+      // this project on accept. Org role stays VIEWER; the project role applies here.
+      if (!profile || !orgMembership) {
+        const invite = await createInvite(ctx.supabase, ctx.user.id, {
+          organizationId: input.organizationId,
+          email,
+          role: "VIEWER",
+          project: { id: project.id as string, name: project.name as string, role: input.role },
+        });
+        return { outcome: "invited" as const, ...invite };
+      }
+
+      if (orgMembership.role === "OWNER") {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "User is not a member of this organization. Invite them to the organization first.",
+          code: "CONFLICT",
+          message: `${email} owns this organization and already has access to every project.`,
         });
       }
 
@@ -707,12 +830,12 @@ export const orgMemberRouter = router({
         .select("id")
         .eq("projectId", input.projectId)
         .eq("userId", profile.id)
-        .single();
+        .maybeSingle();
 
       if (existing) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "User is already a member of this project",
+          message: `${email} already has access to "${project.name}". Use the pencil icon to change their project role.`,
         });
       }
 
@@ -723,13 +846,14 @@ export const orgMemberRouter = router({
       });
 
       if (error) {
+        console.error("[orgMember] addProjectMember insert failed", error);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: error.message,
+          message: "Could not add them to the project because of a server error. Try again in a moment.",
         });
       }
 
-      return { success: true };
+      return { outcome: "added" as const, email };
     }),
 
   removeProjectMember: protectedProcedure

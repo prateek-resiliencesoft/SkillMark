@@ -39,9 +39,16 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
     rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") && !rawNext.includes("://")
       ? rawNext
       : "/dashboard";
-  const nextQuery = rawNext && nextUrl === rawNext
-    ? `?next=${encodeURIComponent(rawNext)}`
-    : "";
+  const addMode = searchParams.has("add");
+  const prefillEmail = searchParams.get("email") ?? "";
+  const sessionExpired = searchParams.get("reason") === "session_expired";
+  const nextQuery = (() => {
+    const q = new URLSearchParams();
+    if (rawNext && nextUrl === rawNext) q.set("next", rawNext);
+    if (addMode) q.set("add", "1");
+    const str = q.toString();
+    return str ? `?${str}` : "";
+  })();
 
   const { toast } = useToast();
   const { t } = useAppLocale();
@@ -65,7 +72,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
   // Form states
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -360,10 +367,21 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
               </h2>
               <p className="text-sm text-muted-foreground">
                 {activeTab === "login"
-                  ? t("auth.signInSubtitle") || "Enter your credentials to access your dashboard"
+                  ? addMode
+                    ? "Sign in to add another account to this browser"
+                    : t("auth.signInSubtitle") || "Enter your credentials to access your dashboard"
                   : "Create your recruiter or admin account in seconds"}
               </p>
             </div>
+
+            {sessionExpired && (
+              <div
+                role="alert"
+                className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive"
+              >
+                Your session{prefillEmail ? ` for ${prefillEmail}` : ""} has expired. Sign in again to continue.
+              </div>
+            )}
 
             {/* Form */}
             <form
@@ -467,6 +485,16 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                 )}
               </Button>
             </form>
+
+            {addMode && (
+              <button
+                type="button"
+                onClick={() => router.push(nextUrl)}
+                className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel and go back
+              </button>
+            )}
           </div>
 
           {/* Footer details */}
