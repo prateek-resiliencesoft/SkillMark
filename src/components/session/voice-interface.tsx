@@ -1856,6 +1856,7 @@ export function VoiceInterface({
                     {/* Code editor */}
                     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                       <CodeEditorCanvas
+                        sessionId={sessionId}
                         key={`code-${voice.currentQuestionIndex}`}
                         ref={codeEditorRef}
                         fillParent
@@ -1869,6 +1870,7 @@ export function VoiceInterface({
                   </div>
                 ) : (
                   <CodeEditorCanvas
+                    sessionId={sessionId}
                     key={`code-${voice.currentQuestionIndex}`}
                     ref={codeEditorRef}
                     fillParent

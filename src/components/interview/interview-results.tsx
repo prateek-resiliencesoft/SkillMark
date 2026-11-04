@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
 import { SessionErrorLogButton } from "@/components/session/session-error-log";
@@ -996,7 +997,9 @@ function SessionDetail({
                                 variant="outline"
                                 className="border-zinc-700 text-[10px] font-normal text-zinc-400"
                               >
-                                {language}
+                                {getCodeLanguage(language)
+                                  ? `${getCodeLanguage(language)!.label} ${getCodeLanguage(language)!.version}`
+                                  : language}
                               </Badge>
                               <span className="text-[10px] text-zinc-500">
                                 {new Date(msg.timestamp).toLocaleTimeString(
