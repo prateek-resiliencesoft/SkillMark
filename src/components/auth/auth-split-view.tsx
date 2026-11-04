@@ -3,6 +3,7 @@
 import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { Button } from "@/components/ui/button";
+import { AuthHeroDecor, AuthHeroScrim } from "@/components/auth/auth-hero-decor";
 import { DitheredLogo } from "@/components/ui/dithered-logo";
 import { LiquidGlassLogoReveal } from "@/components/ui/liquid-glass-logo-reveal";
 import { Input } from "@/components/ui/input";
@@ -20,7 +21,7 @@ import {
   Mail,
   User,
 } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface AuthSplitViewProps {
@@ -32,7 +33,6 @@ type AnimationStage = "glass_center" | "gliding" | "gathering" | "settled";
 const INTRO_SESSION_KEY = "skillmark_intro_played";
 
 export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const rawNext = searchParams.get("next");
   const nextUrl =
@@ -64,11 +64,36 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
   const switchTab = useCallback(
     (tab: "login" | "register") => {
+      if (tab === activeTab) return;
       setActiveTab(tab);
-      router.replace(tab === "login" ? `/login${nextQuery}` : `/register${nextQuery}`);
+      // Update the URL without a route change, so the shell (caustics canvas, logo intro) never remounts.
+      const url = tab === "login" ? `/login${nextQuery}` : `/register${nextQuery}`;
+      window.history.replaceState(window.history.state, "", url);
     },
-    [router, nextQuery],
+    [activeTab, nextQuery],
   );
+
+  // Keep the tab in sync if the URL changes underneath us (back/forward).
+  useEffect(() => {
+    const onPop = () => {
+      const path = window.location.pathname;
+      if (path.startsWith("/register")) setActiveTab("register");
+      else if (path.startsWith("/login")) setActiveTab("login");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Smooth card height between the login and register forms.
+  const cardContentRef = useRef<HTMLDivElement>(null);
+  const [cardHeight, setCardHeight] = useState<number | "auto">("auto");
+  useEffect(() => {
+    const el = cardContentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setCardHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Form states
   const [name, setName] = useState("");
@@ -217,6 +242,8 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
   return (
     <div className="relative min-h-screen w-full flex flex-col lg:grid lg:grid-cols-12 bg-background overflow-hidden selection:bg-primary/20">
+      {/* One shared caustics canvas behind both halves */}
+      <AuthHeroDecor />
       {/* ── STAGE 1: Fullscreen Liquid Glass Logo Reveal in Center ── */}
       <AnimatePresence>
         {stage === "glass_center" && (
@@ -253,7 +280,8 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       </AnimatePresence>
 
       {/* ── Left Column: Interactive Dithered Canvas & Branding ── */}
-      <div className="relative lg:col-span-6 xl:col-span-7 flex flex-col items-center justify-center p-8 lg:p-14 border-b lg:border-b-0 lg:border-r border-border/40 bg-gradient-to-b from-muted/15 via-background to-muted/20">
+      <div className="relative z-10 overflow-hidden lg:col-span-6 xl:col-span-7 flex flex-col items-center justify-center p-8 lg:p-14">
+        <AuthHeroScrim />
         {/* Subtle ambient glow behind canvas */}
         <div className="absolute h-80 w-80 md:h-96 md:w-96 rounded-full bg-primary/15 blur-[120px] pointer-events-none" />
 
@@ -302,7 +330,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       </div>
 
       {/* ── Right Column: Animated Auth Form & Segmented Controls ── */}
-      <div className="lg:col-span-6 xl:col-span-5 flex flex-col items-center justify-center p-6 sm:p-10 lg:p-14">
+      <div className="relative z-10 lg:col-span-6 xl:col-span-5 flex flex-col items-center justify-center p-6 sm:p-10 lg:p-14">
         <motion.div
           key="auth-form-container"
           initial={isFirstPlay ? { opacity: 0, x: 80, scale: 0.96 } : false}
@@ -316,7 +344,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
           className="w-full max-w-md space-y-6"
         >
           {/* Animated Segmented Switch */}
-          <div className="relative flex rounded-2xl bg-muted/60 p-1.5 border border-border/60 backdrop-blur-md">
+          <div className="relative flex rounded-2xl p-1.5 border border-white/60 bg-white/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_20px_40px_-12px_rgba(0,0,0,0.15)] backdrop-blur-3xl backdrop-saturate-150 dark:border-white/12 dark:bg-white/[0.07] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_20px_40px_-12px_rgba(0,0,0,0.5)]">
             {/* Sliding Pill Active Indicator */}
             <div
               className={cn(
@@ -355,7 +383,21 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
           </div>
 
           {/* Auth Card Container */}
-          <div className="rounded-2xl border border-border/80 bg-card/90 p-8 shadow-xl shadow-black/5 backdrop-blur-lg transition-all duration-300">
+          <motion.div
+            initial={false}
+            animate={{ height: cardHeight }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="overflow-hidden rounded-2xl border border-white/60 bg-white/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_20px_40px_-12px_rgba(0,0,0,0.15)] backdrop-blur-3xl backdrop-saturate-150 dark:border-white/12 dark:bg-white/[0.07] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_20px_40px_-12px_rgba(0,0,0,0.5)]"
+          >
+            <div ref={cardContentRef} className="p-8">
+            <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, x: activeTab === "register" ? 12 : -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: activeTab === "register" ? -12 : 12 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
             <div className="mb-6 space-y-1">
               <h2 className="font-heading text-2xl font-bold tracking-tight text-foreground">
                 {activeTab === "login"
@@ -398,7 +440,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                       placeholder="Jane Doe"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="pl-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
+                      className="pl-10 h-11 rounded-xl border-black/10 bg-white/70 placeholder:text-muted-foreground focus-visible:ring-primary dark:border-white/15 dark:bg-black/30"
                     />
                   </div>
                 </div>
@@ -417,7 +459,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
-                    className="pl-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
+                    className="pl-10 h-11 rounded-xl border-black/10 bg-white/70 placeholder:text-muted-foreground focus-visible:ring-primary dark:border-white/15 dark:bg-black/30"
                   />
                 </div>
               </div>
@@ -443,7 +485,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     minLength={6}
-                    className="pl-10 pr-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
+                    className="pl-10 pr-10 h-11 rounded-xl border-black/10 bg-white/70 placeholder:text-muted-foreground focus-visible:ring-primary dark:border-white/15 dark:bg-black/30"
                   />
                   <button
                     type="button"
@@ -492,10 +534,13 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                 Cancel and go back
               </button>
             )}
-          </div>
+            </motion.div>
+            </AnimatePresence>
+            </div>
+          </motion.div>
 
           {/* Footer details */}
-          <div className="text-center text-xs text-muted-foreground/80 leading-relaxed">
+          <div className="mx-auto w-fit rounded-full bg-white/50 px-3 py-1 text-center text-xs leading-relaxed text-foreground/75 backdrop-blur-md dark:bg-black/30 dark:text-white/75">
             By continuing, you agree to ResilienceSoft Interview&apos;s Terms of Service and Privacy Policy.
           </div>
         </motion.div>
