@@ -2,6 +2,7 @@ import { router } from "../trpc";
 import { interviewRouter } from "./interview";
 import { questionRouter } from "./question";
 import { sessionRouter } from "./session";
+import { codeRouter } from "./code";
 import { analysisRouter } from "./analysis";
 import { organizationRouter } from "./organization";
 import { orgMemberRouter } from "./orgMember";
@@ -27,6 +28,7 @@ export const appRouter = router({
   question: questionRouter,
   questionBank: questionBankRouter,
   session: sessionRouter,
+  code: codeRouter,
   analysis: analysisRouter,
   organization: organizationRouter,
   orgMember: orgMemberRouter,
