@@ -24,8 +24,10 @@ npm install
 cp .env.example .env
 # Edit .env with your API keys
 
-# 4. Start local Supabase
-npx supabase start
+# 4. Start Postgres + PostgREST (db/init/*.sql runs on first boot)
+npm run db:up
+# Existing database? Apply newer db/init migrations:
+npm run db:migrate
 
 # 5. Start the dev server
 npm run dev

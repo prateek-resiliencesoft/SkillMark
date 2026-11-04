@@ -48,7 +48,7 @@ import {
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Trash2, Plus, LogOut, Pencil } from "lucide-react";
+import { Copy, Loader2, Trash2, Plus, LogOut, Pencil, X } from "lucide-react";
 
 export default function ProjectMembersPage() {
   const { toast } = useToast();
@@ -76,6 +76,7 @@ export default function ProjectMembersPage() {
   const [editingRoleUserId, setEditingRoleUserId] = useState<string | null>(
     null,
   );
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
 
   const membersQuery = trpc.orgMember.list.useQuery(
     { organizationId: currentOrg?.id ?? "" },
@@ -83,16 +84,56 @@ export default function ProjectMembersPage() {
   );
 
   const addProjectMemberMutation = trpc.orgMember.addProjectMember.useMutation({
-    onSuccess: () => {
-      toast({ title: isZh ? "成员已加入项目" : "Member added to project" });
+    onSuccess: (data) => {
       setInviteOpen(false);
       setInviteEmail("");
       utils.orgMember.listProjectRoles.invalidate();
       utils.orgMember.list.invalidate();
+      if (data.outcome === "added") {
+        setLastInviteUrl(null);
+        toast({
+          title: isZh ? "成员已加入项目" : "Member added to project",
+          description: data.email,
+        });
+        return;
+      }
+      setLastInviteUrl(data.inviteUrl);
+      utils.orgMember.listInvites.invalidate();
+      toast({
+        title: isZh ? "邀请已创建" : "Invite created",
+        description:
+          data.emailStatus === "sent"
+            ? isZh
+              ? `已向 ${data.email} 发送邀请邮件，接受后即可访问此项目。`
+              : `We emailed ${data.email}. They'll get access to this project once they accept.`
+            : isZh
+              ? `${data.email} 还不是组织成员。复制下方链接发给对方。`
+              : `${data.email} isn't in this organization yet. Copy the link below and share it with them.`,
+      });
     },
     onError: (err) => {
       toast({
-        title: isZh ? "错误" : "Error",
+        title: isZh ? "无法添加成员" : "Could not add member",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const isAdminRole =
+    currentOrg?.role === "OWNER" || currentOrg?.role === "ADMIN";
+  const invitesQuery = trpc.orgMember.listInvites.useQuery(
+    { organizationId: currentOrg?.id ?? "" },
+    { enabled: !!currentOrg && isAdminRole },
+  );
+  const revokeInviteMutation = trpc.orgMember.revokeInvite.useMutation({
+    onSuccess: () => {
+      toast({ title: isZh ? "邀请已取消" : "Invite cancelled" });
+      utils.orgMember.listInvites.invalidate();
+    },
+    onError: (err) => {
+      toast({
+        title: isZh ? "无法取消邀请" : "Could not cancel invite",
         description: err.message,
         variant: "destructive",
       });
@@ -162,7 +203,10 @@ export default function ProjectMembersPage() {
     );
   }
 
-  const isAdmin = currentOrg.role === "OWNER" || currentOrg.role === "ADMIN";
+  const isAdmin = isAdminRole;
+  const projectInvites = (invitesQuery.data ?? []).filter(
+    (inv) => !!currentProject && inv.projectId === currentProject.id,
+  );
 
   const allMembers = membersQuery.data ?? [];
   const projectCreatorId = currentProject?.createdBy;
@@ -209,8 +253,8 @@ export default function ProjectMembersPage() {
                 </DialogTitle>
                 <DialogDescription>
                   {isZh
-                    ? "将现有组织成员添加到此项目。"
-                    : "Add an existing organization member to this project."}
+                    ? "输入邮箱。组织成员会被直接加入；其他人会收到邀请，接受后即可访问此项目。"
+                    : "Enter their email. Organization members are added right away; anyone else gets an invite that grants access to this project when they accept."}
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-2">
@@ -275,6 +319,88 @@ export default function ProjectMembersPage() {
           </Dialog>
         )}
       </div>
+
+      {lastInviteUrl ? (
+        <div className="flex flex-col gap-2 rounded-xl border bg-muted/40 p-4 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">
+              {isZh ? "邀请链接已生成" : "Invite link ready"}
+            </p>
+            <p className="truncate text-xs text-muted-foreground">
+              {lastInviteUrl}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(lastInviteUrl);
+                toast({ title: isZh ? "链接已复制" : "Link copied" });
+              } catch {
+                toast({
+                  title: isZh ? "复制失败" : "Could not copy",
+                  description: isZh
+                    ? "请手动选择并复制链接。"
+                    : "Select the link and copy it manually.",
+                  variant: "destructive",
+                });
+              }
+            }}
+          >
+            <Copy className="mr-2 h-3.5 w-3.5" />
+            {isZh ? "复制链接" : "Copy link"}
+          </Button>
+        </div>
+      ) : null}
+
+      {projectInvites.length > 0 && (
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <p className="text-sm font-medium">
+              {isZh ? "待接受的邀请" : "Pending invites"}
+            </p>
+            {projectInvites.map((inv) => (
+              <div
+                key={inv.id}
+                className="flex items-center justify-between gap-3 text-sm"
+              >
+                <div className="min-w-0">
+                  <span className="truncate">{inv.email}</span>{" "}
+                  <Badge variant="outline" className="ml-1">
+                    {roleLabel(
+                      (inv.projectRole ?? inv.role) as
+                        | "ADMIN"
+                        | "MEMBER"
+                        | "VIEWER",
+                    )}
+                  </Badge>
+                  {inv.status === "EXPIRED" && (
+                    <Badge variant="secondary" className="ml-1">
+                      {isZh ? "已过期" : "Expired"}
+                    </Badge>
+                  )}
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  aria-label={isZh ? "取消邀请" : "Cancel invite"}
+                  disabled={revokeInviteMutation.isPending}
+                  onClick={() =>
+                    revokeInviteMutation.mutate({
+                      organizationId: currentOrg.id,
+                      inviteId: inv.id,
+                    })
+                  }
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="p-0">

@@ -43,7 +43,12 @@ export async function middleware(request: NextRequest) {
   }
 
   // Already signed in → leave auth pages for the intended destination
-  if (user && AUTH_PAGES.some((p) => path === p || path.startsWith(p + "/"))) {
+  // (unless adding another account via ?add=1)
+  if (
+    user &&
+    !request.nextUrl.searchParams.has("add") &&
+    AUTH_PAGES.some((p) => path === p || path.startsWith(p + "/"))
+  ) {
     const url = request.nextUrl.clone();
     url.pathname = safeNextPath(request.nextUrl.searchParams.get("next"));
     url.search = "";

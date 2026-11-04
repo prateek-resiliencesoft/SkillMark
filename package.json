@@ -26,6 +26,7 @@
     "dev:voice:gemini": "npx tsx server/gemini-voice-relay.ts",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
+    "db:migrate": "bash scripts/db-migrate.sh",
     "db:psql": "docker compose exec db psql -U skillmark -d skillmark",
     "db:dump": "docker compose exec -T db pg_dump -U skillmark -d skillmark --data-only --schema=public --schema=auth > skillmark-data.sql",
     "db:restore": "docker compose exec -T db psql -U skillmark -d skillmark < skillmark-data.sql",

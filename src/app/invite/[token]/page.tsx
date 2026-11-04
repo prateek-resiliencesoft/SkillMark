@@ -113,11 +113,27 @@ export default function AcceptOrgInvitePage() {
                 Join {invite.data.organization?.name ?? "an organization"}
               </h1>
               <p className="text-sm text-muted-foreground">
-                You were invited as{" "}
-                <span className="font-medium text-foreground">
-                  {roleLabel(invite.data.role)}
-                </span>
-                .
+                {invite.data.project ? (
+                  <>
+                    You were invited to the{" "}
+                    <span className="font-medium text-foreground">
+                      {invite.data.project.name}
+                    </span>{" "}
+                    project as{" "}
+                    <span className="font-medium text-foreground">
+                      {roleLabel(invite.data.project.role)}
+                    </span>
+                    .
+                  </>
+                ) : (
+                  <>
+                    You were invited as{" "}
+                    <span className="font-medium text-foreground">
+                      {roleLabel(invite.data.role)}
+                    </span>
+                    .
+                  </>
+                )}
               </p>
               <div className="flex justify-center gap-2 pt-1">
                 <Badge variant="outline" className="font-normal">
@@ -185,7 +201,7 @@ export default function AcceptOrgInvitePage() {
                 </p>
                 <Button asChild variant="outline" className="w-full">
                   <Link
-                    href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`}
+                    href={`/login?${new URLSearchParams({ add: "1", email: invite.data.email, next: `/invite/${token}` })}`}
                   >
                     Switch account
                   </Link>
