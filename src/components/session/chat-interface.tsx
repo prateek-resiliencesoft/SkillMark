@@ -1220,6 +1220,7 @@ export function ChatInterface({
               {renderCodeSnippetTabs()}
               <div className="h-[300px]">
                 <CodeEditorCanvas
+                  sessionId={sessionId}
                   ref={codeEditorRef}
                   fillParent
                   dark={isDark}
@@ -1289,6 +1290,7 @@ export function ChatInterface({
                 {renderCodeSnippetTabs()}
                 <div className="flex-1">
                   <CodeEditorCanvas
+                    sessionId={sessionId}
                     ref={codeEditorRef}
                     fillParent
                     dark={isDark}
@@ -1559,6 +1561,7 @@ export function ChatInterface({
             {renderCodeSnippetTabs()}
             <div className="h-[400px]">
               <CodeEditorCanvas
+                sessionId={sessionId}
                 ref={codeEditorRef}
                 fillParent
                 dark={isDark}
