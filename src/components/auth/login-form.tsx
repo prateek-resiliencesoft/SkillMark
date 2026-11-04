@@ -1,7 +1,7 @@
 "use client";
 
 import { useAppLocale } from "@/components/app-locale-provider";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Button } from "@/components/ui/button";
 import {
     Card,
@@ -67,7 +67,7 @@ export function LoginForm() {
   return (
     <Card>
       <CardHeader className="text-center">
-        <AuralLogo size={64} className="mx-auto mb-2" priority />
+        <BrandWordmark height={56} className="mx-auto mb-2" priority />
         <p className="text-xs font-semibold tracking-widest uppercase text-primary">
           Measure what matters
         </p>

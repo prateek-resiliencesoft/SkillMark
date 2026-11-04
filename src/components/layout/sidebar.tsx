@@ -9,6 +9,7 @@ import { TourOverlay } from "@/components/tour/tour-overlay";
 import { TourProvider } from "@/components/tour/tour-provider";
 import { TourWelcome } from "@/components/tour/tour-welcome";
 import { AuralLogo } from "@/components/ui/aural-logo";
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -263,16 +264,10 @@ export function Sidebar({
       {/* Logo */}
       <div className="flex h-14 items-center border-b px-4">
         <Link href="/organizations" className="flex items-center gap-2">
-          <AuralLogo size={28} className="shrink-0" priority />
-          {!collapsed && (
-            <div className="flex flex-col">
-              <span className="font-heading text-sm font-bold tracking-[2px] leading-none">
-                RESILIENCESOFT INTERVIEW AI
-              </span>
-              <span className="text-[10px] text-muted-foreground font-medium tracking-tight mt-0.5">
-                Measure what matters
-              </span>
-            </div>
+          {collapsed ? (
+            <AuralLogo size={28} className="shrink-0" priority />
+          ) : (
+            <BrandWordmark height={36} priority />
           )}
         </Link>
       </div>

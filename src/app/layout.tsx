@@ -77,11 +77,11 @@ const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://aural-ai.com";
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "Resiliencesoft Interview AI — Measure what matters",
-    template: "%s | Resiliencesoft Interview AI",
+    default: "ResilienceSoft Interview — Measure what matters",
+    template: "%s | ResilienceSoft Interview",
   },
   description:
-    "Resiliencesoft Interview AI — Measure what matters. The open-source AI interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
+    "ResilienceSoft Interview — Measure what matters. The open-source AI interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
   keywords: [
     "AI interview platform",
     "voice interview",
@@ -102,25 +102,25 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     locale: "en_US",
-    siteName: "Resiliencesoft Interview AI",
-    title: "Resiliencesoft Interview AI | Voice & Video Interviews",
+    siteName: "ResilienceSoft Interview",
+    title: "ResilienceSoft Interview | Voice & Video Interviews",
     description:
-      "Resiliencesoft Interview AI is the interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
+      "ResilienceSoft Interview is the interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
     url: siteUrl,
     images: [
       {
         url: `${siteUrl}/images/marketing/hero-screenshots.webp`,
         width: 1920,
         height: 960,
-        alt: "Resiliencesoft Interview AI Platform",
+        alt: "ResilienceSoft Interview Platform",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Resiliencesoft Interview AI | Voice & Video Interviews",
+    title: "ResilienceSoft Interview | Voice & Video Interviews",
     description:
-      "Resiliencesoft Interview AI is the interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
+      "ResilienceSoft Interview is the interview platform for structured voice, chat, and video interviews. Automate candidate screening, get real-time insights, and scale your interview process.",
     images: [`${siteUrl}/images/marketing/hero-screenshots.webp`],
   },
 };

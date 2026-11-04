@@ -26,7 +26,7 @@ export const takingAnInterviewArticles: DocArticle[] = [
         <h2>Getting Into Your Interview</h2>
         <DocSteps>
           <DocStep step={1} title="Open the Link and Enter Your Details">
-            <p>Click the interview link to open the Resiliencesoft Interview AI interview page. On the welcome screen, enter your full name and email address, then click <strong>Begin Interview</strong>.</p>
+            <p>Click the interview link to open the ResilienceSoft Interview interview page. On the welcome screen, enter your full name and email address, then click <strong>Begin Interview</strong>.</p>
             <DocImage src="/images/docs/interviewee-landing.webp" alt="Interviewee welcome screen with name and email fields" />
           </DocStep>
           <DocStep step={2} title="Complete the Checklist">
@@ -137,7 +137,7 @@ export const takingAnInterviewArticles: DocArticle[] = [
 
         <h3>If You Get Disconnected</h3>
         <p>
-          Resiliencesoft Interview AI saves your progress automatically. Return to the same interview link, verify your identity if prompted, and continue where you left off — previous answers are preserved.
+          ResilienceSoft Interview saves your progress automatically. Return to the same interview link, verify your identity if prompted, and continue where you left off — previous answers are preserved.
         </p>
 
         <DocCallout variant="tip" title="To avoid interruptions">

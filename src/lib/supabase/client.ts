@@ -2,7 +2,7 @@
 
 /**
  * Browser auth client (replaces supabase-js in the browser).
- * Talks to Resiliencesoft Interview AI's own /api/auth/* routes; the session is an httpOnly cookie.
+ * Talks to ResilienceSoft Interview's own /api/auth/* routes; the session is an httpOnly cookie.
  * Keeps the small subset of the old API the UI used.
  */
 export interface AuthUser {

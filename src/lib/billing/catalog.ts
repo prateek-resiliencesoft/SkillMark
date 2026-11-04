@@ -25,7 +25,7 @@ export const PLAN_CATALOG: PlanCatalogEntry[] = [
   {
     id: "FREE",
     name: "Free",
-    blurb: "Try Resiliencesoft Interview AI with a small team.",
+    blurb: "Try ResilienceSoft Interview with a small team.",
     limits: { seats: 5, interviews: 20, projects: 3 },
     stripePriceEnv: null,
     purchaseable: false,

@@ -249,7 +249,7 @@ export const batchRouter = router({
           chatEnabled: settings.chatEnabled,
           voiceEnabled: settings.voiceEnabled,
           videoEnabled: settings.voiceEnabled && settings.videoEnabled,
-          aiName: generated.recommendedSettings?.aiName || "Resiliencesoft Interview AI",
+          aiName: generated.recommendedSettings?.aiName || "ResilienceSoft Interview",
           aiTone: settings.aiTone,
           followUpDepth: settings.followUpDepth,
           language: settings.language,

@@ -29,7 +29,7 @@ const inboundCandidateSchema = z.object({
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    service: "Resiliencesoft Interview AI Inbound Candidate Webhook",
+    service: "ResilienceSoft Interview Inbound Candidate Webhook",
     documentation: "POST candidate JSON payload with X-Webhook-Secret header to ingest candidates.",
   });
 }
