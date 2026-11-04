@@ -161,6 +161,8 @@ export type Database = {
           expiresAt: string;
           acceptedAt: string | null;
           acceptedBy: string | null;
+          projectId: string | null;
+          projectRole: Database["public"]["Enums"]["MemberRole"] | null;
           createdAt: string;
         };
         Insert: {
@@ -174,6 +176,8 @@ export type Database = {
           expiresAt: string;
           acceptedAt?: string | null;
           acceptedBy?: string | null;
+          projectId?: string | null;
+          projectRole?: Database["public"]["Enums"]["MemberRole"] | null;
           createdAt?: string;
         };
         Update: {
@@ -187,6 +191,8 @@ export type Database = {
           expiresAt?: string;
           acceptedAt?: string | null;
           acceptedBy?: string | null;
+          projectId?: string | null;
+          projectRole?: Database["public"]["Enums"]["MemberRole"] | null;
           createdAt?: string;
         };
         Relationships: [];

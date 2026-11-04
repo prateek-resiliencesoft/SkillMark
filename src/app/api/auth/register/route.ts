@@ -1,5 +1,7 @@
 import { ACTIVE_ORG_COOKIE } from "@/lib/active-org";
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { readAccountTokens, setAccountsCookie, withAccount } from "@/lib/auth-accounts";
 import { createUser } from "@/lib/users";
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from "@/lib/auth-session";
 import { checkRateLimit } from "@/lib/api-rate-limit";
@@ -18,6 +20,7 @@ export async function POST(req: Request) {
   const token = await signSession(user);
   const res = NextResponse.json({ user });
   res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
+  setAccountsCookie(res, withAccount(readAccountTokens(cookies()), token));
   // Fresh login → no active org yet, so the dashboard shows the org picker.
   res.cookies.delete(ACTIVE_ORG_COOKIE);
   return res;

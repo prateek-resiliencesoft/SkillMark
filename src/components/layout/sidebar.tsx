@@ -57,6 +57,7 @@ import { motion } from "motion/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AccountSwitcher } from "./account-switcher";
 import { Header } from "./header";
 import { SupportDrawer } from "./support-drawer";
 
@@ -522,6 +523,7 @@ export function Sidebar({
                 {t("sidebar.accountSettings")}
               </Link>
             </DropdownMenuItem>
+            <AccountSwitcher />
             {profile?.role === "ADMIN" ? (
               <DropdownMenuItem asChild>
                 <Link href="/admin" className="flex items-center gap-2">
@@ -537,16 +539,15 @@ export function Sidebar({
               onSelect={async (e) => {
                 e.preventDefault();
                 setSigningOut(true);
-                const supabase = createClient();
+                let switchedTo: string | null = null;
                 try {
-                  await supabase.auth.signOut();
+                  const res = await fetch("/api/auth/logout", { method: "POST" });
+                  switchedTo = (await res.json()).switchedTo ?? null;
                 } catch {
                   // Session may have expired; clear local state instead
-                  await supabase.auth
-                    .signOut({ scope: "local" })
-                    .catch(() => {});
+                  await createClient().auth.signOut().catch(() => {});
                 }
-                window.location.href = "/login";
+                window.location.href = switchedTo ? "/dashboard" : "/login";
               }}
             >
               {signingOut ? (
