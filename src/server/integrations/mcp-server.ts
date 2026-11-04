@@ -76,7 +76,7 @@ async function interviewInScope(id: string, auth: ApiKeyAuth) {
   return { interview: data };
 }
 
-const INSTRUCTIONS = `Resiliencesoft Interview AI platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
+const INSTRUCTIONS = `ResilienceSoft Interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
 
 /** Build an MCP server bound to one authenticated API key (stateless, per request). */
 export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {

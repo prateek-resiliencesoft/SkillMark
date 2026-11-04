@@ -54,7 +54,7 @@ export default function AdminOverviewPage() {
             Overview
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            A quiet look across every organization on this Resiliencesoft Interview AI instance.
+            A quiet look across every organization on this ResilienceSoft Interview instance.
           </p>
         </div>
         <Button asChild variant="outline" size="sm">

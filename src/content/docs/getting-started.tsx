@@ -9,7 +9,7 @@ export const gettingStartedArticles: DocArticle[] = [
   {
     slug: "what-is-aural",
     categorySlug: "getting-started",
-    title: "What is Resiliencesoft Interview AI?",
+    title: "What is ResilienceSoft Interview?",
     description: "AI-powered interview platform for hiring, research, and practice",
     audience: "both",
     order: 1,
@@ -17,7 +17,7 @@ export const gettingStartedArticles: DocArticle[] = [
       <>
         <h2>Product Overview</h2>
         <p>
-          Resiliencesoft Interview AI is an AI-powered interview platform that conducts structured interviews autonomously. You design an interview, share a link, and Resiliencesoft Interview AI handles the conversation — asking questions, probing with follow-ups, and generating detailed analysis when the session is complete.
+          ResilienceSoft Interview is an AI-powered interview platform that conducts structured interviews autonomously. You design an interview, share a link, and ResilienceSoft Interview handles the conversation — asking questions, probing with follow-ups, and generating detailed analysis when the session is complete.
         </p>
 
         <h3>Key Features</h3>

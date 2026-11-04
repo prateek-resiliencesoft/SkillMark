@@ -41,7 +41,7 @@ export const troubleshootingArticles: DocArticle[] = [
 
         <h3>If You Get Disconnected</h3>
         <p>
-          Resiliencesoft Interview AI saves your progress automatically. Return to the same interview link to resume where you left off. If a reconnect button appears, click it. Otherwise, refresh the page.
+          ResilienceSoft Interview saves your progress automatically. Return to the same interview link to resume where you left off. If a reconnect button appears, click it. Otherwise, refresh the page.
         </p>
         <ul>
           <li>Use a stable network — avoid switching Wi-Fi mid-session</li>
@@ -67,11 +67,11 @@ export const troubleshootingArticles: DocArticle[] = [
         <ul>
           <li><strong>Firefox</strong> — generally works, but some audio device selection features may behave differently</li>
           <li><strong>Safari</strong> — limited support for some voice and video features</li>
-          <li><strong>Mobile browsers</strong> — Resiliencesoft Interview AI can run on mobile, but screen size and background tab behavior may affect the experience. Use desktop for important interviews.</li>
+          <li><strong>Mobile browsers</strong> — ResilienceSoft Interview can run on mobile, but screen size and background tab behavior may affect the experience. Use desktop for important interviews.</li>
         </ul>
 
         <DocCallout variant="info">
-          Keep your browser up to date. Older versions may lack WebRTC and audio API fixes that Resiliencesoft Interview AI depends on.
+          Keep your browser up to date. Older versions may lack WebRTC and audio API fixes that ResilienceSoft Interview depends on.
         </DocCallout>
 
         <hr />

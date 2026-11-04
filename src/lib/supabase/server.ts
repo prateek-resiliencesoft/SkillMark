@@ -1,6 +1,6 @@
 /**
  * Request-scoped server client (replaces @supabase/ssr createServerClient).
- * Reads the Resiliencesoft Interview AI session cookie; DB calls go through the server DB client.
+ * Reads the ResilienceSoft Interview session cookie; DB calls go through the server DB client.
  */
 import { cookies } from "next/headers";
 import { supabaseAdmin } from "@/lib/supabase/admin";

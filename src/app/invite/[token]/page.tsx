@@ -144,7 +144,7 @@ export default function AcceptOrgInvitePage() {
 
             {!pending ? (
               <Button asChild className="w-full">
-                <Link href="/organizations">Back to Resiliencesoft Interview AI</Link>
+                <Link href="/organizations">Back to ResilienceSoft Interview</Link>
               </Button>
             ) : !user ? (
               <div className="space-y-3">

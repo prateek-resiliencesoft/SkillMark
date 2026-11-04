@@ -103,7 +103,7 @@ export default function UserStatusPage() {
             System status
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Public service checks for Resiliencesoft Interview AI. Internal probes stay in the
+            Public service checks for ResilienceSoft Interview. Internal probes stay in the
             control center.
           </p>
         </div>

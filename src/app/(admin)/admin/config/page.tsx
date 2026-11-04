@@ -126,7 +126,7 @@ export default function AdminConfigPage() {
         <div>
           <h2 className="text-sm font-medium">Instance</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Global rules for every account on this Resiliencesoft Interview AI instance.
+            Global rules for every account on this ResilienceSoft Interview instance.
           </p>
         </div>
         <label className="block max-w-xs space-y-1.5 text-xs">

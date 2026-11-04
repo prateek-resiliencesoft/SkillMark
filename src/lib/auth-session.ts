@@ -1,5 +1,5 @@
 /**
- * Resiliencesoft Interview AI auth session: httpOnly cookie holding an HS256 JWT signed with AUTH_SECRET.
+ * ResilienceSoft Interview auth session: httpOnly cookie holding an HS256 JWT signed with AUTH_SECRET.
  * Edge-safe (used by middleware) — only depends on `jose`.
  */
 import { SignJWT, jwtVerify } from "jose";
