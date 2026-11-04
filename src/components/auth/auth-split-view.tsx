@@ -21,7 +21,7 @@ import {
   Mail,
   User,
 } from "lucide-react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface AuthSplitViewProps {
@@ -33,6 +33,7 @@ type AnimationStage = "glass_center" | "gliding" | "gathering" | "settled";
 const INTRO_SESSION_KEY = "skillmark_intro_played";
 
 export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const rawNext = searchParams.get("next");
   const nextUrl =
