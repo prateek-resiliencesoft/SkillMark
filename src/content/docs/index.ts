@@ -17,7 +17,7 @@ export const categories: DocCategory[] = [
   {
     slug: "getting-started",
     title: "Getting Started",
-    description: "Learn the basics of Resiliencesoft Interview AI and set up your first interview",
+    description: "Learn the basics of ResilienceSoft Interview and set up your first interview",
     iconName: "Rocket",
     audience: "both",
     order: 1,

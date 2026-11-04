@@ -283,3 +283,61 @@
   content: "";
   pointer-events: none;
 }
+
+/*
+ * Mobile/tablet dashboard (below lg only — desktop untouched): let page headers
+ * and toolbars wrap instead of pushing buttons off-screen, and keep long words
+ * and code inside the viewport.
+ */
+@media (max-width: 767.98px) {
+  .dashboard-shell main .grid:not([class^="grid-cols-"]):not([class*=" grid-cols-"]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 1023.98px) {
+  .dashboard-shell main .flex.justify-between:not(.flex-col):not([role="tablist"]) {
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+  }
+  .dashboard-shell main h1,
+  .dashboard-shell main h2 {
+    overflow-wrap: anywhere;
+  }
+  .dashboard-shell main pre,
+  .dashboard-shell main img,
+  .dashboard-shell main video {
+    max-width: 100%;
+  }
+  .dashboard-shell main pre {
+    overflow-x: auto;
+  }
+  /* Implicit single-column grids size to min-content (truncated titles!) — clamp them. */
+  .dashboard-shell main .grid > *,
+  .dashboard-shell main .flex > .flex-1 {
+    min-width: 0;
+  }
+  /* Rows of controls wrap instead of overflowing. */
+  .dashboard-shell main .flex:not(.flex-col):not(.flex-nowrap):not([role="tablist"]) {
+    flex-wrap: wrap;
+  }
+  /* Long-label buttons wrap rather than spill past the viewport. */
+  .dashboard-shell main button.whitespace-nowrap:not(.w-7):not(.w-8):not(.w-9):not(.w-10):not(.w-11):not([role="tab"]):not([role="combobox"]) {
+    max-width: 100%;
+    white-space: normal;
+    height: auto;
+    min-height: 2.25rem;
+    text-align: center;
+  }
+  .dashboard-shell main p,
+  .dashboard-shell main .bg-zinc-950,
+  .dashboard-shell main .text-2xl {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-wrap: anywhere;
+  }
+  .dashboard-shell main [role="tablist"] {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+}

@@ -1,7 +1,7 @@
 /**
  * Server-side database client (replaces the Supabase service-role client).
  *
- * Resiliencesoft Interview AI talks to plain Postgres through PostgREST (docker-compose service
+ * ResilienceSoft Interview talks to plain Postgres through PostgREST (docker-compose service
  * "rest", bound to 127.0.0.1). The PostgREST query builder keeps every existing
  * `.from().select().eq()` call working unchanged. Server-only: never import in
  * client components.

@@ -17,8 +17,8 @@ export function AuralLogo({ size = 32, className, priority }: AuralLogoProps) {
       style={{ width: size, height: size }}
     >
       <Image
-        src="/images/skillmark-logo.png"
-        alt="Resiliencesoft Interview AI logo"
+        src="/images/brand/logo-mark.png"
+        alt="ResilienceSoft Interview logo"
         width={size}
         height={size}
         className="h-full w-full object-contain"

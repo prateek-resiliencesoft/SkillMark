@@ -6,7 +6,7 @@ export const size = { width: 32, height: 32 };
 export const contentType = "image/png";
 
 export default function Icon() {
-  const logoPath = path.join(process.cwd(), "public/images/skillmark-logo.png");
+  const logoPath = path.join(process.cwd(), "public/images/brand/logo-mark.png");
   const logoBase64 = fs.readFileSync(logoPath).toString("base64");
   const logoDataUrl = `data:image/png;base64,${logoBase64}`;
 
@@ -29,7 +29,7 @@ export default function Icon() {
           width="26"
           height="26"
           style={{ objectFit: "contain" }}
-          alt="Resiliencesoft Interview AI"
+          alt="ResilienceSoft Interview"
         />
       </div>
     ),

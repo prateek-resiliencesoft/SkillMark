@@ -6,7 +6,7 @@ export const size = { width: 180, height: 180 };
 export const contentType = "image/png";
 
 export default function AppleIcon() {
-  const logoPath = path.join(process.cwd(), "public/images/skillmark-logo.png");
+  const logoPath = path.join(process.cwd(), "public/images/brand/logo-mark.png");
   const logoBase64 = fs.readFileSync(logoPath).toString("base64");
   const logoDataUrl = `data:image/png;base64,${logoBase64}`;
 
@@ -29,7 +29,7 @@ export default function AppleIcon() {
           width="140"
           height="140"
           style={{ objectFit: "contain" }}
-          alt="Resiliencesoft Interview AI"
+          alt="ResilienceSoft Interview"
         />
       </div>
     ),

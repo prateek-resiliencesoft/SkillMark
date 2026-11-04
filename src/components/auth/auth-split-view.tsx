@@ -1,10 +1,10 @@
 "use client";
 
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { Button } from "@/components/ui/button";
 import { DitheredLogo } from "@/components/ui/dithered-logo";
 import { LiquidGlassLogoReveal } from "@/components/ui/liquid-glass-logo-reveal";
-import ParticleText from "@/components/ui/particle-text";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
@@ -18,7 +18,6 @@ import {
   EyeOff,
   Lock,
   Mail,
-  Sparkles,
   User,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -73,7 +72,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
   // Animation choreography states
   const [stage, setStage] = useState<AnimationStage>("settled");
   const [isFirstPlay, setIsFirstPlay] = useState(false);
-  const [gatherCount, setGatherCount] = useState(0);
   const glassTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -99,7 +97,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
     // Schedule subsequent choreography stages
     setTimeout(() => {
       setStage("gathering");
-      setGatherCount((c) => c + 1);
     }, 450);
 
     setTimeout(() => {
@@ -123,16 +120,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       if (glassTimerRef.current) clearTimeout(glassTimerRef.current);
     };
   }, [stage, advanceFromGlass]);
-
-  const replayIntro = () => {
-    try {
-      sessionStorage.removeItem(INTRO_SESSION_KEY);
-    } catch {
-      // no-op
-    }
-    setIsFirstPlay(true);
-    setStage("glass_center");
-  };
 
   const supabase = createClient();
 
@@ -167,7 +154,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
         title: "Connection Error",
         description:
           msg ||
-          "Unable to reach the Resiliencesoft Interview AI server. Ensure the app and database (docker compose up -d) are running.",
+          "Unable to reach the ResilienceSoft Interview server. Ensure the app and database (docker compose up -d) are running.",
         variant: "destructive",
       });
       setLoading(false);
@@ -199,7 +186,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       } else if (data.session) {
         toast({
           title: "Account Created",
-          description: "Welcome to Resiliencesoft Interview AI! Redirecting...",
+          description: "Welcome to ResilienceSoft Interview! Redirecting...",
         });
         window.location.href = nextUrl;
       } else {
@@ -240,7 +227,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
             {/* Liquid Glass Reveal Canvas */}
             <div className="relative w-80 h-80 sm:w-96 sm:h-96 flex items-center justify-center">
               <LiquidGlassLogoReveal
-                logo="/images/skillmark-logo.png"
+                logo="/images/brand/logo-mark.png"
                 look={isDark ? "dark" : "light"}
                 background={isDark ? "#09090b" : "#ffffff"}
                 logoColor="#5941F2"
@@ -278,15 +265,16 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
             className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.02]"
           >
             <DitheredLogo
-              imageSrc="/images/skillmark-logo.png"
+              imageSrc="/images/brand/logo-mark.png"
               particleColor="#5941F2"
+              gradientColors={["#FF2D6B", "#E62A8C", "#A83BE0", "#6A35E8"]}
               scale={0.55}
               gridSize={160}
               className="h-64 w-64 sm:h-72 sm:w-72 md:h-80 md:w-80"
             />
           </motion.div>
 
-          {/* Product Brand Title & Tagline — React Bits ParticleText after glass reveal */}
+          {/* Product Brand Title & Tagline — shown after glass reveal */}
           {(!isFirstPlay || stage !== "glass_center") && (
             <motion.div
               key="particle-typography-container"
@@ -296,74 +284,16 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
               className="mt-4 flex w-full max-w-xl flex-col items-center"
             >
               <div className="h-[7.5rem] w-full sm:h-36 md:h-40">
-                <ParticleText
-                  key={`title-${gatherCount}`}
-                  text="RESILIENCESOFT INTERVIEW AI"
-                  particleSize={1.6}
-                  density={3}
-                  color="currentColor"
-                  highlightColor="#5941F2"
-                  highlightMode="motion"
-                  shape="circle"
-                  intro="gather"
-                  scatter={70}
-                  gatherDuration={1500}
-                  stagger={420}
-                  clickBurst
-                  burstStrength={1}
-                  pointerRepel={40}
-                  repelRadius={120}
-                  idleDrift={0.7}
-                  trigger="mount"
-                  fontSize="clamp(2.4rem, 8vw, 4.5rem)"
-                  fontWeight={800}
-                  fontFamily="inherit"
-                  glow
-                  className="h-full w-full text-foreground"
-                />
+                <div className="flex h-full w-full items-center justify-center">
+                  <BrandWordmark variant="text" height={96} className="max-w-full" priority />
+                </div>
               </div>
-              <div className="mt-1 h-12 w-full sm:h-14">
-                <ParticleText
-                  key={`tagline-${gatherCount}`}
-                  text="Measure what matters"
-                  particleSize={1.2}
-                  density={3}
-                  color="currentColor"
-                  highlightColor="#5941F2"
-                  highlightMode="motion"
-                  shape="circle"
-                  intro="gather"
-                  scatter={50}
-                  gatherDuration={1400}
-                  stagger={360}
-                  clickBurst
-                  burstStrength={0.85}
-                  pointerRepel={28}
-                  repelRadius={90}
-                  idleDrift={0.5}
-                  trigger="mount"
-                  fontSize="clamp(0.85rem, 2.4vw, 1.15rem)"
-                  fontWeight={600}
-                  fontFamily="inherit"
-                  glow
-                  className="h-full w-full text-muted-foreground"
-                />
-              </div>
+              <p className="mt-3 text-lg font-medium tracking-wide text-foreground/80 sm:text-xl">
+                Measure what matters
+              </p>
             </motion.div>
           )}
 
-          {/* Replay intro action */}
-          <motion.button
-            type="button"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.8, duration: 0.5 }}
-            onClick={replayIntro}
-            className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/50 px-3 py-1 text-[11px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 transition-all shadow-xs backdrop-blur-sm"
-          >
-            <Sparkles className="h-3 w-3 text-primary" />
-            <span>Replay opening reveal</span>
-          </motion.button>
         </div>
       </div>
 
@@ -426,7 +356,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
               <h2 className="font-heading text-2xl font-bold tracking-tight text-foreground">
                 {activeTab === "login"
                   ? t("auth.welcomeBack") || "Welcome back"
-                  : t("auth.createAccount") || "Get started with Resiliencesoft Interview AI"}
+                  : t("auth.createAccount") || "Get started with ResilienceSoft Interview"}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {activeTab === "login"
@@ -541,7 +471,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
           {/* Footer details */}
           <div className="text-center text-xs text-muted-foreground/80 leading-relaxed">
-            By continuing, you agree to Resiliencesoft Interview AI&apos;s Terms of Service and Privacy Policy.
+            By continuing, you agree to ResilienceSoft Interview&apos;s Terms of Service and Privacy Policy.
           </div>
         </motion.div>
       </div>
