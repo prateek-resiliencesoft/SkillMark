@@ -295,9 +295,6 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                   <BrandWordmark variant="text" height={96} className="max-w-full" priority />
                 </div>
               </div>
-              <p className="mt-3 text-lg font-medium tracking-wide text-foreground/80 sm:text-xl">
-                Measure what matters
-              </p>
             </motion.div>
           )}
 
