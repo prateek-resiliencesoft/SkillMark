@@ -29,7 +29,10 @@ function inviteInsertError(error: { code?: string; message?: string } | null) {
       message: "An invite is already waiting for that email.",
     });
   }
-  if (error?.code === "42P01" || error?.code === "PGRST205") {
+  if (error?.code === "42P01" ||
+    error?.code === "PGRST205" ||
+    error?.code === "42703" ||
+    error?.code === "PGRST204") {
     return new TRPCError({
       code: "INTERNAL_SERVER_ERROR",
       message:

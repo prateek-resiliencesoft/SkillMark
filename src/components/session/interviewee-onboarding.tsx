@@ -41,7 +41,6 @@ import {
     Mic,
     Monitor,
     RefreshCw,
-    RotateCcw,
     ScreenShare,
     User,
 } from "lucide-react";
@@ -80,14 +79,15 @@ const STEPS = [
 
 function WelcomeIllustration() {
   return (
-    <div className="relative bg-gradient-to-br from-primary/10 via-primary/5 to-orange-50 px-6 pt-6 pb-0">
+    <div className="border-b border-border/60 bg-muted/40">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/images/marketing/interview-session-ui.webp"
-        alt="Interview interface preview"
-        className="block w-full rounded-t-lg"
+        src="/images/interview-tour-welcome.webp"
+        alt="A candidate taking an interview on ResilienceSoft Interview"
+        width={896}
+        height={504}
+        className="block aspect-video max-h-[34dvh] w-full object-cover"
       />
-      <div className="absolute -bottom-px left-0 right-0 h-6 bg-gradient-to-t from-white/90 to-transparent" />
     </div>
   );
 }
@@ -103,35 +103,44 @@ export function PreviewWrapper({
   const tourDone = tour?.finished ?? false;
   const [welcomed, setWelcomed] = useState(false);
   const showWelcome = !welcomed && !tour?.active && !tourDone;
+  const readyFiredRef = useRef(false);
+
+  const fireReady = useCallback(() => {
+    if (readyFiredRef.current) return;
+    readyFiredRef.current = true;
+    onReady();
+  }, [onReady]);
 
   const handleStartTour = useCallback(() => {
     setWelcomed(true);
     tour?.restart();
   }, [tour]);
 
+  // Skipping the tour starts the interview straight away (still marks the tour as seen).
   const handleSkipTour = useCallback(() => {
     setWelcomed(true);
     tour?.skip();
-  }, [tour]);
+    fireReady();
+  }, [tour, fireReady]);
+
+  // Finishing (or skipping mid-way through) the tour also starts the interview directly.
+  useEffect(() => {
+    if (tourDone) fireReady();
+  }, [tourDone, fireReady]);
 
   return (
     <div className="relative flex h-[100dvh] flex-col bg-background">
       {children}
 
-      {/* Welcome overlay */}
       {showWelcome && (
-        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-          <div className="mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-border/30 bg-white shadow-2xl">
+        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl">
             <WelcomeIllustration />
-            <div className="space-y-3 px-8 pb-8 pt-2 text-center">
-              <h3 className="text-xl font-bold text-gray-900">Welcome to your interview!</h3>
-              <p className="text-[15px] font-medium text-gray-700">
-                Take a quick tour of the interview interface.
-              </p>
-              <p className="text-sm leading-relaxed text-gray-500">
-                We&apos;ll walk you through the key features — voice controls,
-                transcript, whiteboard, and more — so you know exactly where
-                everything is.
+            <div className="space-y-2 px-6 pb-6 pt-5 text-center sm:px-8">
+              <h3 className="text-xl font-semibold">Welcome to your interview</h3>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Take a quick tour of the interview screen: voice controls,
+                transcript, whiteboard and more, so you know where everything is.
               </p>
               <div className="flex items-stretch gap-3 pt-3">
                 <Button
@@ -146,34 +155,6 @@ export function PreviewWrapper({
                   Take a quick tour
                 </Button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tour complete overlay */}
-      {tourDone && (
-        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-          <div className="mx-4 w-full max-w-md space-y-4 rounded-2xl border bg-card p-6 shadow-2xl">
-            <div className="text-center">
-              <h3 className="text-lg font-semibold">You&apos;re all set!</h3>
-              <p className="mt-1 text-sm text-muted-foreground">
-                You can start the interview now, or restart the tour if you&apos;d like another look.
-              </p>
-            </div>
-            <div className="flex items-stretch gap-3">
-              <Button
-                variant="outline"
-                size="lg"
-                className="gap-2"
-                onClick={() => tour?.restart()}
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Restart tour
-              </Button>
-              <Button className="flex-1" size="lg" onClick={onReady}>
-                Start Interview
-              </Button>
             </div>
           </div>
         </div>
