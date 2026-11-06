@@ -1217,7 +1217,7 @@ export function IntervieweeOnboarding({
   antiCheatingEnabled = false,
   voiceEnabled = false,
   chatEnabled = false,
-  aiName = "AI Interviewer",
+  aiName = "ResilienceSoft Interview",
   questionTypes = [],
   scheduledAt,
   expiresAt,
@@ -1431,7 +1431,7 @@ export function IntervieweeOnboarding({
 
     const mockContext: InterviewContext = {
       title: interviewTitle,
-      aiName: aiName ?? "AI Interviewer",
+      aiName: aiName ?? "ResilienceSoft Interview",
       aiTone: "professional",
       language: language ?? "en-US",
       followUpDepth: "medium",
@@ -1450,7 +1450,7 @@ export function IntervieweeOnboarding({
               sessionId="__preview__"
               interviewId="__preview__"
               interviewTitle={interviewTitle}
-              aiName={aiName ?? "AI Interviewer"}
+              aiName={aiName ?? "ResilienceSoft Interview"}
               questionCount={questionCount}
               interviewContext={mockContext}
               durationMinutes={timeLimitMinutes ?? undefined}
@@ -1464,7 +1464,7 @@ export function IntervieweeOnboarding({
               interview={{
                 id: "__preview__",
                 title: interviewTitle,
-                aiName: aiName ?? "AI Interviewer",
+                aiName: aiName ?? "ResilienceSoft Interview",
                 mode: "CHAT",
                 questions: mockContext.questions.map((q, i) => ({
                   id: `preview-q-${i}`,

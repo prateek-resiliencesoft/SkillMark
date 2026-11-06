@@ -48,7 +48,7 @@ export default function DocsHomePage() {
         <div className="max-w-5xl mx-auto flex items-center justify-between text-xs text-mk-text-muted">
           <span>&copy; {new Date().getFullYear()} ResilienceSoft Interview. All rights reserved.</span>
           <Link href="/" className="hover:text-mk-terracotta transition-colors">
-            aural-ai.com
+            resiliencesoftinterview.com
           </Link>
         </div>
       </footer>

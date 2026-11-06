@@ -29,7 +29,7 @@ export default function CategoryLayout({
                 href="/"
                 className="hover:text-mk-terracotta transition-colors"
               >
-                aural-ai.com
+                resiliencesoftinterview.com
               </Link>
             </div>
           </footer>

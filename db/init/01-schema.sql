@@ -384,7 +384,7 @@ CREATE TABLE public.interviews (
     "userId" uuid NOT NULL,
     "projectId" uuid,
     "aiPersona" text,
-    "aiName" text DEFAULT 'Aural'::text NOT NULL,
+    "aiName" text DEFAULT 'ResilienceSoft Interview'::text NOT NULL,
     "aiTone" public."ToneLevel" DEFAULT 'PROFESSIONAL'::public."ToneLevel" NOT NULL,
     "followUpDepth" public."FollowUpDepth" DEFAULT 'MODERATE'::public."FollowUpDepth" NOT NULL,
     language text DEFAULT 'en'::text NOT NULL,

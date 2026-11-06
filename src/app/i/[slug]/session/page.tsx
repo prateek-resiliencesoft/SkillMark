@@ -161,7 +161,7 @@ export default function SlugSessionPage() {
     const mode = useVoice ? "voice" : "chat";
     const mockContext: InterviewContext = {
       title: interview.data.title,
-      aiName: interview.data.aiName ?? "AI Interviewer",
+      aiName: interview.data.aiName ?? "ResilienceSoft Interview",
       aiTone: "professional",
       language: interview.data.language ?? "en-US",
       followUpDepth: "medium",
@@ -180,7 +180,7 @@ export default function SlugSessionPage() {
               sessionId="__preview__"
               interviewId="__preview__"
               interviewTitle={interview.data.title}
-              aiName={interview.data.aiName ?? "AI Interviewer"}
+              aiName={interview.data.aiName ?? "ResilienceSoft Interview"}
               questionCount={interview.data.questions.length}
               interviewContext={mockContext}
               durationMinutes={interview.data.timeLimitMinutes ?? undefined}
@@ -194,7 +194,7 @@ export default function SlugSessionPage() {
               interview={{
                 id: "__preview__",
                 title: interview.data.title,
-                aiName: interview.data.aiName ?? "AI Interviewer",
+                aiName: interview.data.aiName ?? "ResilienceSoft Interview",
                 mode: "CHAT",
                 questions: mockContext.questions.map((q, i) => ({
                   id: `preview-q-${i}`,
