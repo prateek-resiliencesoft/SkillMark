@@ -20,8 +20,14 @@ export function getLanguageKey(language?: string): LangKey {
 // ── Onboarding (client-side) ────────────────────────────────────────
 
 export const MIC_TEST_MESSAGES: Record<LangKey, string> = {
-  en: "Hello! If you can hear my voice clearly, please say yes or confirm.",
-  zh: "你好！如果你能清楚地听到我的声音，请说「是」或「确认」。",
+  en: "Please say this line: My microphone is working, so we can verify your microphone.",
+  zh: "请说这句话：我的麦克风工作正常，以便我们验证您的麦克风。",
+};
+
+/** Phrase the candidate should speak during the mic check. */
+export const MIC_TEST_SAMPLE_PHRASES: Record<LangKey, string> = {
+  en: "My microphone is working, so we can verify your microphone.",
+  zh: "我的麦克风工作正常，以便我们验证您的麦克风。",
 };
 
 export const POSITIVE_WORDS: Record<LangKey, string[]> = {
@@ -36,6 +42,10 @@ export const SPEECH_SYNTHESIS_LOCALE: Record<LangKey, string> = {
 
 export function getMicTestMessage(language?: string): string {
   return MIC_TEST_MESSAGES[getLanguageKey(language)];
+}
+
+export function getMicTestSamplePhrase(language?: string): string {
+  return MIC_TEST_SAMPLE_PHRASES[getLanguageKey(language)];
 }
 
 export function getPositiveWords(language?: string): string[] {
