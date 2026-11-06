@@ -156,6 +156,10 @@ jobs:
 
             $DC up -d --remove-orphans
 
+            # Old app/voice tags only. Volumes (Postgres, uploads, Caddy) stay.
+            chmod +x scripts/prune-deploy-images.sh
+            ./scripts/prune-deploy-images.sh
+
             $DC ps
             sleep 5
             curl -fsS -o /dev/null -w "caddy:%{http_code}\n" http://127.0.0.1/login || true
