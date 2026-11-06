@@ -17,18 +17,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { InterviewContext } from "@/hooks/use-voice";
-import { getMicTestMessage, getSpeechSynthesisLocale } from "@/lib/i18n";
+import { getMicTestSamplePhrase } from "@/lib/i18n";
+import { createInterviewVad, type InterviewVad } from "@/lib/voice/silero-vad-client";
+import {
+  evaluateMicTest,
+  MIC_TEST_CHECK,
+  micTestAudioSrc,
+} from "@/lib/voice/mic-test-check";
 import {
     setCameraSkipped,
     setScreenSkipped,
     setStoredScreenStream,
 } from "@/lib/media-stream-store";
-import {
-  buildRelayTargets,
-  isRecoverableRelayErrorMessage,
-  RelayConnector,
-  resolveRelayPrimaryPreference,
-} from "@/lib/voice/relay-routing";
 import { cn } from "@/lib/utils";
 import {
     AlertCircle,
@@ -38,7 +38,6 @@ import {
     CheckCircle2,
     Clock,
     Loader2,
-    Mic,
     Monitor,
     RefreshCw,
     ScreenShare,
@@ -411,12 +410,14 @@ function CameraCheck({
   );
 }
 
-type MicPhase = "idle" | "requesting" | "playing" | "listening" | "analyzing" | "confirm";
-
-// Local level-meter detection (no transcription needed). Laptop mics with
-// noise suppression often peak ~0.01–0.03 RMS for normal speech.
-const MIC_SPEECH_RMS = 0.01;
-const MIC_SPEECH_MS = 700;
+type MicPhase =
+  | "idle"
+  | "requesting"
+  | "playing"
+  | "listening"
+  | "playback"
+  | "analyzing"
+  | "confirm";
 
 function describeMicError(err: unknown): string {
   const name = (err as { name?: string })?.name;
@@ -429,51 +430,59 @@ function describeMicError(err: unknown): string {
   return "Unable to access microphone. Please check permissions and retry.";
 }
 
-function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { done: boolean; onDone: () => void; language?: string; allowSkip?: boolean; sessionId?: string }) {
+function MicCheck({
+  done,
+  onDone,
+  language,
+  allowSkip = true,
+  sessionId,
+}: {
+  done: boolean;
+  onDone: () => void;
+  language?: string;
+  allowSkip?: boolean;
+  sessionId?: string;
+}) {
   const [phase, setPhase] = useState<MicPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const [skipped, setSkipped] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [level, setLevel] = useState(0);
+  const [speakerOk, setSpeakerOk] = useState(false);
+  const [failMessage, setFailMessage] = useState<string | null>(null);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const relayConnectorRef = useRef<RelayConnector<Record<string, unknown>> | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
-  // Level-based detection: passes once ~1s of speech above threshold is heard
-  // while listening. Does not depend on any transcription service.
-  const [level, setLevel] = useState(0);
+  const vadRef = useRef<InterviewVad | null>(null);
+  const recordChunksRef = useRef<Float32Array[]>([]);
+  const recordSamplesRef = useRef(0);
+  const speechMsRef = useRef(0);
+  const speechRmsSumRef = useRef(0);
+  const speechFramesRef = useRef(0);
+  const noiseRmsSumRef = useRef(0);
+  const noiseFramesRef = useRef(0);
+  const peakRef = useRef(0);
+  const vadSpeakingRef = useRef(false);
+  const finishedRef = useRef(false);
+
   const phaseRef = useRef<MicPhase>("idle");
   phaseRef.current = phase;
-  const voicedMsRef = useRef(0);
-  const listenStartRef = useRef(0);
-  useEffect(() => {
-    if (phase === "listening") listenStartRef.current = Date.now();
-  }, [phase]);
-  const peakRef = useRef(0);
-  const [heardSomething, setHeardSomething] = useState(false);
 
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
   const languageRef = useRef(language);
   languageRef.current = language;
+  const samplePhrase = getMicTestSamplePhrase(language);
 
-  const stopAll = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+  const stopMicCapture = useCallback(() => {
+    const vad = vadRef.current;
+    vadRef.current = null;
+    if (vad) {
+      void vad.pause().catch(() => {});
+      void vad.destroy().catch(() => {});
     }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    relayConnectorRef.current?.close();
-    relayConnectorRef.current = null;
     if (micCtxRef.current) {
       micCtxRef.current.close().catch(() => {});
       micCtxRef.current = null;
@@ -482,241 +491,228 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
       micStreamRef.current.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
     }
+    setLevel(0);
   }, []);
 
-  const analyzeResponse = useCallback((text: string) => {
-    setPhase("analyzing");
-    const trimmed = text.trim();
-    if (trimmed.length > 0) {
-      setPhase("idle");
-      onDoneRef.current();
-      return;
-    }
-    setPhase("confirm");
-  }, []);
-
-  const getSpeechSynthesisApi = useCallback(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      return null;
-    }
-
-    return window.speechSynthesis;
-  }, []);
-
-  const stopTtsPlayback = useCallback(() => {
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
+  const stopSpeaker = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
     }
-    getSpeechSynthesisApi()?.cancel();
-  }, [getSpeechSynthesisApi]);
+  }, []);
 
-  const startListening = useCallback((quiet = false) => {
-    if (!quiet) {
-      setPhase("listening");
-      setTranscript("");
+  const stopAll = useCallback(() => {
+    stopSpeaker();
+    stopMicCapture();
+  }, [stopMicCapture, stopSpeaker]);
+
+  const playRecordingPreview = useCallback(async () => {
+    const chunks = recordChunksRef.current;
+    if (!chunks.length) return;
+    try {
+      const total = recordSamplesRef.current;
+      const merged = new Float32Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c, off);
+        off += c.length;
+      }
+      // Cap preview ~4s
+      const max = 16_000 * 4;
+      const slice = merged.length > max ? merged.subarray(0, max) : merged;
+      const ctx = new AudioContext({ sampleRate: 16_000 });
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+      const buf = ctx.createBuffer(1, slice.length, 16_000);
+      buf.copyToChannel(slice, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      setPhase("playback");
+      await new Promise<void>((resolve) => {
+        src.onended = () => resolve();
+        src.start();
+        setTimeout(resolve, (slice.length / 16_000) * 1000 + 200);
+      });
+      await ctx.close().catch(() => {});
+      audioCtxRef.current = null;
+    } catch {
+      /* preview is optional */
     }
+  }, []);
 
-    let lastAsrText = "";
-    let handled = false;
-    let micStarted = false;
-
-    const finish = (text: string) => {
-      if (handled) return;
-      handled = true;
-      stopTtsPlayback();
-      if (micCtxRef.current) {
-        micCtxRef.current.close().catch(() => {});
-        micCtxRef.current = null;
-      }
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((t) => t.stop());
-        micStreamRef.current = null;
-      }
-      relayConnectorRef.current?.close();
-      relayConnectorRef.current = null;
-      setLevel(0);
-      if (text.trim()) {
-        analyzeResponse(text);
-      } else if (!quiet || phaseRef.current === "listening" || phaseRef.current === "playing") {
-        analyzeResponse("");
-      }
-    };
-
-    const startMicCapture = async () => {
-      if (micStarted || handled) return;
-      micStarted = true;
-      voicedMsRef.current = 0;
-      peakRef.current = 0;
-      setHeardSomething(false);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            sampleRate: 16000,
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        micStreamRef.current = stream;
-
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        micCtxRef.current = ctx;
-        // Created after an await, so Chrome may start it suspended → no audio frames.
-        if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-
-        const workletCode = `
-          class MicProcessor extends AudioWorkletProcessor {
-            constructor() { super(); this._buf = new Float32Array(4096); this._pos = 0; }
-            process(inputs) {
-              const ch = inputs[0]?.[0];
-              if (!ch) return true;
-              for (let i = 0; i < ch.length; i++) {
-                this._buf[this._pos++] = ch[i];
-                if (this._pos >= 4096) { this.port.postMessage(this._buf); this._buf = new Float32Array(4096); this._pos = 0; }
-              }
-              return true;
-            }
-          }
-          registerProcessor('mic-processor', MicProcessor);
-        `;
-        const blob = new Blob([workletCode], { type: "application/javascript" });
-        const workletUrl = URL.createObjectURL(blob);
-        await ctx.audioWorklet.addModule(workletUrl);
-        URL.revokeObjectURL(workletUrl);
-
-        const source = ctx.createMediaStreamSource(stream);
-        const worklet = new AudioWorkletNode(ctx, "mic-processor");
-        source.connect(worklet);
-        worklet.connect(ctx.destination);
-
-        worklet.port.onmessage = (e) => {
-          if (handled) return;
-          const input = e.data as Float32Array;
-          let sum = 0;
-          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-          const rms = Math.sqrt(sum / input.length);
-          setLevel(Math.min(1, rms * 8));
-          if (rms > peakRef.current) peakRef.current = rms;
-          if (rms > 0.004) setHeardSomething(true);
-          if (phaseRef.current === "listening" && rms > MIC_SPEECH_RMS) {
-            voicedMsRef.current += (input.length / ctx.sampleRate) * 1000;
-            if (voicedMsRef.current >= MIC_SPEECH_MS) {
-              finish(lastAsrText || "voice detected");
-              return;
-            }
-          }
-          if (!relayConnectorRef.current?.isReady) return;
-          const pcm = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            pcm[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
-          }
-          const bytes = new Uint8Array(pcm.buffer);
-          let hex = "";
-          for (let i = 0; i < bytes.length; i++) {
-            hex += bytes[i].toString(16).padStart(2, "0");
-          }
-          relayConnectorRef.current?.sendJson({ type: "audio", data: hex });
-        };
-      } catch (err) {
-        if (!handled) {
-          handled = true;
-          relayConnectorRef.current?.close();
-          relayConnectorRef.current = null;
-          setError(describeMicError(err));
-          setPhase("idle");
-        }
-      }
-    };
-
-    // Start metering right away; the relay transcript is optional.
-    void startMicCapture();
-
-    const connector = new RelayConnector<Record<string, unknown>>({
-      targets: buildRelayTargets({
-        language: languageRef.current,
-        voiceRelayUrl: process.env.NEXT_PUBLIC_VOICE_RELAY_URL,
-        openAiRelayUrl: process.env.NEXT_PUBLIC_OPENAI_VOICE_RELAY_URL,
-        primaryPreference: resolveRelayPrimaryPreference(
-          process.env.NEXT_PUBLIC_VOICE_RELAY_PRIMARY,
-        ),
-        browserProtocol: window.location.protocol,
-        browserHost: window.location.host,
-      }),
-      buildInitMessage: () => ({ type: "mic_test", language: languageRef.current, sessionId }),
-      onConnected: () => {
-        void startMicCapture();
-      },
-      onJsonMessage: (msg, { connector: activeConnector }) => {
-        if (handled) return;
-        if (msg.type === "asr") {
-          const data = msg.data as { results?: Array<{ text?: string }> } | undefined;
-          const results = data?.results || [];
-          if (results.length > 0 && results[0].text) {
-            lastAsrText = results[0].text;
-            setTranscript(lastAsrText);
-            stopTtsPlayback();
-            setPhase("listening");
-          }
-        } else if (msg.type === "asr_ended") {
-          const text = ((msg.text as string) || lastAsrText).trim();
-          if (text) {
-            finish(text);
-          }
-        } else if (msg.type === "disconnected") {
-          if (activeConnector.canFailover) {
-            void activeConnector.failover("mic test relay disconnected");
-          } else if (lastAsrText) {
-            finish(lastAsrText);
-          }
-        } else if (msg.type === "error") {
-          const message = (msg.message as string) || "";
-          if (
-            isRecoverableRelayErrorMessage(message) &&
-            activeConnector.canFailover
-          ) {
-            return;
-          }
-          // Transcription is optional — keep metering locally.
-          if (lastAsrText) finish(lastAsrText);
-        } else if (msg.type === "timeout") {
-          if (lastAsrText) finish(lastAsrText);
-        }
-      },
-      // Relay down/unreachable: transcription is optional, local meter continues.
-      onPermanentFailure: () => {},
-    });
-
-    relayConnectorRef.current = connector;
-    void connector.connect().catch(() => { /* optional transcription */ });
-
-    // Fallback: give up after ~15s of listening and offer retry / continue.
-    const startedAt = Date.now();
-    const watchdog = setInterval(() => {
-      if (handled) { clearInterval(watchdog); return; }
-      const p = phaseRef.current;
-      if (p === "listening" && Date.now() - startedAt > 8000 && Date.now() - listenStartRef.current > 15000) {
-        clearInterval(watchdog);
-        finish(lastAsrText);
-      } else if (Date.now() - startedAt > 45000) {
-        clearInterval(watchdog);
-        finish(lastAsrText);
-      }
-    }, 500);
-  }, [analyzeResponse, sessionId, stopTtsPlayback]);
-
-  const playTTS = useCallback(async () => {
+  const passTest = useCallback(async () => {
+    setFailMessage(null);
     setError(null);
+    stopMicCapture();
+    await playRecordingPreview();
+    setPhase("idle");
+    onDoneRef.current();
+  }, [playRecordingPreview, stopMicCapture]);
+
+  const failTest = useCallback(
+    (message: string) => {
+      stopMicCapture();
+      setFailMessage(message);
+      setError(null);
+      setPhase("confirm");
+    },
+    [stopMicCapture],
+  );
+
+  const startListening = useCallback(async () => {
+    finishedRef.current = false;
+    speechMsRef.current = 0;
+    speechRmsSumRef.current = 0;
+    speechFramesRef.current = 0;
+    noiseRmsSumRef.current = 0;
+    noiseFramesRef.current = 0;
+    peakRef.current = 0;
+    vadSpeakingRef.current = false;
+    recordChunksRef.current = [];
+    recordSamplesRef.current = 0;
+    setFailMessage(null);
+    setPhase("listening");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      micStreamRef.current = stream;
+
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      micCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+
+      const vad = await createInterviewVad({
+        getStream: async () => micStreamRef.current ?? stream,
+        onSpeechStart: () => {
+          vadSpeakingRef.current = true;
+        },
+        onSpeechEnd: () => {
+          vadSpeakingRef.current = false;
+        },
+        onSpeechProb: (p) => {
+          if (p >= 0.6) vadSpeakingRef.current = true;
+        },
+      });
+      if (vad) {
+        vadRef.current = vad;
+        await vad.start();
+      }
+
+      const workletCode = `
+        class MicProcessor extends AudioWorkletProcessor {
+          constructor() { super(); this._buf = new Float32Array(4096); this._pos = 0; }
+          process(inputs) {
+            const ch = inputs[0]?.[0];
+            if (!ch) return true;
+            for (let i = 0; i < ch.length; i++) {
+              this._buf[this._pos++] = ch[i];
+              if (this._pos >= 4096) {
+                this.port.postMessage(this._buf);
+                this._buf = new Float32Array(4096);
+                this._pos = 0;
+              }
+            }
+            return true;
+          }
+        }
+        registerProcessor('mic-processor', MicProcessor);
+      `;
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(workletUrl);
+      URL.revokeObjectURL(workletUrl);
+
+      const source = ctx.createMediaStreamSource(stream);
+      const worklet = new AudioWorkletNode(ctx, "mic-processor");
+      source.connect(worklet);
+      // Do not connect to destination (avoids feedback / echo into speakers).
+      worklet.port.onmessage = (e) => {
+        if (finishedRef.current) return;
+        const input = e.data as Float32Array;
+        let sum = 0;
+        let peak = 0;
+        for (let i = 0; i < input.length; i++) {
+          const v = input[i];
+          sum += v * v;
+          const a = Math.abs(v);
+          if (a > peak) peak = a;
+        }
+        const rms = Math.sqrt(sum / input.length);
+        setLevel(Math.min(1, rms * 8));
+        if (rms > peakRef.current) peakRef.current = rms;
+
+        // Keep a short recording for optional playback (max ~5s).
+        if (recordSamplesRef.current < 16_000 * 5) {
+          recordChunksRef.current.push(new Float32Array(input));
+          recordSamplesRef.current += input.length;
+        }
+
+        const frameMs = (input.length / ctx.sampleRate) * 1000;
+        const isSpeech =
+          vadSpeakingRef.current || rms >= MIC_TEST_CHECK.minSpeechRms;
+        if (isSpeech) {
+          speechMsRef.current += frameMs;
+          speechRmsSumRef.current += rms;
+          speechFramesRef.current += 1;
+        } else {
+          noiseRmsSumRef.current += rms;
+          noiseFramesRef.current += 1;
+        }
+
+        if (speechMsRef.current >= MIC_TEST_CHECK.minSpeechMs) {
+          finishedRef.current = true;
+          const meanSpeech =
+            speechFramesRef.current > 0
+              ? speechRmsSumRef.current / speechFramesRef.current
+              : 0;
+          const noiseFloor =
+            noiseFramesRef.current > 0
+              ? noiseRmsSumRef.current / noiseFramesRef.current
+              : undefined;
+          const verdict = evaluateMicTest({
+            speechMs: speechMsRef.current,
+            peakRms: Math.max(peakRef.current, peak),
+            meanSpeechRms: meanSpeech,
+            noiseFloorRms: noiseFloor,
+          });
+          setPhase("analyzing");
+          if (verdict.pass) {
+            void passTest();
+          } else {
+            failTest(verdict.message);
+          }
+        }
+      };
+    } catch (err) {
+      setError(describeMicError(err));
+      setPhase("idle");
+      stopMicCapture();
+    }
+  }, [failTest, passTest, stopMicCapture]);
+
+  /**
+   * Play the pre-generated Kore clip via a single HTMLAudioElement.
+   * Avoids AudioContext sample-rate mismatches and never falls back to
+   * browser speechSynthesis (that path sounded robotic).
+   */
+  const playSpeakerClip = useCallback(async () => {
+    setError(null);
+    setFailMessage(null);
     setPhase("requesting");
+    stopSpeaker();
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("unsupported");
@@ -728,135 +724,74 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
       return;
     }
 
-    startListening(true);
     setPhase("playing");
 
-    const msg = getMicTestMessage(language);
-
-    // Try S2S streaming endpoint first (same voice as interview); skip if there's nothing to say.
-    if (msg && msg.trim()) try {
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      const ttsTimer = setTimeout(() => abort.abort(), 8000);
-      const res = await fetch("/api/voice/tts-s2s", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: msg, language: languageRef.current }),
-        signal: abort.signal,
-      }).finally(() => clearTimeout(ttsTimer));
-
-      if (res.ok && res.body) {
-        const ctx = new AudioContext({ sampleRate: 24000 });
-        audioCtxRef.current = ctx;
-        const reader = res.body.getReader();
-        let playTime = ctx.currentTime;
-        let leftover: Uint8Array | null = null;
-        let samplesPlayed = 0;
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done: readerDone, value } = await reader.read();
-          if (readerDone || !value || value.length === 0) break;
-
-          // Merge leftover bytes from previous chunk to maintain
-          // float32 sample alignment (4 bytes per sample).
-          let bytes: Uint8Array;
-          if (leftover) {
-            bytes = new Uint8Array(leftover.length + value.length);
-            bytes.set(leftover);
-            bytes.set(value, leftover.length);
-            leftover = null;
-          } else {
-            bytes = value;
-          }
-
-          const remainder = bytes.length % 4;
-          const usable = bytes.length - remainder;
-          if (remainder > 0) {
-            leftover = bytes.slice(usable);
-          }
-          if (usable === 0) continue;
-
-          // Copy into a properly-aligned ArrayBuffer for Float32Array
-          const aligned = new ArrayBuffer(usable);
-          new Uint8Array(aligned).set(bytes.subarray(0, usable));
-          const float32 = new Float32Array(aligned);
-
-          if (float32.length === 0) continue;
-          samplesPlayed += float32.length;
-
-          const buf = ctx.createBuffer(1, float32.length, 24000);
-          buf.getChannelData(0).set(float32);
-          const source = ctx.createBufferSource();
-          source.buffer = buf;
-          source.connect(ctx.destination);
-
-          const startAt = Math.max(ctx.currentTime, playTime);
-          source.start(startAt);
-          playTime = startAt + buf.duration;
+    const tryPlay = (src: string) =>
+      new Promise<void>((resolve, reject) => {
+        const audio = new Audio();
+        audio.preload = "auto";
+        audio.src = src;
+        // Ensure no accidental pitch/tempo change.
+        audio.playbackRate = 1;
+        audio.defaultPlaybackRate = 1;
+        audio.volume = 1;
+        audioRef.current = audio;
+        const cleanup = () => {
+          audio.onended = null;
+          audio.onerror = null;
+        };
+        audio.onended = () => {
+          cleanup();
+          resolve();
+        };
+        audio.onerror = () => {
+          cleanup();
+          reject(new Error(`Failed to play ${src}`));
+        };
+        const p = audio.play();
+        if (p && typeof p.then === "function") {
+          p.catch((err) => {
+            cleanup();
+            reject(err);
+          });
         }
+      });
 
-        // Wait for all scheduled audio to finish, then listen
-        const remaining = playTime - ctx.currentTime;
-        if (remaining > 0) {
-          await new Promise((r) => setTimeout(r, remaining * 1000 + 100));
-        }
-        ctx.close().catch(() => {});
-        audioCtxRef.current = null;
-        abortRef.current = null;
-        // Server streamed no audio (TTS provider error) → fall back to browser speech below.
-        if (samplesPlayed === 0) throw new Error("empty tts stream");
-        if (relayConnectorRef.current?.isReady || micCtxRef.current) {
-          setPhase("listening");
-        } else {
-          startListening();
-        }
-        return;
+    try {
+      // Prefer 48 kHz MP3; fall back to 48 kHz WAV if MP3 fails to load.
+      try {
+        await tryPlay(micTestAudioSrc(languageRef.current, "mp3"));
+      } catch {
+        await tryPlay(micTestAudioSrc(languageRef.current, "wav"));
       }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError" && abortRef.current === null) return;
-      abortRef.current = null;
-      // S2S unavailable, fall back to browser SpeechSynthesis
+      audioRef.current = null;
+      setSpeakerOk(true);
+      void startListening();
+    } catch {
+      audioRef.current = null;
+      setError(
+        "Could not play the speaker test clip. Check your speakers/volume and retry.",
+      );
+      setPhase("idle");
     }
-
-    fallbackToSpeechSynthesis();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startListening]);
-
-  const fallbackToSpeechSynthesis = useCallback(() => {
-    const speechSynthesisApi = getSpeechSynthesisApi();
-    if (!speechSynthesisApi || typeof SpeechSynthesisUtterance === "undefined") {
-      startListening();
-      return;
-    }
-
-    setPhase("playing");
-    const msg = getMicTestMessage(language);
-    const utterance = new SpeechSynthesisUtterance(msg);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.lang = getSpeechSynthesisLocale(language);
-    utterance.onend = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
-    utterance.onerror = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
-    // Some browsers/OSes (e.g. Linux without TTS voices) never fire onend.
-    setTimeout(() => {
-      if (phaseRef.current === "playing") {
-        speechSynthesisApi.cancel();
-        setPhase("listening");
-      }
-    }, Math.max(5000, msg.length * 90));
-    speechSynthesisApi.speak(utterance);
-  }, [getSpeechSynthesisApi, startListening, language]);
+  }, [startListening, stopSpeaker]);
 
   useEffect(() => {
     return () => {
       stopAll();
-      getSpeechSynthesisApi()?.cancel();
     };
-  }, [getSpeechSynthesisApi, stopAll]);
+  }, [stopAll]);
 
-  const isBusy = phase === "requesting" || phase === "playing" || phase === "listening" || phase === "analyzing";
+  // Unused sessionId kept for API parity with callers / future ASR.
+  void sessionId;
+  void skipped;
+
+  const isBusy =
+    phase === "requesting" ||
+    phase === "playing" ||
+    phase === "listening" ||
+    phase === "playback" ||
+    phase === "analyzing";
 
   return (
     <Card className="overflow-hidden">
@@ -866,7 +801,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <AudioLines
               className={cn(
                 "h-10 w-10 transition-colors",
-                isBusy ? "text-primary" : "text-muted-foreground/30"
+                isBusy ? "text-primary" : "text-muted-foreground/30",
               )}
             />
             {phase === "playing" && (
@@ -887,71 +822,76 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
               <div className="flex flex-col items-center gap-1">
                 <div className="flex gap-1">
                   <div className="h-2 w-2 animate-pulse rounded-full bg-destructive" />
-                  <span className="text-[11px] font-medium text-destructive">Listening...</span>
-                </div>
-                {transcript && (
-                  <span className="max-w-[10rem] truncate text-[10px] text-muted-foreground">
-                    &quot;{transcript}&quot;
+                  <span className="text-[11px] font-medium text-destructive">
+                    Listening...
                   </span>
-                )}
+                </div>
               </div>
             )}
-            {(phase === "playing" || phase === "listening" || phase === "confirm") && (
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted-foreground/20" aria-label="Microphone level">
-                <div className="h-full rounded-full bg-primary transition-[width] duration-100" style={{ width: `${Math.round(level * 100)}%` }} />
+            {phase === "playback" && (
+              <span className="text-[11px] text-muted-foreground">Playing your mic back...</span>
+            )}
+            {(phase === "playing" ||
+              phase === "listening" ||
+              phase === "confirm") && (
+              <div
+                className="h-1.5 w-28 overflow-hidden rounded-full bg-muted-foreground/20"
+                aria-label="Microphone level"
+              >
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-75"
+                  style={{ width: `${Math.round(level * 100)}%` }}
+                />
               </div>
-            )}
-            {phase === "analyzing" && (
-              <span className="text-[11px] text-muted-foreground">Analyzing...</span>
-            )}
-            {phase === "idle" && !done && (
-              <span className="text-[11px] text-muted-foreground/50">
-                Speaker &amp; Microphone
-              </span>
-            )}
-            {done && !skipped && (
-              <span className="text-xs font-medium text-secondary-600 dark:text-secondary-400">
-                Audio confirmed
-              </span>
             )}
           </div>
+
           {phase === "idle" && !done && (
-            <Button size="sm" onClick={playTTS} className="w-full">
-              <Mic className="mr-1.5 h-3.5 w-3.5" />
-              Test Microphone
-            </Button>
-          )}
-          {phase === "requesting" && (
-            <Button size="sm" disabled className="w-full">
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Requesting access...
+            <Button size="sm" onClick={() => void playSpeakerClip()} className="w-full">
+              Test speaker & mic
             </Button>
           )}
           {phase === "playing" && (
-            <Button size="sm" variant="outline" onClick={() => { stopAll(); setPhase("idle"); }} className="w-full">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                stopAll();
+                setPhase("idle");
+              }}
+              className="w-full"
+            >
               Stop
             </Button>
           )}
-          {phase === "listening" && (
+          {(phase === "listening" || phase === "analyzing" || phase === "playback") && (
             <Button size="sm" variant="outline" disabled className="w-full">
               <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Listening...
-            </Button>
-          )}
-          {phase === "analyzing" && (
-            <Button size="sm" disabled className="w-full">
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Analyzing...
+              {phase === "listening"
+                ? "Listening..."
+                : phase === "playback"
+                  ? "Playing back..."
+                  : "Checking..."}
             </Button>
           )}
           {phase === "confirm" && !done && (
-            <Button size="sm" onClick={playTTS} className="w-full">
+            <Button size="sm" onClick={() => void playSpeakerClip()} className="w-full">
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
               Retry
             </Button>
           )}
-          {phase === "confirm" && !done && (allowSkip || heardSomething) && (
-            <Button size="sm" variant="outline" onClick={() => { stopAll(); setPhase("idle"); onDoneRef.current(); }} className="w-full">
+          {phase === "confirm" && !done && allowSkip && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                stopAll();
+                setPhase("idle");
+                setSkipped(true);
+                onDoneRef.current();
+              }}
+              className="w-full"
+            >
               Continue anyway
             </Button>
           )}
@@ -963,28 +903,33 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             properly.
           </p>
           <p className="text-xs text-muted-foreground">
-            {phase === "idle" && !done &&
-              "Click \"Test Microphone\" to hear a message from the voice agent. Then speak your response to confirm the audio works — just like in the actual interview."}
-            {phase === "requesting" &&
-              "Granting microphone access..."}
-            {phase === "playing" &&
-              "The voice agent is speaking — listen carefully..."}
-            {phase === "listening" &&
-              "Speak for a second or two (e.g. \"yes, I can hear you\") — the bar should move. It passes automatically."}
-            {phase === "analyzing" &&
-              "Checking your response..."}
-            {phase === "confirm" && !done && allowSkip &&
-              "We couldn't detect your voice. Try again, or "}
-            {phase === "confirm" && !done && allowSkip && (
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
-                skip this step
-              </button>
+            {phase === "idle" && !done && (
+              <>
+                Click &quot;Test speaker &amp; mic&quot; to hear a short message
+                in the interview voice, then say:{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{samplePhrase}&quot;
+                </span>
+              </>
             )}
-            {phase === "confirm" && !done && allowSkip && "."}
-            {phase === "confirm" && !done && !allowSkip &&
-              (heardSomething
-                ? "Your voice was too quiet to confirm. Move closer to the mic and retry, or continue anyway."
-                : "We couldn't detect any sound from your microphone. Check the selected input device and retry.")}
+            {phase === "requesting" && "Granting microphone access..."}
+            {phase === "playing" &&
+              "Playing a clear sample in the interview voice — listen carefully."}
+            {phase === "listening" && (
+              <>
+                Now say clearly:{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{samplePhrase}&quot;
+                </span>{" "}
+                The level bar should move. We need about{" "}
+                {Math.round(MIC_TEST_CHECK.minSpeechMs / 100) / 10}s of clear
+                speech.
+              </>
+            )}
+            {phase === "playback" &&
+              "Playing back what we captured from your mic..."}
+            {phase === "analyzing" && "Checking your voice..."}
+            {phase === "confirm" && !done && (failMessage || "We couldn't hear you clearly. Please retry.")}
             {done &&
               "Audio test passed. Your speaker and microphone are working."}
           </p>
@@ -992,7 +937,11 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <div className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
               <span>{error}</span>
-              <button type="button" className="ml-auto font-medium underline" onClick={playTTS}>
+              <button
+                type="button"
+                className="ml-auto font-medium underline"
+                onClick={() => void playSpeakerClip()}
+              >
                 Retry
               </button>
             </div>
@@ -1000,7 +949,11 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           {allowSkip && !error && phase === "idle" && !done && (
             <p className="text-xs text-muted-foreground">
               No microphone?{" "}
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
+              <button
+                type="button"
+                className="font-medium text-primary hover:underline"
+                onClick={() => setShowSkipDialog(true)}
+              >
                 Skip
               </button>
             </p>
@@ -1009,6 +962,9 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <p className="text-xs text-amber-600 dark:text-amber-400">
               Microphone is required for this interview.
             </p>
+          )}
+          {speakerOk && !done && phase === "listening" && (
+            <p className="text-[11px] text-muted-foreground">Speaker clip played.</p>
           )}
         </div>
 
@@ -1038,7 +994,13 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setPhase("idle"); setSkipped(true); onDone(); }}>
+            <AlertDialogAction
+              onClick={() => {
+                setPhase("idle");
+                setSkipped(true);
+                onDone();
+              }}
+            >
               Skip anyway
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1255,7 +1217,7 @@ export function IntervieweeOnboarding({
   antiCheatingEnabled = false,
   voiceEnabled = false,
   chatEnabled = false,
-  aiName = "AI Interviewer",
+  aiName = "ResilienceSoft Interview",
   questionTypes = [],
   scheduledAt,
   expiresAt,
@@ -1469,7 +1431,7 @@ export function IntervieweeOnboarding({
 
     const mockContext: InterviewContext = {
       title: interviewTitle,
-      aiName: aiName ?? "AI Interviewer",
+      aiName: aiName ?? "ResilienceSoft Interview",
       aiTone: "professional",
       language: language ?? "en-US",
       followUpDepth: "medium",
@@ -1488,7 +1450,7 @@ export function IntervieweeOnboarding({
               sessionId="__preview__"
               interviewId="__preview__"
               interviewTitle={interviewTitle}
-              aiName={aiName ?? "AI Interviewer"}
+              aiName={aiName ?? "ResilienceSoft Interview"}
               questionCount={questionCount}
               interviewContext={mockContext}
               durationMinutes={timeLimitMinutes ?? undefined}
@@ -1502,7 +1464,7 @@ export function IntervieweeOnboarding({
               interview={{
                 id: "__preview__",
                 title: interviewTitle,
-                aiName: aiName ?? "AI Interviewer",
+                aiName: aiName ?? "ResilienceSoft Interview",
                 mode: "CHAT",
                 questions: mockContext.questions.map((q, i) => ({
                   id: `preview-q-${i}`,

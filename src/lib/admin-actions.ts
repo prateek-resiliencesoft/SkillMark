@@ -13,6 +13,7 @@ const LABELS: Record<string, string> = {
   "user.pause": "Paused an account",
   "user.resume": "Resumed an account",
   "user.delete": "Deleted an account",
+  "storage.delete": "Deleted stored interview files",
   "org.update": "Updated organization details",
   "org.set_flags": "Updated organization features",
   "config.instance": "Updated instance settings",

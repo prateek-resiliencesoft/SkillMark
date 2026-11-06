@@ -195,7 +195,7 @@ export default function AdminServerActivityPage() {
         <div>
           <h1 className="font-heading text-2xl font-semibold tracking-tight">Server activity</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            CPU, memory and bandwidth from Grafana — use it to see how many interviews the server can run at once.
+            CPU, memory, disk and bandwidth from Grafana — use it to see how many interviews the server can run at once.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -220,7 +220,7 @@ export default function AdminServerActivityPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Stat
           label="Live interviews"
           value={loading ? "…" : String(data?.liveInterviews ?? 0)}
@@ -234,6 +234,21 @@ export default function AdminServerActivityPage() {
             last(s.memoryUsedBytes) != null && data?.memoryTotalBytes
               ? `${bytes(last(s.memoryUsedBytes)!)} of ${bytes(data.memoryTotalBytes)}`
               : undefined
+          }
+        />
+        <Stat
+          label="Storage"
+          value={
+            data?.diskTotalBytes && data.diskFreeBytes != null
+              ? pct(((data.diskTotalBytes - data.diskFreeBytes) / data.diskTotalBytes) * 100)
+              : last(s.disk) != null
+                ? pct(last(s.disk)!)
+                : "—"
+          }
+          hint={
+            data?.diskTotalBytes && data.diskFreeBytes != null
+              ? `${bytes(data.diskTotalBytes - data.diskFreeBytes)} used · ${bytes(data.diskFreeBytes)} free of ${bytes(data.diskTotalBytes)}`
+              : "Root disk"
           }
         />
         <Stat

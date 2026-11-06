@@ -1,0 +1,169 @@
+name: Deploy dev
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  APP_IMAGE: prateek-resiliencesoft/skillmark-app
+  VOICE_IMAGE: prateek-resiliencesoft/skillmark-voice
+  DEV_URL: https://dev.resiliencesoftinterview.com
+
+jobs:
+  deploy:
+    name: Build images · Deploy dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tags
+        id: meta
+        run: |
+          echo "app=${REGISTRY}/${APP_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "voice=${REGISTRY}/${VOICE_IMAGE}" >> "$GITHUB_OUTPUT"
+          WS_BASE="${DEV_URL/https:/wss:}"
+          WS_BASE="${WS_BASE%/}"
+          echo "voice_ws=${WS_BASE}/ws/voice" >> "$GITHUB_OUTPUT"
+          echo "openai_ws=${WS_BASE}/ws/openai-voice" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push dev app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.app }}:dev
+          build-args: |
+            NEXT_PUBLIC_APP_URL=${{ env.DEV_URL }}
+            NEXT_PUBLIC_VOICE_RELAY_URL=${{ steps.meta.outputs.voice_ws }}
+            NEXT_PUBLIC_OPENAI_VOICE_RELAY_URL=${{ steps.meta.outputs.openai_ws }}
+          cache-from: type=gha,scope=app-dev
+          cache-to: type=gha,mode=max,scope=app-dev
+
+      - name: Build and push dev voice image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.voice
+          push: true
+          tags: ${{ steps.meta.outputs.voice }}:dev
+          cache-from: type=gha,scope=voice-dev
+          cache-to: type=gha,mode=max,scope=voice-dev
+
+      - name: Deploy dev over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_REF: ${{ steps.meta.outputs.app }}:dev
+          VOICE_REF: ${{ steps.meta.outputs.voice }}:dev
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 20m
+          envs: GHCR_USER,GHCR_TOKEN,APP_REF,VOICE_REF
+          script: |
+            set -euo pipefail
+            # Dev only. Do not touch /opt/skillmark or the production compose project.
+            sudo mkdir -p /opt/skillmark-dev
+            sudo chown ubuntu:ubuntu /opt/skillmark-dev
+            if [ ! -f /opt/skillmark-dev/.env.dev ]; then
+              echo "Missing /opt/skillmark-dev/.env.dev" >&2
+              exit 1
+            fi
+
+            origin="$(git -C /opt/skillmark remote get-url origin)"
+            if [ ! -d /opt/skillmark-dev/src/.git ]; then
+              rm -rf /opt/skillmark-dev/src
+              git clone --branch dev --single-branch "$origin" /opt/skillmark-dev/src
+            fi
+            git -C /opt/skillmark-dev/src fetch origin dev
+            git -C /opt/skillmark-dev/src reset --hard origin/dev
+
+            install -m 644 /opt/skillmark-dev/src/docker-compose.dev.yml /opt/skillmark-dev/docker-compose.dev.yml
+            install -m 644 /opt/skillmark-dev/src/scripts/dev-waker.py /opt/skillmark-dev/dev-waker.py
+            install -m 644 /opt/skillmark-dev/src/scripts/dev.caddy /opt/skillmark-dev/dev.caddy
+            install -m 755 /opt/skillmark-dev/src/scripts/keep-caddy-dev.sh /opt/skillmark-dev/keep-caddy-dev.sh
+            (crontab -l 2>/dev/null | grep -v keep-caddy-dev.sh || true; echo '* * * * * /opt/skillmark-dev/keep-caddy-dev.sh') | crontab -
+            /opt/skillmark-dev/keep-caddy-dev.sh || true
+
+            echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin
+            docker pull "${APP_REF}"
+            docker tag "${APP_REF}" skillmark-app:dev
+            docker pull "${VOICE_REF}"
+            docker tag "${VOICE_REF}" skillmark-voice:dev
+
+            DC=(docker compose -f /opt/skillmark-dev/docker-compose.dev.yml --env-file /opt/skillmark-dev/.env.dev -p skillmark-dev)
+            app_up=0
+            voice_up=0
+            if docker ps -q --filter name=skillmark-dev-app-1 --filter status=running | grep -q .; then app_up=1; fi
+            if docker ps -q --filter name=skillmark-dev-voice-1 --filter status=running | grep -q .; then voice_up=1; fi
+
+            # Schema updates hit skillmark_dev only. Start Postgres for the migration, then stop it if dev was idle.
+            "${DC[@]}" up -d db
+            for _ in $(seq 1 40); do
+              st="$(docker inspect -f '{{.State.Health.Status}}' skillmark-dev-db-1 2>/dev/null || echo missing)"
+              [ "$st" = healthy ] && break
+              sleep 3
+            done
+            db_user="$(grep -E '^POSTGRES_USER=' /opt/skillmark-dev/.env.dev | cut -d= -f2-)"
+            db_name="$(grep -E '^POSTGRES_DB=' /opt/skillmark-dev/.env.dev | cut -d= -f2-)"
+            for f in $(ls /opt/skillmark-dev/src/db/init/*.sql | sort); do
+              case "$(basename "$f")" in 00-*|01-*) continue ;; esac
+              echo "Applying $(basename "$f")"
+              "${DC[@]}" exec -T db psql -U "$db_user" -d "$db_name" -v ON_ERROR_STOP=1 -q < "$f"
+            done
+            "${DC[@]}" exec -T db psql -U "$db_user" -d "$db_name" -c "NOTIFY pgrst, 'reload schema';"
+
+            if [ "$app_up" = 1 ]; then
+              if [ "$voice_up" = 1 ]; then
+                "${DC[@]}" --profile voice up -d
+              else
+                "${DC[@]}" up -d
+              fi
+              echo "dev was in use; recreated"
+            else
+              "${DC[@]}" --profile voice stop
+              echo "dev was idle; images updated, stack left stopped"
+            fi
+
+            docker image prune -f >/dev/null || true
+            sudo cp /opt/skillmark-dev/src/scripts/skillmark-dev-waker.service /etc/systemd/system/skillmark-dev-waker.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable skillmark-dev-waker
+            sudo systemctl restart skillmark-dev-waker
+            systemctl is-active skillmark-dev-waker
+            # systemctl reports active before Python binds :3199.
+            ok=0
+            for _ in $(seq 1 30); do
+              if curl -fsS --max-time 2 http://127.0.0.1:3199/healthz; then
+                ok=1
+                break
+              fi
+              sleep 0.5
+            done
+            echo
+            [ "$ok" = 1 ]

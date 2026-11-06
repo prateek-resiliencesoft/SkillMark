@@ -14,6 +14,7 @@ import {
   BarChart3,
   Building2,
   ChevronDown,
+  HardDrive,
   HeartPulse,
   LayoutDashboard,
   PanelLeft,
@@ -39,6 +40,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/admin", label: "Overview", exact: true, icon: LayoutDashboard },
       { href: "/admin/organizations", label: "Organizations", icon: Building2 },
       { href: "/admin/people", label: "People", icon: Users },
+      { href: "/admin/storage", label: "Stored files", icon: HardDrive },
     ],
   },
   {

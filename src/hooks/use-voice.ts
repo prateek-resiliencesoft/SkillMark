@@ -151,6 +151,10 @@ export function useVoice({
   const liveTranscriptRef = useRef("");
   const endpointTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const checkInSentForQuestionRef = useRef(false);
+  const lastTurnEndedAtRef = useRef(0);
+  /** Cumulative speech ms this turn (survives mid-answer pauses). */
+  const turnSpeechMsRef = useRef(0);
+  const lastSpeechSegmentStartRef = useRef<number | null>(null);
   const currentQuestionForCheckInRef = useRef(
     interviewContext.startQuestionIndex ?? 0,
   );
@@ -810,6 +814,15 @@ export function useVoice({
       silenceStartedAtRef.current = null;
       if (!turnActiveRef.current) return;
       turnActiveRef.current = false;
+      lastTurnEndedAtRef.current = performance.now();
+      // Close out the current speech segment timing.
+      if (lastSpeechSegmentStartRef.current != null) {
+        turnSpeechMsRef.current += Math.max(
+          0,
+          performance.now() - lastSpeechSegmentStartRef.current,
+        );
+        lastSpeechSegmentStartRef.current = null;
+      }
 
       // Close the audio turn first so Gemini finalizes what they said, then
       // optionally cue a once-per-question gentle check-in for hesitant answers.
@@ -823,7 +836,8 @@ export function useVoice({
         });
       }
       speechStartedAtRef.current = null;
-      liveTranscriptRef.current = "";
+      // Keep liveTranscript briefly so a fast continuation can still see context;
+      // it is cleared when a fresh turn starts outside the continuation window.
       setState((s) => ({ ...s, isProcessing: true }));
     },
     [clearEndpointTimer, sendActivity],
@@ -831,17 +845,34 @@ export function useVoice({
 
   const beginUserTurn = useCallback(() => {
     // Speech resumed (or started): cancel any end-of-turn / check-in countdown.
-    // A later pause will start a fresh hold — never ask check-in while they are adding.
     clearEndpointTimer();
     silenceStartedAtRef.current = null;
+    const now = performance.now();
     if (turnActiveRef.current) {
-      // Already in an open turn (second hold after a pause) — just keep listening.
+      // Already in an open turn (pause inside the answer) — resume segment timer.
+      if (lastSpeechSegmentStartRef.current == null) {
+        lastSpeechSegmentStartRef.current = now;
+      }
       return;
     }
+
+    const continuing =
+      lastTurnEndedAtRef.current > 0 &&
+      now - lastTurnEndedAtRef.current < ENDPOINTING_CONFIG.continuationWindowMs;
+
     turnActiveRef.current = true;
-    speechStartedAtRef.current = performance.now();
+    if (continuing) {
+      // Candidate kept talking after a premature end — barge in and reopen.
+      interruptPlayback();
+      if (!speechStartedAtRef.current) speechStartedAtRef.current = now;
+    } else {
+      speechStartedAtRef.current = now;
+      turnSpeechMsRef.current = 0;
+      liveTranscriptRef.current = "";
+    }
+    lastSpeechSegmentStartRef.current = now;
     // Barge-in: stop local AI playback when the candidate really starts talking.
-    if (performance.now() < micHoldUntilRef.current) {
+    if (now < micHoldUntilRef.current) {
       interruptPlayback();
     }
     sendActivity("activity_start");
@@ -849,13 +880,17 @@ export function useVoice({
 
   const scheduleEndpointCheck = useCallback(() => {
     clearEndpointTimer();
-    silenceStartedAtRef.current = performance.now();
+    const now = performance.now();
+    silenceStartedAtRef.current = now;
+    // Freeze speech duration for this pause (don't count silence as speech).
+    if (lastSpeechSegmentStartRef.current != null) {
+      turnSpeechMsRef.current += Math.max(0, now - lastSpeechSegmentStartRef.current);
+      lastSpeechSegmentStartRef.current = null;
+    }
     endpointTimerRef.current = setInterval(() => {
       if (!turnActiveRef.current || silenceStartedAtRef.current == null) return;
       const silenceMs = performance.now() - silenceStartedAtRef.current;
-      const speechDurationMs = speechStartedAtRef.current
-        ? Math.max(0, silenceStartedAtRef.current - speechStartedAtRef.current)
-        : 0;
+      const speechDurationMs = turnSpeechMsRef.current;
       const decision = decideEndpoint({
         silenceMs,
         transcript: liveTranscriptRef.current,

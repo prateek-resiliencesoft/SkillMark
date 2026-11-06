@@ -7,7 +7,7 @@ import type { DocArticle } from "./types";
 
 export const gettingStartedArticles: DocArticle[] = [
   {
-    slug: "what-is-aural",
+    slug: "what-is-resiliencesoft-interview",
     categorySlug: "getting-started",
     title: "What is ResilienceSoft Interview?",
     description: "AI-powered interview platform for hiring, research, and practice",

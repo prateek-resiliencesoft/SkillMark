@@ -6,6 +6,7 @@
  * "pause", "plan", "people" — never tenant/IDOR jargon.
  */
 import { nanoid } from "@/lib/id";
+import { clearStoredMedia } from "@/lib/media-review";
 import { deleteAccount } from "@/lib/account-deletion";
 import { authDb } from "@/lib/supabase/admin";
 import { setUserPaused } from "@/lib/users";
@@ -1411,5 +1412,73 @@ export const platformRouter = router({
       });
 
       return { id: org.id as string, featureFlags: flags };
+    }),
+
+  /** Organizations and their projects, for choosing which stored files to delete. */
+  storageIndex: platformProcedure.query(async ({ ctx }) => {
+    const [{ data: orgs }, { data: projects }] = await Promise.all([
+      ctx.supabase
+        .from("organizations")
+        .select("id, name, status")
+        .neq("status", "DELETED")
+        .order("name"),
+      ctx.supabase.from("projects").select("id, name, organizationId").order("name"),
+    ]);
+    return {
+      organizations: (orgs ?? []).map((o) => ({
+        id: o.id as string,
+        name: o.name as string,
+        status: (o.status as string) ?? "ACTIVE",
+      })),
+      projects: (projects ?? []).map((p) => ({
+        id: p.id as string,
+        name: p.name as string,
+        organizationId: p.organizationId as string,
+      })),
+    };
+  }),
+
+  /** Delete Backblaze/local files for every organization, chosen organizations, or chosen projects. */
+  deleteStoredFiles: platformProcedure
+    .input(
+      z.object({
+        scope: z.enum(["all", "organizations", "projects"]),
+        organizationIds: z.array(z.string().uuid()).max(200).optional(),
+        projectIds: z.array(z.string().uuid()).max(500).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      let organizationIds = input.organizationIds ?? [];
+      if (input.scope === "all") {
+        const { data } = await ctx.supabase.from("organizations").select("id");
+        organizationIds = (data ?? []).map((o) => o.id as string);
+      }
+      if (input.scope === "organizations" && organizationIds.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Select at least one organization." });
+      }
+      if (input.scope === "projects" && (input.projectIds?.length ?? 0) === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Select at least one project." });
+      }
+
+      const result = await clearStoredMedia(ctx.supabase, {
+        organizationIds,
+        projectIds: input.scope === "projects" ? input.projectIds : undefined,
+      });
+
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "storage.delete",
+        targetType: "storage",
+        targetId: ctx.user.id,
+        meta: {
+          scope: input.scope,
+          organizations: organizationIds.length,
+          projects: input.projectIds?.length ?? 0,
+          objects: result.objects,
+          sessions: result.sessions,
+        },
+      });
+
+      return result;
     }),
 });

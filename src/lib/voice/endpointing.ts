@@ -7,9 +7,12 @@ import { ENDPOINTING_CONFIG, type EndpointingConfig } from "./endpointing-config
 const TRAILING_FILLER_RE =
   /\b(um+|uh+|uhm+|hmm+|mm+|er+|ah+|like|actually|basically|literally|you\s*know|i\s*mean|matlab|toh|yaar|well)\s*$/i;
 
-/** Trailing conjunctions / prepositions — answer is almost certainly unfinished. */
+/**
+ * Trailing conjunctions / prepositions — answer is almost certainly unfinished.
+ * Includes short prepositions common at cut-offs ("…working for", "…internship in").
+ */
 const TRAILING_CONJ_RE =
-  /\b(and|but|or|because|so|then|if|when|while|to|for|with|that|which|although|however|plus|also)\s*[,…]?\s*$/i;
+  /\b(and|but|or|because|so|then|if|when|while|to|for|with|that|which|although|however|plus|also|of|in|on|at|from|about|into|over)\s*[,…]?\s*$/i;
 
 /** Stutter / repeated short tokens: "I I", "the the", "my my". */
 const REPEATED_WORD_RE = /\b([a-zA-Z']{1,12})\s+\1\b/;
@@ -39,14 +42,8 @@ export type EndpointAction = "hold" | "end_turn" | "check_in";
 
 export interface EndpointDecision {
   shouldEnd: boolean;
-  /**
-   * - hold: keep listening
-   * - end_turn: activityEnd (complete — AI replies normally, no check-in)
-   * - check_in: activityEnd + once-per-question “[add anything?]” cue
-   */
   action: EndpointAction;
   targetSilenceMs: number;
-  /** True when the transcript looks unfinished (stutter / trailing / cut-off). */
   hesitant: boolean;
   signals: HesitationSignals;
   reason: string;
@@ -67,10 +64,6 @@ export function analyzeHesitation(
   };
 }
 
-/**
- * Unfinished-looking speech that deserves a longer hold (and maybe a check-in
- * if they stay silent through it). Short-but-complete answers are NOT included.
- */
 export function looksIncomplete(signals: HesitationSignals): boolean {
   return (
     signals.hasTrailingFiller ||
@@ -80,7 +73,6 @@ export function looksIncomplete(signals: HesitationSignals): boolean {
   );
 }
 
-/** @deprecated use looksIncomplete — kept for call-site clarity */
 export function isHesitant(signals: HesitationSignals): boolean {
   return looksIncomplete(signals);
 }
@@ -88,24 +80,34 @@ export function isHesitant(signals: HesitationSignals): boolean {
 /** How long to wait after speech ends before closing the turn. */
 export function targetSilenceMsForTurn(
   signals: HesitationSignals,
+  speechDurationMs = 0,
   config: EndpointingConfig = ENDPOINTING_CONFIG,
 ): number {
-  const raw = looksIncomplete(signals) ? config.hesitantPauseMs : config.donePauseMs;
-  return Math.min(config.maxPauseMs, raw);
+  if (looksIncomplete(signals)) {
+    return Math.min(config.maxPauseMs, config.hesitantPauseMs);
+  }
+  // Long self-intros / multi-sentence answers: need a longer quiet gap so a
+  // natural breath between sentences does not cut them off.
+  if (speechDurationMs >= config.longAnswerSpeechMs) {
+    return Math.min(config.maxPauseMs, config.longAnswerDonePauseMs);
+  }
+  return Math.min(config.maxPauseMs, config.donePauseMs);
 }
 
 /**
  * Decide whether silence so far is enough to end the candidate's turn.
- * Call this repeatedly while Silero reports the candidate is not speaking.
- *
- * Check-in only when the answer still looks unfinished after the full hesitant
- * hold. Clear answers end quickly with end_turn (never check-in).
+ * Check-in only when unfinished-looking after the full hesitant hold.
+ * Clear short answers end at ~1.5s; long answers need a longer quiet gap.
  */
 export function decideEndpoint(input: EndpointDecisionInput): EndpointDecision {
   const config = input.config ?? ENDPOINTING_CONFIG;
   const signals = analyzeHesitation(input.transcript, input.speechDurationMs, config);
   const hesitant = looksIncomplete(signals);
-  const targetSilenceMs = targetSilenceMsForTurn(signals, config);
+  const targetSilenceMs = targetSilenceMsForTurn(
+    signals,
+    input.speechDurationMs,
+    config,
+  );
 
   if (input.silenceMs < Math.min(config.decisionAfterSilenceMs, targetSilenceMs)) {
     return {
@@ -135,7 +137,11 @@ export function decideEndpoint(input: EndpointDecisionInput): EndpointDecision {
       targetSilenceMs,
       hesitant,
       signals,
-      reason: hesitant ? "hesitant_pause_elapsed" : "done_pause_elapsed",
+      reason: hesitant
+        ? "hesitant_pause_elapsed"
+        : input.speechDurationMs >= config.longAnswerSpeechMs
+          ? "long_answer_done_pause_elapsed"
+          : "done_pause_elapsed",
     };
   }
 
@@ -145,6 +151,10 @@ export function decideEndpoint(input: EndpointDecisionInput): EndpointDecision {
     targetSilenceMs,
     hesitant,
     signals,
-    reason: hesitant ? "holding_for_hesitation" : "holding_for_done_pause",
+    reason: hesitant
+      ? "holding_for_hesitation"
+      : input.speechDurationMs >= config.longAnswerSpeechMs
+        ? "holding_for_long_answer_pause"
+        : "holding_for_done_pause",
   };
 }
