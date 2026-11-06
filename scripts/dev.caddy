@@ -1,0 +1,13 @@
+# Dev app. The waker on the docker bridge starts the dev stack, then proxies.
+# Dev containers are stopped when idle so they do not use production RAM.
+dev.resiliencesoftinterview.com {
+	encode gzip
+	reverse_proxy 172.18.0.1:3199 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		transport http {
+			response_header_timeout 90s
+			dial_timeout 10s
+		}
+	}
+}

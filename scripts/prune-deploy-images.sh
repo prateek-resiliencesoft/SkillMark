@@ -24,6 +24,7 @@ do
   docker images "$repo" --format '{{.Tag}}' | while read -r tag; do
     [ -n "$tag" ] || continue
     [ "$tag" = "$IMAGE_TAG" ] && continue
+    [ "$tag" = "dev" ] && continue
     [ "$tag" = "<none>" ] && continue
     echo "Removing ${repo}:${tag}"
     docker rmi "${repo}:${tag}" || true

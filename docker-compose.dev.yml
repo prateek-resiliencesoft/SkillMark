@@ -1,0 +1,117 @@
+# Dev stack for dev.resiliencesoftinterview.com.
+# Separate project and volume from production (skillmark / skillmark-pg).
+# restart is "no" so a stop stays stopped. scripts/dev-waker.py starts it on a visit.
+#
+#   docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
+#   docker compose -f docker-compose.dev.yml --env-file .env.dev --profile voice up -d
+name: skillmark-dev
+
+x-log: &log
+  logging:
+    options:
+      max-size: "10m"
+      max-file: "2"
+
+services:
+  db:
+    image: postgres:16
+    restart: "no"
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: "0.40"
+    oom_score_adj: 800
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skillmark}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.dev}
+      POSTGRES_DB: ${POSTGRES_DB:-skillmark_dev}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=20
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - effective_cache_size=128MB
+    volumes:
+      - skillmark-dev-pg:/var/lib/postgresql/data
+      - ./src/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skillmark} -d ${POSTGRES_DB:-skillmark_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    <<: *log
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: "no"
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: "0.15"
+    oom_score_adj: 800
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: ${PGRST_DB_URI:?set PGRST_DB_URI in .env.dev}
+      PGRST_DB_SCHEMAS: public,auth
+      PGRST_DB_ANON_ROLE: ${POSTGRES_USER:-skillmark}
+      PGRST_JWT_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env.dev}
+      PGRST_DB_MAX_ROWS: "1000"
+    <<: *log
+
+  app:
+    image: skillmark-app:dev
+    restart: "no"
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: "0.75"
+    oom_score_adj: 700
+    env_file:
+      - .env.dev
+    environment:
+      POSTGREST_URL: http://rest:3000
+      STORAGE_DIR: /app/storage
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "127.0.0.1:3100:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+    volumes:
+      - skillmark-dev-storage:/app/storage
+    <<: *log
+
+  # Started only when a voice websocket is requested.
+  voice:
+    image: skillmark-voice:dev
+    profiles: ["voice"]
+    restart: "no"
+    mem_limit: 192m
+    memswap_limit: 192m
+    cpus: "0.40"
+    oom_score_adj: 800
+    env_file:
+      - .env.dev
+    environment:
+      VOICE_RELAY_HOST: "0.0.0.0"
+      VOICE_RELAY_PORT: "8082"
+      OPENAI_VOICE_RELAY_PORT: "8082"
+      GEMINI_VOICE_RELAY_PORT: "8082"
+      VOICE_RELAY_PROVIDER: ${VOICE_RELAY_PROVIDER:-auto}
+    ports:
+      - "127.0.0.1:8182:8082"
+    <<: *log
+
+volumes:
+  skillmark-dev-pg:
+  skillmark-dev-storage:
