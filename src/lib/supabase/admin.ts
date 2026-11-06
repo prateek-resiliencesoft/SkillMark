@@ -50,8 +50,8 @@ export const supabaseAdmin = {
     },
     admin: {
       deleteUser: async (id: string) => {
-        await deleteUser(id);
-        return { data: null, error: null as { message: string } | null };
+        const { error } = await deleteUser(id);
+        return { data: null, error: error ? { message: error } : (null as { message: string } | null) };
       },
     },
   },

@@ -6,9 +6,11 @@ import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding } from "@/components/session/interviewee-onboarding";
 import { PreparingScreen } from "@/components/session/preparing-screen";
+import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { Card, CardContent } from "@/components/ui/card";
+import { useInterviewLinkGuard } from "@/hooks/use-interview-link-guard";
 import { trpc } from "@/lib/trpc/client";
-import { CheckCircle2, Clock } from "lucide-react";
+import { Clock } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
@@ -32,6 +34,8 @@ export default function InviteSessionPage() {
   const [completionReason, setCompletionReason] = useState<string | undefined>();
   const [disqualified, setDisqualified] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  const [linkExpired, setLinkExpired] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   const handleComplete = (reason?: string) => {
     setCompletionReason(reason);
@@ -64,6 +68,35 @@ export default function InviteSessionPage() {
   const session = (candidate.data as any)?.session ?? null;
   const interview = (candidate.data as any)?.interview;
 
+  // Interview is live once onboarding is accepted: keep the one-time link alive.
+  useInterviewLinkGuard({
+    sessionId: session?.id,
+    active: onboardingDone && !completed && !disqualified && !linkExpired,
+    onExpired: () => setLinkExpired(true),
+  });
+
+  // Onboarding accepted → mark the interview as begun (link becomes single-use).
+  const handleOnboardingComplete = async () => {
+    if (starting || !session?.id) return;
+    setStarting(true);
+    try {
+      const res = await fetch("/api/session/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
+      if (!res.ok) {
+        setLinkExpired(true);
+        return;
+      }
+      setOnboardingDone(true);
+    } catch {
+      setLinkExpired(true);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   // Wait through first load / cache refresh until session appears (or redirect).
   if (candidate.isLoading || !candidate.data || (!session && candidate.isFetching)) {
     return <PreparingScreen />;
@@ -71,6 +104,11 @@ export default function InviteSessionPage() {
 
   if (!session) {
     return <PreparingScreen />;
+  }
+
+  // Fresh completion in this tab → thank-you. Any other visit to a finished link → expired.
+  if (completed) {
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} />;
   }
 
   const isExpired = !!(
@@ -107,26 +145,12 @@ export default function InviteSessionPage() {
     return <DisqualifiedScreen />;
   }
 
-  if (completed || session.status === "COMPLETED") {
-    return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="py-12 text-center">
-            <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-            <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-            {completionReason === "TIME_LIMIT_EXCEEDED" && (
-              <p className="mt-2 text-sm text-amber-600">
-                The session time limit has been reached and the interview was ended automatically.
-              </p>
-            )}
-            <p className="mt-2 text-muted-foreground">
-              Your interview has been completed successfully. We appreciate your
-              time and thoughtful responses.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+  if (linkExpired || session.status === "ABANDONED") {
+    return <LinkExpiredScreen reason="interrupted" />;
+  }
+
+  if (session.status === "COMPLETED") {
+    return <LinkExpiredScreen reason="used" />;
   }
 
   if (!onboardingDone) {
@@ -145,7 +169,8 @@ export default function InviteSessionPage() {
         questionTypes={(interview.questions ?? []).map((q: any) => q.type as string)}
         scheduledAt={candidate.data.scheduledAt}
         expiresAt={candidate.data.expiresAt}
-        onComplete={() => setOnboardingDone(true)}
+        oneTimeLink
+        onComplete={handleOnboardingComplete}
       />
     );
   }

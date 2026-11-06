@@ -1,41 +1,29 @@
-import { supabaseAdmin } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
+import { deleteAccount } from "@/lib/account-deletion";
+import { getAuthUser } from "@/lib/auth";
+import { SESSION_COOKIE } from "@/lib/auth-session";
+import { ACTIVE_ORG_COOKIE } from "@/lib/active-org";
+import { readAccountTokens, setAccountsCookie, withoutAccount } from "@/lib/auth-accounts";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 export async function POST() {
   try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
+    const user = await getAuthUser();
     if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const userId = user.id;
-
-    await Promise.all([
-      supabaseAdmin.from("interviews").delete().eq("userId", userId),
-      supabaseAdmin.from("organizations").delete().eq("ownerId", userId),
-      supabaseAdmin.from("audit_logs").delete().eq("userId", userId),
-    ]);
-
-    const { error: deleteError } =
-      await supabaseAdmin.auth.admin.deleteUser(userId);
-
-    if (deleteError) {
-      return NextResponse.json(
-        { error: deleteError.message },
-        { status: 500 },
-      );
+    const result = await deleteAccount(user.id, { deletedBy: user.id });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
     }
 
-    return NextResponse.json({ success: true });
+    const res = NextResponse.json({ success: true });
+    res.cookies.delete(SESSION_COOKIE);
+    res.cookies.delete(ACTIVE_ORG_COOKIE);
+    setAccountsCookie(res, withoutAccount(readAccountTokens(cookies()), user.id));
+    return res;
   } catch {
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
