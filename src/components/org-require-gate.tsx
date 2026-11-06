@@ -5,8 +5,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { Loader2 } from "lucide-react";
 
-/** Only org creation is reachable until the user owns/joins a tenant. */
-const ALLOWED_WITHOUT_ORG = ["/org/new"];
+/** Org creation and the account page (to delete the account) work before the user has a tenant. */
+const ALLOWED_WITHOUT_ORG = ["/org/new", "/account"];
 
 /**
  * Multitenant gate: signup does not create an org. User must name + create one.
