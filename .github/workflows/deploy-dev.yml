@@ -156,5 +156,14 @@ jobs:
             sudo systemctl enable skillmark-dev-waker
             sudo systemctl restart skillmark-dev-waker
             systemctl is-active skillmark-dev-waker
-            curl -fsS http://127.0.0.1:3199/healthz
+            # systemctl reports active before Python binds :3199.
+            ok=0
+            for _ in $(seq 1 30); do
+              if curl -fsS --max-time 2 http://127.0.0.1:3199/healthz; then
+                ok=1
+                break
+              fi
+              sleep 0.5
+            done
             echo
+            [ "$ok" = 1 ]
