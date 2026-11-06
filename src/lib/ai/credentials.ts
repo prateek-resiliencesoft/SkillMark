@@ -239,6 +239,50 @@ export function applyKeySlotsPatch(
   return current;
 }
 
+export type KeySlotInput = {
+  /** Index of an already-saved key to keep (position in the stored list). */
+  keep?: number | null;
+  /** New plaintext key; wins over `keep`. */
+  value?: string;
+};
+
+/**
+ * Order-aware save: the list order IS the failover order. Saved keys are
+ * referenced by their old index so they can be dragged anywhere without
+ * ever sending their plaintext back.
+ */
+export function applyKeyOrderPatch(
+  currentRaw: unknown,
+  providerId: AiProviderId,
+  slots: KeySlotInput[],
+  baseUrl?: string | null,
+): AiProvidersStored {
+  const current = (
+    currentRaw && typeof currentRaw === "object" ? { ...(currentRaw as object) } : {}
+  ) as AiProvidersStored;
+  const prev = current[providerId] ?? {};
+  const prevKeys = normalizeKeyList(prev);
+  const used = new Set<number>();
+  const nextEnc: string[] = [];
+  for (const slot of slots) {
+    const incoming = (slot.value ?? "").trim();
+    if (incoming) {
+      nextEnc.push(encryptSecret(incoming));
+    } else if (slot.keep != null && prevKeys[slot.keep] && !used.has(slot.keep)) {
+      used.add(slot.keep);
+      nextEnc.push(prevKeys[slot.keep]);
+    }
+  }
+  const capped = nextEnc.slice(0, MAX_KEYS_PER_PROVIDER);
+  current[providerId] = {
+    ...prev,
+    apiKeys: capped,
+    apiKey: capped[0] ?? null,
+    ...(baseUrl !== undefined ? { baseUrl: baseUrl?.trim() || null } : {}),
+  };
+  return current;
+}
+
 export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCredentials {
   const pick = (
     orgKeys: string[],
