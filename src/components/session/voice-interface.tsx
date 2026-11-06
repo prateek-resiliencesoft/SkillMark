@@ -676,6 +676,14 @@ export function VoiceInterface({
     }
   }, [error]);
 
+  // ── Turn the mic on automatically once the interview connects ──
+  const micAutoStartedRef = useRef(false);
+  useEffect(() => {
+    if (preview || !voice.isConnected || micAutoStartedRef.current) return;
+    micAutoStartedRef.current = true;
+    if (!voice.isListening) void voice.startListening();
+  }, [voice.isConnected, preview]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Start recording when voice connects (video mode) ───────────
   const recordingStartedRef = useRef(false);
   useEffect(() => {

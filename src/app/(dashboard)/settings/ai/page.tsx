@@ -5,16 +5,28 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SortableList } from "@/components/ui/sortable-list";
+import {
+  PROVIDER_CAPS,
+  checkVoiceModel,
+  voiceBlockedReason,
+} from "@/lib/ai/capabilities";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   ExternalLink,
+  AlertTriangle,
+  ChevronDown,
   Eye,
   EyeOff,
+  Mic,
+  MicOff,
+  X,
+  XCircle,
+  CheckCircle2,
+  Type,
   Globe,
   Key,
   Loader2,
@@ -27,6 +39,23 @@ import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
+
+/** One API key row. `keep` = index of the already-saved key it represents (null = new). */
+type KeySlot = { id: string; keep: number | null; value: string };
+
+let slotCounter = 0;
+const newSlot = (keep: number | null = null): KeySlot => ({
+  id: `slot-${++slotCounter}`,
+  keep,
+  value: "",
+});
+const emptySlots = (): Record<ProviderId, KeySlot[]> => ({
+  openai: [newSlot()],
+  gemini: [newSlot()],
+  nvidia: [newSlot()],
+  anthropic: [newSlot()],
+  custom: [newSlot()],
+});
 
 // Official vector logos
 function OpenAiLogo({ className }: { className?: string }) {
@@ -165,11 +194,10 @@ const PROVIDERS: ProviderMeta[] = [
   },
 ];
 
-const TASK_LABELS: Record<string, { title: string; hint: string }> = {
-  screening: { title: "Screening (light)", hint: "Simple screens · interview follow-up LIGHT" },
-  standard: { title: "Standard", hint: "Default rounds · follow-up MODERATE" },
-  heavy: { title: "Heavy / multi-level", hint: "Deep probes · follow-up DEEP" },
-  interview: { title: "Live interview override", hint: "Optional override for all live turns" },
+const TEXT_TASKS: Record<string, { title: string; hint: string }> = {
+  screening: { title: "Screening (light)", hint: "Simple screens · light follow-ups" },
+  standard: { title: "Standard", hint: "Default rounds · moderate follow-ups" },
+  heavy: { title: "Heavy / multi-level", hint: "Deep probes · deep follow-ups" },
   report: { title: "Reports & scoring", hint: "Post-interview analysis" },
   resume: { title: "Resume / CV parse", hint: "PDF extraction & profiling" },
   generate: { title: "Question generation", hint: "AI interview builder" },
@@ -183,6 +211,51 @@ const PROVIDER_SHORT: Record<ProviderId, string> = {
   custom: "Custom",
 };
 
+type ProviderRow = {
+  apiKeyHint: string | null;
+  apiKeyHints: (string | null)[];
+  keyCount: number;
+  maxKeys: number;
+  baseUrl?: string;
+  textModel?: string;
+  voiceModel?: string;
+  defaultModel?: string;
+  configured: boolean;
+};
+
+type Scope = "voice" | "text";
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  description,
+  tone,
+}: {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  tone: "voice" | "text";
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div
+        className={cn(
+          "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border",
+          tone === "voice"
+            ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+            : "border-sky-500/25 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+        )}
+      >
+        <Icon className="h-[18px] w-[18px]" />
+      </div>
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AiSettingsPage() {
   const { currentOrg } = useOrg();
   const orgId = currentOrg?.id ?? "";
@@ -191,13 +264,7 @@ export default function AiSettingsPage() {
   const utils = trpc.useUtils();
   const query = trpc.aiSettings.get.useQuery({ organizationId: orgId }, { enabled: !!orgId });
 
-  const [keySlots, setKeySlots] = useState<Record<ProviderId, string[]>>({
-    openai: [""],
-    gemini: [""],
-    nvidia: [""],
-    anthropic: [""],
-    custom: [""],
-  });
+  const [keySlots, setKeySlots] = useState<Record<ProviderId, KeySlot[]>>(emptySlots);
   const [showKeys, setShowKeys] = useState<Record<ProviderId, boolean>>({
     openai: false,
     gemini: false,
@@ -206,24 +273,24 @@ export default function AiSettingsPage() {
     custom: false,
   });
   const [customBase, setCustomBase] = useState("");
+  const [customTextModel, setCustomTextModel] = useState("");
+  const [customVoiceModel, setCustomVoiceModel] = useState("");
   const [routing, setRouting] = useState<Record<string, ProviderId[]>>({});
+  const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: ProviderId | "routing"; type: "save" | "clear" } | null>(null);
 
   useEffect(() => {
     if (!query.data) return;
     const custom = query.data.providers.find((p) => p.id === "custom");
     setCustomBase(custom?.baseUrl ?? "");
-    const nextSlots: Record<ProviderId, string[]> = {
-      openai: [""],
-      gemini: [""],
-      nvidia: [""],
-      anthropic: [""],
-      custom: [""],
-    };
+    setCustomTextModel(custom?.textModel ?? "");
+    setCustomVoiceModel(custom?.voiceModel ?? "");
+    const nextSlots = emptySlots();
     for (const p of query.data.providers) {
       const id = p.id as ProviderId;
-      const n = Math.max(1, p.keyCount || 0);
-      nextSlots[id] = Array.from({ length: n }, () => "");
+      if ((p.keyCount || 0) > 0) {
+        nextSlots[id] = Array.from({ length: p.keyCount }, (_, i) => newSlot(i));
+      }
     }
     setKeySlots(nextSlots);
     setRouting(query.data.routing as Record<string, ProviderId[]>);
@@ -232,11 +299,11 @@ export default function AiSettingsPage() {
   const saveKeys = trpc.aiSettings.saveProviderKeys.useMutation({
     onSuccess: () => {
       void utils.aiSettings.get.invalidate();
-      toast({ title: "Provider keys saved" });
+      toast({ title: "Provider saved" });
       setPendingAction(null);
     },
     onError: (e) => {
-      toast({ title: "Could not save keys", description: e.message, variant: "destructive" });
+      toast({ title: "Could not save", description: e.message, variant: "destructive" });
       setPendingAction(null);
     },
   });
@@ -254,17 +321,21 @@ export default function AiSettingsPage() {
   const saveRouting = trpc.aiSettings.saveRouting.useMutation({
     onSuccess: () => {
       void utils.aiSettings.get.invalidate();
-      toast({ title: "Task routing saved" });
+      toast({ title: "Priority saved" });
       setPendingAction(null);
     },
     onError: (e) => {
-      toast({ title: "Could not save routing", description: e.message, variant: "destructive" });
+      toast({ title: "Could not save priority", description: e.message, variant: "destructive" });
       setPendingAction(null);
     },
   });
 
   const busy = saveKeys.isLoading || clearProvider.isLoading || saveRouting.isLoading;
-  const taskKinds = useMemo(() => query.data?.taskKinds ?? Object.keys(TASK_LABELS), [query.data?.taskKinds]);
+
+  const voiceCheck = useMemo(
+    () => (customVoiceModel.trim() ? checkVoiceModel(customVoiceModel) : null),
+    [customVoiceModel],
+  );
 
   if (!orgId || query.isLoading || !query.data) {
     return (
@@ -274,35 +345,34 @@ export default function AiSettingsPage() {
     );
   }
 
-  const byId = Object.fromEntries(query.data.providers.map((p) => [p.id, p])) as unknown as Record<
-    ProviderId,
-    {
-      apiKeyHint: string | null;
-      apiKeyHints: (string | null)[];
-      keyCount: number;
-      maxKeys: number;
-      baseUrl?: string;
-      defaultModel?: string;
-      configured: boolean;
-    }
-  >;
+  const byId = Object.fromEntries(query.data.providers.map((p) => [p.id, p])) as unknown as Record<ProviderId, ProviderRow>;
   const envFallback = query.data.envFallback;
   const maxKeys = query.data.providers[0]?.maxKeys ?? 5;
+  const providerMeta = Object.fromEntries(PROVIDERS.map((m) => [m.id, m])) as Record<ProviderId, ProviderMeta>;
 
-  const configuredCount = PROVIDERS.filter((p) => {
-    const row = byId[p.id];
-    const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
-    const hasEnv = !!envFallback[p.id];
-    return hasOrg || hasEnv;
-  }).length;
+  const isConfigured = (id: ProviderId) => {
+    const row = byId[id];
+    return (row?.keyCount ?? 0) > 0 || (id === "custom" && !!row?.baseUrl) || !!envFallback[id];
+  };
+  const configuredCount = PROVIDERS.filter((p) => isConfigured(p.id)).length;
 
   const handleSaveKeys = (p: ProviderMeta) => {
+    if (p.id === "custom" && customVoiceModel.trim() && voiceCheck && !voiceCheck.ok) {
+      toast({ title: "Can't save this voice model", description: voiceCheck.reason, variant: "destructive" });
+      return;
+    }
     setPendingAction({ id: p.id, type: "save" });
     saveKeys.mutate({
       organizationId: orgId,
       providerId: p.id,
-      keySlots: keySlots[p.id],
-      ...(p.needsBaseUrl ? { baseUrl: customBase.trim() || null } : {}),
+      slots: (keySlots[p.id] ?? []).map((sl) => ({ keep: sl.keep, value: sl.value.trim() || undefined })),
+      ...(p.needsBaseUrl
+        ? {
+            baseUrl: customBase.trim() || null,
+            textModel: customTextModel.trim() || null,
+            voiceModel: customVoiceModel.trim() || null,
+          }
+        : {}),
     });
   };
 
@@ -311,18 +381,363 @@ export default function AiSettingsPage() {
     clearProvider.mutate({ organizationId: orgId, providerId: p.id });
   };
 
-  const moveRoute = (task: string, index: number, dir: -1 | 1) => {
-    setRouting((prev) => {
-      const list = [...(prev[task] ?? [])];
-      const j = index + dir;
-      if (j < 0 || j >= list.length) return prev;
-      [list[index], list[j]] = [list[j], list[index]];
-      return { ...prev, [task]: list };
-    });
+  /** Provider card. Custom renders in both sections and shares one set of keys. */
+  const renderCard = (p: ProviderMeta, scope: Scope) => {
+    const row = byId[p.id];
+    const caps = PROVIDER_CAPS[p.id];
+    const slots = keySlots[p.id] ?? [newSlot()];
+    const hints = row?.apiKeyHints ?? [];
+    const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
+    const hasEnv = !!envFallback[p.id];
+    const isCustom = p.id === "custom";
+    const isCurrentSaving = pendingAction?.id === p.id && pendingAction.type === "save";
+    const isCurrentClearing = pendingAction?.id === p.id && pendingAction.type === "clear";
+    const LogoComponent = p.logo;
+    const voiceBlocked = voiceBlockedReason(p.id);
+
+    return (
+      <div
+        key={`${p.id}-${scope}`}
+        className="group relative flex flex-col rounded-2xl border bg-card/70 p-5 transition-all duration-200 hover:border-border/80 hover:shadow-sm"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-transform duration-200 group-hover:scale-105",
+                p.badgeContainer,
+              )}
+            >
+              <LogoComponent />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold tracking-tight text-foreground">{p.name}</h3>
+              <p className="line-clamp-1 text-xs text-muted-foreground">{p.hint}</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            {hasOrg || hasEnv ? (
+              <Badge
+                variant="outline"
+                className="gap-1 border-emerald-500/25 bg-emerald-500/10 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+              >
+                <Check className="h-3 w-3" />
+                {hasOrg ? `${row?.keyCount ?? 0} key${(row?.keyCount ?? 0) === 1 ? "" : "s"}` : "Env"}
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="py-0.5 text-[11px] font-normal text-muted-foreground">
+                Not configured
+              </Badge>
+            )}
+          </div>
+        </div>
+
+        {/* Capability strip */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className="gap-1 text-[10px] font-normal">
+            <Type className="h-3 w-3" /> Text
+          </Badge>
+          {scope === "voice" ? (
+            <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] font-normal text-emerald-700 dark:text-emerald-300">
+              <Mic className="h-3 w-3" /> Voice
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="gap-1 text-[10px] font-normal text-muted-foreground">
+              <MicOff className="h-3 w-3" /> No voice
+            </Badge>
+          )}
+        </div>
+        <p className="mt-2 text-sm text-foreground/90">{caps.summary}</p>
+
+        {voiceBlocked && (
+          <div className="mt-3 flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <p>
+              <span className="font-semibold">Not for voice interviews.</span> {voiceBlocked}
+            </p>
+          </div>
+        )}
+
+        <div className="mt-3">
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            You can use this key for
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {caps.usedFor
+              .filter((u) => (scope === "text" && isCustom ? !u.startsWith("Voice") : true))
+              .map((u) => (
+                <span key={u} className="rounded-md border bg-background/60 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {u}
+                </span>
+              ))}
+          </div>
+        </div>
+
+        <details className="group/d mt-3 rounded-lg border bg-background/40 text-xs">
+          <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 font-medium text-muted-foreground hover:text-foreground">
+            Strengths &amp; limits
+            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open/d:rotate-180" />
+          </summary>
+          <div className="grid gap-3 border-t px-3 py-3 sm:grid-cols-2">
+            <div>
+              <p className="mb-1 font-medium text-emerald-600 dark:text-emerald-400">Why use it</p>
+              <ul className="list-inside list-disc space-y-1 text-muted-foreground">
+                {caps.pros.map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 font-medium text-amber-600 dark:text-amber-400">Limits</p>
+              <ul className="list-inside list-disc space-y-1 text-muted-foreground">
+                {caps.limits.map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </details>
+
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+          {p.howTo}{" "}
+          <Link
+            href={p.consoleUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+          >
+            {p.consoleLabel}
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+        </p>
+
+        <div className="mt-4 space-y-3">
+          {isCustom && (
+            <>
+              <div className="rounded-md bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">
+                One custom endpoint powers both sections — endpoint and keys are shared, the model is set per use.
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Globe className="h-3 w-3 text-muted-foreground" />
+                  <Label className="text-xs font-medium text-muted-foreground">Base URL</Label>
+                </div>
+                <Input
+                  placeholder={p.basePlaceholder}
+                  value={customBase}
+                  onChange={(e) => setCustomBase(e.target.value)}
+                  disabled={!canEdit || busy}
+                  className="bg-background/80 font-mono text-xs"
+                />
+              </div>
+
+              {scope === "text" ? (
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">Chat model</Label>
+                  <Input
+                    placeholder={row?.defaultModel ?? "llama3.1:8b"}
+                    value={customTextModel}
+                    onChange={(e) => setCustomTextModel(e.target.value)}
+                    disabled={!canEdit || busy}
+                    className="bg-background/80 font-mono text-xs"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Used for chat interviews, reports, CV parsing and question generation. Any chat model works.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-muted-foreground">Voice model (realtime)</Label>
+                  <Input
+                    placeholder="gpt-4o-realtime-preview"
+                    value={customVoiceModel}
+                    onChange={(e) => setCustomVoiceModel(e.target.value)}
+                    disabled={!canEdit || busy}
+                    aria-invalid={voiceCheck ? !voiceCheck.ok : undefined}
+                    className={cn(
+                      "bg-background/80 font-mono text-xs",
+                      voiceCheck && !voiceCheck.ok && "border-destructive focus-visible:ring-destructive",
+                    )}
+                  />
+                  {voiceCheck ? (
+                    voiceCheck.ok ? (
+                      <p className="flex items-start gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        {voiceCheck.note}
+                      </p>
+                    ) : (
+                      <p className="flex items-start gap-1.5 text-[11px] text-destructive">
+                        <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          <span className="font-semibold">Can&apos;t add this to voice.</span> {voiceCheck.reason}
+                        </span>
+                      </p>
+                    )
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      Must be a realtime model that speaks the OpenAI Realtime protocol. Leave empty to keep this
+                      endpoint chat-only.
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="space-y-2">
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Key className="h-3 w-3" />
+              API keys · drag to set failover order (max {maxKeys})
+            </Label>
+            <SortableList
+              items={slots}
+              getKey={(sl) => sl.id}
+              disabled={!canEdit || busy || slots.length < 2}
+              onReorder={(next) => setKeySlots((prev) => ({ ...prev, [p.id]: next }))}
+            >
+              {(slot, i, handle) => (
+                <div className="flex items-center gap-1.5">
+                  {handle ?? <span className="w-5 shrink-0" />}
+                  <span
+                    className={cn(
+                      "w-14 shrink-0 text-[10px] font-medium",
+                      i === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
+                    )}
+                  >
+                    {i === 0 ? "Primary" : `Backup ${i}`}
+                  </span>
+                  <div className="relative min-w-0 flex-1">
+                    <Input
+                      type={showKeys[p.id] ? "text" : "password"}
+                      autoComplete="off"
+                      placeholder={
+                        slot.keep != null && hints[slot.keep]
+                          ? `Saved (${hints[slot.keep]}) — leave blank to keep`
+                          : p.keyPlaceholder
+                      }
+                      value={slot.value}
+                      onChange={(e) =>
+                        setKeySlots((prev) => ({
+                          ...prev,
+                          [p.id]: (prev[p.id] ?? []).map((x) =>
+                            x.id === slot.id ? { ...x, value: e.target.value } : x,
+                          ),
+                        }))
+                      }
+                      disabled={!canEdit || busy}
+                      className="bg-background/80 pr-9 font-mono text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKeys((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                      tabIndex={-1}
+                    >
+                      {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+                  {canEdit && slots.length > 1 && (
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                      disabled={busy}
+                      onClick={() =>
+                        setKeySlots((prev) => ({
+                          ...prev,
+                          [p.id]: (prev[p.id] ?? []).filter((x) => x.id !== slot.id),
+                        }))
+                      }
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </SortableList>
+            {canEdit && slots.length < maxKeys && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={busy}
+                onClick={() => setKeySlots((prev) => ({ ...prev, [p.id]: [...(prev[p.id] ?? []), newSlot()] }))}
+              >
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                Add backup key
+              </Button>
+            )}
+          </div>
+
+          {canEdit && (
+            <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
+              {hasOrg && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => handleClear(p)}
+                  className="h-8 text-xs text-muted-foreground transition-colors hover:text-destructive"
+                >
+                  {isCurrentClearing ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Clear all
+                </Button>
+              )}
+              <Button size="sm" disabled={busy} onClick={() => handleSaveKeys(p)} className="h-8 text-xs font-medium">
+                {isCurrentSaving ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  `Save ${p.name}`
+                )}
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
+  const voiceList = routing.voice ?? [];
+  const customVoiceOk = !!customVoiceModel.trim() && !!voiceCheck?.ok;
+
+  const addToVoice = (pid: ProviderId) => {
+    const blocked = voiceBlockedReason(pid);
+    if (blocked) {
+      setVoiceWarning(blocked);
+      return;
+    }
+    if (pid === "custom" && !customVoiceOk) {
+      setVoiceWarning(
+        voiceCheck && !voiceCheck.ok
+          ? `Custom endpoint can't be added: ${voiceCheck.reason}`
+          : "Set a realtime voice model on the Custom card (Voice section) first — Custom only joins voice with a model that supports it.",
+      );
+      return;
+    }
+    setVoiceWarning(null);
+    setRouting((prev) => ({ ...prev, voice: [...(prev.voice ?? []), pid] }));
+  };
+
+  const savePriority = () => {
+    setPendingAction({ id: "routing", type: "save" });
+    saveRouting.mutate({ organizationId: orgId, routing });
+  };
+
+  const voiceProviders = PROVIDERS.filter((p) => p.id === "openai" || p.id === "gemini");
+  const textProviders = PROVIDERS.filter((p) => p.id === "anthropic" || p.id === "nvidia");
+  const customProvider = PROVIDERS.find((p) => p.id === "custom")!;
+
   return (
-    <div className="mx-auto max-w-5xl space-y-8 pb-10">
+    <div className="mx-auto max-w-5xl space-y-10 pb-10">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-0.5 text-xs font-medium text-primary">
@@ -331,8 +746,8 @@ export default function AiSettingsPage() {
           </div>
           <h1 className="text-2xl font-bold tracking-tight">AI Providers</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Add up to {maxKeys} API keys per provider. On errors or rate limits the next key, then the next backup
-            provider, is tried automatically — candidates only see an error if every backup fails.
+            Add up to {maxKeys} keys per provider. On errors or rate limits the next key, then the next provider, is
+            tried automatically — candidates only see an error if every backup fails.
           </p>
         </div>
         <Badge variant="outline" className="px-2.5 py-1 text-xs">
@@ -341,299 +756,221 @@ export default function AiSettingsPage() {
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {PROVIDERS.map((p) => {
-          const row = byId[p.id];
-          const slots = keySlots[p.id] ?? [""];
-          const hints = row?.apiKeyHints ?? [];
-          const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
-          const hasEnv = !!envFallback[p.id];
-          const isCustom = p.id === "custom";
-          const isCurrentSaving = pendingAction?.id === p.id && pendingAction.type === "save";
-          const isCurrentClearing = pendingAction?.id === p.id && pendingAction.type === "clear";
-          const LogoComponent = p.logo;
+      {/* Voice + text */}
+      <section className="space-y-4">
+        <SectionHeader
+          icon={Mic}
+          tone="voice"
+          title="Voice & text providers"
+          description="These can run live voice interviews as well as everything text-based."
+        />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {voiceProviders.map((p) => renderCard(p, "voice"))}
+          <div className="md:col-span-2">{renderCard(customProvider, "voice")}</div>
+        </div>
+      </section>
 
-          return (
-            <div
-              key={p.id}
-              className={cn(
-                "group relative flex flex-col justify-between rounded-2xl border bg-card/70 p-5 transition-all duration-200 hover:border-border/80 hover:shadow-sm",
-                isCustom && "bg-gradient-to-br from-card/80 to-muted/20 md:col-span-2",
-              )}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={cn(
-                      "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-transform duration-200 group-hover:scale-105",
-                      p.badgeContainer,
-                    )}
-                  >
-                    <LogoComponent />
-                  </div>
-                  <div>
-                    <h2 className="text-base font-semibold tracking-tight text-foreground">{p.name}</h2>
-                    <p className="line-clamp-1 text-xs text-muted-foreground">{p.hint}</p>
-                  </div>
-                </div>
-                <div className="shrink-0">
-                  {hasOrg || hasEnv ? (
-                    <Badge
-                      variant="outline"
-                      className="gap-1 border-emerald-500/25 bg-emerald-500/10 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
-                    >
-                      <Check className="h-3 w-3" />
-                      <span>
-                        {hasOrg ? `${row?.keyCount ?? 0} key${(row?.keyCount ?? 0) === 1 ? "" : "s"}` : "Env"}
-                      </span>
-                    </Badge>
-                  ) : (
-                    <Badge variant="secondary" className="py-0.5 text-[11px] font-normal text-muted-foreground">
-                      Not configured
-                    </Badge>
-                  )}
-                </div>
-              </div>
+      {/* Text only */}
+      <section className="space-y-4">
+        <SectionHeader
+          icon={Type}
+          tone="text"
+          title="Text-only providers"
+          description="No voice models. Use them for chat interviews, reports, CV parsing and question generation — and as backups."
+        />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {textProviders.map((p) => renderCard(p, "text"))}
+          <div className="md:col-span-2">{renderCard(customProvider, "text")}</div>
+        </div>
+      </section>
 
-              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                {p.howTo}{" "}
-                <Link
-                  href={p.consoleUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
-                >
-                  {p.consoleLabel}
-                  <ExternalLink className="h-3 w-3" />
-                </Link>
-              </p>
-              {row?.defaultModel && (
-                <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-                  Model on this provider:{" "}
-                  <span className="text-foreground/80">{row.defaultModel}</span>
-                </p>
-              )}
-
-              <div className="mt-4 space-y-3">
-                {isCustom && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <Globe className="h-3 w-3 text-muted-foreground" />
-                      <Label className="text-xs font-medium text-muted-foreground">Base URL</Label>
-                    </div>
-                    <Input
-                      placeholder={p.basePlaceholder}
-                      value={customBase}
-                      onChange={(e) => setCustomBase(e.target.value)}
-                      disabled={!canEdit || busy}
-                      className="bg-background/80 font-mono text-xs"
-                    />
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    <Key className="h-3 w-3" />
-                    API keys (failover order · max {maxKeys})
-                  </Label>
-                  {slots.map((val, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="w-5 shrink-0 text-[10px] text-muted-foreground">#{i + 1}</span>
-                      <div className="relative min-w-0 flex-1">
-                        <Input
-                          type={showKeys[p.id] ? "text" : "password"}
-                          autoComplete="off"
-                          placeholder={
-                            hints[i]
-                              ? `Saved (${hints[i]}) — leave blank to keep`
-                              : p.keyPlaceholder
-                          }
-                          value={val}
-                          onChange={(e) =>
-                            setKeySlots((prev) => {
-                              const next = [...(prev[p.id] ?? [""])];
-                              next[i] = e.target.value;
-                              return { ...prev, [p.id]: next };
-                            })
-                          }
-                          disabled={!canEdit || busy}
-                          className="bg-background/80 pr-9 font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowKeys((s) => ({ ...s, [p.id]: !s[p.id] }))}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
-                          tabIndex={-1}
-                        >
-                          {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                        </button>
-                      </div>
-                      {canEdit && slots.length > 1 && (
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                          disabled={busy}
-                          onClick={() =>
-                            setKeySlots((prev) => ({
-                              ...prev,
-                              [p.id]: (prev[p.id] ?? []).filter((_, j) => j !== i),
-                            }))
-                          }
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-                  {canEdit && slots.length < maxKeys && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-8 text-xs"
-                      disabled={busy}
-                      onClick={() =>
-                        setKeySlots((prev) => ({
-                          ...prev,
-                          [p.id]: [...(prev[p.id] ?? []), ""],
-                        }))
-                      }
-                    >
-                      <Plus className="mr-1.5 h-3.5 w-3.5" />
-                      Add backup key
-                    </Button>
-                  )}
-                </div>
-
-                {canEdit && (
-                  <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
-                    {hasOrg && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() => handleClear(p)}
-                        className="h-8 text-xs text-muted-foreground transition-colors hover:text-destructive"
-                      >
-                        {isCurrentClearing ? (
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                        )}
-                        Clear all
-                      </Button>
-                    )}
-                    <Button size="sm" disabled={busy} onClick={() => handleSaveKeys(p)} className="h-8 text-xs font-medium">
-                      {isCurrentSaving ? (
-                        <>
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                          Saving...
-                        </>
-                      ) : (
-                        `Save ${p.name}`
-                      )}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Task routing */}
-      <div className="rounded-2xl border bg-card/70 p-5">
-        <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+      {/* Priority */}
+      <section className="space-y-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-base font-semibold tracking-tight">Task priority &amp; backups</h2>
-            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-              Top of each list = primary provider. Lower entries are backups if the primary hits limits or errors.
-              Example: put Gemini first for screening, OpenAI first for heavy multi-level rounds.
+            <h2 className="text-lg font-semibold tracking-tight">Provider priority</h2>
+            <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
+              {canEdit ? "Drag to reorder. " : ""}Top of each list is tried first; the rest are backups.
             </p>
           </div>
           {canEdit && (
-            <Button
-              size="sm"
-              className="h-8 text-xs"
-              disabled={busy}
-              onClick={() => {
-                setPendingAction({ id: "routing", type: "save" });
-                saveRouting.mutate({ organizationId: orgId, routing });
-              }}
-            >
+            <Button size="sm" className="h-8 text-xs" disabled={busy} onClick={savePriority}>
               {pendingAction?.id === "routing" && saveRouting.isLoading ? (
                 <>
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
                   Saving...
                 </>
               ) : (
-                "Save routing"
+                "Save priority"
               )}
             </Button>
           )}
         </div>
 
+        {/* Voice interviews */}
+        <div className="rounded-2xl border border-emerald-500/20 bg-card/70 p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <Mic className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+            <h3 className="text-sm font-semibold">Voice interviews</h3>
+            <span className="text-[11px] text-muted-foreground">OpenAI, Gemini and a voice-ready Custom model only</span>
+          </div>
+
+          {voiceWarning && (
+            <div
+              role="alert"
+              className="mb-3 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
+            >
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <p className="flex-1">{voiceWarning}</p>
+              <button type="button" onClick={() => setVoiceWarning(null)} aria-label="Dismiss" className="shrink-0">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
+          <SortableList
+            items={voiceList}
+            getKey={(pid) => `voice-${pid}`}
+            disabled={!canEdit || busy || voiceList.length < 2}
+            onReorder={(next) => setRouting((prev) => ({ ...prev, voice: next }))}
+          >
+            {(pid, index, handle) => {
+              const Logo = providerMeta[pid]?.logo;
+              return (
+                <div
+                  className={cn(
+                    "flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 text-sm",
+                    index === 0 && "border-emerald-500/30",
+                  )}
+                >
+                  {handle ?? <span className="w-5 shrink-0" />}
+                  {Logo ? <Logo className="h-4 w-4 shrink-0" /> : null}
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {PROVIDER_SHORT[pid] ?? pid}
+                    {!isConfigured(pid) && (
+                      <span className="ml-2 text-[10px] font-normal text-amber-600 dark:text-amber-400">no key yet</span>
+                    )}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[10px] font-normal",
+                      index === 0
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {index === 0 ? "Primary" : `Backup ${index}`}
+                  </Badge>
+                  {canEdit && (
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                      aria-label={`Remove ${PROVIDER_SHORT[pid]} from voice`}
+                      disabled={busy}
+                      onClick={() =>
+                        setRouting((prev) => ({ ...prev, voice: (prev.voice ?? []).filter((x) => x !== pid) }))
+                      }
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              );
+            }}
+          </SortableList>
+          {voiceList.length === 0 && (
+            <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
+              No voice provider selected — add one below.
+            </p>
+          )}
+
+          {canEdit && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-muted-foreground">Add:</span>
+              {PROVIDERS.filter((p) => !voiceList.includes(p.id)).map((p) => {
+                const blocked = !!voiceBlockedReason(p.id);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => addToVoice(p.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                      blocked
+                        ? "border-dashed text-muted-foreground hover:border-destructive/50 hover:text-destructive"
+                        : "hover:bg-muted",
+                    )}
+                  >
+                    {blocked ? <MicOff className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                    {PROVIDER_SHORT[p.id]}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Text tasks */}
         <div className="grid gap-4 md:grid-cols-2">
-          {taskKinds.map((task) => {
-            const meta = TASK_LABELS[task] ?? { title: task, hint: "" };
+          {Object.entries(TEXT_TASKS).map(([task, meta]) => {
             const list = routing[task] ?? [];
             return (
-              <div key={task} className="rounded-xl border bg-background/50 p-3">
-                <div className="mb-2">
-                  <div className="text-sm font-medium">{meta.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{meta.hint}</div>
+              <div key={task} className="rounded-xl border bg-card/60 p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <Type className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                  <div>
+                    <div className="text-sm font-medium">{meta.title}</div>
+                    <div className="text-[11px] text-muted-foreground">{meta.hint}</div>
+                  </div>
                 </div>
-                <ol className="space-y-1.5">
-                  {list.map((pid, index) => (
-                    <li
-                      key={`${task}-${pid}`}
-                      className="flex items-center gap-2 rounded-md border bg-card px-2 py-1.5 text-xs"
-                    >
-                      <span className="w-4 text-muted-foreground">{index + 1}.</span>
-                      <span className="min-w-0 flex-1 font-medium">
-                        {PROVIDER_SHORT[pid] ?? pid}
-                        {index === 0 ? (
-                          <span className="ml-1.5 text-[10px] font-normal text-emerald-600 dark:text-emerald-400">
-                            primary
-                          </span>
-                        ) : (
-                          <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">backup</span>
+                <SortableList
+                  items={list}
+                  getKey={(pid) => `${task}-${pid}`}
+                  disabled={!canEdit || busy || list.length < 2}
+                  onReorder={(next) => setRouting((prev) => ({ ...prev, [task]: next }))}
+                >
+                  {(pid, index, handle) => {
+                    const Logo = providerMeta[pid]?.logo;
+                    return (
+                      <div
+                        className={cn(
+                          "flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 text-sm",
+                          index === 0 && "border-emerald-500/30",
                         )}
-                      </span>
-                      {canEdit && (
-                        <span className="flex shrink-0 gap-0.5">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            disabled={index === 0 || busy}
-                            onClick={() => moveRoute(task, index, -1)}
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            disabled={index === list.length - 1 || busy}
-                            onClick={() => moveRoute(task, index, 1)}
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </Button>
+                      >
+                        {handle ?? <span className="w-5 shrink-0" />}
+                        {Logo ? <Logo className="h-4 w-4 shrink-0" /> : null}
+                        <span className="min-w-0 flex-1 truncate font-medium">
+                          {PROVIDER_SHORT[pid] ?? pid}
+                          {!isConfigured(pid) && (
+                            <span className="ml-2 text-[10px] font-normal text-amber-600 dark:text-amber-400">
+                              no key yet
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </li>
-                  ))}
-                </ol>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px] font-normal",
+                            index === 0
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {index === 0 ? "Primary" : `Backup ${index}`}
+                        </Badge>
+                      </div>
+                    );
+                  }}
+                </SortableList>
               </div>
             );
           })}
         </div>
-      </div>
+      </section>
     </div>
   );
 }

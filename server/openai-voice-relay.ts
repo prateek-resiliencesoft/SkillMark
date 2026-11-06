@@ -767,9 +767,10 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   let pendingPromptTimer: ReturnType<typeof setTimeout> | null = null;
   let lastTranscriptUpdateAt = 0;
   const USER_TRANSCRIPT_STABILITY_MS = 900;
-  const USER_TRANSCRIPT_MAX_WAIT_MS = 4500;
-  const USER_TURN_SPLIT_SILENCE_MS = 1200;
-  const USER_SPEECH_STOP_FINALIZE_MS = 1600;
+  const USER_TRANSCRIPT_MAX_WAIT_MS = 6000;
+  const USER_TURN_SPLIT_SILENCE_MS = 5500;
+  // ~5.5s of silence before the interviewer replies / asks the next question.
+  const USER_SPEECH_STOP_FINALIZE_MS = 5500;
   const SPEECH_STOP_FORWARD_GRACE_MS = 1400;
   const STALE_ASR_GUARD_MS = 1500;
   let staleAsrGuardText = "";

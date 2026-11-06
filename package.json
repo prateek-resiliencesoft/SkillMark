@@ -19,7 +19,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test:web": "node --import tsx --test tests/session-score.test.ts tests/relay-routing.test.ts tests/voice-save-route.test.ts tests/playback-jitter-buffer.test.ts tests/openai-voice-relay-helpers.test.ts tests/voice-relay-helpers.test.ts tests/api-rate-limit.test.ts tests/interview-templates.test.ts tests/api-key-auth.test.ts tests/session-lifecycle.test.ts tests/session-link.test.ts tests/voice-relay-reconnect.test.ts tests/theme-tokens.test.ts tests/tailwind-palette.test.ts tests/theme-provider.test.ts tests/question-bank-router.test.ts tests/generator-prompt.test.ts tests/theme-transition.test.ts tests/bklit-dashboard-components.test.ts tests/flipping-word-swap.test.ts tests/head-movement.test.ts tests/batch-invites.test.ts tests/webhooks.test.ts tests/interview-forms.test.ts tests/network-security.test.ts tests/session-error-log.test.ts tests/report-template.test.ts",
+    "test:web": "node --import tsx --test tests/session-score.test.ts tests/relay-routing.test.ts tests/voice-save-route.test.ts tests/playback-jitter-buffer.test.ts tests/openai-voice-relay-helpers.test.ts tests/voice-relay-helpers.test.ts tests/api-rate-limit.test.ts tests/interview-templates.test.ts tests/api-key-auth.test.ts tests/session-lifecycle.test.ts tests/session-link.test.ts tests/ai-key-order.test.ts tests/ai-capabilities.test.ts tests/voice-relay-reconnect.test.ts tests/theme-tokens.test.ts tests/tailwind-palette.test.ts tests/theme-provider.test.ts tests/question-bank-router.test.ts tests/generator-prompt.test.ts tests/theme-transition.test.ts tests/bklit-dashboard-components.test.ts tests/flipping-word-swap.test.ts tests/head-movement.test.ts tests/batch-invites.test.ts tests/webhooks.test.ts tests/interview-forms.test.ts tests/network-security.test.ts tests/session-error-log.test.ts tests/report-template.test.ts",
     "test:functional": "node --import tsx --test --test-concurrency=1 tests/functional.test.ts",
     "dev:voice": "npx tsx server/voice-relay.ts",
     "dev:openai-voice": "npx tsx server/openai-voice-relay.ts",
@@ -30,7 +30,8 @@
     "db:psql": "docker compose exec db psql -U skillmark -d skillmark",
     "db:dump": "docker compose exec -T db pg_dump -U skillmark -d skillmark --data-only --schema=public --schema=auth > skillmark-data.sql",
     "db:restore": "docker compose exec -T db psql -U skillmark -d skillmark < skillmark-data.sql",
-    "mediapipe:assets": "bash scripts/mediapipe-assets.sh"
+    "mediapipe:assets": "bash scripts/mediapipe-assets.sh",
+    "vad:assets": "bash scripts/vad-assets.sh"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.0",
@@ -58,6 +59,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@ricky0123/vad-web": "^0.0.31",
     "@supabase/postgrest-js": "^2.95.3",
     "@tanstack/react-query": "^4.43.0",
     "@trpc/client": "^10.45.4",
@@ -88,6 +90,7 @@
     "motion": "^14.7.1",
     "next": "14.2.35",
     "next-themes": "^0.4.6",
+    "onnxruntime-web": "^1.31.1",
     "openai": "^6.22.0",
     "pdf-parse": "^1.1.1",
     "prism-react-renderer": "^2.4.1",
