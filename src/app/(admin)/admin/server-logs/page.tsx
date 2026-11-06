@@ -1,5 +1,6 @@
 "use client";
 
+import { usePollInterval } from "@/components/admin/poll-interval-control";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,13 +33,6 @@ type LevelFilter =
   | "debug"
   | "unknown";
 
-const RANGES: { label: string; minutes: number }[] = [
-  { label: "15m", minutes: 15 },
-  { label: "1h", minutes: 60 },
-  { label: "6h", minutes: 360 },
-  { label: "24h", minutes: 1440 },
-];
-
 const LEVEL_FILTERS: { id: LevelFilter; label: string }[] = [
   { id: "all", label: "All levels" },
   { id: "problems", label: "Errors + warns" },
@@ -49,15 +43,9 @@ const LEVEL_FILTERS: { id: LevelFilter; label: string }[] = [
   { id: "unknown", label: "Unknown" },
 ];
 
-const REFRESH_PRESETS: { label: string; ms: number | "custom" }[] = [
-  { label: "Off", ms: 0 },
-  { label: "1s", ms: 1_000 },
-  { label: "5s", ms: 5_000 },
-  { label: "15s", ms: 15_000 },
-  { label: "30s", ms: 30_000 },
-  { label: "1m", ms: 60_000 },
-  { label: "Custom", ms: "custom" },
-];
+
+/** Fixed look-back window; the polling control decides how fresh it is. */
+const LOG_WINDOW_MINUTES = 60;
 
 const PAGE_SIZES = [25, 50, 100] as const;
 
@@ -106,29 +94,18 @@ function formatTs(iso: string) {
   }
 }
 
-function clampCustomSeconds(raw: string) {
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return 1;
-  return Math.min(3600, Math.max(1, n));
-}
-
 export default function AdminServerLogsPage() {
   const [source, setSource] = useState<Source>("all");
-  const [minutes, setMinutes] = useState(60);
+  const minutes = LOG_WINDOW_MINUTES;
   const [searchInput, setSearchInput] = useState("");
   const deferredSearch = useDeferredValue(searchInput.trim());
 
   const [levelFilter, setLevelFilter] = useState<LevelFilter>("all");
   const [fileFilter, setFileFilter] = useState<string>("all");
-  const [refreshPreset, setRefreshPreset] = useState<number | "custom">(5_000);
-  const [customSeconds, setCustomSeconds] = useState("10");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(50);
 
-  const refreshMs =
-    refreshPreset === "custom"
-      ? clampCustomSeconds(customSeconds) * 1000
-      : refreshPreset;
+  const { ms: refreshMs, control: pollControl } = usePollInterval(5_000);
 
   const logs = trpc.platform.serverLogs.useQuery(
     {
@@ -173,7 +150,7 @@ export default function AdminServerLogsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [source, minutes, deferredSearch, pageSize, levelFilter, fileFilter]);
+  }, [source, deferredSearch, pageSize, levelFilter, fileFilter]);
 
   useEffect(() => {
     if (fileFilter !== "all" && !fileOptions.includes(fileFilter)) {
@@ -310,62 +287,7 @@ export default function AdminServerLogsPage() {
           </SelectContent>
         </Select>
 
-        <div className="flex rounded-md border p-0.5">
-          {RANGES.map((r) => (
-            <button
-              key={r.minutes}
-              type="button"
-              onClick={() => setMinutes(r.minutes)}
-              className={cn(
-                "rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                minutes === r.minutes
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground">Auto</span>
-          <div className="flex rounded-md border p-0.5">
-            {REFRESH_PRESETS.map((r) => (
-              <button
-                key={r.label}
-                type="button"
-                onClick={() => setRefreshPreset(r.ms)}
-                className={cn(
-                  "rounded px-2 py-1 text-xs font-medium transition-colors",
-                  refreshPreset === r.ms
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-          {refreshPreset === "custom" ? (
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Input
-                type="number"
-                min={1}
-                max={3600}
-                step={1}
-                value={customSeconds}
-                onChange={(e) => setCustomSeconds(e.target.value)}
-                onBlur={() =>
-                  setCustomSeconds(String(clampCustomSeconds(customSeconds)))
-                }
-                className="h-8 w-20 text-sm"
-                aria-label="Custom refresh seconds"
-              />
-              <span>sec (1–3600)</span>
-            </label>
-          ) : null}
-        </div>
+        {pollControl}
 
         <Input
           value={searchInput}

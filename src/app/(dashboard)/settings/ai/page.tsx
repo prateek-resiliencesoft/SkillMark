@@ -5,12 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SortableList } from "@/components/ui/sortable-list";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown,
-  ArrowUp,
   Check,
   ExternalLink,
   Eye,
@@ -27,6 +26,23 @@ import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
+
+/** One API key row. `keep` = index of the already-saved key it represents (null = new). */
+type KeySlot = { id: string; keep: number | null; value: string };
+
+let slotCounter = 0;
+const newSlot = (keep: number | null = null): KeySlot => ({
+  id: `slot-${++slotCounter}`,
+  keep,
+  value: "",
+});
+const emptySlots = (): Record<ProviderId, KeySlot[]> => ({
+  openai: [newSlot()],
+  gemini: [newSlot()],
+  nvidia: [newSlot()],
+  anthropic: [newSlot()],
+  custom: [newSlot()],
+});
 
 // Official vector logos
 function OpenAiLogo({ className }: { className?: string }) {
@@ -191,13 +207,7 @@ export default function AiSettingsPage() {
   const utils = trpc.useUtils();
   const query = trpc.aiSettings.get.useQuery({ organizationId: orgId }, { enabled: !!orgId });
 
-  const [keySlots, setKeySlots] = useState<Record<ProviderId, string[]>>({
-    openai: [""],
-    gemini: [""],
-    nvidia: [""],
-    anthropic: [""],
-    custom: [""],
-  });
+  const [keySlots, setKeySlots] = useState<Record<ProviderId, KeySlot[]>>(emptySlots);
   const [showKeys, setShowKeys] = useState<Record<ProviderId, boolean>>({
     openai: false,
     gemini: false,
@@ -213,17 +223,12 @@ export default function AiSettingsPage() {
     if (!query.data) return;
     const custom = query.data.providers.find((p) => p.id === "custom");
     setCustomBase(custom?.baseUrl ?? "");
-    const nextSlots: Record<ProviderId, string[]> = {
-      openai: [""],
-      gemini: [""],
-      nvidia: [""],
-      anthropic: [""],
-      custom: [""],
-    };
+    const nextSlots = emptySlots();
     for (const p of query.data.providers) {
       const id = p.id as ProviderId;
-      const n = Math.max(1, p.keyCount || 0);
-      nextSlots[id] = Array.from({ length: n }, () => "");
+      if ((p.keyCount || 0) > 0) {
+        nextSlots[id] = Array.from({ length: p.keyCount }, (_, i) => newSlot(i));
+      }
     }
     setKeySlots(nextSlots);
     setRouting(query.data.routing as Record<string, ProviderId[]>);
@@ -301,7 +306,10 @@ export default function AiSettingsPage() {
     saveKeys.mutate({
       organizationId: orgId,
       providerId: p.id,
-      keySlots: keySlots[p.id],
+      slots: (keySlots[p.id] ?? []).map((sl) => ({
+        keep: sl.keep,
+        value: sl.value.trim() || undefined,
+      })),
       ...(p.needsBaseUrl ? { baseUrl: customBase.trim() || null } : {}),
     });
   };
@@ -311,15 +319,7 @@ export default function AiSettingsPage() {
     clearProvider.mutate({ organizationId: orgId, providerId: p.id });
   };
 
-  const moveRoute = (task: string, index: number, dir: -1 | 1) => {
-    setRouting((prev) => {
-      const list = [...(prev[task] ?? [])];
-      const j = index + dir;
-      if (j < 0 || j >= list.length) return prev;
-      [list[index], list[j]] = [list[j], list[index]];
-      return { ...prev, [task]: list };
-    });
-  };
+  const providerMeta = Object.fromEntries(PROVIDERS.map((m) => [m.id, m])) as Record<ProviderId, ProviderMeta>;
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 pb-10">
@@ -344,7 +344,7 @@ export default function AiSettingsPage() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {PROVIDERS.map((p) => {
           const row = byId[p.id];
-          const slots = keySlots[p.id] ?? [""];
+          const slots = keySlots[p.id] ?? [newSlot()];
           const hints = row?.apiKeyHints ?? [];
           const hasOrg = (row?.keyCount ?? 0) > 0 || (p.id === "custom" && !!row?.baseUrl);
           const hasEnv = !!envFallback[p.id];
@@ -434,59 +434,75 @@ export default function AiSettingsPage() {
                 <div className="space-y-2">
                   <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                     <Key className="h-3 w-3" />
-                    API keys (failover order · max {maxKeys})
+                    API keys · drag to set failover order (max {maxKeys})
                   </Label>
-                  {slots.map((val, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="w-5 shrink-0 text-[10px] text-muted-foreground">#{i + 1}</span>
-                      <div className="relative min-w-0 flex-1">
-                        <Input
-                          type={showKeys[p.id] ? "text" : "password"}
-                          autoComplete="off"
-                          placeholder={
-                            hints[i]
-                              ? `Saved (${hints[i]}) — leave blank to keep`
-                              : p.keyPlaceholder
-                          }
-                          value={val}
-                          onChange={(e) =>
-                            setKeySlots((prev) => {
-                              const next = [...(prev[p.id] ?? [""])];
-                              next[i] = e.target.value;
-                              return { ...prev, [p.id]: next };
-                            })
-                          }
-                          disabled={!canEdit || busy}
-                          className="bg-background/80 pr-9 font-mono text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowKeys((s) => ({ ...s, [p.id]: !s[p.id] }))}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
-                          tabIndex={-1}
+                  <SortableList
+                    items={slots}
+                    getKey={(sl) => sl.id}
+                    disabled={!canEdit || busy || slots.length < 2}
+                    onReorder={(next) => setKeySlots((prev) => ({ ...prev, [p.id]: next }))}
+                  >
+                    {(slot, i, handle) => (
+                      <div className="flex items-center gap-1.5 rounded-lg bg-card/0">
+                        {handle ?? <span className="w-5 shrink-0" />}
+                        <span
+                          className={cn(
+                            "w-14 shrink-0 text-[10px] font-medium",
+                            i === 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
+                          )}
                         >
-                          {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                        </button>
+                          {i === 0 ? "Primary" : `Backup ${i}`}
+                        </span>
+                        <div className="relative min-w-0 flex-1">
+                          <Input
+                            type={showKeys[p.id] ? "text" : "password"}
+                            autoComplete="off"
+                            placeholder={
+                              slot.keep != null && hints[slot.keep]
+                                ? `Saved (${hints[slot.keep]}) — leave blank to keep`
+                                : p.keyPlaceholder
+                            }
+                            value={slot.value}
+                            onChange={(e) =>
+                              setKeySlots((prev) => ({
+                                ...prev,
+                                [p.id]: (prev[p.id] ?? []).map((x) =>
+                                  x.id === slot.id ? { ...x, value: e.target.value } : x,
+                                ),
+                              }))
+                            }
+                            disabled={!canEdit || busy}
+                            className="bg-background/80 pr-9 font-mono text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowKeys((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                            tabIndex={-1}
+                          >
+                            {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                        {canEdit && slots.length > 1 && (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                            disabled={busy}
+                            onClick={() =>
+                              setKeySlots((prev) => ({
+                                ...prev,
+                                [p.id]: (prev[p.id] ?? []).filter((x) => x.id !== slot.id),
+                              }))
+                            }
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </div>
-                      {canEdit && slots.length > 1 && (
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                          disabled={busy}
-                          onClick={() =>
-                            setKeySlots((prev) => ({
-                              ...prev,
-                              [p.id]: (prev[p.id] ?? []).filter((_, j) => j !== i),
-                            }))
-                          }
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                    )}
+                  </SortableList>
                   {canEdit && slots.length < maxKeys && (
                     <Button
                       type="button"
@@ -497,7 +513,7 @@ export default function AiSettingsPage() {
                       onClick={() =>
                         setKeySlots((prev) => ({
                           ...prev,
-                          [p.id]: [...(prev[p.id] ?? []), ""],
+                          [p.id]: [...(prev[p.id] ?? []), newSlot()],
                         }))
                       }
                     >
@@ -547,10 +563,10 @@ export default function AiSettingsPage() {
       <div className="rounded-2xl border bg-card/70 p-5">
         <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-base font-semibold tracking-tight">Task priority &amp; backups</h2>
+            <h2 className="text-base font-semibold tracking-tight">Provider priority</h2>
             <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-              Top of each list = primary provider. Lower entries are backups if the primary hits limits or errors.
-              Example: put Gemini first for screening, OpenAI first for heavy multi-level rounds.
+              {canEdit ? "Drag providers to reorder. " : ""}The top one is tried first; the others are backups if it
+              fails or hits a limit.
             </p>
           </div>
           {canEdit && (
@@ -569,7 +585,7 @@ export default function AiSettingsPage() {
                   Saving...
                 </>
               ) : (
-                "Save routing"
+                "Save priority"
               )}
             </Button>
           )}
@@ -585,50 +601,39 @@ export default function AiSettingsPage() {
                   <div className="text-sm font-medium">{meta.title}</div>
                   <div className="text-[11px] text-muted-foreground">{meta.hint}</div>
                 </div>
-                <ol className="space-y-1.5">
-                  {list.map((pid, index) => (
-                    <li
-                      key={`${task}-${pid}`}
-                      className="flex items-center gap-2 rounded-md border bg-card px-2 py-1.5 text-xs"
-                    >
-                      <span className="w-4 text-muted-foreground">{index + 1}.</span>
-                      <span className="min-w-0 flex-1 font-medium">
-                        {PROVIDER_SHORT[pid] ?? pid}
-                        {index === 0 ? (
-                          <span className="ml-1.5 text-[10px] font-normal text-emerald-600 dark:text-emerald-400">
-                            primary
-                          </span>
-                        ) : (
-                          <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">backup</span>
+                <SortableList
+                  items={list}
+                  getKey={(pid) => `${task}-${pid}`}
+                  disabled={!canEdit || busy || list.length < 2}
+                  onReorder={(next) => setRouting((prev) => ({ ...prev, [task]: next }))}
+                >
+                  {(pid, index, handle) => {
+                    const Logo = providerMeta[pid]?.logo;
+                    return (
+                      <div
+                        className={cn(
+                          "flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 text-sm",
+                          index === 0 && "border-emerald-500/30",
                         )}
-                      </span>
-                      {canEdit && (
-                        <span className="flex shrink-0 gap-0.5">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            disabled={index === 0 || busy}
-                            onClick={() => moveRoute(task, index, -1)}
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            disabled={index === list.length - 1 || busy}
-                            onClick={() => moveRoute(task, index, 1)}
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </Button>
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ol>
+                      >
+                        {handle ?? <span className="w-5 shrink-0" />}
+                        {Logo ? <Logo className="h-4 w-4 shrink-0" /> : null}
+                        <span className="min-w-0 flex-1 truncate font-medium">{PROVIDER_SHORT[pid] ?? pid}</span>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px] font-normal",
+                            index === 0
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {index === 0 ? "Primary" : `Backup ${index}`}
+                        </Badge>
+                      </div>
+                    );
+                  }}
+                </SortableList>
               </div>
             );
           })}

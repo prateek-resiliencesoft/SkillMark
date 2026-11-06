@@ -1,12 +1,13 @@
 "use client";
 
+import { usePollInterval } from "@/components/admin/poll-interval-control";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc/client";
 import type { MetricPoint, ServerMetricKey } from "@/lib/grafana/client";
 import { cn } from "@/lib/utils";
 import { ExternalLink, RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -17,20 +18,8 @@ import {
   YAxis,
 } from "recharts";
 
-const RANGES = [
-  { label: "15m", minutes: 15 },
-  { label: "1h", minutes: 60 },
-  { label: "6h", minutes: 360 },
-  { label: "24h", minutes: 1440 },
-  { label: "7d", minutes: 10080 },
-];
-
-const REFRESH = [
-  { label: "Off", ms: 0 },
-  { label: "10s", ms: 10_000 },
-  { label: "30s", ms: 30_000 },
-  { label: "1m", ms: 60_000 },
-];
+/** Fixed look-back window; the polling control decides how fresh it is. */
+const WINDOW_MINUTES = 60;
 
 const pct = (v: number) => `${v.toFixed(1)}%`;
 function bytes(v: number) {
@@ -163,8 +152,8 @@ function MetricChart({
 }
 
 export default function AdminServerActivityPage() {
-  const [minutes, setMinutes] = useState(60);
-  const [refreshMs, setRefreshMs] = useState(30_000);
+  const minutes = WINDOW_MINUTES;
+  const { ms: refreshMs, control: pollControl } = usePollInterval(30_000);
 
   const q = trpc.platform.serverActivity.useQuery(
     { minutes },
@@ -210,36 +199,7 @@ export default function AdminServerActivityPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex rounded-lg border p-0.5" role="group" aria-label="Time range">
-            {RANGES.map((r) => (
-              <button
-                key={r.minutes}
-                type="button"
-                onClick={() => setMinutes(r.minutes)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-xs",
-                  minutes === r.minutes ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-          <div className="flex rounded-lg border p-0.5" role="group" aria-label="Auto refresh">
-            {REFRESH.map((r) => (
-              <button
-                key={r.ms}
-                type="button"
-                onClick={() => setRefreshMs(r.ms)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-xs",
-                  refreshMs === r.ms ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
+          {pollControl}
           <Button size="sm" variant="outline" onClick={() => q.refetch()} disabled={q.isFetching}>
             <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", q.isFetching && "animate-spin")} />
             Refresh
