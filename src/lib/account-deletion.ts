@@ -13,6 +13,9 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { scrubUser } from "@/lib/users";
 import { nanoid } from "@/lib/id";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("account-deletion");
 
 export type DeleteAccountResult =
   | { ok: true }
@@ -65,6 +68,7 @@ export async function deleteAccount(
     })),
     stats: { interviews: interviewCount ?? 0, memberships: memberships?.length ?? 0 },
   });
+  if (archiveError) log.error("archive failed:", archiveError.message);
   if (archiveError) return { ok: false, status: 500, error: "Could not archive account." };
 
   // Retain org data but take owned orgs out of service (same shape as platform soft delete).
@@ -94,6 +98,7 @@ export async function deleteAccount(
     .eq("id", userId);
 
   const { error } = await scrubUser(userId);
+  if (error) log.error("scrub failed:", error);
   if (error) return { ok: false, status: 500, error: "Could not remove account credentials." };
   return { ok: true };
 }
