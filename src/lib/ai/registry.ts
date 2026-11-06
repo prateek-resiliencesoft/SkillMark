@@ -132,7 +132,7 @@ export async function resolveProviderChain(
   organizationId?: string | null,
   task: AiTaskKind = "standard",
 ): Promise<ChainEntry[]> {
-  const { merged, envOnly, routing } = await loadCredsPair(organizationId);
+  const { merged, envOnly, routing, orgPlain } = await loadCredsPair(organizationId);
   const order = routingForTask(routing, task);
   const chain: ChainEntry[] = [];
   const seenKeys = new Set<string>();
@@ -149,7 +149,8 @@ export async function resolveProviderChain(
       if (!provider) return;
       chain.push({
         provider,
-        model: modelFor(provider),
+        // Custom endpoint: honour the model the org configured for text work.
+        model: (id === "custom" && source === "org" && orgPlain.custom?.textModel) || modelFor(provider),
         source,
         keyIndex,
       });

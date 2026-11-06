@@ -3,6 +3,7 @@ if (typeof window !== "undefined") {
 }
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import type { Context } from "@/server/context";
+import { checkVoiceModel, isVoiceCapableProvider } from "./capabilities";
 
 export const AI_PROVIDER_IDS = ["openai", "gemini", "nvidia", "anthropic", "custom"] as const;
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
@@ -16,6 +17,7 @@ export const AI_TASK_KINDS = [
   "report", // scoring / summaries
   "resume", // CV parse
   "generate", // question generation
+  "voice", // live voice interviews — voice-capable providers only
 ] as const;
 export type AiTaskKind = (typeof AI_TASK_KINDS)[number];
 
@@ -27,6 +29,10 @@ export type AiProviderStored = {
   /** Encrypted API keys (max 5). */
   apiKeys?: (string | null)[];
   baseUrl?: string | null;
+  /** Custom endpoint only: model for chat/reports/etc. */
+  textModel?: string | null;
+  /** Custom endpoint only: realtime model for voice interviews (validated). */
+  voiceModel?: string | null;
 };
 
 export type AiRoutingStored = Partial<Record<AiTaskKind, AiProviderId[]>>;
@@ -81,6 +87,9 @@ export function decryptAiProviders(raw: unknown): AiProvidersStored {
       apiKeys: plainKeys,
       apiKey: plainKeys[0] ?? null,
       baseUrl: row.baseUrl?.trim() || null,
+      ...(id === "custom"
+        ? { textModel: row.textModel?.trim() || null, voiceModel: row.voiceModel?.trim() || null }
+        : {}),
     };
   }
   if (obj.routing && typeof obj.routing === "object") {
@@ -94,9 +103,11 @@ function sanitizeRouting(raw: AiRoutingStored): AiRoutingStored {
   for (const kind of AI_TASK_KINDS) {
     const list = raw[kind];
     if (!Array.isArray(list)) continue;
-    const cleaned = list.filter((id): id is AiProviderId =>
+    let cleaned = list.filter((id): id is AiProviderId =>
       (AI_PROVIDER_IDS as readonly string[]).includes(id),
     );
+    // Voice interviews: text-only providers never belong here.
+    if (kind === "voice") cleaned = cleaned.filter((id) => isVoiceCapableProvider(id));
     if (cleaned.length) out[kind] = cleaned;
   }
   return out;
@@ -239,6 +250,29 @@ export function applyKeySlotsPatch(
   return current;
 }
 
+/** Save the custom endpoint's models. Voice model must pass the voice check. */
+export function applyCustomModelsPatch(
+  currentRaw: unknown,
+  patch: { textModel?: string | null; voiceModel?: string | null },
+): { next: AiProvidersStored; error?: string } {
+  const current = (
+    currentRaw && typeof currentRaw === "object" ? { ...(currentRaw as object) } : {}
+  ) as AiProvidersStored;
+  const prev = current.custom ?? {};
+  const row: AiProviderStored = { ...prev };
+  if (patch.textModel !== undefined) row.textModel = patch.textModel?.trim() || null;
+  if (patch.voiceModel !== undefined) {
+    const v = patch.voiceModel?.trim() || null;
+    if (v) {
+      const check = checkVoiceModel(v);
+      if (!check.ok) return { next: current, error: check.reason };
+    }
+    row.voiceModel = v;
+  }
+  current.custom = row;
+  return { next: current };
+}
+
 export type KeySlotInput = {
   /** Index of an already-saved key to keep (position in the stored list). */
   keep?: number | null;
@@ -348,6 +382,7 @@ export const DEFAULT_TASK_ROUTING: Record<AiTaskKind, AiProviderId[]> = {
   report: ["openai", "gemini", "anthropic", "nvidia", "custom"],
   resume: ["gemini", "openai", "anthropic", "nvidia", "custom"],
   generate: ["openai", "gemini", "anthropic", "nvidia", "custom"],
+  voice: ["openai", "gemini"],
 };
 
 /** Per-provider chat model (env override). Failover always swaps to this provider's model — never reuses another vendor's id. */
