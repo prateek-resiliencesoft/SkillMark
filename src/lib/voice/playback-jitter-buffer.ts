@@ -1,6 +1,6 @@
 export const PLAYBACK_SAMPLE_RATE = 24_000;
 export const JITTER_BUFFER_TARGET_MS = 200;
-export const JITTER_BUFFER_LOW_WATER_MS = 60;
+export const JITTER_BUFFER_LOW_WATER_MS = 120;
 export const JITTER_BUFFER_MAX_WAIT_MS = 250;
 export const JITTER_BUFFER_MAX_BATCH_MS = 260;
 

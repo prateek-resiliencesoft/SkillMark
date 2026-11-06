@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  transpilePackages: ["@ricky0123/vad-web", "onnxruntime-web"],
   experimental: {
     serverComponentsExternalPackages: [
       "pdf-parse",

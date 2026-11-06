@@ -30,7 +30,8 @@
     "db:psql": "docker compose exec db psql -U skillmark -d skillmark",
     "db:dump": "docker compose exec -T db pg_dump -U skillmark -d skillmark --data-only --schema=public --schema=auth > skillmark-data.sql",
     "db:restore": "docker compose exec -T db psql -U skillmark -d skillmark < skillmark-data.sql",
-    "mediapipe:assets": "bash scripts/mediapipe-assets.sh"
+    "mediapipe:assets": "bash scripts/mediapipe-assets.sh",
+    "vad:assets": "bash scripts/vad-assets.sh"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.0",
@@ -58,6 +59,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@ricky0123/vad-web": "^0.0.31",
     "@supabase/postgrest-js": "^2.95.3",
     "@tanstack/react-query": "^4.43.0",
     "@trpc/client": "^10.45.4",
@@ -88,6 +90,7 @@
     "motion": "^14.7.1",
     "next": "14.2.35",
     "next-themes": "^0.4.6",
+    "onnxruntime-web": "^1.31.1",
     "openai": "^6.22.0",
     "pdf-parse": "^1.1.1",
     "prism-react-renderer": "^2.4.1",

@@ -19,6 +19,8 @@ ENV NEXT_PUBLIC_VOICE_RELAY_URL=$NEXT_PUBLIC_VOICE_RELAY_URL
 ENV NEXT_PUBLIC_OPENAI_VOICE_RELAY_URL=$NEXT_PUBLIC_OPENAI_VOICE_RELAY_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+# Self-host Silero VAD + onnxruntime wasm under public/vad (no CDN).
+RUN npm run vad:assets
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runner
