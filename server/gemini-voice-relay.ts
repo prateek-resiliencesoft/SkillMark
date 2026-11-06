@@ -37,7 +37,7 @@ const RELAY_PORT =
   Number(process.env.GEMINI_VOICE_RELAY_PORT || process.env.OPENAI_VOICE_RELAY_PORT) || 8082;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview";
-const GEMINI_VOICE = process.env.GEMINI_LIVE_VOICE || "Sulafat";
+const GEMINI_VOICE = process.env.GEMINI_LIVE_VOICE || "Kore";
 const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
@@ -407,6 +407,7 @@ When transitioning to a CODING or WHITEBOARD question:
 ## Important Rules
 - TURN-TAKING: Ask ONE question (or one follow-up), then STOP talking and wait silently for the participant to answer. Never answer your own question, never guess what they would say, and never keep talking after a question.
 - Only respond after the participant has finished speaking. If they pause briefly mid-answer, keep waiting. Base your reply on what they actually said.
+- CHECK-IN CUES: ONLY when you receive a message that starts with [ANSWER_CHECK_IN], ask ONE short warm question such as whether they would like to add anything or if you should move on. Do NOT advance the question in that same turn. If they say no / move on / that's all, continue normally. If they keep answering, listen. NEVER ask “would you like to add anything” (or similar) on your own — only when you see [ANSWER_CHECK_IN].
 - You MUST use the signal_question_change function to transition between questions. NEVER verbally say "let's move on" without also calling the function — the UI only updates when the function is called.
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
@@ -475,6 +476,11 @@ interface GeminiConnectOpts {
   /** Interview session id — used only for the per-session error log. */
   sessionId?: string;
   stage?: string;
+  /**
+   * When true, Gemini automatic VAD is disabled and the browser sends
+   * activityStart / activityEnd from Silero VAD + smart endpointing.
+   */
+  clientVad?: boolean;
 }
 
 async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
@@ -515,20 +521,28 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
           },
           thinkingConfig: { thinkingLevel: "MINIMAL" },
         },
-        realtimeInputConfig: {
-          // Let the candidate finish: low end-of-speech sensitivity + ~1.2s of
-          // silence before Gemini treats the turn as over; low start sensitivity
-          // so breaths/room noise don't open a turn.
-          automaticActivityDetection: {
-            disabled: false,
-            startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
-            endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-            prefixPaddingMs: 300,
-            silenceDurationMs: 1200,
-          },
-          // The interviewer's own voice (speaker echo) must never cut it off.
-          activityHandling: "NO_INTERRUPTION",
-        },
+        realtimeInputConfig: opts.clientVad
+          ? {
+              // Browser Silero VAD owns turn boundaries via activityStart/End.
+              automaticActivityDetection: { disabled: true },
+              // Real barge-in only — client raises activityStart after a high
+              // Silero confidence streak so speaker echo cannot cut the AI off.
+              activityHandling: "START_OF_ACTIVITY_INTERRUPTS",
+            }
+          : {
+              // Fallback when client VAD failed to load: long silence + low
+              // sensitivity so short nervous pauses don't end the turn.
+              automaticActivityDetection: {
+                disabled: false,
+                startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+                endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
+                prefixPaddingMs: 300,
+                // Client Silero owns pacing when available; this is only the
+                // no-VAD fallback — keep it snappy for clear answers.
+                silenceDurationMs: 2000,
+              },
+              activityHandling: "NO_INTERRUPTION",
+            },
         inputAudioTranscription: {},
         outputAudioTranscription: {},
         sessionResumption: opts.resumeHandle ? { handle: opts.resumeHandle } : {},
@@ -579,7 +593,12 @@ wss.on("connection", (browserWs) => {
       } else if (msg.type === "init" && msg.context) {
         clearTimeout(timeout);
         browserWs.removeListener("message", handler);
-        void handleInterview(browserWs, msg.context as InterviewContext, msg.sessionId);
+        void handleInterview(
+          browserWs,
+          msg.context as InterviewContext,
+          msg.sessionId,
+          !!msg.clientVad,
+        );
       }
     } catch { /* not JSON */ }
   };
@@ -637,7 +656,13 @@ async function handleMicTest(browserWs: WebSocket, language?: string, sessionId?
 
 // ── Interview ───────────────────────────────────────────────────────
 
-async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sessionId?: string) {
+async function handleInterview(
+  browserWs: WebSocket,
+  ctx: InterviewContext,
+  sessionId?: string,
+  clientVad = false,
+) {
+  let clientVadEnabled = clientVad;
   const apiKeys = await resolveGeminiKeys(sessionId);
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
@@ -659,6 +684,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
   let playbackEndsAt = 0;      // estimated time the browser finishes playing
   let lastUserSpeech = 0;
   let userSpokeThisQuestion = false;
+  let checkInAskedThisQuestion = false;
   let interviewDone = false;
   let pendingComplete = false;
   let completeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -750,6 +776,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
     currentQuestionIndex = idx;
     questionEnteredAt = Date.now();
     userSpokeThisQuestion = false;
+    checkInAskedThisQuestion = false;
     send({
       type: "question_change",
       questionIndex: currentQuestionIndex,
@@ -905,6 +932,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
         const handle = attempt === 1 ? resumeHandle : null;
         const ws = await connectGemini({
           apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
+          clientVad: clientVadEnabled,
           systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
         });
         gem = ws;
@@ -931,10 +959,10 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
 
   // ── Initial connection ──
   try {
-    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
+    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
     attach(gem);
-    log.info("Gemini session established");
-    send({ type: "ready", sessionId: "gemini-session" });
+    log.info(`Gemini session established (clientVad=${clientVadEnabled})`);
+    send({ type: "ready", sessionId: "gemini-session", clientVad: clientVadEnabled });
     send({ type: "question_change", questionIndex: currentQuestionIndex, totalQuestions: sortedQuestions.length });
     await new Promise((r) => setTimeout(r, 1_500));
     sayText(currentQuestionIndex > 0
@@ -964,15 +992,52 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext, sess
         return;
       }
       if (reconnecting) return;
+      if (msg.type === "client_vad") {
+        const next = !!msg.enabled;
+        if (next === clientVadEnabled) return;
+        clientVadEnabled = next;
+        log.info(`Client VAD ${clientVadEnabled ? "enabled" : "disabled (fallback)"} — reconnecting Gemini`);
+        void reconnect("client_vad_toggle");
+        return;
+      }
+      if (msg.type === "activity_start") {
+        if (!clientVadEnabled) return;
+        gemSend({ realtimeInput: { activityStart: {} } });
+        lastUserSpeech = Date.now();
+        return;
+      }
+      if (msg.type === "activity_end") {
+        if (!clientVadEnabled) return;
+        gemSend({ realtimeInput: { activityEnd: {} } });
+        lastUserSpeech = Date.now();
+        return;
+      }
+      if (msg.type === "answer_check_in") {
+        // Once per question: ask gently whether they want to add more.
+        if (checkInAskedThisQuestion) {
+          log.info("answer_check_in ignored (already asked this question)");
+          return;
+        }
+        checkInAskedThisQuestion = true;
+        const hint = String(msg.transcript || "").trim().slice(0, 240);
+        log.info(`answer_check_in (hesitant) transcript=${JSON.stringify(hint)}`);
+        sayText(
+          "[ANSWER_CHECK_IN] The participant paused after an unfinished-looking answer"
+          + (hint ? ` (last words sounded like: "${hint}")` : "")
+          + ". ONLY because of this cue, ask ONE short warm question: would they like to add anything, or shall we move on? "
+          + "Do not call signal_question_change in this turn. Wait for their reply.",
+        );
+        return;
+      }
       if (msg.type === "audio" && msg.data) {
         const pcm = Buffer.from(msg.data as string, "hex");
-        // Echo guard: while the browser is still playing our audio, only pass
-        // loud speech through (barge-in). Gemini's own VAD handles the rest.
-        // Half-duplex: while the browser is still playing the interviewer's
-        // audio (plus a tail for speaker echo), drop mic audio entirely so
-        // Gemini never hears itself and can't "answer itself".
-        const speaking = Date.now() < playbackEndsAt + ECHO_TAIL_MS;
-        if (speaking) return;
+        // Half-duplex echo guard when Gemini automatic VAD is in charge.
+        // With client VAD the browser already gates echo / barge-in, so we
+        // forward whatever it sends (including silence inside an open turn).
+        if (!clientVadEnabled) {
+          const speaking = Date.now() < playbackEndsAt + ECHO_TAIL_MS;
+          if (speaking) return;
+        }
         gemSend({ realtimeInput: { audio: { data: pcm.toString("base64"), mimeType: "audio/pcm;rate=16000" } } });
       } else if (msg.type === "text_input" && msg.content) {
         const text = String(msg.content).trim();

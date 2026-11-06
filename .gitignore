@@ -50,3 +50,6 @@ yarn-error.log*
 skillmark-data.sql
 public/mediapipe/
 
+
+# Generated Silero VAD / onnxruntime assets (scripts/vad-assets.sh)
+public/vad/

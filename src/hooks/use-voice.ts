@@ -13,10 +13,19 @@ import {
   PLAYBACK_SAMPLE_RATE,
   shouldFlushPlaybackQueue,
 } from "@/lib/voice/playback-jitter-buffer";
+import { decideEndpoint } from "@/lib/voice/endpointing";
+import { ENDPOINTING_CONFIG } from "@/lib/voice/endpointing-config";
+import {
+  createInterviewVad,
+  preloadVadAssets,
+  type InterviewVad,
+} from "@/lib/voice/silero-vad-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { reportSessionError } from "@/lib/session-error-report-client";
 
-const PLAYBACK_START_LEAD_S = 0.12;
+const PLAYBACK_START_LEAD_S = 0.18;
+// Short fade-in when playback (re)starts from silence, to avoid a click.
+const PLAYBACK_FADE_IN_SAMPLES = 96; // 4ms at 24kHz
 
 const log = createLogger("voice");
 
@@ -132,6 +141,19 @@ export function useVoice({
   const trackedMessagesRef = useRef<TrackedMessage[]>([]);
   const micHoldUntilRef = useRef(0);
   const bargeInFramesRef = useRef(0);
+
+  // Client Silero VAD + smart endpointing
+  const clientVadEnabledRef = useRef(false);
+  const vadRef = useRef<InterviewVad | null>(null);
+  const turnActiveRef = useRef(false);
+  const silenceStartedAtRef = useRef<number | null>(null);
+  const speechStartedAtRef = useRef<number | null>(null);
+  const liveTranscriptRef = useRef("");
+  const endpointTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const checkInSentForQuestionRef = useRef(false);
+  const currentQuestionForCheckInRef = useRef(
+    interviewContext.startQuestionIndex ?? 0,
+  );
 
   const onInterruptRef = useRef(onInterrupt);
   useEffect(() => { onInterruptRef.current = onInterrupt; }, [onInterrupt]);
@@ -265,6 +287,12 @@ export function useVoice({
     queuedAudioSamplesRef.current = 0;
     firstQueuedAudioAtRef.current = null;
 
+    const coldStart = playTimeRef.current <= now;
+    if (coldStart) {
+      const n = Math.min(PLAYBACK_FADE_IN_SAMPLES, float32.length);
+      for (let i = 0; i < n; i++) float32[i] *= i / n;
+    }
+
     const audioBuffer = ctx.createBuffer(1, float32.length, PLAYBACK_SAMPLE_RATE);
     audioBuffer.copyToChannel(float32, 0);
 
@@ -354,7 +382,19 @@ export function useVoice({
 
       // Create AudioContext for playback
       if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+        audioContextRef.current = new AudioContext({ sampleRate: 24000, latencyHint: "interactive" });
+      }
+      // Browsers can create the context suspended (autoplay policy); resume it
+      // inside this user-initiated call so the first words aren't lost.
+      if (audioContextRef.current.state === "suspended") {
+        await audioContextRef.current.resume().catch(() => {});
+      }
+
+      // Prefer client Silero VAD; fall back to Gemini automatic VAD if assets fail.
+      const vadAssetsOk = await preloadVadAssets();
+      clientVadEnabledRef.current = vadAssetsOk;
+      if (!vadAssetsOk) {
+        log.warn("Silero VAD assets unavailable — using Gemini automatic VAD");
       }
 
       // Reset tracked messages
@@ -381,6 +421,7 @@ export function useVoice({
         buildInitMessage: () => ({
           type: "init",
           sessionId,
+          clientVad: clientVadEnabledRef.current,
           context: {
             ...interviewContext,
             startQuestionIndex: currentQuestionIndexRef.current,
@@ -521,6 +562,7 @@ export function useVoice({
             const text = (results[0].text as string) || "";
             if (text.trim()) {
               asrBufferRef.current = text.trim();
+              liveTranscriptRef.current = text.trim();
               setState((s) => ({ ...s, userTranscript: text }));
               onTranscript?.(text, false);
             }
@@ -668,6 +710,9 @@ export function useVoice({
           // Persist messages from the previous question (fire-and-forget)
           saveProgress(idx);
 
+          checkInSentForQuestionRef.current = false;
+          currentQuestionForCheckInRef.current = idx;
+          liveTranscriptRef.current = "";
           setState((s) => ({
             ...s,
             currentQuestionIndex: idx,
@@ -746,6 +791,83 @@ export function useVoice({
     [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId]
   );
 
+  const clearEndpointTimer = useCallback(() => {
+    if (endpointTimerRef.current) {
+      clearInterval(endpointTimerRef.current);
+      endpointTimerRef.current = null;
+    }
+  }, []);
+
+  const sendActivity = useCallback((type: "activity_start" | "activity_end") => {
+    const connector = relayConnectorRef.current;
+    if (!connector?.isReady || !clientVadEnabledRef.current) return;
+    connector.sendJson({ type });
+  }, []);
+
+  const finishUserTurn = useCallback(
+    (action: "end_turn" | "check_in") => {
+      clearEndpointTimer();
+      silenceStartedAtRef.current = null;
+      if (!turnActiveRef.current) return;
+      turnActiveRef.current = false;
+
+      // Close the audio turn first so Gemini finalizes what they said, then
+      // optionally cue a once-per-question gentle check-in for hesitant answers.
+      sendActivity("activity_end");
+      if (action === "check_in" && !checkInSentForQuestionRef.current) {
+        checkInSentForQuestionRef.current = true;
+        relayConnectorRef.current?.sendJson({
+          type: "answer_check_in",
+          transcript: liveTranscriptRef.current,
+          questionIndex: currentQuestionForCheckInRef.current,
+        });
+      }
+      speechStartedAtRef.current = null;
+      liveTranscriptRef.current = "";
+      setState((s) => ({ ...s, isProcessing: true }));
+    },
+    [clearEndpointTimer, sendActivity],
+  );
+
+  const beginUserTurn = useCallback(() => {
+    // Speech resumed (or started): cancel any end-of-turn / check-in countdown.
+    // A later pause will start a fresh hold — never ask check-in while they are adding.
+    clearEndpointTimer();
+    silenceStartedAtRef.current = null;
+    if (turnActiveRef.current) {
+      // Already in an open turn (second hold after a pause) — just keep listening.
+      return;
+    }
+    turnActiveRef.current = true;
+    speechStartedAtRef.current = performance.now();
+    // Barge-in: stop local AI playback when the candidate really starts talking.
+    if (performance.now() < micHoldUntilRef.current) {
+      interruptPlayback();
+    }
+    sendActivity("activity_start");
+  }, [clearEndpointTimer, interruptPlayback, sendActivity]);
+
+  const scheduleEndpointCheck = useCallback(() => {
+    clearEndpointTimer();
+    silenceStartedAtRef.current = performance.now();
+    endpointTimerRef.current = setInterval(() => {
+      if (!turnActiveRef.current || silenceStartedAtRef.current == null) return;
+      const silenceMs = performance.now() - silenceStartedAtRef.current;
+      const speechDurationMs = speechStartedAtRef.current
+        ? Math.max(0, silenceStartedAtRef.current - speechStartedAtRef.current)
+        : 0;
+      const decision = decideEndpoint({
+        silenceMs,
+        transcript: liveTranscriptRef.current,
+        speechDurationMs,
+      });
+      if (!decision.shouldEnd) return;
+      if (decision.action === "check_in" || decision.action === "end_turn") {
+        finishUserTurn(decision.action);
+      }
+    }, 200);
+  }, [clearEndpointTimer, finishUserTurn]);
+
   /** Start capturing microphone audio and sending to relay */
   const startListening = useCallback(async () => {
     if (isListeningRef.current) return;
@@ -769,6 +891,52 @@ export function useVoice({
       source.connect(processor);
       processor.connect(ctx.destination);
 
+      // Optional Silero VAD on the same mic stream (self-hosted /vad assets).
+      if (clientVadEnabledRef.current && !vadRef.current) {
+        const vad = await createInterviewVad({
+          getStream: async () => mediaStreamRef.current ?? stream,
+          onSpeechStart: () => {
+            bargeInFramesRef.current = 0;
+            // During AI playback, ignore normal-threshold starts — barge-in
+            // requires a sustained high-confidence streak in onSpeechProb.
+            if (performance.now() < micHoldUntilRef.current && !turnActiveRef.current) {
+              return;
+            }
+            beginUserTurn();
+          },
+          onSpeechEnd: () => {
+            if (!turnActiveRef.current) return;
+            scheduleEndpointCheck();
+          },
+          onSpeechProb: (probability) => {
+            // While the AI is talking, only barge in on sustained high-confidence speech.
+            const aiSpeaking = performance.now() < micHoldUntilRef.current;
+            if (!aiSpeaking || turnActiveRef.current) {
+              bargeInFramesRef.current = 0;
+              return;
+            }
+            if (probability >= ENDPOINTING_CONFIG.bargeInSpeechThreshold) {
+              bargeInFramesRef.current += 1;
+              if (bargeInFramesRef.current >= ENDPOINTING_CONFIG.bargeInMinFrames) {
+                bargeInFramesRef.current = 0;
+                beginUserTurn();
+              }
+            } else {
+              bargeInFramesRef.current = 0;
+            }
+          },
+        });
+        if (vad) {
+          vadRef.current = vad;
+          await vad.start();
+          log.info("Silero VAD started (client endpointing)");
+        } else {
+          clientVadEnabledRef.current = false;
+          relayConnectorRef.current?.sendJson({ type: "client_vad", enabled: false });
+          log.warn("Silero VAD failed to start — falling back to automatic VAD");
+        }
+      }
+
       processor.onaudioprocess = (event) => {
         if (!isListeningRef.current) return;
         const connector = relayConnectorRef.current;
@@ -783,14 +951,17 @@ export function useVoice({
         const level = Math.min(1, rms * 5);
         setState((s) => ({ ...s, audioLevel: level }));
 
-        // Half-duplex: don't upload mic audio while the interviewer is speaking
-        // (plus a short echo tail) — speaker echo would otherwise be heard as the
-        // candidate and make the AI interrupt or answer itself.
-        if (performance.now() < micHoldUntilRef.current) {
+        const aiSpeaking = performance.now() < micHoldUntilRef.current;
+        if (clientVadEnabledRef.current) {
+          // With client VAD: only stream mic audio while a user turn is open
+          // (activityStart..activityEnd). Echo during AI speech is dropped
+          // unless Silero confirmed a barge-in (turnActive).
+          if (!turnActiveRef.current) return;
+        } else if (aiSpeaking) {
+          // Automatic-VAD fallback: classic half-duplex echo guard.
           bargeInFramesRef.current = 0;
           return;
         }
-        bargeInFramesRef.current = 0;
 
         // Convert float32 to int16 PCM
         const pcm = new Int16Array(inputData.length);
@@ -817,11 +988,27 @@ export function useVoice({
       reportSessionError(sessionId, { category: "tts_stt", message: `Microphone: ${msg}`, context: { stage: "mic" } });
       onError?.(msg);
     }
-  }, [onError, sessionId]);
+  }, [
+    beginUserTurn,
+    onError,
+    scheduleEndpointCheck,
+    sessionId,
+  ]);
 
   /** Stop capturing microphone */
   const stopListening = useCallback(() => {
     isListeningRef.current = false;
+    clearEndpointTimer();
+    turnActiveRef.current = false;
+    silenceStartedAtRef.current = null;
+    speechStartedAtRef.current = null;
+
+    const vad = vadRef.current;
+    vadRef.current = null;
+    if (vad) {
+      void vad.pause().catch(() => {});
+      void vad.destroy().catch(() => {});
+    }
 
     if (processorRef.current) {
       const { processor, source, ctx } = processorRef.current;
@@ -837,7 +1024,7 @@ export function useVoice({
     }
 
     setState((s) => ({ ...s, isListening: false, audioLevel: 0 }));
-  }, []);
+  }, [clearEndpointTimer]);
 
   /** Request transition to the next question */
   const nextQuestion = useCallback(() => {
