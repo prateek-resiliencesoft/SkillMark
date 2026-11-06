@@ -72,7 +72,7 @@ const ibmPlexSansCondensed = localFont({
   ],
 });
 
-const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://aural-ai.com";
+const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://resiliencesoftinterview.com";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
