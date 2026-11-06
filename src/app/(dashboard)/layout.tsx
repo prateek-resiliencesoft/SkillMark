@@ -10,6 +10,8 @@ import { redirect } from "next/navigation";
  * - Has org(s), no valid active org (fresh login, or active org removed)
  *                        → /organizations?pick=1 (org picker), keeping the target in ?next=.
  * - Has org(s) + valid active org → page renders normally (dashboard etc.).
+ * - No org: /account (profile + delete account) stays reachable, and /settings
+ *   (org-scoped) sends them there instead of forcing org creation.
  * - /org/new is only reachable with ?create=1 once the user already has an org.
  */
 export default async function DashboardLayout({
@@ -30,6 +32,8 @@ export default async function DashboardLayout({
   const search = headers().get("x-search") ?? "";
   const onOrgNew = pathname === "/org/new" || pathname.startsWith("/org/new/");
   const onPicker = pathname === "/organizations";
+  const onAccount = pathname === "/account" || pathname.startsWith("/account/");
+  const onSettings = pathname === "/settings" || pathname.startsWith("/settings/");
   const wantsCreate = new URLSearchParams(search).get("create") === "1";
 
   const { data: memberships, error: membershipError } = await supabase
@@ -54,7 +58,8 @@ export default async function DashboardLayout({
   );
 
   if (orgIds.size === 0) {
-    if (!onOrgNew) redirect("/org/new");
+    if (onSettings) redirect("/account");
+    if (!onOrgNew && !onAccount) redirect("/org/new");
   } else if (onOrgNew) {
     if (!wantsCreate) redirect("/organizations?pick=1");
   } else if (!onPicker && pathname) {
