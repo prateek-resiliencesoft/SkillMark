@@ -4,8 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { Card, CardContent } from "@/components/ui/card";
-import { Link2Off, CheckCircle2, Clock } from "lucide-react";
+import { Link2Off, Clock } from "lucide-react";
 import { PreparingScreen } from "@/components/session/preparing-screen";
+import { LinkExpiredScreen } from "@/components/session/candidate-end-screens";
+import { isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
 
 export default function InvitePage() {
@@ -48,7 +50,12 @@ export default function InvitePage() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const session = (candidate.data as any).session;
     if (session) {
-      if (session.status === "COMPLETED") {
+      // One-time link: finished / interrupted / already-running interviews never reopen here.
+      if (
+        session.status === "COMPLETED" ||
+        session.status === "ABANDONED" ||
+        (session.status === "IN_PROGRESS" && session.interviewBeganAt)
+      ) {
         setCompleted(true);
       } else {
         goToSession();
@@ -111,7 +118,7 @@ export default function InvitePage() {
     new Date(candidate.data.expiresAt).getTime() < Date.now()
   );
 
-  if (isExpired && session?.status !== "COMPLETED") {
+  if (isExpired && !isLinkConsumed(session?.status)) {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md border-amber-200/50 shadow-sm">
@@ -136,21 +143,17 @@ export default function InvitePage() {
     );
   }
 
-  // Completed
-  if (completed || session?.status === "COMPLETED") {
+  // One-time link already used (finished, interrupted, or running in another tab)
+  if (
+    completed ||
+    session?.status === "COMPLETED" ||
+    session?.status === "ABANDONED" ||
+    (session?.status === "IN_PROGRESS" && session?.interviewBeganAt)
+  ) {
     return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="py-12 text-center">
-            <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-            <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-            <p className="mt-2 text-muted-foreground">
-              Your interview has been completed successfully. We appreciate your
-              time and thoughtful responses.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <LinkExpiredScreen
+        reason={session?.status === "ABANDONED" ? "interrupted" : "used"}
+      />
     );
   }
 

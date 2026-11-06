@@ -5,12 +5,15 @@
  * Separate from org context so operators do not confuse scopes.
  */
 import { AuralLogo } from "@/components/ui/aural-logo";
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
 import {
   Activity,
+  BarChart3,
   Building2,
+  ChevronDown,
   HeartPulse,
   LayoutDashboard,
   PanelLeft,
@@ -22,20 +25,40 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
-const NAV: {
+type NavItem = {
   href: string;
   label: string;
   exact?: boolean;
   icon: React.ElementType;
-}[] = [
-  { href: "/admin", label: "Overview", exact: true, icon: LayoutDashboard },
-  { href: "/admin/organizations", label: "Organizations", icon: Building2 },
-  { href: "/admin/people", label: "People", icon: Users },
-  { href: "/admin/config", label: "Config", icon: Settings2 },
-  { href: "/admin/activity", label: "Activity", icon: Activity },
-  { href: "/admin/status", label: "Status", icon: HeartPulse },
-  { href: "/admin/server-logs", label: "Server Logs", icon: ScrollText },
+};
+
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+  {
+    title: "Platform",
+    items: [
+      { href: "/admin", label: "Overview", exact: true, icon: LayoutDashboard },
+      { href: "/admin/organizations", label: "Organizations", icon: Building2 },
+      { href: "/admin/people", label: "People", icon: Users },
+    ],
+  },
+  {
+    title: "Configuration",
+    items: [
+      { href: "/admin/config", label: "Config", icon: Settings2 },
+      { href: "/admin/activity", label: "Activity", icon: Activity },
+    ],
+  },
+  {
+    title: "Server",
+    items: [
+      { href: "/admin/status", label: "Status", icon: HeartPulse },
+      { href: "/admin/server-logs", label: "Server Logs", icon: ScrollText },
+      { href: "/admin/server-activity", label: "Server Activity", icon: BarChart3 },
+    ],
+  },
 ];
+
+const ALL_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
 function navActive(pathname: string, href: string, exact?: boolean) {
   if (exact) return pathname === href;
@@ -51,6 +74,8 @@ export function AdminShell({
 }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  // Groups the operator closed by hand; the group holding the current page always stays open.
+  const [closed, setClosed] = useState<Record<string, boolean>>({});
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -65,53 +90,74 @@ export function AdminShell({
 
       <aside
         className={cn(
-          "sticky top-0 flex h-screen shrink-0 flex-col border-r bg-background/90 backdrop-blur-md transition-all duration-200",
-          collapsed ? "w-16" : "w-56",
+          "sticky top-0 flex h-screen shrink-0 flex-col border-r bg-background transition-all duration-200 dark:bg-surface-sidebar",
+          collapsed ? "w-16" : "w-52",
         )}
       >
-        <div className="flex h-14 items-center border-b px-3">
-          <Link href="/admin" className="flex min-w-0 items-center gap-2.5">
-            <AuralLogo size={26} className="shrink-0" priority />
-            {!collapsed ? (
-              <div className="flex min-w-0 flex-col leading-none">
-                <span className="font-heading text-sm font-bold tracking-[2px]">
-                  RESILIENCESOFT INTERVIEW AI
-                </span>
-                <span className="mt-0.5 text-[10px] font-medium text-muted-foreground">
-                  Control center
-                </span>
-              </div>
-            ) : null}
+        <div className="flex h-14 items-center border-b px-4">
+          <Link href="/admin" className="flex items-center gap-2">
+            {collapsed ? (
+              <AuralLogo size={28} className="shrink-0" priority />
+            ) : (
+              <BrandWordmark height={36} priority />
+            )}
           </Link>
         </div>
 
-        <nav className="flex-1 space-y-1 px-2 py-3">
-          {NAV.map((item) => {
-            const active = navActive(pathname, item.href, item.exact);
-            const Icon = item.icon;
+        <nav className="flex-1 space-y-3 overflow-y-auto px-2 py-3">
+          {NAV_GROUPS.map((group) => {
+            const hasActive = group.items.some((i) => navActive(pathname, i.href, i.exact));
+            const open = collapsed || hasActive || !closed[group.title];
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={collapsed ? item.label : undefined}
-                className={cn(
-                  "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  collapsed && "justify-center px-0",
-                  active
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              <div key={group.title}>
+                {!collapsed ? (
+                  <button
+                    type="button"
+                    onClick={() => setClosed((c) => ({ ...c, [group.title]: open }))}
+                    aria-expanded={open}
+                    className="flex w-full items-center justify-between px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                  >
+                    {group.title}
+                    <ChevronDown
+                      className={cn("h-3.5 w-3.5 transition-transform", !open && "-rotate-90")}
+                    />
+                  </button>
+                ) : (
+                  <div className="mx-3 mb-1 border-t first:hidden" />
                 )}
-              >
-                {active ? (
-                  <motion.span
-                    layoutId="admin-sidebar-active"
-                    className="absolute inset-0 -z-10 rounded-lg bg-muted"
-                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                  />
+                {open ? (
+                  <div className="mt-1 space-y-1">
+                    {group.items.map((item) => {
+                      const active = navActive(pathname, item.href, item.exact);
+                      const Icon = item.icon;
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          title={collapsed ? item.label : undefined}
+                          className={cn(
+                            "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                            collapsed && "justify-center px-0",
+                            active
+                              ? "text-foreground"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                          )}
+                        >
+                          {active ? (
+                            <motion.span
+                              layoutId="admin-sidebar-active"
+                              className="absolute inset-0 -z-10 rounded-lg bg-muted"
+                              transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                            />
+                          ) : null}
+                          <Icon className="h-4 w-4 shrink-0" />
+                          {!collapsed ? <span>{item.label}</span> : null}
+                        </Link>
+                      );
+                    })}
+                  </div>
                 ) : null}
-                <Icon className="h-4 w-4 shrink-0" />
-                {!collapsed ? <span>{item.label}</span> : null}
-              </Link>
+              </div>
             );
           })}
         </nav>
@@ -149,7 +195,7 @@ export function AdminShell({
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top strip */}
         <div className="flex gap-1 overflow-x-auto border-b px-3 py-2 lg:hidden">
-          {NAV.map((item) => {
+          {ALL_ITEMS.map((item) => {
             const active = navActive(pathname, item.href, item.exact);
             return (
               <Link

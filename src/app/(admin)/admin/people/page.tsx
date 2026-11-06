@@ -119,6 +119,14 @@ export default function AdminPeoplePage() {
                       {person.role === "ENTERPRISE" ? "Enterprise" : "Standard"}
                     </Badge>
                   )}
+                  {person.paused ? (
+                    <Badge
+                      variant="outline"
+                      className="bg-amber-500/10 text-[10px] font-normal text-amber-700 dark:text-amber-300"
+                    >
+                      Paused
+                    </Badge>
+                  ) : null}
                   <Badge variant="outline" className="text-[10px] font-normal">
                     {person.organizationCount}{" "}
                     {person.organizationCount === 1

@@ -66,6 +66,8 @@ interface IntervieweeOnboardingProps {
   questionTypes?: string[];
   scheduledAt?: string | null;
   expiresAt?: string | null;
+  /** Invite links are single-use: closing the tab or losing connection ends the interview. */
+  oneTimeLink?: boolean;
   onComplete: () => void;
 }
 
@@ -1257,6 +1259,7 @@ export function IntervieweeOnboarding({
   questionTypes = [],
   scheduledAt,
   expiresAt,
+  oneTimeLink = false,
   onComplete,
 }: IntervieweeOnboardingProps) {
   const [step, setStep] = useState<OnboardingStep>("info");
@@ -1327,6 +1330,34 @@ export function IntervieweeOnboarding({
               )}
             </CardContent>
           </Card>
+
+          {oneTimeLink && (
+            <Card className="mt-4 border-destructive/40">
+              <CardContent className="space-y-3 p-4 sm:p-6">
+                <h3 className="font-semibold text-destructive">
+                  Important: this link works only once
+                </h3>
+                <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                  Once you start, this interview cannot be paused, restarted or reopened.
+                </div>
+                <ul className="list-inside list-disc space-y-2 text-sm text-muted-foreground">
+                  <li>
+                    Your interview link is valid for <span className="font-medium text-foreground">one attempt only</span>.
+                    After the interview ends, the link expires and cannot be opened again.
+                  </li>
+                  <li>
+                    If you <span className="font-medium text-foreground">get disconnected from the internet</span>,
+                    close this tab, or refresh the page, your link will expire and the
+                    interview will be over.
+                  </li>
+                  <li>
+                    Keep your laptop connected to a <span className="font-medium text-foreground">stable internet
+                    connection that will not drop</span> (and plugged in to power) for the whole interview.
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="mt-4">
             <CardContent className="space-y-3 p-4 sm:p-6">
@@ -1412,7 +1443,9 @@ export function IntervieweeOnboarding({
                 checked={agreed}
                 onCheckedChange={(v) => setAgreed(v === true)}
               />
-              I agree to the above notice and interview guidelines
+              {oneTimeLink
+                ? "I understand this link works only once, and I agree to the above notices and guidelines"
+                : "I agree to the above notice and interview guidelines"}
             </label>
             <Button
               disabled={!agreed}

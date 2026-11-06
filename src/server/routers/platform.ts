@@ -6,9 +6,13 @@
  * "pause", "plan", "people" — never tenant/IDOR jargon.
  */
 import { nanoid } from "@/lib/id";
+import { deleteAccount } from "@/lib/account-deletion";
+import { authDb } from "@/lib/supabase/admin";
+import { setUserPaused } from "@/lib/users";
 import {
   GRAFANA_LOG_SOURCES,
   queryGrafanaLinuxLogs,
+  queryServerMetrics,
   type GrafanaLogSource,
 } from "@/lib/grafana/client";
 import {
@@ -71,6 +75,17 @@ const PLATFORM_ROLE_LABEL: Record<string, string> = {
 };
 
 const limitValue = z.number().int().min(0).nullable();
+
+/** ids → paused_at for the given users (auth schema). */
+async function pausedMap(ids: string[]): Promise<Record<string, string>> {
+  if (ids.length === 0) return {};
+  const { data } = await authDb.from("users").select("id, paused_at").in("id", ids);
+  const out: Record<string, string> = {};
+  for (const r of (data ?? []) as { id: string; paused_at: string | null }[]) {
+    if (r.paused_at) out[r.id] = r.paused_at;
+  }
+  return out;
+}
 
 export const platformRouter = router({
   /** Lightweight gate for the admin UI shell. */
@@ -474,6 +489,7 @@ export const platformRouter = router({
       let req = ctx.supabase
         .from("profiles")
         .select("id, email, name, role, createdAt", { count: "exact" })
+        .not("email", "like", "%@deleted.invalid")
         .order("createdAt", { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -491,6 +507,7 @@ export const platformRouter = router({
 
       const people = data ?? [];
       const ids = people.map((p) => p.id as string);
+      const paused = await pausedMap(ids);
       const membershipCounts: Record<string, number> = {};
       if (ids.length > 0) {
         const { data: memberships } = await ctx.supabase
@@ -511,6 +528,7 @@ export const platformRouter = router({
           name: (p.name as string | null) ?? null,
           role: p.role as string,
           isPlatformAdmin: p.role === "ADMIN",
+          paused: Boolean(paused[p.id as string]),
           organizationCount: membershipCounts[p.id as string] ?? 0,
           createdAt: p.createdAt as string,
         })),
@@ -892,6 +910,7 @@ export const platformRouter = router({
       }
 
       const role = person.role as string;
+      const pausedAt = (await pausedMap([input.id]))[input.id] ?? null;
       return {
         id: person.id as string,
         email: person.email as string,
@@ -899,6 +918,8 @@ export const platformRouter = router({
         role,
         roleLabel: PLATFORM_ROLE_LABEL[role] ?? role,
         isPlatformAdmin: role === "ADMIN",
+        paused: Boolean(pausedAt),
+        pausedAt,
         createdAt: person.createdAt as string,
         memberships: (memberships ?? []).map((m) => {
           const org = orgMap[m.organizationId as string];
@@ -915,6 +936,95 @@ export const platformRouter = router({
           };
         }),
       };
+    }),
+
+  /** Server load graphs (Grafana/Prometheus) plus live-interview count for capacity planning. */
+  serverActivity: platformProcedure
+    .input(z.object({ minutes: z.number().int().min(5).max(10080).default(60) }).optional())
+    .query(async ({ ctx, input }) => {
+      const metrics = await queryServerMetrics({ minutes: input?.minutes ?? 60 });
+      // "Live" = interview began and the candidate tab is still beating.
+      const cutoff = new Date(Date.now() - 20_000).toISOString();
+      const { count } = await ctx.supabase
+        .from("sessions")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "IN_PROGRESS")
+        .not("interviewBeganAt", "is", null)
+        .gte("lastHeartbeatAt", cutoff);
+      return { ...metrics, liveInterviews: count ?? 0 };
+    }),
+
+  /** Pause (block login + live sessions) or resume an account. Reversible. */
+  setPersonStatus: platformProcedure
+    .input(z.object({ userId: z.string().uuid(), paused: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      if (input.paused && input.userId === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "You cannot pause your own account.",
+        });
+      }
+      const { data: person } = await ctx.supabase
+        .from("profiles")
+        .select("id, email, name")
+        .eq("id", input.userId)
+        .maybeSingle();
+      if (!person) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Person not found." });
+      }
+      const { error } = await setUserPaused(input.userId, input.paused);
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Could not update this account.",
+        });
+      }
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: input.paused ? "user.pause" : "user.resume",
+        targetType: "user",
+        targetId: input.userId,
+        meta: { email: person.email, name: person.name },
+      });
+      return { id: input.userId, paused: input.paused };
+    }),
+
+  /** Delete an account: credentials + profile scrubbed, a snapshot is archived. */
+  deletePerson: platformProcedure
+    .input(z.object({ userId: z.string().uuid(), confirmEmail: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Use your account page to delete your own account.",
+        });
+      }
+      const { data: person } = await ctx.supabase
+        .from("profiles")
+        .select("id, email, name")
+        .eq("id", input.userId)
+        .maybeSingle();
+      if (!person) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Person not found." });
+      }
+      if (String(person.email).toLowerCase() !== input.confirmEmail.trim().toLowerCase()) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Email does not match. Deletion cancelled.",
+        });
+      }
+      const result = await deleteAccount(input.userId, { deletedBy: ctx.user.id });
+      if (!result.ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
+      }
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "user.delete",
+        targetType: "user",
+        targetId: input.userId,
+        meta: { email: person.email, name: person.name },
+      });
+      return { id: input.userId };
     }),
 
   setPlatformRole: platformProcedure
