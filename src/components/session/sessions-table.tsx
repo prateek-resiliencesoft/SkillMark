@@ -235,6 +235,7 @@ export function SessionsTable({
   emptyMessage = "No sessions found.",
 }: SessionsTableProps) {
   const { toast } = useToast();
+  const utils = trpc.useUtils();
 
   // ── State ──
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -246,6 +247,7 @@ export function SessionsTable({
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key)),
   );
@@ -348,6 +350,20 @@ export function SessionsTable({
       setSelectedIds(new Set());
       onDeleteSuccess?.();
     },
+  });
+
+  const archiveMutation = trpc.session.archiveMany.useMutation({
+    onSuccess: ({ archived }) => {
+      toast({
+        title: `${archived} moved to History`,
+        description: "Recordings and the transcript were deleted. Name and score were kept.",
+      });
+      setSelectedIds(new Set());
+      onDeleteSuccess?.();
+      void utils.session.listHistory.invalidate();
+    },
+    onError: (err) =>
+      toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
   });
 
   // ── Handlers ──
@@ -587,6 +603,18 @@ export function SessionsTable({
 
         {selectedIds.size > 0 && (
           <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmArchive(true)}
+              disabled={archiveMutation.isLoading || deleteMutation.isLoading}
+            >
+              {archiveMutation.isLoading ? (
+                <Hugeicon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Hugeicon icon={Delete02Icon} className="mr-2 h-4 w-4" />
+              )}
+              Delete data ({selectedIds.size})
+            </Button>
             <Button
               variant="destructive"
               onClick={() => setConfirmDelete(true)}
@@ -863,6 +891,30 @@ export function SessionsTable({
           </>
         )}
       </div>
+
+      <AlertDialog open={confirmArchive} onOpenChange={setConfirmArchive}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete interview data</AlertDialogTitle>
+            <AlertDialogDescription>
+              Recordings, screenshots, and the transcript for {selectedIds.size} session
+              {selectedIds.size > 1 ? "s" : ""} are removed from storage. The candidate
+              name and score stay on the History tab.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                archiveMutation.mutate({ ids: Array.from(selectedIds) });
+                setConfirmArchive(false);
+              }}
+            >
+              Delete data
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirmation dialog */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>

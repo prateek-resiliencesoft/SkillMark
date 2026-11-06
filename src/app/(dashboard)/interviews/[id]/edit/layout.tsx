@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
-import { Eye, Link2, ListOrdered, Lock, Loader2, Settings, Share2, Users } from "lucide-react";
+import { Eye, History, Link2, ListOrdered, Lock, Loader2, Settings, Share2, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -17,6 +17,7 @@ const tabs = [
   { value: "content", label: "Content", icon: ListOrdered, href: "" },
   { value: "settings", label: "Settings", icon: Settings, href: "/settings" },
   { value: "sessions", label: "Sessions", icon: Users, href: "/sessions" },
+  { value: "history", label: "History", icon: History, href: "/history" },
 ] as const;
 
 export default function EditInterviewLayout({
@@ -45,6 +46,7 @@ export default function EditInterviewLayout({
   const activeTab = useMemo(() => {
     if (pathname.endsWith("/settings")) return "settings";
     if (pathname.endsWith("/sessions")) return "sessions";
+    if (pathname.endsWith("/history")) return "history";
     return "content";
   }, [pathname]);
 

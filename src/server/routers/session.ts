@@ -1,6 +1,6 @@
 import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
-import { applyMediaReview, clearSessionMediaStorage } from "@/lib/media-review";
+import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -843,6 +843,7 @@ export const sessionRouter = router({
         .from("sessions")
         .select("*, messages(id)")
         .eq("interviewId", input.interviewId)
+        .is("dataArchivedAt", null)
         .order("createdAt", { ascending: false })
         .limit(limit + 1);
 
@@ -866,6 +867,104 @@ export const sessionRouter = router({
       }
 
       return { sessions, nextCursor };
+    }),
+
+  /** Archived rows: candidate name and score only. Files and transcript are already gone. */
+  listHistory: protectedProcedure
+    .input(z.object({ interviewId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const { data: interview } = await ctx.supabase
+        .from("interviews")
+        .select("id, projectId, project:projects!inner(organizationId)")
+        .eq("id", input.interviewId)
+        .single();
+      if (!interview) throw new TRPCError({ code: "NOT_FOUND" });
+      const project = interview.project as unknown as { organizationId: string };
+      const { data: membership } = await ctx.supabase
+        .from("organization_members")
+        .select("role")
+        .eq("organizationId", project.organizationId)
+        .eq("userId", ctx.user.id)
+        .single();
+      if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
+      const projAccess = await hasProjectAccess(ctx.supabase, interview.projectId, ctx.user.id);
+      if (!projAccess) throw new TRPCError({ code: "FORBIDDEN" });
+
+      const { data } = await ctx.supabase
+        .from("sessions")
+        .select("id, participantName, participantEmail, status, insights, dataArchivedAt, createdAt")
+        .eq("interviewId", input.interviewId)
+        .not("dataArchivedAt", "is", null)
+        .order("dataArchivedAt", { ascending: false })
+        .limit(200);
+
+      return {
+        sessions: (data ?? []).map((row) => ({
+          id: row.id as string,
+          participantName: (row.participantName as string | null) ?? null,
+          participantEmail: (row.participantEmail as string | null) ?? null,
+          status: row.status as string,
+          insights: row.insights ?? null,
+          dataArchivedAt: row.dataArchivedAt as string,
+          createdAt: row.createdAt as string,
+        })),
+      };
+    }),
+
+  /** Remove files and transcript. Keep name and score for History. */
+  archiveMany: protectedProcedure
+    .input(z.object({ ids: z.array(z.string().uuid()).min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: sessions } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, participantName, participantEmail, mediaStoragePrefix, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
+        .in("id", input.ids);
+
+      const { data: linked } = await ctx.supabase
+        .from("candidates")
+        .select("sessionId, name, email")
+        .in("sessionId", input.ids);
+      const candidateBySession = new Map(
+        (linked ?? []).map((c) => [c.sessionId as string, c]),
+      );
+
+      let cleared = 0;
+      for (const s of sessions ?? []) {
+        const interviewData = s.interview as unknown as {
+          projectId: string;
+          project: { organizationId: string };
+        };
+        const orgId = interviewData?.project?.organizationId;
+        if (!orgId) throw new TRPCError({ code: "NOT_FOUND" });
+        const { data: membership } = await ctx.supabase
+          .from("organization_members")
+          .select("role")
+          .eq("organizationId", orgId)
+          .eq("userId", ctx.user.id)
+          .single();
+        if (!membership) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not authorized to delete this interview data" });
+        }
+        const projAccess = await hasProjectAccess(ctx.supabase, interviewData.projectId, ctx.user.id);
+        if (!projAccess) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not authorized to delete this interview data" });
+        }
+        const linkedCandidate = candidateBySession.get(s.id as string);
+        if (linkedCandidate && !s.participantName) {
+          await ctx.supabase
+            .from("sessions")
+            .update({
+              participantName: linkedCandidate.name,
+              participantEmail: (s.participantEmail as string | null) ?? linkedCandidate.email,
+            })
+            .eq("id", s.id);
+        }
+        const result = await archiveSessionData(ctx.supabase, s.id as string, s.mediaStoragePrefix as string | null);
+        cleared += result.cleared;
+      }
+      return { archived: sessions?.length ?? 0, cleared };
     }),
 
   saveRecording: publicProcedure

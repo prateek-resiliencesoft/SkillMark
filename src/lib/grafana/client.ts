@@ -226,6 +226,10 @@ export type ServerMetricsResult = {
   stepSeconds: number;
   series: Partial<Record<ServerMetricKey, MetricPoint[]>>;
   memoryTotalBytes: number | null;
+  /** Root filesystem size (`mountpoint="/"`). */
+  diskTotalBytes: number | null;
+  /** Space left on that filesystem. */
+  diskFreeBytes: number | null;
   cpuCores: number | null;
   grafanaUrl: string | null;
   error?: string;
@@ -303,6 +307,8 @@ export async function queryServerMetrics(input: { minutes?: number }): Promise<S
     stepSeconds,
     series: {},
     memoryTotalBytes: null,
+    diskTotalBytes: null,
+    diskFreeBytes: null,
     cpuCores: null,
     grafanaUrl: ok ? url : null,
   };
@@ -319,9 +325,12 @@ export async function queryServerMetrics(input: { minutes?: number }): Promise<S
   const keys = Object.keys(queries) as ServerMetricKey[];
 
   try {
-    const [results, memTotal, cores] = await Promise.all([
+    const disk = `instance="${escapeLabel(instance)}",mountpoint="/",fstype!="tmpfs"`;
+    const [results, memTotal, diskTotal, diskFree, cores] = await Promise.all([
       Promise.all(keys.map((k) => promRange(url, token, promUid, queries[k], start, end, stepSeconds))),
       promInstant(url, token, promUid, `node_memory_MemTotal_bytes{instance="${escapeLabel(instance)}"}`),
+      promInstant(url, token, promUid, `node_filesystem_size_bytes{${disk}}`),
+      promInstant(url, token, promUid, `node_filesystem_avail_bytes{${disk}}`),
       promInstant(
         url,
         token,
@@ -333,7 +342,14 @@ export async function queryServerMetrics(input: { minutes?: number }): Promise<S
     keys.forEach((k, idx) => {
       series[k] = results[idx];
     });
-    return { ...empty, series, memoryTotalBytes: memTotal, cpuCores: cores };
+    return {
+      ...empty,
+      series,
+      memoryTotalBytes: memTotal,
+      diskTotalBytes: diskTotal,
+      diskFreeBytes: diskFree,
+      cpuCores: cores,
+    };
   } catch (err) {
     return { ...empty, error: err instanceof Error ? err.message : String(err) };
   }

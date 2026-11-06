@@ -18,11 +18,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
     }
 
-    const { data: session } = await supabaseAdmin
+    const { data: session, error } = await supabaseAdmin
       .from("sessions")
       .select("id, status, interviewBeganAt")
       .eq("id", sessionId)
       .maybeSingle();
+    if (error) {
+      return NextResponse.json({ error: "Could not start this interview. Try again." }, { status: 500 });
+    }
     if (!session) return NextResponse.json({ error: "Not found" }, { status: 404 });
     if (session.status !== "IN_PROGRESS") {
       return NextResponse.json({ ok: false, expired: true }, { status: 409 });

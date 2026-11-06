@@ -244,6 +244,10 @@ export const candidateRouter = router({
         .eq("interviewId", input.interviewId)
         .order("createdAt", { ascending: false });
 
+      const activeCandidates = (candidates ?? []).filter(
+        (c: { session?: { dataArchivedAt?: string | null } | null }) => !c.session?.dataArchivedAt,
+      );
+
       const linkedSessionIds = (candidates ?? [])
         .map((c: { sessionId: string | null }) => c.sessionId)
         .filter(Boolean);
@@ -252,6 +256,7 @@ export const candidateRouter = router({
         .from("sessions")
         .select("*, messages(id)")
         .eq("interviewId", input.interviewId)
+        .is("dataArchivedAt", null)
         .order("createdAt", { ascending: false });
 
       if (linkedSessionIds.length > 0) {
@@ -271,7 +276,7 @@ export const candidateRouter = router({
         }),
       );
 
-      return { candidates: candidates ?? [], walkInSessions };
+      return { candidates: activeCandidates, walkInSessions };
     }),
 
   update: protectedProcedure
