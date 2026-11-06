@@ -1002,12 +1002,14 @@ async function handleInterview(
       }
       if (msg.type === "activity_start") {
         if (!clientVadEnabled) return;
+        log.info("client activity_start");
         gemSend({ realtimeInput: { activityStart: {} } });
         lastUserSpeech = Date.now();
         return;
       }
       if (msg.type === "activity_end") {
         if (!clientVadEnabled) return;
+        log.info("client activity_end");
         gemSend({ realtimeInput: { activityEnd: {} } });
         lastUserSpeech = Date.now();
         return;
