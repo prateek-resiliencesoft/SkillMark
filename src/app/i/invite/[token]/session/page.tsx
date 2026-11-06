@@ -36,6 +36,7 @@ export default function InviteSessionPage() {
   const [onboardingDone, setOnboardingDone] = useState(false);
   const [linkExpired, setLinkExpired] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   const handleComplete = (reason?: string) => {
     setCompletionReason(reason);
@@ -85,13 +86,21 @@ export default function InviteSessionPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: session.id }),
       });
-      if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { expired?: boolean; error?: string };
+      // Only this candidate's own finished session is expired. A new person
+      // on the same interview has a different session and must still start.
+      if (body.expired) {
         setLinkExpired(true);
         return;
       }
+      if (!res.ok) {
+        setStartError(body.error || "Could not start this interview. Try again.");
+        return;
+      }
+      setStartError(null);
       setOnboardingDone(true);
     } catch {
-      setLinkExpired(true);
+      setStartError("Could not start this interview. Try again.");
     } finally {
       setStarting(false);
     }
@@ -151,6 +160,29 @@ export default function InviteSessionPage() {
 
   if (session.status === "COMPLETED") {
     return <LinkExpiredScreen reason="used" />;
+  }
+
+  if (startError) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="py-12 text-center">
+            <h2 className="text-xl font-semibold">Could not start interview</h2>
+            <p className="mt-2 text-sm text-muted-foreground">{startError}</p>
+            <button
+              type="button"
+              className="mt-4 text-sm font-medium text-primary hover:underline"
+              onClick={() => {
+                setStartError(null);
+                setStarting(false);
+              }}
+            >
+              Try again
+            </button>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (!onboardingDone) {

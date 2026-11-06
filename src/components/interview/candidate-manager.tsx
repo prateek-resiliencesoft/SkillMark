@@ -435,6 +435,7 @@ export function CandidateManager({
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [resumeImportOpen, setResumeImportOpen] = useState(false);
@@ -556,7 +557,22 @@ export function CandidateManager({
   const invalidateAll = useCallback(() => {
     utils.candidate.list.invalidate({ interviewId });
     utils.analysis.getInterviewInsights.invalidate({ interviewId });
+    utils.session.listHistory.invalidate({ interviewId });
+    utils.session.listByInterview.invalidate({ interviewId });
   }, [utils, interviewId]);
+
+  const archiveMutation = trpc.session.archiveMany.useMutation({
+    onSuccess: ({ archived }) => {
+      invalidateAll();
+      toast({
+        title: `${archived} moved to History`,
+        description: "Recordings and the transcript were deleted. Name and score were kept.",
+      });
+      setSelectedIds(new Set());
+    },
+    onError: (err) =>
+      toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
+  });
 
   const resendInviteMutation = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
@@ -720,7 +736,24 @@ export function CandidateManager({
   }, [allPageSelected, pageIds]);
 
   const isBulkDeleting =
-    removeCandidatesMutation.isLoading || removeSessionsMutation.isLoading;
+    removeCandidatesMutation.isLoading || removeSessionsMutation.isLoading || archiveMutation.isLoading;
+
+  const selectedSessionIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const composite of selectedIds) {
+      if (composite.startsWith("walkin-")) {
+        ids.push(composite.slice("walkin-".length));
+        continue;
+      }
+      if (composite.startsWith("candidate-")) {
+        const candidateId = composite.slice("candidate-".length);
+        const row = candidates.find((c) => c.id === candidateId);
+        const sessionId = row?.session?.id as string | undefined;
+        if (sessionId) ids.push(sessionId);
+      }
+    }
+    return ids;
+  }, [selectedIds, candidates]);
 
   const handleBulkDelete = useCallback(() => {
     const candidateIds = Array.from(selectedIds)
@@ -954,6 +987,18 @@ export function CandidateManager({
         {/* Bulk actions / Import+Add */}
         {selectedIds.size > 0 ? (
           <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmArchive(true)}
+              disabled={isBulkDeleting || selectedSessionIds.length === 0}
+            >
+              {archiveMutation.isLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 h-4 w-4" />
+              )}
+              Delete data ({selectedSessionIds.length})
+            </Button>
             <Button
               variant="destructive"
               onClick={() => setConfirmDelete(true)}
@@ -1462,6 +1507,30 @@ export function CandidateManager({
           </>
         )}
       </div>
+
+      <AlertDialog open={confirmArchive} onOpenChange={setConfirmArchive}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete interview data</AlertDialogTitle>
+            <AlertDialogDescription>
+              Recordings, screenshots, and the transcript for {selectedSessionIds.length} session
+              {selectedSessionIds.length === 1 ? "" : "s"} are removed. The candidate name and
+              score stay on the History tab.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                archiveMutation.mutate({ ids: selectedSessionIds });
+                setConfirmArchive(false);
+              }}
+            >
+              Delete data
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirmation dialog */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
