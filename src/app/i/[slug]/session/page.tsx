@@ -7,12 +7,11 @@ import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head
 import { IntervieweeOnboarding, PreviewWrapper } from "@/components/session/interviewee-onboarding";
 import { IntervieweeTourOverlay } from "@/components/session/interviewee-tour-overlay";
 import { IntervieweeTourProvider } from "@/components/session/interviewee-tour-provider";
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { PreparingScreen } from "@/components/session/preparing-screen";
-import { Card, CardContent } from "@/components/ui/card";
 import type { InterviewContext } from "@/hooks/use-voice";
 import { trpc } from "@/lib/trpc/client";
 import { reportSessionError } from "@/lib/session-error-report-client";
-import { CheckCircle2 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -105,25 +104,7 @@ export default function SlugSessionPage() {
 
   if (session.data.status === "COMPLETED" || completed) {
     try { localStorage.removeItem(STORAGE_PREFIX + slug); } catch { /* noop */ }
-    return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="py-12 text-center">
-            <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-            <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-            {completionReason === "TIME_LIMIT_EXCEEDED" && (
-              <p className="mt-2 text-sm text-amber-600">
-                The session time limit has been reached and the interview was ended automatically.
-              </p>
-            )}
-            <p className="mt-2 text-muted-foreground">
-              Your interview has been completed successfully. We appreciate your
-              time and thoughtful responses.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} />;
   }
 
   const antiCheatingEnabled = !isPreview && !!interview.data.antiCheatingEnabled;

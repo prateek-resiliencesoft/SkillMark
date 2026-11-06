@@ -1,3 +1,4 @@
+import { expireIfStale } from "@/lib/session-link-server";
 import { nanoid } from "@/lib/id";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -557,6 +558,13 @@ export const candidateRouter = router({
           code: "NOT_FOUND",
           message: "Interview is no longer available",
         });
+      }
+
+      // One-time link: if the candidate's tab vanished mid-interview, end it now.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const linked = (candidate as any).session;
+      if (linked && typeof linked === "object" && !Array.isArray(linked)) {
+        return { ...candidate, session: await expireIfStale(linked) };
       }
 
       return candidate;

@@ -7,7 +7,15 @@ import bcrypt from "bcryptjs";
 import { authDb } from "@/lib/supabase/admin";
 import { verifySession, type SessionUser } from "@/lib/auth-session";
 
-type Row = { id: string; email: string; encrypted_password: string; raw_user_meta_data: Record<string, unknown> | null; created_at: string };
+type Row = {
+  id: string;
+  email: string;
+  encrypted_password: string;
+  raw_user_meta_data: Record<string, unknown> | null;
+  created_at: string;
+  paused_at?: string | null;
+  deleted_at?: string | null;
+};
 
 function toUser(r: Row): SessionUser {
   return { id: r.id, email: r.email, user_metadata: r.raw_user_meta_data ?? {}, created_at: r.created_at };
@@ -18,16 +26,61 @@ export async function findUserByEmail(email: string): Promise<Row | null> {
   return (data as Row) ?? null;
 }
 
+/** Active = not paused and not deleted. Paused/deleted accounts cannot hold a session. */
 export async function getUserById(id: string): Promise<SessionUser | null> {
   const { data } = await authDb.from("users").select("*").eq("id", id).maybeSingle();
-  return data ? toUser(data as Row) : null;
+  if (!data) return null;
+  const row = data as Row;
+  if (row.deleted_at || row.paused_at) return null;
+  return toUser(row);
+}
+
+export type LoginResult =
+  | { ok: true; user: SessionUser }
+  | { ok: false; reason: "invalid" | "paused" };
+
+export async function verifyLogin(email: string, password: string): Promise<LoginResult> {
+  const row = await findUserByEmail(email);
+  if (!row?.encrypted_password || row.deleted_at) return { ok: false, reason: "invalid" };
+  const ok = await bcrypt.compare(password, row.encrypted_password);
+  if (!ok) return { ok: false, reason: "invalid" };
+  if (row.paused_at) return { ok: false, reason: "paused" };
+  return { ok: true, user: toUser(row) };
 }
 
 export async function verifyPassword(email: string, password: string): Promise<SessionUser | null> {
-  const row = await findUserByEmail(email);
-  if (!row?.encrypted_password) return null;
-  const ok = await bcrypt.compare(password, row.encrypted_password);
-  return ok ? toUser(row) : null;
+  const r = await verifyLogin(email, password);
+  return r.ok ? r.user : null;
+}
+
+export async function setUserPaused(id: string, paused: boolean): Promise<{ error: string | null }> {
+  const { error } = await authDb
+    .from("users")
+    .update({ paused_at: paused ? new Date().toISOString() : null, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .is("deleted_at", null);
+  return { error: error?.message ?? null };
+}
+
+/**
+ * Scrub credentials + identity but keep the row as an opaque FK anchor
+ * (interviews/projects still reference it). Frees the email for re-registration.
+ */
+export async function scrubUser(id: string): Promise<{ error: string | null }> {
+  const now = new Date().toISOString();
+  const { error } = await authDb
+    .from("users")
+    .update({
+      email: `deleted+${id}@deleted.invalid`,
+      // Not a valid bcrypt hash → bcrypt.compare can never succeed.
+      encrypted_password: "!deleted",
+      raw_user_meta_data: {},
+      deleted_at: now,
+      paused_at: null,
+      updated_at: now,
+    })
+    .eq("id", id);
+  return { error: error?.message ?? null };
 }
 
 export async function createUser(email: string, password: string, meta: Record<string, unknown> = {}) {
@@ -49,8 +102,10 @@ export async function updatePassword(id: string, password: string) {
   return { error: error?.message ?? null };
 }
 
-export async function deleteUser(id: string) {
-  await authDb.from("users").delete().eq("id", id);
+/** Hard delete; returns the DB error (e.g. FK violation) instead of swallowing it. */
+export async function deleteUser(id: string): Promise<{ error: string | null }> {
+  const { error } = await authDb.from("users").delete().eq("id", id);
+  return { error: error?.message ?? null };
 }
 
 /** Validate a session JWT and confirm the user still exists. */
