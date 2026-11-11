@@ -24,8 +24,8 @@ VALUES
   (
     'planLimits',
     jsonb_build_object(
-      'FREE', jsonb_build_object('seats', 5, 'interviews', 20, 'projects', 3),
-      'PRO', jsonb_build_object('seats', 25, 'interviews', 200, 'projects', 20),
+      'FREE', jsonb_build_object('seats', null, 'interviews', 20, 'projects', 3),
+      'PRO', jsonb_build_object('seats', null, 'interviews', 200, 'projects', 20),
       'ENTERPRISE', jsonb_build_object('seats', null, 'interviews', null, 'projects', null),
       'SELF_HOSTED', jsonb_build_object('seats', null, 'interviews', null, 'projects', null)
     )
