@@ -527,18 +527,31 @@ export const questionBankRouter = router({
         secQuery = secQuery.in("id", input.sectionIds);
       }
 
-      const { data: sections } = await secQuery;
+      const { data: sections, error: secErr } = await secQuery;
+      if (secErr) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: secErr.message,
+        });
+      }
       if (!sections || sections.length === 0) {
         return { sections: [], questions: [] };
       }
 
       const activeSecIds = sections.map((s) => s.id);
-      const { data: items } = await ctx.supabase
+      const { data: items, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
         .select("*")
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
+
+      if (itemsErr) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: itemsErr.message,
+        });
+      }
 
       const secMap = new Map(sections.map((s) => [s.id, s.name]));
 
@@ -553,3 +566,4 @@ export const questionBankRouter = router({
       };
     }),
 });
+

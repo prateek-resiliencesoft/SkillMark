@@ -136,7 +136,7 @@ export function BulkCvGenerator({
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState(false);
-  const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("technical");
+  const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("mixed");
   const [includePremade, setIncludePremade] = useState(true);
   const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
 
@@ -166,7 +166,7 @@ export function BulkCvGenerator({
 
   const premade = trpc.questionBank.getEnabledQuestions.useQuery(
     { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+    { enabled: !!currentOrg?.id, staleTime: 10_000, refetchOnMount: "always" },
   );
 
   const createBatch = trpc.batch.create.useMutation();
