@@ -647,6 +647,90 @@ export type Database = {
         };
         Relationships: [];
       };
+      question_bank_sections: {
+        Row: {
+          id: string;
+          organizationId: string;
+          name: string;
+          description: string | null;
+          order: number;
+          isEnabled: boolean;
+          createdAt: string;
+          updatedAt: string;
+        };
+        Insert: {
+          id?: string;
+          organizationId: string;
+          name: string;
+          description?: string | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Update: {
+          id?: string;
+          organizationId?: string;
+          name?: string;
+          description?: string | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Relationships: [];
+      };
+      question_bank_items: {
+        Row: {
+          id: string;
+          sectionId: string;
+          organizationId: string;
+          text: string;
+          description: string | null;
+          type: string;
+          options: Json | null;
+          starterCode: Json | null;
+          followUpPrompts: Json | null;
+          skipIf: Json | null;
+          order: number;
+          isEnabled: boolean;
+          createdAt: string;
+          updatedAt: string;
+        };
+        Insert: {
+          id?: string;
+          sectionId: string;
+          organizationId: string;
+          text: string;
+          description?: string | null;
+          type?: string;
+          options?: Json | null;
+          starterCode?: Json | null;
+          followUpPrompts?: Json | null;
+          skipIf?: Json | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Update: {
+          id?: string;
+          sectionId?: string;
+          organizationId?: string;
+          text?: string;
+          description?: string | null;
+          type?: string;
+          options?: Json | null;
+          starterCode?: Json | null;
+          followUpPrompts?: Json | null;
+          skipIf?: Json | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

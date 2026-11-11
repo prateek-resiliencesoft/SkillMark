@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * Conditional skip rules for interview / bank questions.
  * Example: skip "Where do you live?" if intro already mentioned location.
@@ -8,6 +10,15 @@ export type QuestionSkipIf = {
   /** Short label shown in UI / reports. */
   reason?: string;
 };
+
+/** Shared Zod schema for bank + interview question skipIf. */
+export const questionSkipIfSchema = z
+  .object({
+    answerContainsAny: z.array(z.string().trim().min(1)).max(20).optional(),
+    reason: z.string().trim().max(200).optional(),
+  })
+  .nullable()
+  .optional();
 
 export const skipIfSchemaShape = {
   answerContainsAny: true as const,

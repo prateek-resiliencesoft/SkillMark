@@ -52,7 +52,7 @@ export function PremadeQuestionPicker({
   );
 
   const sections = bank.data?.sections ?? [];
-  const questions = (bank.data?.questions ?? []) as PremadeBankQuestion[];
+  const questions: PremadeBankQuestion[] = bank.data?.questions ?? [];
 
   const suggestedSections = useMemo(
     () => sectionsMatchingInterviewType(interviewType, sections),
@@ -92,12 +92,6 @@ export function PremadeQuestionPicker({
     onSelectedChange(new Set(questions.map((q) => q.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed on bank/include only
   }, [includePremade, questions, sections, disabled]);
-
-  // Interview-type change: offer suggested selection only if user hasn't customized.
-  useEffect(() => {
-    if (!includePremade || !questions.length || disabled || userTouchedRef.current) return;
-    // no-op for selection — type only drives suggested badge / Suggested button
-  }, [interviewType, includePremade, questions.length, disabled]);
 
   const selectedQuestions = useMemo(
     () => questions.filter((q) => selectedIds.has(q.id)),

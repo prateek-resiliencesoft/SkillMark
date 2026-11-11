@@ -455,7 +455,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
 
     try {
       const premadeToInclude = selectedPremadePayload(
-        enabledPremadeQuery.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+        enabledPremadeQuery.data?.questions,
         selectedPremadeIds,
         includePremade,
       );
@@ -1647,7 +1647,7 @@ function ImportDialog({
       isRequired: true,
       options: q.options as GeneratedQuestion["options"],
       starterCode: q.starterCode as GeneratedQuestion["starterCode"],
-      skipIf: (q as { skipIf?: GeneratedQuestion["skipIf"] }).skipIf ?? null,
+      skipIf: q.skipIf ?? null,
     }));
     onImport(mapped);
     setSelectedIds(new Set());

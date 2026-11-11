@@ -1,3 +1,5 @@
+import type { QuestionSkipIf } from "@/lib/question-conditions";
+
 /** Map interview type → question-bank section name keywords. */
 const TYPE_KEYWORDS: Record<string, string[]> = {
   screening: ["screen"],
@@ -27,10 +29,20 @@ export type PremadeBankQuestion = {
   description?: string | null;
   options?: unknown;
   starterCode?: unknown;
-  skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
+  skipIf?: QuestionSkipIf | null;
 };
 
-export function toPremadePayload(questions: PremadeBankQuestion[]) {
+export type PremadeQuestionPayload = {
+  text: string;
+  type?: string;
+  sectionName: string;
+  description?: string;
+  options?: unknown;
+  starterCode?: unknown;
+  skipIf?: QuestionSkipIf;
+};
+
+export function toPremadePayload(questions: PremadeBankQuestion[]): PremadeQuestionPayload[] {
   return questions.map((q) => ({
     text: q.text,
     type: q.type ?? undefined,

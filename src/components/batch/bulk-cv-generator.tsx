@@ -227,7 +227,7 @@ export function BulkCvGenerator({
 
   const ensureBatch = async (): Promise<string> => {
     const premadeQuestions = selectedPremadePayload(
-      premade.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+      premade.data?.questions,
       selectedPremadeIds,
       includePremade,
     );

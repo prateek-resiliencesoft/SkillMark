@@ -1,6 +1,20 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { parseSkipIf, questionSkipIfSchema } from "@/lib/question-conditions";
+import type { PremadeBankQuestion } from "@/lib/premade-sections";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
+
+export type EnabledBankSection = {
+  id: string;
+  name: string;
+  order: number;
+  isEnabled: boolean;
+};
+
+export type EnabledBankQuestionsResult = {
+  sections: EnabledBankSection[];
+  questions: PremadeBankQuestion[];
+};
 
 export const DEFAULT_QUESTION_BANK_SECTIONS = [
   {
@@ -314,13 +328,7 @@ export const questionBankRouter = router({
           .nullable()
           .optional(),
         followUpPrompts: z.any().optional(),
-        skipIf: z
-          .object({
-            answerContainsAny: z.array(z.string()).max(20).optional(),
-            reason: z.string().max(200).optional(),
-          })
-          .nullable()
-          .optional(),
+        skipIf: questionSkipIfSchema,
         isEnabled: z.boolean().default(true),
       }),
     )
@@ -354,7 +362,7 @@ export const questionBankRouter = router({
           options: input.options ?? null,
           starterCode: input.starterCode ?? null,
           followUpPrompts: input.followUpPrompts ?? null,
-          skipIf: input.skipIf ?? null,
+          skipIf: parseSkipIf(input.skipIf),
           order: nextOrder,
           isEnabled: input.isEnabled,
         })
@@ -380,13 +388,7 @@ export const questionBankRouter = router({
         options: z.any().optional(),
         starterCode: z.any().optional(),
         followUpPrompts: z.any().optional(),
-        skipIf: z
-          .object({
-            answerContainsAny: z.array(z.string()).max(20).optional(),
-            reason: z.string().max(200).optional(),
-          })
-          .nullable()
-          .optional(),
+        skipIf: questionSkipIfSchema,
         isEnabled: z.boolean().optional(),
         order: z.number().optional(),
         sectionId: z.string().optional(),
@@ -409,11 +411,12 @@ export const questionBankRouter = router({
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
 
-      const { id, ...updates } = input;
+      const { id, skipIf, ...rest } = input;
       const { data: updated, error } = await ctx.supabase
         .from("question_bank_items")
         .update({
-          ...updates,
+          ...rest,
+          ...(skipIf !== undefined ? { skipIf: parseSkipIf(skipIf) } : {}),
           updatedAt: new Date().toISOString(),
         })
         .eq("id", id)
@@ -507,7 +510,7 @@ export const questionBankRouter = router({
         sectionIds: z.array(z.string()).optional(),
       }),
     )
-    .query(async ({ ctx, input }) => {
+    .query(async ({ ctx, input }): Promise<EnabledBankQuestionsResult> => {
       const membership = await getOrgMembership(
         ctx.supabase,
         input.organizationId,
@@ -538,10 +541,12 @@ export const questionBankRouter = router({
         return { sections: [], questions: [] };
       }
 
-      const activeSecIds = sections.map((s) => s.id);
+      const activeSecIds = sections.map((s: EnabledBankSection) => s.id);
       const { data: items, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
-        .select("*")
+        .select(
+          "id, sectionId, text, type, description, options, starterCode, skipIf, isEnabled, order",
+        )
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
@@ -553,15 +558,35 @@ export const questionBankRouter = router({
         });
       }
 
-      const secMap = new Map(sections.map((s) => [s.id, s.name]));
+      const secMap = new Map(
+        (sections as EnabledBankSection[]).map((s) => [s.id, s.name]),
+      );
 
-      const questions = (items ?? []).map((q) => ({
-        ...q,
+      const questions: PremadeBankQuestion[] = (
+        (items ?? []) as Array<{
+          id: string;
+          sectionId: string;
+          text: string;
+          type: string | null;
+          description: string | null;
+          options: unknown;
+          starterCode: unknown;
+          skipIf: unknown;
+        }>
+      ).map((q) => ({
+        id: q.id,
+        sectionId: q.sectionId,
         sectionName: secMap.get(q.sectionId) ?? "Standard",
+        text: q.text,
+        type: q.type,
+        description: q.description,
+        options: q.options ?? null,
+        starterCode: q.starterCode ?? null,
+        skipIf: parseSkipIf(q.skipIf),
       }));
 
       return {
-        sections,
+        sections: sections as EnabledBankSection[],
         questions,
       };
     }),
