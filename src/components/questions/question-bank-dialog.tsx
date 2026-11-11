@@ -34,6 +34,7 @@ export interface QuestionBankItemData {
   type: "OPEN_ENDED" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "CODING" | "WHITEBOARD" | "RESEARCH";
   options?: { options: string[] } | null;
   starterCode?: { language: string; code: string } | null;
+  skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
   isEnabled?: boolean;
 }
 
@@ -66,6 +67,8 @@ export function QuestionBankDialog({
   const [codeLanguage, setCodeLanguage] = useState("typescript");
   const [starterCode, setStarterCode] = useState("// Write your solution here\n");
   const [isEnabled, setIsEnabled] = useState(true);
+  const [skipKeywords, setSkipKeywords] = useState("");
+  const [skipReason, setSkipReason] = useState("");
 
   useEffect(() => {
     if (initialData) {
@@ -83,6 +86,8 @@ export function QuestionBankDialog({
         setCodeLanguage(initialData.starterCode.language || "typescript");
         setStarterCode(initialData.starterCode.code || "");
       }
+      setSkipKeywords((initialData.skipIf?.answerContainsAny ?? []).join(", "));
+      setSkipReason(initialData.skipIf?.reason ?? "");
     } else {
       setText("");
       setDescription("");
@@ -91,6 +96,8 @@ export function QuestionBankDialog({
       setCodeLanguage("typescript");
       setStarterCode("// Write your solution here\n");
       setIsEnabled(true);
+      setSkipKeywords("");
+      setSkipReason("");
     }
   }, [initialData, open]);
 
@@ -145,6 +152,10 @@ export function QuestionBankDialog({
       return;
     }
 
+    const keywords = skipKeywords
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean);
     const payload = {
       text: text.trim(),
       description: description.trim() || undefined,
@@ -158,6 +169,12 @@ export function QuestionBankDialog({
         type === "CODING"
           ? { language: codeLanguage, code: starterCode }
           : undefined,
+      skipIf: keywords.length
+        ? {
+            answerContainsAny: keywords,
+            reason: skipReason.trim() || undefined,
+          }
+        : null,
     };
 
     if (initialData?.id) {
@@ -320,6 +337,49 @@ export function QuestionBankDialog({
               </div>
             </div>
           )}
+
+          {/* Skip if already answered in intro / earlier answers */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+            <Label className="text-xs font-semibold">
+              Skip if already answered
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              If the candidate already covered these topics earlier (e.g. in their introduction),
+              the interviewer will skip this question. Comma-separated keywords.
+            </p>
+            <Input
+              placeholder="e.g. live, location, city, currently working, job at"
+              value={skipKeywords}
+              onChange={(e) => setSkipKeywords(e.target.value)}
+            />
+            <Input
+              placeholder="Optional reason label (e.g. Covered in intro)"
+              value={skipReason}
+              onChange={(e) => setSkipReason(e.target.value)}
+            />
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {[
+                { label: "Location", kw: "live, living, location, city, based in" },
+                { label: "Current role", kw: "currently working, work at, working as, my job" },
+                { label: "Background", kw: "background, experience, years of" },
+              ].map((p) => (
+                <Button
+                  key={p.label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  onClick={() =>
+                    setSkipKeywords((prev) =>
+                      prev.trim() ? `${prev.replace(/,\s*$/, "")}, ${p.kw}` : p.kw,
+                    )
+                  }
+                >
+                  + {p.label}
+                </Button>
+              ))}
+            </div>
+          </div>
 
           <DialogFooter className="pt-2">
             <Button

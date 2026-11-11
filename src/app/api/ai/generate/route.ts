@@ -138,32 +138,18 @@ export async function POST(req: Request) {
           throw lastError ?? new Error("Failed to parse AI response after retries");
         }
 
-        // Ensure all premade questions are present in generated output
+        // Force exact premade wording (replace paraphrases + append missing)
         if (
           generated &&
           Array.isArray(premadeQuestions) &&
           premadeQuestions.length > 0 &&
           Array.isArray(generated.questions)
         ) {
-          const generatedTexts = new Set(
-            generated.questions.map((q) => {
-              const item = q as { text?: unknown };
-              return typeof item?.text === "string" ? item.text.toLowerCase().trim() : "";
-            }),
-          );
-          for (const pm of premadeQuestions) {
-            if (pm?.text && !generatedTexts.has(pm.text.toLowerCase().trim())) {
-              generated.questions.push({
-                order: generated.questions.length,
-                text: pm.text,
-                type: pm.type || "OPEN_ENDED",
-                description: pm.description || `From ${pm.sectionName || "Premade"} section`,
-                isRequired: true,
-                options: pm.options || null,
-                starterCode: pm.starterCode || null,
-              });
-            }
-          }
+          const { enforceExactPremadeQuestions } = await import("@/lib/question-conditions");
+          generated.questions = enforceExactPremadeQuestions(
+            generated.questions as { text: string; skipIf?: unknown }[],
+            premadeQuestions,
+          ) as typeof generated.questions;
         }
 
         enqueue(sse({ type: "done", data: generated }));

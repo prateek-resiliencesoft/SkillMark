@@ -314,6 +314,13 @@ export const questionBankRouter = router({
           .nullable()
           .optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: z
+          .object({
+            answerContainsAny: z.array(z.string()).max(20).optional(),
+            reason: z.string().max(200).optional(),
+          })
+          .nullable()
+          .optional(),
         isEnabled: z.boolean().default(true),
       }),
     )
@@ -347,6 +354,7 @@ export const questionBankRouter = router({
           options: input.options ?? null,
           starterCode: input.starterCode ?? null,
           followUpPrompts: input.followUpPrompts ?? null,
+          skipIf: input.skipIf ?? null,
           order: nextOrder,
           isEnabled: input.isEnabled,
         })
@@ -372,6 +380,13 @@ export const questionBankRouter = router({
         options: z.any().optional(),
         starterCode: z.any().optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: z
+          .object({
+            answerContainsAny: z.array(z.string()).max(20).optional(),
+            reason: z.string().max(200).optional(),
+          })
+          .nullable()
+          .optional(),
         isEnabled: z.boolean().optional(),
         order: z.number().optional(),
         sectionId: z.string().optional(),

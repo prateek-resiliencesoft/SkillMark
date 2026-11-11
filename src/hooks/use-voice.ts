@@ -46,6 +46,7 @@ export interface InterviewContext {
     options?: any;
     starterCode?: { language: string; code: string } | null;
     order: number;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
   }>;
 }
 

@@ -734,9 +734,11 @@ export function ChatInterface({
 
       // Advance question tracker only when AI explicitly moved to next question
       if (data.questionAdvanced) {
-        setCurrentQuestion((prev) =>
-          Math.min(prev + 1, interview.questions.length)
-        );
+        const target =
+          typeof data.nextQuestionIndex === "number"
+            ? data.nextQuestionIndex
+            : currentQuestion + 1;
+        setCurrentQuestion(Math.min(target, interview.questions.length));
       }
 
       // Check for interview completion signal
@@ -844,9 +846,11 @@ export function ChatInterface({
       setMessages((prev) => [...prev, aiMessage]);
 
       if (data.questionAdvanced) {
-        setCurrentQuestion((prev) =>
-          Math.min(prev + 1, interview.questions.length)
-        );
+        const target =
+          typeof data.nextQuestionIndex === "number"
+            ? data.nextQuestionIndex
+            : prevIdx + 1;
+        setCurrentQuestion(Math.min(target, interview.questions.length));
       }
     } catch (error) {
       console.error("Previous question error:", error);

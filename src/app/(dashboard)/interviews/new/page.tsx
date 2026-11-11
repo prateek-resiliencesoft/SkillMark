@@ -3,6 +3,10 @@
 import { useAppLocale } from "@/components/app-locale-provider";
 import { BulkCvGenerator } from "@/components/batch/bulk-cv-generator";
 import { AIGenerator } from "@/components/interview/ai-generator";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { useProject } from "@/components/project-provider";
 import { Button } from "@/components/ui/button";
@@ -31,7 +35,6 @@ import { trpc } from "@/lib/trpc/client";
 import {
   Files,
   Loader2,
-  Layers,
   MessageSquare,
   Mic,
   PenLine,
@@ -70,6 +73,10 @@ export default function NewInterviewPage() {
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>(false);
   const [includePremade, setIncludePremade] = useState(true);
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
+  const [premadeInterviewType, setPremadeInterviewType] = useState<
+    "technical" | "behavioral" | "mixed" | "screening"
+  >("mixed");
   const [loading, setLoading] = useState(false);
 
   const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
@@ -109,15 +116,22 @@ export default function NewInterviewPage() {
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
       });
 
-      if (includePremade && enabledPremadeQuery.data?.questions) {
-        const questionsToCreate = enabledPremadeQuery.data.questions;
-        for (let i = 0; i < questionsToCreate.length; i++) {
-          const q = questionsToCreate[i];
+      const picked = selectedPremadePayload(
+        enabledPremadeQuery.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+        selectedPremadeIds,
+        includePremade,
+      );
+      if (picked?.length) {
+        for (let i = 0; i < picked.length; i++) {
+          const q = picked[i];
+          const full = enabledPremadeQuery.data?.questions?.find(
+            (bq) => bq.text === q.text,
+          );
           await createQuestionMutation.mutateAsync({
             interviewId: interview.id,
             order: i,
             text: q.text,
-            type: q.type as
+            type: (q.type ?? "OPEN_ENDED") as
               | "OPEN_ENDED"
               | "SINGLE_CHOICE"
               | "MULTIPLE_CHOICE"
@@ -125,10 +139,12 @@ export default function NewInterviewPage() {
               | "WHITEBOARD"
               | "RESEARCH",
             description: q.description ?? undefined,
-            options: q.options ?? undefined,
+            options: (full?.options ?? q.options) ?? undefined,
             starterCode:
-              (q.starterCode as { language: string; code: string } | null) ??
-              undefined,
+              ((full?.starterCode ?? q.starterCode) as {
+                language: string;
+                code: string;
+              } | null) ?? undefined,
           });
         }
       }
@@ -464,32 +480,36 @@ export default function NewInterviewPage() {
                   </div>
                 </div>
 
-                {/* Premade Question Bank Options */}
-                <div className="rounded-xl border border-border/80 bg-muted/20 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <Layers className="h-4 w-4 text-primary" />
-                      <div>
-                        <Label className="text-sm font-semibold cursor-pointer">
-                          {isZh ? "包含题库中的预设轮次题目" : "Include Premade Bank Questions"}
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          {isZh
-                            ? "自动添加筛选轮、技术轮和 HR 轮的默认题目"
-                            : "Auto-populates standard Screening, Technical, and HR round questions"}
-                        </p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={includePremade}
-                      onCheckedChange={setIncludePremade}
-                    />
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <Label className="text-sm font-semibold">
+                      {isZh ? "题库预设题目" : "Premade bank questions"}
+                    </Label>
+                    <Select
+                      value={premadeInterviewType}
+                      onValueChange={(v) =>
+                        setPremadeInterviewType(v as typeof premadeInterviewType)
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-[160px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="mixed">Mixed (all)</SelectItem>
+                        <SelectItem value="screening">Screening</SelectItem>
+                        <SelectItem value="technical">Technical</SelectItem>
+                        <SelectItem value="behavioral">Behavioral</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  {includePremade && (enabledPremadeQuery.data?.questions?.length ?? 0) > 0 && (
-                    <div className="text-xs text-primary font-medium pt-1">
-                      ✓ {enabledPremadeQuery.data?.questions.length} premade questions will be automatically added to this interview
-                    </div>
-                  )}
+                  <PremadeQuestionPicker
+                    interviewType={premadeInterviewType}
+                    includePremade={includePremade}
+                    onIncludeChange={setIncludePremade}
+                    selectedIds={selectedPremadeIds}
+                    onSelectedChange={setSelectedPremadeIds}
+                    compact
+                  />
                 </div>
 
                 <Button type="submit" disabled={loading || !title}>
