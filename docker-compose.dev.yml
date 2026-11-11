@@ -39,6 +39,9 @@ services:
     volumes:
       - skillmark-dev-pg:/var/lib/postgresql/data
       - ./src/db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Host-only bind for SSH-tunnel debugging (DbGate, psql). Not public.
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-skillmark} -d ${POSTGRES_DB:-skillmark_dev}"]
       interval: 5s
