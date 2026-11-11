@@ -92,6 +92,24 @@ export default function BatchDetailPage() {
     onSuccess: () => router.push("/batches"),
     onError: (e) => toast({ title: "Could not delete", description: e.message, variant: "destructive" }),
   });
+  const removeCandidate = trpc.batch.removeCandidate.useMutation({
+    onSuccess: () => {
+      void utils.batch.getById.invalidate({ id });
+      toast({ title: "Candidate removed" });
+    },
+    onError: (e) => toast({ title: "Could not remove", description: e.message, variant: "destructive" }),
+  });
+  const removeCandidates = trpc.batch.removeCandidates.useMutation({
+    onSuccess: (r) => {
+      setSelected(new Set());
+      void utils.batch.getById.invalidate({ id });
+      toast({
+        title: `Removed ${r.removed} candidate${r.removed === 1 ? "" : "s"}`,
+        description: r.blocked ? `${r.blocked} already started — left in batch` : undefined,
+      });
+    },
+    onError: (e) => toast({ title: "Could not remove", description: e.message, variant: "destructive" }),
+  });
 
   const candidates = useMemo(() => batch.data?.candidates ?? [], [batch.data]);
   const visible = useMemo(() => {
@@ -195,6 +213,40 @@ export default function BatchDetailPage() {
               <Button onClick={() => setSendTo(selected.size ? Array.from(selected) : candidates.map((c) => c.id))} disabled={!candidates.length}>
                 <Send className="mr-2 h-4 w-4" />
                 {selected.size ? `Send to ${selected.size} selected` : "Send to all"}
+              </Button>
+            )}
+            {b.canEdit && selected.size > 0 && (
+              <Button
+                variant="outline"
+                className="text-destructive hover:text-destructive"
+                disabled={removeCandidates.isLoading}
+                onClick={() => {
+                  const removable = candidates.filter(
+                    (c) => selected.has(c.id) && c.status === "NOT_STARTED",
+                  );
+                  if (!removable.length) {
+                    toast({
+                      title: "Nothing to remove",
+                      description: "Only candidates who have not started can be removed",
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  if (
+                    !confirm(
+                      `Remove ${removable.length} not-started candidate${removable.length === 1 ? "" : "s"} from this batch? Their interviews will be deleted.`,
+                    )
+                  ) {
+                    return;
+                  }
+                  removeCandidates.mutate({
+                    batchId: id,
+                    candidateIds: removable.map((c) => c.id),
+                  });
+                }}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Remove selected
               </Button>
             )}
             {b.canEdit && (
@@ -397,6 +449,33 @@ export default function BatchDetailPage() {
                                 <Pencil className="mr-2 h-4 w-4" />
                                 Edit contact
                               </DropdownMenuItem>
+                              {c.status === "NOT_STARTED" && (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    disabled={removeCandidate.isLoading}
+                                    onClick={() => {
+                                      if (
+                                        !confirm(
+                                          `Remove ${c.name} from this batch? Their interview will be deleted. This cannot be undone.`,
+                                        )
+                                      ) {
+                                        return;
+                                      }
+                                      removeCandidate.mutate({ batchId: id, candidateId: c.id });
+                                      setSelected((prev) => {
+                                        const next = new Set(prev);
+                                        next.delete(c.id);
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Remove from batch
+                                  </DropdownMenuItem>
+                                </>
+                              )}
                             </>
                           )}
                         </DropdownMenuContent>

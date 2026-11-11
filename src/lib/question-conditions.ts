@@ -104,8 +104,9 @@ export type PremadeExact = {
 };
 
 /**
- * Ensure every premade appears with EXACT wording in the generated list.
- * Reworded near-duplicates are replaced; missing ones are appended.
+ * Ensure every premade appears with EXACT wording, listed FIRST (screening /
+ * auto-include rounds before AI complementary Qs). Reworded near-duplicates
+ * from the model are dropped; missing premade are inserted.
  */
 export function enforceExactPremadeQuestions<
   T extends {
@@ -120,35 +121,36 @@ export function enforceExactPremadeQuestions<
   },
 >(questions: T[], premade: PremadeExact[]): T[] {
   if (!premade.length) return questions;
-  const out = [...questions];
-  const used = new Set<number>();
+
+  const premadeExact: T[] = [];
+  const usedGenerated = new Set<number>();
 
   for (const pm of premade) {
     if (!pm?.text?.trim()) continue;
-    let hit = out.findIndex(
-      (q, i) => !used.has(i) && textsOverlap(q.text, pm.text),
+    let hit = questions.findIndex(
+      (q, i) => !usedGenerated.has(i) && textsOverlap(q.text, pm.text),
     );
     if (hit < 0) {
-      hit = out.findIndex(
+      hit = questions.findIndex(
         (q, i) =>
-          !used.has(i) &&
+          !usedGenerated.has(i) &&
           normalizeMatchText(q.text) === normalizeMatchText(pm.text),
       );
     }
     if (hit >= 0) {
-      used.add(hit);
-      out[hit] = {
-        ...out[hit],
+      usedGenerated.add(hit);
+      premadeExact.push({
+        ...questions[hit],
         text: pm.text,
-        type: (pm.type as T["type"]) || out[hit].type,
-        description: pm.description || out[hit].description,
-        options: (pm.options as T["options"]) ?? out[hit].options,
-        starterCode: (pm.starterCode as T["starterCode"]) ?? out[hit].starterCode,
-        skipIf: pm.skipIf ?? out[hit].skipIf,
-      };
+        type: (pm.type as T["type"]) || questions[hit].type,
+        description: pm.description || questions[hit].description,
+        options: (pm.options as T["options"]) ?? questions[hit].options,
+        starterCode: (pm.starterCode as T["starterCode"]) ?? questions[hit].starterCode,
+        skipIf: pm.skipIf ?? questions[hit].skipIf,
+      });
     } else {
-      out.push({
-        order: out.length,
+      premadeExact.push({
+        order: premadeExact.length,
         text: pm.text,
         type: (pm.type as T["type"]) || ("OPEN_ENDED" as T["type"]),
         description: pm.description || `From ${pm.sectionName || "Premade"} section`,
@@ -157,8 +159,9 @@ export function enforceExactPremadeQuestions<
         starterCode: pm.starterCode as T["starterCode"],
         skipIf: pm.skipIf ?? null,
       } as T);
-      used.add(out.length - 1);
     }
   }
-  return out.map((q, i) => ({ ...q, order: i }));
+
+  const complementary = questions.filter((_, i) => !usedGenerated.has(i));
+  return [...premadeExact, ...complementary].map((q, i) => ({ ...q, order: i }));
 }
