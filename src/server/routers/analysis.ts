@@ -51,6 +51,7 @@ export const analysisRouter = router({
         )
         .eq("id", input.sessionId)
         .order("timestamp", { referencedTable: "messages", ascending: true })
+        .order("id", { referencedTable: "messages", ascending: true })
         .single();
 
       if (!session) {
@@ -119,6 +120,33 @@ export const analysisRouter = router({
         );
       }
 
+      type StrikeLog = {
+        type: string;
+        timestamp: number;
+        detail?: string;
+        imageUrl?: string;
+        imagePath?: string;
+      };
+      const rawLog = ((session as Record<string, unknown>).antiCheatingLog ?? null) as
+        | StrikeLog[]
+        | null;
+      let antiCheatingLog: StrikeLog[] | null = rawLog;
+      if (!mediaClearedAt && rawLog?.length) {
+        antiCheatingLog = await Promise.all(
+          rawLog.map(async (v) => {
+            const source = v.imagePath || v.imageUrl;
+            if (!source) return v;
+            const signed = await resolveSessionSignedUrl(
+              "screenshots",
+              source,
+              input.sessionId,
+              organizationId,
+            );
+            return signed ? { ...v, imageUrl: signed } : v;
+          }),
+        );
+      }
+
       return {
         organizationId,
         interviewTitle: interview.title,
@@ -136,9 +164,7 @@ export const analysisRouter = router({
         audioRecordingUrl,
         audioDuration: (session as Record<string, unknown>).audioDuration as number | null,
         screenshots,
-        antiCheatingLog: (session as Record<string, unknown>).antiCheatingLog as
-          | { type: string; timestamp: number; detail?: string }[]
-          | null,
+        antiCheatingLog,
         mediaReviewStatus:
           (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
         mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,

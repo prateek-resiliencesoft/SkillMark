@@ -5,6 +5,10 @@ export type VoiceSavePayload = {
     content: string;
     questionId?: string;
     source?: string;
+    /** Client speak-time ISO; used for correct transcript order. */
+    timestamp?: string;
+    /** Monotonic client sequence within the session. */
+    seq?: number;
   }>;
   complete?: boolean;
   currentQuestionIndex?: number;

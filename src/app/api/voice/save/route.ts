@@ -11,15 +11,24 @@ const log = createLogger("api/voice/save");
 const voiceSaveOps: VoiceSaveOps = {
   async insertMessages(sessionId, messages) {
     await supabaseAdmin.from("messages").insert(
-      messages.map((m) => ({
-        sessionId,
-        role: m.role === "user" ? ("USER" as const) : ("ASSISTANT" as const),
-        content: m.content,
-        contentType: "TEXT" as const,
-        questionId: m.questionId || null,
-        wordCount: m.content.split(/\s+/).length,
-        transcription: m.source === "chat" ? "chat" : null,
-      })),
+      messages.map((m, i) => {
+        const clientTs = m.timestamp ? new Date(m.timestamp) : null;
+        const tsValid = clientTs && !Number.isNaN(clientTs.getTime());
+        // Tiny offset from seq so same-ms batches stay stable even if DB collapses equals.
+        const timestamp = tsValid
+          ? new Date(clientTs.getTime() + (typeof m.seq === "number" ? m.seq : i)).toISOString()
+          : undefined;
+        return {
+          sessionId,
+          role: m.role === "user" ? ("USER" as const) : ("ASSISTANT" as const),
+          content: m.content,
+          contentType: "TEXT" as const,
+          questionId: m.questionId || null,
+          wordCount: m.content.split(/\s+/).length,
+          transcription: m.source === "chat" ? "chat" : null,
+          ...(timestamp ? { timestamp } : {}),
+        };
+      }),
     );
   },
   async loadSessionForCompletion(sessionId) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { FlagsPopover } from "@/components/batch/bulk-cv-generator";
+import { BulkCvGenerator, FlagsPopover } from "@/components/batch/bulk-cv-generator";
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -46,6 +47,7 @@ import {
   Search,
   Send,
   Trash2,
+  UserPlus,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -75,6 +77,7 @@ export default function BatchDetailPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sendTo, setSendTo] = useState<string[] | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string; name: string; email: string; phone: string } | null>(null);
 
   const updateContact = trpc.batch.updateContact.useMutation({
@@ -116,6 +119,9 @@ export default function BatchDetailPage() {
 
   const b = batch.data;
   const invited = candidates.filter((c) => c.emailStatus === "sent" || c.whatsappStatus === "sent").length;
+  const unsentIds = candidates
+    .filter((c) => c.emailStatus !== "sent" && c.whatsappStatus !== "sent")
+    .map((c) => c.id);
   const allVisibleSelected = visible.length > 0 && visible.every((c) => selected.has(c.id));
   const recipients = (sendTo ?? [])
     .map((cid) => candidates.find((c) => c.id === cid))
@@ -168,11 +174,23 @@ export default function BatchDetailPage() {
             </p>
             {b.settings.roleDescription && <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{b.settings.roleDescription}</p>}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={exportRows}>
               <Download className="mr-2 h-4 w-4" />
               Export
             </Button>
+            {b.canEdit && (
+              <Button variant="outline" onClick={() => setAddOpen(true)}>
+                <UserPlus className="mr-2 h-4 w-4" />
+                Add candidates
+              </Button>
+            )}
+            {b.canEdit && unsentIds.length > 0 && (
+              <Button variant="outline" onClick={() => setSendTo(unsentIds)}>
+                <Send className="mr-2 h-4 w-4" />
+                Send to unsent ({unsentIds.length})
+              </Button>
+            )}
             {b.canEdit && (
               <Button onClick={() => setSendTo(selected.size ? Array.from(selected) : candidates.map((c) => c.id))} disabled={!candidates.length}>
                 <Send className="mr-2 h-4 w-4" />
@@ -404,12 +422,41 @@ export default function BatchDetailPage() {
         onOpenChange={(o) => !o && setSendTo(null)}
         batchId={id}
         organizationId={currentOrg?.id}
-        recipients={recipients}
+        recipients={recipients.map((c) => ({
+          id: c.id,
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          scheduledAt: c.scheduledAt,
+          expiresAt: c.expiresAt,
+          emailStatus: c.emailStatus,
+          whatsappStatus: c.whatsappStatus,
+        }))}
         onSent={() => {
           setSelected(new Set());
           void utils.batch.getById.invalidate({ id });
         }}
       />
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Add candidates to {b.name}</DialogTitle>
+            <DialogDescription>
+              Upload more CVs. New interviews reuse this batch&apos;s role settings. Send invite links after they are generated.
+            </DialogDescription>
+          </DialogHeader>
+          <BulkCvGenerator
+            existingBatchId={id}
+            existingBatchName={b.name}
+            compact
+            onFinished={() => {
+              setAddOpen(false);
+              void utils.batch.getById.invalidate({ id });
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent className="max-w-md">

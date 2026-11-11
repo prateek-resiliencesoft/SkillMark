@@ -95,14 +95,31 @@ const STATUS_LABEL: Record<RowStatus, string> = {
   generate_error: "Generation failed",
 };
 
-export function BulkCvGenerator({ projectId }: { projectId?: string }) {
+export function BulkCvGenerator({
+  projectId,
+  existingBatchId,
+  existingBatchName,
+  compact,
+  onFinished,
+}: {
+  projectId?: string;
+  /** Add CVs into this batch instead of creating a new one. */
+  existingBatchId?: string;
+  existingBatchName?: string;
+  /** Hide the shared batch-settings card (for add-to-existing dialogs). */
+  compact?: boolean;
+  onFinished?: (batchId: string) => void;
+}) {
   const router = useRouter();
   const { toast } = useToast();
   const { currentOrg } = useOrg();
   const fileInput = useRef<HTMLInputElement>(null);
+  const appendMode = !!existingBatchId;
 
   const [batchName, setBatchName] = useState(
-    () => `Batch ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`,
+    () =>
+      existingBatchName ??
+      `Batch ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`,
   );
   const [roleDescription, setRoleDescription] = useState("");
   const [jobDescription, setJobDescription] = useState("");
@@ -122,8 +139,12 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
 
   const [rows, setRows] = useState<CvRow[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(existingBatchId ?? null);
   const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (existingBatchId) setBatchId(existingBatchId);
+  }, [existingBatchId]);
   const [sendOpen, setSendOpen] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const previewRow = previewKey ? rows.find((r) => r.key === previewKey) ?? null : null;
@@ -195,6 +216,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   );
 
   const ensureBatch = async (): Promise<string> => {
+    if (existingBatchId) return existingBatchId;
     if (batchId) return batchId;
     const premadeQuestions = includePremade
       ? (premade.data?.questions ?? [])
@@ -253,6 +275,15 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
               phone: row.phone.trim() || null,
             },
           });
+          // Persist original CV so sessions screen can open it later
+          try {
+            const fd = new FormData();
+            fd.append("file", row.file);
+            fd.append("candidateId", r.candidateId);
+            await fetch("/api/batches/upload-cv", { method: "POST", body: fd });
+          } catch {
+            /* non-fatal — resumeMarkdown still on profile */
+          }
           patchRow(row.key, {
             status: "generated",
             candidateId: r.candidateId,
@@ -281,10 +312,24 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   const readyValid = ready.filter((r) => !rowProblem(r));
   const generated = rows.filter((r) => r.status === "generated");
   const parsingCount = rows.filter((r) => r.status === "queued" || r.status === "parsing").length;
-  const canGenerate = !!batchName.trim() && !!roleDescription.trim() && readyValid.length > 0 && !running;
+  const canGenerate =
+    readyValid.length > 0 &&
+    !running &&
+    (appendMode || (!!batchName.trim() && !!roleDescription.trim()));
 
   return (
     <div className="space-y-6">
+      {appendMode && (
+        <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm">
+          Adding candidates to{" "}
+          <span className="font-medium text-foreground">
+            {existingBatchName ?? "this batch"}
+          </span>
+          . New interviews use the batch&apos;s existing role settings.
+        </div>
+      )}
+
+      {!compact && (
       <Card>
         <CardHeader>
           <CardTitle>1. Batch & role</CardTitle>
@@ -441,10 +486,11 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
           </div>
         </CardContent>
       </Card>
+      )}
 
       <Card>
         <CardHeader>
-          <CardTitle>2. Upload CVs</CardTitle>
+          <CardTitle>{compact ? "1. Upload CVs" : "2. Upload CVs"}</CardTitle>
           <CardDescription>
             PDF, DOCX, scanned PDFs and photos. Fields we can&apos;t read reliably are left blank and flagged — check them
             before generating.
@@ -587,7 +633,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>3. Generate & send</CardTitle>
+          <CardTitle>{compact ? "2. Generate" : "3. Generate & send"}</CardTitle>
           <CardDescription>
             Every candidate gets a unique private link that opens only their interview — no username or password to manage.
           </CardDescription>
@@ -595,7 +641,11 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         <CardContent className="flex flex-wrap items-center gap-3">
           <Button disabled={!canGenerate} onClick={() => void generateRows(readyValid)}>
             {running && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {batchId ? `Generate ${readyValid.length} more` : `Create batch & generate ${readyValid.length} interview${readyValid.length === 1 ? "" : "s"}`}
+            {appendMode
+              ? `Add ${readyValid.length} candidate${readyValid.length === 1 ? "" : "s"}`
+              : batchId
+                ? `Generate ${readyValid.length} more`
+                : `Create batch & generate ${readyValid.length} interview${readyValid.length === 1 ? "" : "s"}`}
           </Button>
           {parsingCount > 0 && <span className="text-sm text-muted-foreground">Reading {parsingCount} CV(s)…</span>}
           {ready.length > readyValid.length && (
@@ -606,15 +656,29 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
             <div className="flex w-full flex-wrap items-center gap-2 border-t pt-4">
               <span className="mr-auto text-sm">
                 <CheckCircle2 className="mr-1 inline h-4 w-4 text-green-600" />
-                {generated.length} interview{generated.length === 1 ? "" : "s"} ready. Send links now?
+                {generated.length} interview{generated.length === 1 ? "" : "s"} ready
+                {appendMode ? "." : ". Send links now?"}
               </span>
-              <Button onClick={() => setSendOpen(true)}>Send to all {generated.length}</Button>
-              <Button variant="outline" onClick={() => router.push(`/batches/${batchId}`)}>
-                Send one by one
-              </Button>
-              <Button variant="ghost" onClick={() => router.push(`/batches/${batchId}`)}>
-                Don&apos;t send now
-              </Button>
+              {appendMode ? (
+                <Button
+                  onClick={() => {
+                    if (onFinished) onFinished(batchId);
+                    else router.push(`/batches/${batchId}`);
+                  }}
+                >
+                  Done
+                </Button>
+              ) : (
+                <>
+                  <Button onClick={() => setSendOpen(true)}>Send to all {generated.length}</Button>
+                  <Button variant="outline" onClick={() => router.push(`/batches/${batchId}`)}>
+                    Send one by one
+                  </Button>
+                  <Button variant="ghost" onClick={() => router.push(`/batches/${batchId}`)}>
+                    Don&apos;t send now
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </CardContent>
