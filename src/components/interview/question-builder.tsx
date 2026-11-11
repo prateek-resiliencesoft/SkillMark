@@ -28,6 +28,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import type { PremadeBankQuestion } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import { QUESTION_TYPE_STYLES } from "@/components/interview/question-card";
@@ -323,7 +324,7 @@ export function QuestionBuilder({
                       await createMutation.mutateAsync({
                         interviewId,
                         text: q.text,
-                        type: q.type as
+                        type: (q.type ?? "OPEN_ENDED") as
                           | "OPEN_ENDED"
                           | "SINGLE_CHOICE"
                           | "MULTIPLE_CHOICE"
@@ -656,27 +657,10 @@ function PremadeAddList({
   loading,
   onAdd,
 }: {
-  questions: {
-    id: string;
-    sectionId: string;
-    sectionName: string;
-    text: string;
-    type: string;
-    description?: string | null;
-    options?: unknown;
-    starterCode?: unknown;
-    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
-  }[];
+  questions: PremadeBankQuestion[];
   sections: { id: string; name: string }[];
   loading?: boolean;
-  onAdd: (q: {
-    text: string;
-    type: string;
-    description?: string | null;
-    options?: unknown;
-    starterCode?: unknown;
-    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
-  }) => Promise<void>;
+  onAdd: (q: PremadeBankQuestion) => Promise<void>;
 }) {
   const [openSecs, setOpenSecs] = useState<Set<string>>(
     () => new Set(sections.slice(0, 1).map((s) => s.id)),
