@@ -114,10 +114,17 @@ export function CandidateDetailSheet({
     { interviewId: c?.interviewId ?? "" },
     { enabled: !!c?.interviewId },
   );
+  const profile = c?.profile as
+    | { cvPath?: string; resumeMarkdown?: string; fileName?: string }
+    | null
+    | undefined;
   const isFormApplicant = typeof c?.notes === "string" && /applied via|hosted form/i.test(c.notes);
-  const cvQ = trpc.interviewForm.cvLink.useQuery(
+  const hasResume =
+    isFormApplicant ||
+    !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName);
+  const cvQ = trpc.candidate.resumeAccess.useQuery(
     { candidateId: candidateId ?? "" },
-    { enabled: open && !!candidateId && isFormApplicant, retry: false },
+    { enabled: open && !!candidateId && hasResume, retry: false },
   );
   const [cvOpening, setCvOpening] = useState(false);
 
@@ -302,12 +309,12 @@ export function CandidateDetailSheet({
                   {c.lastSendError && <p className="mt-2 text-xs text-destructive">Last send error: {c.lastSendError}</p>}
                 </section>
 
-                {isFormApplicant && (
+                {hasResume && (
                   <section className="rounded-xl border bg-card p-4 shadow-sm">
-                    <h4 className="mb-2 text-sm font-semibold">Application CV</h4>
+                    <h4 className="mb-2 text-sm font-semibold">Resume</h4>
                     {cvQ.isLoading ? (
-                      <p className="text-xs text-muted-foreground">Looking up CV…</p>
-                    ) : cvQ.data?.url ? (
+                      <p className="text-xs text-muted-foreground">Looking up resume…</p>
+                    ) : cvQ.data?.url || cvQ.data?.markdown ? (
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={cvQ.data.name}>
                           {cvQ.data.name}
@@ -318,16 +325,28 @@ export function CandidateDetailSheet({
                           disabled={cvOpening}
                           onClick={() => {
                             setCvOpening(true);
-                            window.open(cvQ.data!.url, "_blank", "noopener,noreferrer");
-                            setCvOpening(false);
+                            try {
+                              if (cvQ.data?.url) {
+                                window.open(cvQ.data.url, "_blank", "noopener,noreferrer");
+                              } else if (cvQ.data?.markdown) {
+                                const blob = new Blob([cvQ.data.markdown], { type: "text/markdown" });
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, "_blank", "noopener,noreferrer");
+                                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                              }
+                            } finally {
+                              setCvOpening(false);
+                            }
                           }}
                         >
                           {cvOpening ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <FileText className="mr-1.5 h-3.5 w-3.5" />}
-                          View CV
+                          View resume
                         </Button>
                       </div>
                     ) : (
-                      <p className="text-xs text-muted-foreground">No CV on file for this form application.</p>
+                      <p className="text-xs text-muted-foreground">
+                        {cvQ.error?.message ?? "No resume on file for this candidate."}
+                      </p>
                     )}
                   </section>
                 )}

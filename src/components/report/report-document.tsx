@@ -140,11 +140,23 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
         <div data-pdf-block><H>Transcript</H></div>
         {data.transcript.map((m) => {
           const user = m.role === "USER";
+          const when = m.timestamp
+            ? new Date(m.timestamp).toLocaleString(undefined, {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })
+            : "";
           return (
             <div key={m.id} data-pdf-block style={{ display: "flex", justifyContent: user ? "flex-end" : "flex-start", marginBottom: 6 }}>
               <div style={{ maxWidth: "78%", padding: "6px 10px", borderRadius: 8, background: user ? `${accent}14` : "#f3f4f6", border: user ? `1px solid ${accent}33` : "1px solid #e5e7eb" }}>
-                <div style={{ fontSize: fs - 2.5, fontWeight: 700, color: user ? accent : "#6b7280" }}>{user ? "Candidate" : "Interviewer"}</div>
-                <div style={{ lineHeight: 1.45 }}>{m.content}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: fs - 2.5, fontWeight: 700, color: user ? accent : "#6b7280" }}>
+                  <span>{user ? "Candidate" : "Interviewer"}</span>
+                  {when && <span style={{ fontWeight: 500, opacity: 0.75 }}>{when}</span>}
+                </div>
+                <div style={{ lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.content}</div>
               </div>
             </div>
           );

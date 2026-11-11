@@ -591,10 +591,11 @@ export function VoiceInterface({
     window.addEventListener("pointerup", onUp);
   }, []);
 
-  // ── Recording hook (video mode) ──────────────────────────────────
+  // ── Recording hook (always audio; camera/screen only in video mode) ──
   const recording = useInterviewRecording({
     sessionId,
-    enabled: videoMode,
+    enabled: true,
+    captureVideo: videoMode,
   });
 
   const cameraPipRef = useRef<HTMLVideoElement>(null);
@@ -660,8 +661,8 @@ export function VoiceInterface({
     onTranscript: handleTranscript,
     onAIResponse: handleAIResponse,
     onError: handleError,
-    onTtsChunk: videoMode ? recording.addTtsChunk : undefined,
-    onInterrupt: videoMode ? recording.cancelTts : undefined,
+    onTtsChunk: recording.addTtsChunk,
+    onInterrupt: recording.cancelTts,
   });
 
   useEffect(() => {
@@ -684,23 +685,23 @@ export function VoiceInterface({
     if (!voice.isListening) void voice.startListening();
   }, [voice.isConnected, preview]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Start recording when voice connects (video mode) ───────────
+  // ── Start recording when voice connects ────────────────────────
   const recordingStartedRef = useRef(false);
   useEffect(() => {
-    if (!videoMode || !voice.isConnected || recordingStartedRef.current) return;
+    if (!voice.isConnected || recordingStartedRef.current) return;
     recordingStartedRef.current = true;
     const micStream = voice.mediaStreamRef.current;
     recording.start(micStream ?? undefined);
-  }, [videoMode, voice.isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voice.isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Attach mic stream to recording when it becomes available
   useEffect(() => {
-    if (!videoMode || !voice.isListening) return;
+    if (!voice.isListening) return;
     const micStream = voice.mediaStreamRef.current;
     if (micStream) {
       recording.attachMicStream(micStream);
     }
-  }, [videoMode, voice.isListening]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voice.isListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Countdown timer (starts when voice connects) ────────────────
   useEffect(() => {
@@ -1206,25 +1207,27 @@ export function VoiceInterface({
       ]);
 
       try {
-        // Stop recording and save artifacts (video mode)
-        if (videoMode && recording.isRecording) {
-          const result = await withTimeout(recording.stop(), 8000, "stop recording");
-          await withTimeout(
-            fetch("/api/trpc/session.saveRecording", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                json: {
-                  sessionId,
-                  audioRecordingUrl: result.audioUrl,
-                  audioDuration: result.audioDuration,
-                  screenshots: result.screenshots,
-                },
+        // Stop + save audio (and screenshots when video mode) BEFORE session completes
+        if (recording.isRecording || recordingStartedRef.current) {
+          const result = await withTimeout(recording.stop(), 15_000, "stop recording");
+          if (result.audioUrl || result.screenshots.length > 0) {
+            await withTimeout(
+              fetch("/api/trpc/session.saveRecording", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  json: {
+                    sessionId,
+                    audioRecordingUrl: result.audioUrl,
+                    audioDuration: result.audioDuration,
+                    screenshots: result.screenshots.length ? result.screenshots : undefined,
+                  },
+                }),
               }),
-            }),
-            8000,
-            "save recording",
-          );
+              12_000,
+              "save recording",
+            );
+          }
         }
       } catch (err) {
         console.error("[voice] Failed to save recording:", err);
@@ -1236,7 +1239,7 @@ export function VoiceInterface({
     } finally {
       onComplete?.();
     }
-  }, [saveAllDrawings, saveAllCodeSnippets, videoMode, recording, sessionId, voice, onComplete]);
+  }, [saveAllDrawings, saveAllCodeSnippets, recording, sessionId, voice, onComplete]);
 
   useEffect(() => {
     handleEndInterviewRef.current = handleEndInterview;

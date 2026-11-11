@@ -3,6 +3,7 @@
 import type { AntiCheatingViolation } from "@/hooks/use-anti-cheating";
 import { useAntiCheating } from "@/hooks/use-anti-cheating";
 import { markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
+import { captureCameraSnapshot, uploadStrikeSnapshot } from "@/lib/capture-camera-snapshot";
 import { MAX_STRIKES, STRIKE_LABEL } from "@/lib/head-movement";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
@@ -47,10 +48,28 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
         localCount.current += 1;
         let count = localCount.current;
         let disqualified = count >= MAX_STRIKES;
+        let imageUrl: string | undefined;
+        let imagePath: string | undefined;
+        try {
+          const blob = await captureCameraSnapshot();
+          if (blob) {
+            const uploaded = await uploadStrikeSnapshot(sessionId, blob, `strike-${violation.type}`);
+            imageUrl = uploaded.imageUrl;
+            imagePath = uploaded.imagePath;
+          }
+        } catch (err) {
+          console.warn("[anti-cheating] snapshot failed", err);
+        }
         try {
           const res = await reportRef.current.mutateAsync({
             sessionId,
-            violation: { type: violation.type, timestamp: violation.timestamp, detail: violation.detail },
+            violation: {
+              type: violation.type,
+              timestamp: violation.timestamp,
+              detail: violation.detail || reason,
+              imageUrl,
+              imagePath,
+            },
           });
           const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;
           if (typeof strikes === "number") {

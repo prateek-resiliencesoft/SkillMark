@@ -1,5 +1,7 @@
 import { expireIfStale } from "@/lib/session-link-server";
 import { nanoid } from "@/lib/id";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -8,6 +10,7 @@ import {
 } from "../trpc";
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
 import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
+import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
 export type { InviteDeliveryResult };
@@ -133,6 +136,69 @@ export const candidateRouter = router({
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
       await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
       return c;
+    }),
+
+  /**
+   * Signed CV / resume for a candidate — form application file, batch-uploaded
+   * cvPath, or parsed resumeMarkdown when no binary exists.
+   */
+  resumeAccess: protectedProcedure
+    .input(z.object({ candidateId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("id, interviewId, profile, name")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+      const { organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+
+      const { data: appRows } = await ctx.supabase
+        .from("applications")
+        .select("files")
+        .eq("candidateId", input.candidateId)
+        .order("createdAt", { ascending: false })
+        .limit(1);
+      const app = Array.isArray(appRows) ? appRows[0] : appRows;
+      if (app?.files) {
+        const signed = await signApplicationCv(
+          app.files as Record<string, { name: string; size: number; type: string; path: string }[]>,
+          organizationId,
+        );
+        if (signed) return { ...signed, markdown: null as string | null };
+      }
+
+      const profile = (c.profile ?? null) as {
+        cvPath?: string;
+        cvType?: string;
+        fileName?: string;
+        resumeMarkdown?: string;
+      } | null;
+
+      if (profile?.cvPath && pathBelongsToOrganization(profile.cvPath, organizationId)) {
+        const { data, error } = await supabaseAdmin.storage
+          .from(FILES_BUCKET)
+          .createSignedUrl(profile.cvPath, 3600);
+        if (!error && data?.signedUrl) {
+          return {
+            name: profile.fileName || "resume",
+            url: data.signedUrl,
+            type: profile.cvType || "application/octet-stream",
+            markdown: null as string | null,
+          };
+        }
+      }
+
+      if (profile?.resumeMarkdown?.trim()) {
+        return {
+          name: profile.fileName || `${c.name || "candidate"}-resume.md`,
+          url: null as string | null,
+          type: "text/markdown",
+          markdown: profile.resumeMarkdown,
+        };
+      }
+
+      throw new TRPCError({ code: "NOT_FOUND", message: "No resume on file for this candidate" });
     }),
 
   /** Which invite channels the interview's org has configured (no secrets returned). */

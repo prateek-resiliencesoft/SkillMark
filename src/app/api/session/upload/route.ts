@@ -44,7 +44,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    if (session.status === "COMPLETED" || session.status === "DISQUALIFIED") {
+    // Allow finalize uploads after complete/disqualify (stop-recording races complete).
+    if (session.status === "ABANDONED") {
       return NextResponse.json({ error: "Session has ended" }, { status: 403 });
     }
 

@@ -8,6 +8,7 @@ import {
   type HeadFrameState,
 } from "@/lib/head-movement";
 import { detectionsSuppressed, markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
+import { uploadStrikeSnapshot } from "@/lib/capture-camera-snapshot";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -54,17 +55,9 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
         try {
           const blob = await captureRef.current();
           if (blob) {
-            const fd = new FormData();
-            fd.append("file", blob, "snapshot.jpg");
-            fd.append("sessionId", sessionId);
-            fd.append("type", "screenshot");
-            fd.append("filename", `head-movement-${timestamp}.jpg`);
-            const r = await fetch("/api/session/upload", { method: "POST", body: fd });
-            if (r.ok) {
-              const j = await r.json();
-              imageUrl = j.url;
-              imagePath = j.path;
-            }
+            const uploaded = await uploadStrikeSnapshot(sessionId, blob, "head-movement");
+            imageUrl = uploaded.imageUrl;
+            imagePath = uploaded.imagePath;
           }
         } catch (err) {
           console.warn("[head-movement] snapshot upload failed", err);

@@ -299,7 +299,13 @@ export const batchRouter = router({
           graduationYear: edu?.graduationYear ?? null,
           workExperience: experienceBucket(profile.totalExperienceYears) ?? null,
           notes: profile.summary,
-          profile: { ...profile, reviewFlags: input.reviewFlags, fileName: input.fileName, extractionMethod: input.extractionMethod },
+          profile: {
+            ...profile,
+            reviewFlags: input.reviewFlags,
+            fileName: input.fileName,
+            extractionMethod: input.extractionMethod,
+            resumeMarkdown: input.resumeMarkdown.slice(0, 60_000),
+          },
           inviteToken: nanoid(12),
         })
         .select("id, inviteToken")
