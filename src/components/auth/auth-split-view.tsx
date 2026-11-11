@@ -121,17 +121,13 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
         const invalidCreds =
           error.message?.toLowerCase().includes("invalid login credentials") ||
           error.message?.toLowerCase().includes("invalid email or password");
-        const errorDesc = invalidCreds
-          ? fromInvite
-            ? "No account matches that email and password. Create an account with the invited email, then accept the invite."
-            : "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
-          : error.message || "Unable to sign in. Please check your credentials.";
         toast({
           title: "Sign In Failed",
-          description: errorDesc,
+          description: invalidCreds
+            ? "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
+            : error.message || "Unable to sign in. Please check your credentials.",
           variant: "destructive",
         });
-        if (invalidCreds && fromInvite) switchTab("register");
         setLoading(false);
       } else {
         window.location.href = nextUrl;
