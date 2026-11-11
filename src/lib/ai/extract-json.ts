@@ -6,48 +6,118 @@ const log = createLogger("ai/extract-json");
  * Robustly extract and parse a JSON object from an AI response string.
  *
  * Handles common issues:
- * - Unicode smart / curly quotes (U+201C, U+201D, etc.) → standard ASCII `"`
- * - JSON wrapped inside markdown code blocks (```json ... ```)
- * - Stray control characters
- * - Unescaped newlines and quotes inside string values
+ * - Unicode smart / curly quotes → ASCII `"`
+ * - Markdown code fences
+ * - Trailing commas before `]` / `}`
+ * - Unescaped newlines / interior quotes in strings
+ * - Truncated objects (best-effort close of open braces/brackets)
  */
 export function extractJson<T = Record<string, unknown>>(raw: string): T {
-  // 1. Normalise smart / curly quotes to ASCII equivalents
   let text = raw
-    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"') // double
-    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'"); // single
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
 
-  // 2. If the response is wrapped in a markdown code block, extract the inner content
-  const codeBlock = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  const codeBlock = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/i);
   if (codeBlock) {
     text = codeBlock[1].trim();
+  } else {
+    text = text.replace(/```(?:json)?/gi, "");
   }
 
-  // 3. Extract the outermost JSON object
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  const candidate = extractBalancedObject(text);
+  if (!candidate) {
     throw new Error("No JSON object found in AI response");
   }
 
-  let jsonStr = jsonMatch[0];
+  const attempts = [
+    candidate,
+    stripTrailingCommas(candidate),
+    sanitiseJsonString(stripTrailingCommas(candidate)),
+    closeTruncatedJson(stripTrailingCommas(candidate)),
+    sanitiseJsonString(closeTruncatedJson(stripTrailingCommas(candidate))),
+  ];
 
-  // 4. Try parsing directly
-  try {
-    return JSON.parse(jsonStr) as T;
-  } catch {
-    // 5. Fallback: sanitise common issues
-    jsonStr = sanitiseJsonString(jsonStr);
+  let lastErr: unknown;
+  for (const attempt of attempts) {
     try {
-      return JSON.parse(jsonStr) as T;
+      return JSON.parse(attempt) as T;
     } catch (e) {
-      // 6. Last resort: log the problematic content for debugging
-      log.error(
-        "Failed to parse after sanitisation. First 500 chars:",
-        jsonStr.slice(0, 500),
-      );
-      throw e;
+      lastErr = e;
     }
   }
+
+  log.error(
+    "Failed to parse after sanitisation. First 500 chars:",
+    candidate.slice(0, 500),
+  );
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Failed to parse AI response as JSON");
+}
+
+/** First balanced `{...}` (string-aware). Truncated → slice from `{` for repair. */
+function extractBalancedObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) {
+      return text.slice(start, i + 1);
+    }
+  }
+  // Truncated — return from `{` to end for repair attempts
+  return text.slice(start);
+}
+
+function stripTrailingCommas(s: string): string {
+  return s.replace(/,(\s*[}\]])/g, "$1");
+}
+
+/**
+ * Best-effort close of truncated JSON: end open string, then close brackets/braces
+ * in reverse open order.
+ */
+function closeTruncatedJson(raw: string): string {
+  let inStr = false;
+  let esc = false;
+  const stack: ("{" | "[")[] = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") stack.push("{");
+    else if (c === "[") stack.push("[");
+    else if (c === "}" || c === "]") stack.pop();
+  }
+
+  let out = raw;
+  if (inStr) out += '"';
+  // Drop dangling comma before we close
+  out = out.replace(/,\s*$/, "");
+  while (stack.length) {
+    const open = stack.pop();
+    out += open === "{" ? "}" : "]";
+  }
+  return out;
 }
 
 /**
@@ -55,7 +125,6 @@ export function extractJson<T = Record<string, unknown>>(raw: string): T {
  * control characters and quotes that appear inside string values.
  */
 function sanitiseJsonString(raw: string): string {
-  // Strip invisible / non-printable control chars outside of strings (keep \n \r \t)
   const input = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
   const out: string[] = [];
@@ -66,14 +135,12 @@ function sanitiseJsonString(raw: string): string {
     const ch = input[i];
 
     if (ch === '"') {
-      // Start of a JSON string – walk until we find the real closing quote
       out.push('"');
       i++;
       const strChars: string[] = [];
       while (i < len) {
         const sc = input[i];
         if (sc === "\\") {
-          // Keep existing escape sequences
           strChars.push(sc);
           i++;
           if (i < len) {
@@ -81,9 +148,6 @@ function sanitiseJsonString(raw: string): string {
             i++;
           }
         } else if (sc === '"') {
-          // Is this the real end of the string, or an unescaped interior quote?
-          // Peek ahead: if the next non-whitespace char is one of : , ] } or it's
-          // immediately followed by , ] } : then it's likely the real closing quote.
           const after = input.slice(i + 1).match(/^\s*(.)/);
           const nextSignificant = after ? after[1] : "";
           if (
@@ -93,10 +157,8 @@ function sanitiseJsonString(raw: string): string {
             nextSignificant === ":" ||
             nextSignificant === ""
           ) {
-            // Real closing quote
             break;
           } else {
-            // Interior unescaped quote – escape it
             strChars.push('\\"');
             i++;
           }
@@ -116,7 +178,7 @@ function sanitiseJsonString(raw: string): string {
       }
       out.push(strChars.join(""));
       out.push('"');
-      i++; // skip the closing quote
+      i++;
     } else {
       out.push(ch);
       i++;
