@@ -46,6 +46,12 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     log.error(`Failed to parse ${file.name}:`, err);
-    return Response.json({ error: err instanceof Error ? err.message : "Failed to parse CV" }, { status: 500 });
+    const message = err instanceof Error ? err.message : "Failed to parse CV";
+    const status = (err as { status?: number } | null)?.status;
+    // Surface provider 400s as 502 so the client always gets a JSON body with a clear message.
+    return Response.json(
+      { error: message },
+      { status: status === 401 || status === 403 ? status : 502 },
+    );
   }
 }

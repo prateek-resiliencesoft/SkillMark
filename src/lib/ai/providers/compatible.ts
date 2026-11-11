@@ -112,6 +112,12 @@ function enrichOpenAIError(err: unknown, providerName: string, model: string): E
       429,
     );
   }
+  if (status === 400 || /\b400\b\s*status code/i.test(detail)) {
+    return wrap(
+      `${providerName} rejected request for "${model}" (400${/no body/i.test(detail) ? ", empty body" : ""}). Often invalid model, max_tokens, or request shape. ${detail}`,
+      400,
+    );
+  }
   if (err instanceof Error) {
     if (status && !(err as Error & { status?: number }).status) {
       (err as Error & { status?: number }).status = status;

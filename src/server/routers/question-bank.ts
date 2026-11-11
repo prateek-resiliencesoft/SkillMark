@@ -506,7 +506,7 @@ export const questionBankRouter = router({
   getEnabledQuestions: protectedProcedure
     .input(
       z.object({
-        organizationId: z.string(),
+        organizationId: z.string().min(1),
         sectionIds: z.array(z.string()).optional(),
       }),
     )
@@ -516,9 +516,14 @@ export const questionBankRouter = router({
         input.organizationId,
         ctx.user.id,
       );
-      if (!membership) return { sections: [], questions: [] };
+      if (!membership) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You are not a member of this organization",
+        });
+      }
 
-      // Query active sections
+      // Query active sections (same org as Questions bank)
       let secQuery = ctx.supabase
         .from("question_bank_sections")
         .select("id, name, order, isEnabled")
@@ -530,32 +535,66 @@ export const questionBankRouter = router({
         secQuery = secQuery.in("id", input.sectionIds);
       }
 
-      const { data: sections, error: secErr } = await secQuery;
+      let { data: sections, error: secErr } = await secQuery;
       if (secErr) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: secErr.message,
         });
       }
+
+      // Parity with list(): seed defaults once so picker is never empty on a new org
+      if ((!sections || sections.length === 0) && !input.sectionIds?.length) {
+        const { count } = await ctx.supabase
+          .from("question_bank_sections")
+          .select("id", { count: "exact", head: true })
+          .eq("organizationId", input.organizationId);
+        if (!count) {
+          await seedDefaultSections(ctx.supabase, input.organizationId);
+          const seeded = await ctx.supabase
+            .from("question_bank_sections")
+            .select("id, name, order, isEnabled")
+            .eq("organizationId", input.organizationId)
+            .eq("isEnabled", true)
+            .order("order", { ascending: true });
+          sections = seeded.data ?? [];
+          if (seeded.error) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: seeded.error.message,
+            });
+          }
+        }
+      }
+
       if (!sections || sections.length === 0) {
         return { sections: [], questions: [] };
       }
 
       const activeSecIds = sections.map((s: EnabledBankSection) => s.id);
-      const { data: items, error: itemsErr } = await ctx.supabase
+      // Prefer * so missing optional columns (e.g. skipIf pre-migrate) don't 500 the picker
+      let { data: items, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
-        .select(
-          "id, sectionId, text, type, description, options, starterCode, skipIf, isEnabled, order",
-        )
+        .select("*")
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
 
       if (itemsErr) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: itemsErr.message,
-        });
+        // Fallback without filter if schema cache lag — still try to return questions
+        const retry = await ctx.supabase
+          .from("question_bank_items")
+          .select("id, sectionId, text, type, description, options, starterCode, order, isEnabled")
+          .in("sectionId", activeSecIds)
+          .eq("isEnabled", true)
+          .order("order", { ascending: true });
+        if (retry.error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: itemsErr.message,
+          });
+        }
+        items = retry.data;
       }
 
       const secMap = new Map(
@@ -571,19 +610,22 @@ export const questionBankRouter = router({
           description: string | null;
           options: unknown;
           starterCode: unknown;
-          skipIf: unknown;
+          skipIf?: unknown;
+          isEnabled?: boolean;
         }>
-      ).map((q) => ({
-        id: q.id,
-        sectionId: q.sectionId,
-        sectionName: secMap.get(q.sectionId) ?? "Standard",
-        text: q.text,
-        type: q.type,
-        description: q.description,
-        options: q.options ?? null,
-        starterCode: q.starterCode ?? null,
-        skipIf: parseSkipIf(q.skipIf),
-      }));
+      )
+        .filter((q) => q.isEnabled !== false)
+        .map((q) => ({
+          id: q.id,
+          sectionId: q.sectionId,
+          sectionName: secMap.get(q.sectionId) ?? "Standard",
+          text: q.text,
+          type: q.type,
+          description: q.description,
+          options: q.options ?? null,
+          starterCode: q.starterCode ?? null,
+          skipIf: parseSkipIf(q.skipIf),
+        }));
 
       return {
         sections: sections as EnabledBankSection[],

@@ -216,7 +216,8 @@ export function shouldFailover(err: unknown): boolean {
   if (e?.status === 401 || e?.status === 403) return true;
   // Wrong/retired model id for this provider — try next key/provider with its own model.
   if (e?.status === 404 || e?.status === 410) return true;
-  if (e?.status === 408 || e?.status === 500 || e?.status === 502 || e?.status === 503 || e?.status === 504) {
+  // 400 often = bad model id / max_tokens / unsupported response_format on compat APIs
+  if (e?.status === 400 || e?.status === 408 || e?.status === 500 || e?.status === 502 || e?.status === 503 || e?.status === 504) {
     return true;
   }
   const msg = e?.message ?? "";

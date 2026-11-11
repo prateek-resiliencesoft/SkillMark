@@ -88,17 +88,34 @@ async function generateProfileJson(
   provider: LLMProvider,
   model: string,
   source: string,
-  strict = false,
+  opts: { strict?: boolean; jsonMode?: boolean } = {},
 ) {
+  const { strict = false, jsonMode = false } = opts;
+  // Keep maxTokens modest — Gemini/OpenAI-compat often 400 on oversized max_tokens.
   return provider.generateResponse({
     model,
     temperature: 0,
-    maxTokens: strict ? 3072 : 6144,
+    maxTokens: strict ? 2048 : 3072,
+    jsonMode,
     messages: [
       { role: "system", content: strict ? `${STRICT_RETRY_PROMPT}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
       { role: "user", content: source },
     ],
   });
+}
+
+function isRetryableProfileError(msg: string, err?: unknown): boolean {
+  const status = (err as { status?: number } | undefined)?.status;
+  if (status === 400 || status === 404 || status === 410 || status === 429 || status === 503) {
+    return true;
+  }
+  return (
+    /JSON|Unexpected token|Expected|position \d+|No JSON object/i.test(msg) ||
+    /\b400\b|\b404\b|\b410\b|\b429\b|no body|invalid.?argument|max.?tokens|context length|too many tokens/i.test(
+      msg,
+    ) ||
+    isDeadModelError(msg)
+  );
 }
 
 export async function extractCandidateProfile(
@@ -119,14 +136,21 @@ export async function extractCandidateProfile(
   }
 
   let lastErr: unknown;
+  // Variants: normal → jsonMode → strict compact. Then next model/provider.
+  const variants: { strict: boolean; jsonMode: boolean }[] = [
+    { strict: false, jsonMode: false },
+    { strict: false, jsonMode: true },
+    { strict: true, jsonMode: false },
+  ];
+
   for (const attempt of attempts) {
-    for (const strict of [false, true]) {
+    for (const variant of variants) {
       try {
         const res = await generateProfileJson(
           attempt.provider,
           attempt.model,
           source,
-          strict,
+          variant,
         );
         const raw = extractJson<Record<string, unknown>>(
           res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
@@ -140,13 +164,8 @@ export async function extractCandidateProfile(
             "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
           );
         }
-        // JSON parse / truncate → retry strict once on same model, then next model.
-        const isJsonFail =
-          /JSON|Unexpected token|Expected|position \d+|No JSON object/i.test(msg);
-        if (isJsonFail && !strict) continue;
-        // Dead/retired model → try next; other hard errors stop (avoid burning quota).
-        if (!isDeadModelError(msg) && !isJsonFail) throw err;
-        break;
+        if (!isRetryableProfileError(msg, err)) throw err;
+        // else try next variant / model
       }
     }
   }
@@ -155,6 +174,11 @@ export async function extractCandidateProfile(
   if (isDeadModelError(msg)) {
     throw new Error(
       `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
+    );
+  }
+  if (/\b400\b|no body|invalid.?argument|max.?tokens/i.test(msg)) {
+    throw new Error(
+      `AI rejected the CV parse request (400). Try a shorter CV or change the resume model in Settings → AI. Detail: ${msg}`,
     );
   }
   throw lastErr instanceof Error

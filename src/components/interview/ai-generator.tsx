@@ -6,6 +6,8 @@ import {
   selectedPremadePayload,
 } from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
+import { useProject } from "@/components/project-provider";
+import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { AiButton } from "@/components/ui/ai-button";
 import {
     AlertDialog,
@@ -260,6 +262,9 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const router = useRouter();
   const { toast } = useToast();
   const { currentOrg } = useOrg();
+  const { currentProject } = useProject();
+  const bankOrgId =
+    currentProject?.organizationId || currentOrg?.id || "";
   const [description, setDescription] = useState("");
   const [activeTemplate, setActiveTemplate] = useState<number | null>(null);
   const [hlRanges, setHlRanges] = useState<HLRange[]>([]);
@@ -279,9 +284,13 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     "technical" | "behavioral" | "mixed" | "screening"
   >("mixed");
 
-  const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+  const bankListQuery = trpc.questionBank.list.useQuery(
+    { organizationId: bankOrgId },
+    { enabled: !!bankOrgId, staleTime: 10_000, refetchOnMount: "always" },
+  );
+  const enabledPremadeQuestions = useMemo(
+    () => flattenEnabledBankList(bankListQuery.data).questions,
+    [bankListQuery.data],
   );
 
   const [generating, setGenerating] = useState(false);
@@ -455,7 +464,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
 
     try {
       const premadeToInclude = selectedPremadePayload(
-        enabledPremadeQuery.data?.questions,
+        enabledPremadeQuestions,
         selectedPremadeIds,
         includePremade,
       );
@@ -1117,6 +1126,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               </Select>
             </div>
             <PremadeQuestionPicker
+              organizationId={bankOrgId}
               interviewType={premadeInterviewType}
               includePremade={includePremade}
               onIncludeChange={setIncludePremade}
