@@ -121,6 +121,72 @@ export const questionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
         });
+
+      // Batch: also append into settings.premadeQuestions so future AI gens include it
+      // (only when this candidate interview has not started yet).
+      try {
+        const { data: iv } = await ctx.supabase
+          .from("interviews")
+          .select("batchId")
+          .eq("id", interviewId)
+          .maybeSingle();
+        const batchId = (iv as { batchId?: string | null } | null)?.batchId;
+        if (batchId) {
+          const { data: cand } = await ctx.supabase
+            .from("candidates")
+            .select("session:sessions(status)")
+            .eq("interviewId", interviewId)
+            .maybeSingle();
+          const status =
+            (cand as { session?: { status?: string } | null } | null)?.session?.status ??
+            "NOT_STARTED";
+          if (status === "NOT_STARTED" || !status) {
+            const { data: batch } = await ctx.supabase
+              .from("interview_batches")
+              .select("settings")
+              .eq("id", batchId)
+              .single();
+            const settings = (batch?.settings ?? {}) as {
+              premadeQuestions?: {
+                text: string;
+                type?: string;
+                sectionName?: string;
+                description?: string;
+                options?: unknown;
+                starterCode?: unknown;
+              }[];
+            };
+            const prev = settings.premadeQuestions ?? [];
+            const exists = prev.some(
+              (p) => p.text.toLowerCase().trim() === input.text.toLowerCase().trim(),
+            );
+            if (!exists) {
+              await ctx.supabase
+                .from("interview_batches")
+                .update({
+                  settings: {
+                    ...settings,
+                    premadeQuestions: [
+                      ...prev,
+                      {
+                        text: input.text,
+                        type: input.type,
+                        sectionName: "Added after create",
+                        description: input.description ?? undefined,
+                        options: input.options ?? undefined,
+                        starterCode: input.starterCode ?? undefined,
+                      },
+                    ],
+                  },
+                })
+                .eq("id", batchId);
+            }
+          }
+        }
+      } catch {
+        /* non-fatal */
+      }
+
       return question;
     }),
 

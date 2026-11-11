@@ -33,6 +33,8 @@ import { cn } from "@/lib/utils";
 import { QUESTION_TYPE_STYLES } from "@/components/interview/question-card";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   ListOrdered,
   Loader2,
@@ -78,7 +80,13 @@ export function QuestionBuilder({
   // Inline editing state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [addingNew, setAddingNew] = useState(false);
+  const [premadeOpen, setPremadeOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const { currentOrg } = useOrg();
+  const bank = trpc.questionBank.getEnabledQuestions.useQuery(
+    { organizationId: currentOrg?.id ?? "" },
+    { enabled: !!currentOrg?.id && (addingNew || premadeOpen), staleTime: 30_000 },
+  );
 
   // Assessment criteria state
   const [editableCriteria, setEditableCriteria] = useState<AssessmentCriterion[]>(
@@ -94,10 +102,16 @@ export function QuestionBuilder({
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [optimisticOrder, setOptimisticOrder] = useState<Question[] | null>(null);
 
+  const keepAddPanelRef = useRef(false);
   const createMutation = trpc.question.create.useMutation({
     onSuccess: () => {
       utils.interview.getById.invalidate({ id: interviewId });
-      setAddingNew(false);
+      if (keepAddPanelRef.current) {
+        keepAddPanelRef.current = false;
+      } else {
+        setAddingNew(false);
+        setPremadeOpen(false);
+      }
       toast({ title: "Question added" });
     },
   });
@@ -277,27 +291,87 @@ export function QuestionBuilder({
 
           {/* Inline add new question */}
           {addingNew && (
-            <QuestionCard
-              data={newQuestionDefaults}
-              index={questions.length}
-              editing
-              hideDelete
-              saving={createMutation.isLoading}
-              onStartEdit={() => {}}
-              onSave={(data) => {
-                createMutation.mutate({
-                  interviewId,
-                  text: data.text,
-                  type: data.type as "OPEN_ENDED" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "CODING" | "WHITEBOARD" | "RESEARCH",
-                  description: data.description as string | undefined,
-                  isRequired: data.isRequired,
-                  options: data.options,
-                  starterCode: data.starterCode as { language: string; code: string } | null | undefined,
-                });
-              }}
-              onCancel={() => setAddingNew(false)}
-              onDelete={() => setAddingNew(false)}
-            />
+            <div className="space-y-3">
+              <div className="rounded-xl border bg-muted/20 p-3">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between text-left text-sm font-medium"
+                  onClick={() => setPremadeOpen((v) => !v)}
+                >
+                  <span className="flex items-center gap-2">
+                    <ListOrdered className="h-4 w-4 text-primary" />
+                    Add from premade bank
+                  </span>
+                  {premadeOpen ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </button>
+                {premadeOpen && (
+                  <PremadeAddList
+                    questions={(bank.data?.questions ?? []).filter(
+                      (q) =>
+                        !questions.some(
+                          (ex) => ex.text.toLowerCase().trim() === q.text.toLowerCase().trim(),
+                        ),
+                    )}
+                    sections={bank.data?.sections ?? []}
+                    loading={bank.isLoading || createMutation.isLoading}
+                    onAdd={async (q) => {
+                      keepAddPanelRef.current = true;
+                      await createMutation.mutateAsync({
+                        interviewId,
+                        text: q.text,
+                        type: q.type as
+                          | "OPEN_ENDED"
+                          | "SINGLE_CHOICE"
+                          | "MULTIPLE_CHOICE"
+                          | "CODING"
+                          | "WHITEBOARD"
+                          | "RESEARCH",
+                        description: q.description ?? undefined,
+                        options: q.options ?? undefined,
+                        starterCode: q.starterCode as
+                          | { language: string; code: string }
+                          | null
+                          | undefined,
+                        skipIf: q.skipIf ?? undefined,
+                      });
+                    }}
+                  />
+                )}
+              </div>
+
+              <p className="text-xs font-medium text-muted-foreground">Or write a question manually</p>
+              <QuestionCard
+                data={newQuestionDefaults}
+                index={questions.length}
+                editing
+                hideDelete
+                saving={createMutation.isLoading}
+                onStartEdit={() => {}}
+                onSave={(data) => {
+                  createMutation.mutate({
+                    interviewId,
+                    text: data.text,
+                    type: data.type as "OPEN_ENDED" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "CODING" | "WHITEBOARD" | "RESEARCH",
+                    description: data.description as string | undefined,
+                    isRequired: data.isRequired,
+                    options: data.options,
+                    starterCode: data.starterCode as { language: string; code: string } | null | undefined,
+                  });
+                }}
+                onCancel={() => {
+                  setAddingNew(false);
+                  setPremadeOpen(false);
+                }}
+                onDelete={() => {
+                  setAddingNew(false);
+                  setPremadeOpen(false);
+                }}
+              />
+            </div>
           )}
 
           {!addingNew && (
@@ -306,7 +380,10 @@ export function QuestionBuilder({
                 variant="outline"
                 size="sm"
                 className="flex-1 border-dashed"
-                onClick={() => setAddingNew(true)}
+                onClick={() => {
+                  setAddingNew(true);
+                  setPremadeOpen(true);
+                }}
               >
                 <Plus className="mr-1 h-3.5 w-3.5" />
                 Add New
@@ -565,6 +642,120 @@ export function QuestionBuilder({
           </Button>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Premade add list (inline under Add New)                            */
+/* ------------------------------------------------------------------ */
+
+function PremadeAddList({
+  questions,
+  sections,
+  loading,
+  onAdd,
+}: {
+  questions: {
+    id: string;
+    sectionId: string;
+    sectionName: string;
+    text: string;
+    type: string;
+    description?: string | null;
+    options?: unknown;
+    starterCode?: unknown;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
+  }[];
+  sections: { id: string; name: string }[];
+  loading?: boolean;
+  onAdd: (q: {
+    text: string;
+    type: string;
+    description?: string | null;
+    options?: unknown;
+    starterCode?: unknown;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
+  }) => Promise<void>;
+}) {
+  const [openSecs, setOpenSecs] = useState<Set<string>>(
+    () => new Set(sections.slice(0, 1).map((s) => s.id)),
+  );
+  const [addingId, setAddingId] = useState<string | null>(null);
+
+  if (!questions.length && !loading) {
+    return (
+      <p className="mt-2 text-xs text-muted-foreground">
+        No premade questions left to add (or bank is empty).
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-2 max-h-64 space-y-1.5 overflow-y-auto code-scrollbar">
+      {sections.map((sec) => {
+        const items = questions.filter((q) => q.sectionId === sec.id);
+        if (!items.length) return null;
+        const open = openSecs.has(sec.id);
+        return (
+          <div key={sec.id} className="rounded-lg border bg-background">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-xs font-semibold"
+              onClick={() =>
+                setOpenSecs((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(sec.id)) next.delete(sec.id);
+                  else next.add(sec.id);
+                  return next;
+                })
+              }
+            >
+              <span>
+                {sec.name}{" "}
+                <span className="font-normal text-muted-foreground">({items.length})</span>
+              </span>
+              {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            </button>
+            {open && (
+              <div className="space-y-1 border-t px-2 py-1.5">
+                {items.map((q) => (
+                  <div
+                    key={q.id}
+                    className="flex items-start gap-2 rounded-md px-1.5 py-1.5 text-xs hover:bg-muted/50"
+                  >
+                    <p className="min-w-0 flex-1 leading-snug">{q.text}</p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 text-[11px]"
+                      disabled={loading || addingId === q.id}
+                      onClick={async () => {
+                        setAddingId(q.id);
+                        try {
+                          await onAdd(q);
+                        } finally {
+                          setAddingId(null);
+                        }
+                      }}
+                    >
+                      {addingId === q.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <>
+                          <Plus className="mr-1 h-3 w-3" />
+                          Add
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

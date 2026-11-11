@@ -71,4 +71,6 @@ export interface GeneratedQuestion {
   followUpPrompts?: string[];
   /** Starter code template for CODING questions. */
   starterCode?: { language: string; code: string };
+  /** Skip when prior user answers already cover these keywords. */
+  skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
 }

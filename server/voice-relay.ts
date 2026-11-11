@@ -36,6 +36,7 @@ import {
 } from "./voice-relay-helpers";
 import { bt } from "../src/lib/i18n";
 import { createLogger } from "../src/lib/logger";
+import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { SPOKEN, PROMPTS } from "./voice-relay-prompts";
 
 const log = createLogger("voice-relay");
@@ -87,6 +88,7 @@ interface InterviewContext {
     description?: string | null;
     options?: { options: string[]; allowMultiple?: boolean } | null;
     order: number;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
   }>;
 }
 
@@ -676,6 +678,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
   // was on (provided via init context); default to 0 for new sessions.
   let currentQuestionIndex = 0; // set after init
   const questionSummaries: string[] = [];
+  const priorUserAnswers: string[] = [];
   let questionTranscript: TranscriptEntry[] = [];
   let asrAccumulator = "";
   let ttsAccumulator = "";
@@ -1161,7 +1164,15 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
         pendingLastQuestionTimeout = null;
       }
 
-      currentQuestionIndex++;
+      for (const t of transcriptSnapshot) {
+        if (t.role === "user" && t.text.trim()) priorUserAnswers.push(t.text);
+      }
+
+      currentQuestionIndex = nextAskableQuestionIndex(
+        sortedQuestions,
+        currentQuestionIndex + 1,
+        priorUserAnswers,
+      );
 
       if (currentQuestionIndex < sortedQuestions.length) {
         // Run LLM summarization AND session teardown in parallel

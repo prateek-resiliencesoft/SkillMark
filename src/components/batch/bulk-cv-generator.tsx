@@ -1,6 +1,10 @@
 "use client";
 
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +30,6 @@ import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
-  Check,
   CheckCircle2,
   Download,
   Eye,
@@ -135,7 +138,7 @@ export function BulkCvGenerator({
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState(false);
   const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("technical");
   const [includePremade, setIncludePremade] = useState(true);
-  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(new Set());
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
 
   const [rows, setRows] = useState<CvRow[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -145,6 +148,18 @@ export function BulkCvGenerator({
   useEffect(() => {
     if (existingBatchId) setBatchId(existingBatchId);
   }, [existingBatchId]);
+
+  const existingBatch = trpc.batch.getById.useQuery(
+    { id: existingBatchId ?? "" },
+    { enabled: !!existingBatchId },
+  );
+  useEffect(() => {
+    const t = existingBatch.data?.settings?.interviewType;
+    if (t === "technical" || t === "behavioral" || t === "mixed" || t === "screening") {
+      setInterviewType(t);
+    }
+  }, [existingBatch.data?.settings?.interviewType]);
+
   const [sendOpen, setSendOpen] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const previewRow = previewKey ? rows.find((r) => r.key === previewKey) ?? null : null;
@@ -154,13 +169,8 @@ export function BulkCvGenerator({
     { enabled: !!currentOrg?.id, staleTime: 30_000 },
   );
 
-  useEffect(() => {
-    if (premade.data?.sections) {
-      setSelectedSectionIds(new Set(premade.data.sections.map((s) => s.id)));
-    }
-  }, [premade.data?.sections]);
-
   const createBatch = trpc.batch.create.useMutation();
+  const updateBatchSettings = trpc.batch.updateSettings.useMutation();
   const generateCandidate = trpc.batch.generateCandidate.useMutation();
 
   const patchRow = useCallback((key: string, patch: Partial<CvRow>) => {
@@ -216,20 +226,28 @@ export function BulkCvGenerator({
   );
 
   const ensureBatch = async (): Promise<string> => {
-    if (existingBatchId) return existingBatchId;
-    if (batchId) return batchId;
-    const premadeQuestions = includePremade
-      ? (premade.data?.questions ?? [])
-          .filter((q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId))
-          .map((q) => ({
-            text: q.text as string,
-            type: (q.type as string) ?? undefined,
-            sectionName: q.sectionName as string,
-            description: (q.description as string | null) ?? undefined,
-            options: q.options ?? undefined,
-            starterCode: q.starterCode ?? undefined,
-          }))
-      : undefined;
+    const premadeQuestions = selectedPremadePayload(
+      premade.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+      selectedPremadeIds,
+      includePremade,
+    );
+
+    // Existing batch: refresh premade list so newly picked Qs apply to new candidates
+    if (existingBatchId || batchId) {
+      const id = existingBatchId ?? batchId!;
+      if (premadeQuestions) {
+        try {
+          await updateBatchSettings.mutateAsync({
+            batchId: id,
+            premadeQuestions,
+          });
+        } catch {
+          /* non-fatal — still generate with stored settings */
+        }
+      }
+      return id;
+    }
+
     const batch = await createBatch.mutateAsync({
       projectId,
       name: batchName.trim(),
@@ -247,7 +265,7 @@ export function BulkCvGenerator({
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
         defaultCountryCode: countryCode || undefined,
-        premadeQuestions: premadeQuestions?.length ? premadeQuestions : undefined,
+        premadeQuestions,
       },
     });
     setBatchId(batch.id);
@@ -427,65 +445,27 @@ export function BulkCvGenerator({
             <SettingSelect label="Language" value={language} onChange={setLanguage} options={LANGUAGES} disabled={!!batchId} />
           </div>
 
-          <div className="space-y-2">
-            <Label className="font-semibold text-sm">Premade section questions</Label>
-            <div className="space-y-3 rounded-xl border border-border/80 bg-card/60 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-semibold text-foreground">Include standard round questions</p>
-                  <p className="text-xs text-muted-foreground">
-                    Pulls enabled Question Bank rounds (Screening, Technical, HR). AI fills gaps without duplicates.
-                  </p>
-                </div>
-                <Switch checked={includePremade} disabled={!!batchId} onCheckedChange={setIncludePremade} />
-              </div>
-
-              {includePremade && (premade.data?.sections?.length ?? 0) > 0 && (
-                <div className="space-y-2 border-t border-border/50 pt-2">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Rounds to include (
-                    {(premade.data?.questions ?? []).filter(
-                      (q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId),
-                    ).length}{" "}
-                    questions):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {(premade.data?.sections ?? []).map((sec) => {
-                      const isSelected = selectedSectionIds.has(sec.id);
-                      const count = (premade.data?.questions ?? []).filter((q) => q.sectionId === sec.id).length;
-                      return (
-                        <button
-                          key={sec.id}
-                          type="button"
-                          disabled={!!batchId}
-                          onClick={() => {
-                            setSelectedSectionIds((prev) => {
-                              const next = new Set(prev);
-                              if (isSelected) next.delete(sec.id);
-                              else next.add(sec.id);
-                              return next;
-                            });
-                          }}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
-                            isSelected
-                              ? "border-primary bg-primary/10 text-primary"
-                              : "border-border bg-muted/40 text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
-                          <span>{sec.name}</span>
-                          <span className="rounded-full border bg-background/80 px-1.5 text-[10px]">{count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <PremadeQuestionPicker
+            interviewType={interviewType}
+            includePremade={includePremade}
+            onIncludeChange={setIncludePremade}
+            selectedIds={selectedPremadeIds}
+            onSelectedChange={setSelectedPremadeIds}
+            disabled={!!batchId && !appendMode}
+          />
         </CardContent>
       </Card>
+      )}
+
+      {appendMode && compact && (
+        <PremadeQuestionPicker
+          interviewType={interviewType}
+          includePremade={includePremade}
+          onIncludeChange={setIncludePremade}
+          selectedIds={selectedPremadeIds}
+          onSelectedChange={setSelectedPremadeIds}
+          compact
+        />
       )}
 
       <Card>

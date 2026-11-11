@@ -24,6 +24,7 @@ import {
   DEFAULT_TTS_BARGE_IN_MIN_AUDIO_MS,
   shouldAllowTtsBargeIn,
 } from "./openai-voice-relay-helpers";
+import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 
 const log = createLogger("openai-relay");
 
@@ -206,6 +207,7 @@ interface InterviewContext {
     options?: { options: string[]; allowMultiple?: boolean } | null;
     starterCode?: { language: string; code: string } | null;
     order: number;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
   }>;
 }
 
@@ -265,6 +267,10 @@ function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
   const questionList = sorted.map((q, i) => {
     let entry = `  ${i + 1}. [${q.type}] ${q.text}`;
     if (q.description) entry += `\n     Context: ${q.description}`;
+    if (q.skipIf?.answerContainsAny?.length) {
+      entry += `\n     SKIP IF prior answers already cover: ${q.skipIf.answerContainsAny.join(", ")}`;
+      if (q.skipIf.reason) entry += ` (${q.skipIf.reason})`;
+    }
     if (q.options?.options?.length) {
       const labels = q.options.options.map((o, j) => `${String.fromCharCode(65 + j)}) ${o}`).join(", ");
       const multi = q.options.allowMultiple ? " (multiple choice)" : " (single choice)";
@@ -292,13 +298,15 @@ ${questionList}
 
 ## 你的行为准则
 1. 从第${currentQ}个问题开始。先用温暖友好的方式自我介绍（提到你的名字、面试主题和问题数量）。然后说一句过渡语，比如"我们开始吧，这是第一个问题。"之后再提出问题。问候、过渡语和问题必须是三个独立的句子，不要合并。
-2. 对每个问题，根据受访者的回答进行${maxFollowUps}次以内的追问。语气要像友好、耐心的真人面试官，而不是冷冰冰地连珠发问。
-3. 当一个问题讨论充分后，调用 signal_question_change 函数来进入下一个问题。"讨论充分"是指受访者给出了详细、具体的回答——不是模糊的表述如"我遇到过很多挑战"。如果回答模糊，应追问以获取更多细节。
-4. 切换后，自然地过渡到新问题。通常先用一句简短的认可或感谢来承接上一段回答，再进入下一题，而不是直接生硬地抛出问题。
-5. 所有问题结束后，调用 signal_question_change 并设 questionIndex 为 ${sorted.length}（超出范围），然后做简短总结告别。
-6. 保持对话自然流畅，回复简洁（1-3句话）。语速要平缓，略慢于日常对话，让受访者能轻松跟上。可以使用简短友好的衔接语，比如"谢谢你的分享"、"我明白了"、"这很有帮助"。
-7. 如果受访者要求"跳过"或"下一题"，简短回应后立即调用 signal_question_change 并设 userRequested=true。
-8. 如果受访者要求"上一题"，调用 signal_question_change 并设 questionIndex 为上一题的索引，设 userRequested=true。
+2. 提问脚本问题时，必须逐字朗读题目原文——不要改写、软化或替换列表中的问题文本。
+3. 如果某题有 SKIP IF 标注，且受访者早前（例如自我介绍）已覆盖这些话题，则跳过：调用 signal_question_change 进入下一题，不要提问。
+4. 对每个问题，根据受访者的回答进行${maxFollowUps}次以内的追问。语气要像友好、耐心的真人面试官，而不是冷冰冰地连珠发问。
+5. 当一个问题讨论充分后，调用 signal_question_change 函数来进入下一个问题。"讨论充分"是指受访者给出了详细、具体的回答——不是模糊的表述如"我遇到过很多挑战"。如果回答模糊，应追问以获取更多细节。
+6. 切换后，自然地过渡到新问题。通常先用一句简短的认可或感谢来承接上一段回答，再逐字提出下一题。
+7. 所有问题结束后，调用 signal_question_change 并设 questionIndex 为 ${sorted.length}（超出范围），然后做简短总结告别。
+8. 保持对话自然流畅，回复简洁（1-3句话）。语速要平缓，略慢于日常对话，让受访者能轻松跟上。可以使用简短友好的衔接语，比如"谢谢你的分享"、"我明白了"、"这很有帮助"。
+9. 如果受访者要求"跳过"或"下一题"，简短回应后立即调用 signal_question_change 并设 userRequested=true。
+10. 如果受访者要求"上一题"，调用 signal_question_change 并设 questionIndex 为上一题的索引，设 userRequested=true。
 
 ## 选择题的特殊规则
 当提问单选题或多选题时，你必须把所有选项（A、B、C等）逐一朗读出来作为问题的一部分。受访者只能听到你说话——如果你不说出选项，他们就无法知道有哪些选择。列出选项后，请受访者选择并解释理由。对于多选题，提醒他们可以选择多个选项。
@@ -344,13 +352,15 @@ ${questionList}
 
 ## Your Behavior
 1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.
-2. For each question, follow up based on the participant's answers (up to ${maxFollowUps} follow-ups). Sound like a warm, patient human interviewer, not a rapid-fire questionnaire.
-3. When a question is sufficiently discussed, call the signal_question_change function to move forward. "Sufficiently discussed" means the participant has given a detailed, specific answer — NOT a vague statement like "I had many challenges" or "that's a good question." If their answer is vague, ask them to elaborate before moving on.
-4. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question.
-5. After all questions are done, call signal_question_change with questionIndex=${sorted.length} (out of bounds), then give a brief wrap-up and farewell.
-6. Keep responses concise (1-3 sentences) and conversational. Speak at a calm, unhurried pace — slightly slower than normal conversation speed so the participant can follow easily. Use brief friendly bridges like "Thanks for sharing that", "I appreciate the context", or "That makes sense" when appropriate.
-7. If the participant asks to "skip" or "next question", briefly acknowledge and immediately call signal_question_change with userRequested=true.
-8. If the participant asks for "previous question", call signal_question_change with the previous question's index and userRequested=true.
+2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
+3. If a question has a SKIP IF note and the participant already covered those topics earlier (e.g. in their introduction), skip it: call signal_question_change to the next index without asking it.
+4. For each question, follow up based on the participant's answers (up to ${maxFollowUps} follow-ups). Sound like a warm, patient human interviewer, not a rapid-fire questionnaire.
+5. When a question is sufficiently discussed, call the signal_question_change function to move forward. "Sufficiently discussed" means the participant has given a detailed, specific answer — NOT a vague statement like "I had many challenges" or "that's a good question." If their answer is vague, ask them to elaborate before moving on.
+6. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question. Ask the next scripted question VERBATIM.
+7. After all questions are done, call signal_question_change with questionIndex=${sorted.length} (out of bounds), then give a brief wrap-up and farewell.
+8. Keep responses concise (1-3 sentences) and conversational. Speak at a calm, unhurried pace — slightly slower than normal conversation speed so the participant can follow easily. Use brief friendly bridges like "Thanks for sharing that", "I appreciate the context", or "That makes sense" when appropriate.
+9. If the participant asks to "skip" or "next question", briefly acknowledge and immediately call signal_question_change with userRequested=true.
+10. If the participant asks for "previous question", call signal_question_change with the previous question's index and userRequested=true.
 
 ## Special Rules for Choice Questions
 When asking a SINGLE_CHOICE or MULTIPLE_CHOICE question, you MUST read out ALL the answer options (A, B, C, etc.) as part of asking the question. The participant can only hear you — they cannot see the options unless you say them. After listing the options, ask the participant to choose and explain their reasoning. For multiple-choice questions, remind them they can select more than one option.
@@ -1510,8 +1520,18 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
             if (msg.name === "signal_question_change") {
               let args: { questionIndex?: number; userRequested?: boolean } = {};
               try { args = JSON.parse(msg.arguments || "{}"); } catch { /* ignore */ }
-              const newIdx = args.questionIndex ?? (currentQuestionIndex + 1);
+              let newIdx = args.questionIndex ?? (currentQuestionIndex + 1);
               const userRequested = args.userRequested === true;
+              if (newIdx > currentQuestionIndex && newIdx < sortedQuestions.length) {
+                const priorUser = conversationHistory
+                  .filter((h) => h.role === "user")
+                  .map((h) => h.text);
+                const resolved = nextAskableQuestionIndex(sortedQuestions, newIdx, priorUser);
+                if (resolved !== newIdx) {
+                  log.info(`Skipped covered Qs → Q${resolved + 1} (was Q${newIdx + 1})`);
+                  newIdx = resolved;
+                }
+              }
               log.info(`OpenAI called signal_question_change → Q${newIdx + 1}${userRequested ? " (user requested)" : ""}`);
 
               // Already on the requested question — no-op, just tell the model.
@@ -1552,7 +1572,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               if (newIdx >= sortedQuestions.length) {
                 result = "Interview is now complete. Please give a brief farewell.";
               } else {
-                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question.`;
+                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question VERBATIM.`;
               }
 
               if (newIdx >= sortedQuestions.length) {
