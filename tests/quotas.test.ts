@@ -6,7 +6,7 @@ import { resolveOrgLimits } from "@/server/quotas";
 describe("resolveOrgLimits", () => {
   it("uses free plan defaults", () => {
     assert.deepEqual(resolveOrgLimits("FREE"), {
-      seats: 5,
+      seats: null,
       interviews: 20,
       projects: 3,
     });
@@ -32,7 +32,7 @@ describe("resolveOrgLimits", () => {
       seats: "nope",
       projects: -1,
     } as Record<string, unknown>);
-    assert.equal(limits.seats, 25);
+    assert.equal(limits.seats, null);
     assert.equal(limits.projects, 20);
   });
 });

@@ -1,10 +1,11 @@
 /**
  * User accounts stored in auth.users (bcrypt password hashes).
- * A trigger (public.handle_new_user) creates the profile.
+ * A trigger (public.handle_new_user) creates the profile; ensureProfileRow
+ * is a belt-and-suspenders upsert for invite-join / register paths.
  * Organizations are created by the user during onboarding.
  */
 import bcrypt from "bcryptjs";
-import { authDb } from "@/lib/supabase/admin";
+import { authDb, supabaseAdmin } from "@/lib/supabase/admin";
 import { verifySession, type SessionUser } from "@/lib/auth-session";
 
 type Row = {
@@ -83,6 +84,40 @@ export async function scrubUser(id: string): Promise<{ error: string | null }> {
   return { error: error?.message ?? null };
 }
 
+/** Ensure profiles row exists (trigger may lag / miss under PostgREST). */
+export async function ensureProfileRow(
+  user: SessionUser,
+  name?: string | null,
+): Promise<void> {
+  const trimmed =
+    name?.trim() ||
+    (typeof user.user_metadata?.full_name === "string" ? user.user_metadata.full_name.trim() : "") ||
+    (typeof user.user_metadata?.name === "string" ? user.user_metadata.name.trim() : "") ||
+    null;
+
+  const { data: existing } = await supabaseAdmin
+    .from("profiles")
+    .select("id, name, email")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (!existing) {
+    await supabaseAdmin.from("profiles").insert({
+      id: user.id,
+      email: user.email,
+      name: trimmed,
+    });
+    return;
+  }
+
+  const patch: { email?: string; name?: string } = {};
+  if (existing.email !== user.email) patch.email = user.email;
+  if (!existing.name && trimmed) patch.name = trimmed;
+  if (Object.keys(patch).length > 0) {
+    await supabaseAdmin.from("profiles").update(patch).eq("id", user.id);
+  }
+}
+
 export async function createUser(email: string, password: string, meta: Record<string, unknown> = {}) {
   const normalized = email.trim().toLowerCase();
   if (await findUserByEmail(normalized)) return { user: null, error: "User already registered" };
@@ -93,7 +128,9 @@ export async function createUser(email: string, password: string, meta: Record<s
     .select("*")
     .single();
   if (error) return { user: null, error: error.message };
-  return { user: toUser(data as Row), error: null };
+  const user = toUser(data as Row);
+  await ensureProfileRow(user);
+  return { user, error: null };
 }
 
 export async function updatePassword(id: string, password: string) {

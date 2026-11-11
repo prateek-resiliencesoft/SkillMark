@@ -22,7 +22,47 @@ function normalizeEmail(email: string) {
 }
 
 type Supabase = Parameters<typeof getOrgMembership>[0];
-type InviteRole = "ADMIN" | "MEMBER" | "VIEWER";
+type InviteRole = "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
+type OrgAssignableRole = InviteRole;
+
+async function countOrgOwners(supabase: Supabase, organizationId: string) {
+  const { count } = await supabase
+    .from("organization_members")
+    .select("id", { count: "exact", head: true })
+    .eq("organizationId", organizationId)
+    .eq("role", "OWNER");
+  return count ?? 0;
+}
+
+/** Keep organizations.ownerId pointing at an OWNER after demote/remove. */
+async function reassignOrgOwnerIdIfNeeded(
+  supabase: Supabase,
+  organizationId: string,
+  departingUserId: string,
+) {
+  const { data: org } = await supabase
+    .from("organizations")
+    .select("ownerId")
+    .eq("id", organizationId)
+    .maybeSingle();
+  if (!org || org.ownerId !== departingUserId) return;
+
+  const { data: next } = await supabase
+    .from("organization_members")
+    .select("userId")
+    .eq("organizationId", organizationId)
+    .eq("role", "OWNER")
+    .neq("userId", departingUserId)
+    .limit(1)
+    .maybeSingle();
+
+  if (next?.userId) {
+    await supabase
+      .from("organizations")
+      .update({ ownerId: next.userId })
+      .eq("id", organizationId);
+  }
+}
 
 function inviteInsertError(error: { code?: string; message?: string } | null) {
   if (error?.code === "23505") {
@@ -240,7 +280,7 @@ export const orgMemberRouter = router({
       z.object({
         organizationId: z.string(),
         email: z.string().email(),
-        role: z.enum(["ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
+        role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -251,7 +291,7 @@ export const orgMemberRouter = router({
         { minRole: "ADMIN", requireActive: true },
       );
 
-      if (input.role === "ADMIN") {
+      if (input.role === "ADMIN" || input.role === "OWNER") {
         const caller = await getOrgMembership(
           ctx.supabase,
           input.organizationId,
@@ -260,7 +300,10 @@ export const orgMemberRouter = router({
         if (caller?.role !== "OWNER") {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "Only the owner can invite someone as Admin",
+            message:
+              input.role === "OWNER"
+                ? "Only an owner can invite someone as Owner"
+                : "Only an owner can invite someone as Admin",
           });
         }
       }
@@ -448,7 +491,7 @@ export const orgMemberRouter = router({
       z.object({
         organizationId: z.string(),
         userId: z.string(),
-        role: z.enum(["ADMIN", "MEMBER", "VIEWER"]),
+        role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -471,28 +514,30 @@ export const orgMemberRouter = router({
         throw new TRPCError({ code: "NOT_FOUND", message: "Member not found" });
       }
 
-      if (targetMembership.role === "OWNER") {
+      const callerIsOwner = callerMembership.role === "OWNER";
+      const targetIsOwner = targetMembership.role === "OWNER";
+      const nextRole = input.role as OrgAssignableRole;
+
+      if (!callerIsOwner && (targetIsOwner || nextRole === "OWNER" || nextRole === "ADMIN")) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Cannot change the role of the organization owner",
+          message: "Only an owner can change Owner/Admin roles",
         });
       }
 
-      // Admins cannot promote to ADMIN (only owners can)
-      if (
-        callerMembership.role === "ADMIN" &&
-        input.role === "ADMIN" &&
-        targetMembership.role !== "ADMIN"
-      ) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Only the owner can promote members to Admin",
-        });
+      if (targetIsOwner && nextRole !== "OWNER") {
+        const owners = await countOrgOwners(ctx.supabase, input.organizationId);
+        if (owners <= 1) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Cannot demote the last organization owner. Promote someone else first.",
+          });
+        }
       }
 
       const { error } = await ctx.supabase
         .from("organization_members")
-        .update({ role: input.role })
+        .update({ role: nextRole })
         .eq("organizationId", input.organizationId)
         .eq("userId", input.userId);
 
@@ -501,6 +546,14 @@ export const orgMemberRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
         });
+      }
+
+      if (targetIsOwner && nextRole !== "OWNER") {
+        await reassignOrgOwnerIdIfNeeded(
+          ctx.supabase,
+          input.organizationId,
+          input.userId,
+        );
       }
 
       return { success: true };
@@ -524,6 +577,13 @@ export const orgMemberRouter = router({
       }
       assertMinRole(callerMembership.role, "ADMIN");
 
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Use Leave organization to remove yourself.",
+        });
+      }
+
       const targetMembership = await getOrgMembership(
         ctx.supabase,
         input.organizationId,
@@ -534,10 +594,19 @@ export const orgMemberRouter = router({
       }
 
       if (targetMembership.role === "OWNER") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Cannot remove the organization owner",
-        });
+        if (callerMembership.role !== "OWNER") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Only an owner can remove another owner",
+          });
+        }
+        const owners = await countOrgOwners(ctx.supabase, input.organizationId);
+        if (owners <= 1) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "Cannot remove the last organization owner.",
+          });
+        }
       }
 
       await ctx.supabase
@@ -545,6 +614,28 @@ export const orgMemberRouter = router({
         .delete()
         .eq("organizationId", input.organizationId)
         .eq("userId", input.userId);
+
+      // Drop project access for this org too.
+      const { data: projects } = await ctx.supabase
+        .from("projects")
+        .select("id")
+        .eq("organizationId", input.organizationId);
+      const projectIds = (projects ?? []).map((p) => p.id as string);
+      if (projectIds.length > 0) {
+        await ctx.supabase
+          .from("project_members")
+          .delete()
+          .eq("userId", input.userId)
+          .in("projectId", projectIds);
+      }
+
+      if (targetMembership.role === "OWNER") {
+        await reassignOrgOwnerIdIfNeeded(
+          ctx.supabase,
+          input.organizationId,
+          input.userId,
+        );
+      }
 
       return { success: true };
     }),
@@ -584,7 +675,7 @@ export const orgMemberRouter = router({
         organizationId: z.string(),
         projectId: z.string(),
         userId: z.string(),
-        role: z.enum(["ADMIN", "MEMBER", "VIEWER"]),
+        role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -597,6 +688,13 @@ export const orgMemberRouter = router({
         throw new TRPCError({ code: "FORBIDDEN" });
       }
       assertMinRole(callerMembership.role, "ADMIN");
+
+      if (input.role === "OWNER" && callerMembership.role !== "OWNER") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only an organization owner can assign the project Owner role",
+        });
+      }
 
       await ensureProjectMembersPopulated(
         ctx.supabase,
@@ -631,7 +729,7 @@ export const orgMemberRouter = router({
         organizationId: z.string(),
         projectId: z.string(),
         email: z.string().email(),
-        role: z.enum(["ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
+        role: z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]).default("MEMBER"),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -644,6 +742,13 @@ export const orgMemberRouter = router({
         throw new TRPCError({ code: "FORBIDDEN" });
       }
       assertMinRole(callerMembership.role, "ADMIN");
+
+      if (input.role === "OWNER" && callerMembership.role !== "OWNER") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only an organization owner can add a project Owner",
+        });
+      }
 
       const email = normalizeEmail(input.email);
 
@@ -680,13 +785,6 @@ export const orgMemberRouter = router({
           project: { id: project.id as string, name: project.name as string, role: input.role },
         });
         return { outcome: "invited" as const, ...invite };
-      }
-
-      if (orgMembership.role === "OWNER") {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: `${email} owns this organization and already has access to every project.`,
-        });
       }
 
       await ensureProjectMembersPopulated(
@@ -745,6 +843,25 @@ export const orgMemberRouter = router({
       }
       assertMinRole(callerMembership.role, "ADMIN");
 
+      if (input.userId === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "You cannot remove yourself from the project this way.",
+        });
+      }
+
+      const targetOrg = await getOrgMembership(
+        ctx.supabase,
+        input.organizationId,
+        input.userId,
+      );
+      if (targetOrg?.role === "OWNER" && callerMembership.role !== "OWNER") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only an organization owner can remove another owner from a project",
+        });
+      }
+
       await ensureProjectMembersPopulated(
         ctx.supabase,
         input.organizationId,
@@ -773,11 +890,14 @@ export const orgMemberRouter = router({
       }
 
       if (membership.role === "OWNER") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "Organization owner cannot leave. Transfer ownership or delete the organization.",
-        });
+        const owners = await countOrgOwners(ctx.supabase, input.organizationId);
+        if (owners <= 1) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              "You are the last owner. Promote another owner before leaving, or delete the organization.",
+          });
+        }
       }
 
       await ctx.supabase
@@ -785,6 +905,14 @@ export const orgMemberRouter = router({
         .delete()
         .eq("organizationId", input.organizationId)
         .eq("userId", ctx.user.id);
+
+      if (membership.role === "OWNER") {
+        await reassignOrgOwnerIdIfNeeded(
+          ctx.supabase,
+          input.organizationId,
+          ctx.user.id,
+        );
+      }
 
       return { success: true };
     }),

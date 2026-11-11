@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { trpc } from "@/lib/trpc/client";
+import { useAuth } from "@/components/auth-provider";
 import { useOrg } from "@/components/org-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,13 +51,14 @@ import { Copy, Loader2, Plus, Trash2, Pencil } from "lucide-react";
 export default function OrgSettingsMembersPage() {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
+  const { user } = useAuth();
   const utils = trpc.useUtils();
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">(
-    "MEMBER",
-  );
+  const [inviteRole, setInviteRole] = useState<
+    "OWNER" | "ADMIN" | "MEMBER" | "VIEWER"
+  >("MEMBER");
   const [editingRoleUserId, setEditingRoleUserId] = useState<string | null>(null);
   const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
 
@@ -140,6 +142,8 @@ export default function OrgSettingsMembersPage() {
   const isOwner = currentOrg.role === "OWNER";
   const isAdmin = isOwner || currentOrg.role === "ADMIN";
   const members = membersQuery.data ?? [];
+  const canRemoveMember = (role: string, userId: string) =>
+    isAdmin && userId !== user?.id && (role !== "OWNER" || isOwner);
 
   const roleVariant = (role: string) => {
     switch (role) {
@@ -200,6 +204,9 @@ export default function OrgSettingsMembersPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      {isOwner && (
+                        <SelectItem value="OWNER">Owner</SelectItem>
+                      )}
                       {isOwner && (
                         <SelectItem value="ADMIN">Admin</SelectItem>
                       )}
@@ -370,14 +377,19 @@ export default function OrgSettingsMembersPage() {
                       {m.profile?.email ?? "—"}
                     </TableCell>
                     <TableCell>
-                      {editingRoleUserId === m.userId && m.role !== "OWNER" ? (
+                      {editingRoleUserId === m.userId &&
+                      (m.role !== "OWNER" || isOwner) ? (
                         <Select
                           value={m.role}
                           onValueChange={(v) =>
                             updateRoleMutation.mutate({
                               organizationId: currentOrg.id,
                               userId: m.userId,
-                              role: v as "ADMIN" | "MEMBER" | "VIEWER",
+                              role: v as
+                                | "OWNER"
+                                | "ADMIN"
+                                | "MEMBER"
+                                | "VIEWER",
                             })
                           }
                           onOpenChange={(open) => {
@@ -390,6 +402,9 @@ export default function OrgSettingsMembersPage() {
                           </SelectTrigger>
                           <SelectContent>
                             {isOwner && (
+                              <SelectItem value="OWNER">OWNER</SelectItem>
+                            )}
+                            {isOwner && (
                               <SelectItem value="ADMIN">ADMIN</SelectItem>
                             )}
                             <SelectItem value="MEMBER">MEMBER</SelectItem>
@@ -401,7 +416,7 @@ export default function OrgSettingsMembersPage() {
                           <Badge variant={roleVariant(m.role)}>
                             {m.role}
                           </Badge>
-                          {isAdmin && m.role !== "OWNER" && (
+                          {isAdmin && (m.role !== "OWNER" || isOwner) && (
                             <button
                               onClick={() => setEditingRoleUserId(m.userId)}
                               className="text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
@@ -414,7 +429,7 @@ export default function OrgSettingsMembersPage() {
                     </TableCell>
                     {isAdmin && (
                       <TableCell>
-                        {m.role !== "OWNER" && (
+                        {canRemoveMember(m.role, m.userId) && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button

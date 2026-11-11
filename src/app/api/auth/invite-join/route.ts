@@ -2,7 +2,7 @@ import { ACTIVE_ORG_COOKIE } from "@/lib/active-org";
 import { readAccountTokens, setAccountsCookie, withAccount } from "@/lib/auth-accounts";
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from "@/lib/auth-session";
 import { checkRateLimit } from "@/lib/api-rate-limit";
-import { createUser, findUserByEmail, verifyLogin } from "@/lib/users";
+import { createUser, ensureProfileRow, findUserByEmail, verifyLogin } from "@/lib/users";
 import { acceptOrgInviteForUser } from "@/server/accept-org-invite";
 import { authenticateForInviteEmail } from "@/server/invite-join-auth";
 import { clientIp } from "@/server/integrations/applications";
@@ -46,6 +46,9 @@ export async function POST(req: Request) {
   if (!authResult.ok) {
     return NextResponse.json({ error: authResult.error }, { status: authResult.status });
   }
+
+  // Profile must exist before accept / account UI; don't rely only on DB trigger timing.
+  await ensureProfileRow(authResult.user, name);
 
   try {
     const joined = await acceptOrgInviteForUser(supabaseAdmin, authResult.user, token);
