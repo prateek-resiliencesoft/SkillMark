@@ -11,7 +11,7 @@ import type { Context } from "./context";
 
 export type MemberRole = "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
 export type OrgStatus = "ACTIVE" | "SUSPENDED" | "DELETED";
-export type OrgPlan = "FREE" | "PRO" | "ENTERPRISE" | "SELF_HOSTED";
+export type OrgPlan = string;
 export type PlatformRole = "USER" | "ADMIN" | "ENTERPRISE";
 
 export type OrgRow = {

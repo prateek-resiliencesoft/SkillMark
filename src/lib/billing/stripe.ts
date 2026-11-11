@@ -69,9 +69,11 @@ export async function createStripeCustomer(opts: {
 export async function createCheckoutSession(opts: {
   customerId: string;
   organizationId: string;
-  plan: Extract<OrgPlanId, "PRO" | "ENTERPRISE">;
+  plan: OrgPlanId;
+  /** Prefer explicit price from the live plan catalog. */
+  priceId?: string | null;
 }): Promise<{ url: string; id: string }> {
-  const price = stripePriceIdForPlan(opts.plan);
+  const price = opts.priceId?.trim() || stripePriceIdForPlan(opts.plan);
   if (!price) {
     throw new Error(`No Stripe price configured for ${opts.plan}`);
   }
@@ -106,11 +108,19 @@ export async function createBillingPortalSession(opts: {
   });
 }
 
-/** Map a Stripe price id back to our plan, if known. */
+/** Map a Stripe price id back to our plan, if known (built-in catalog). */
 export function planFromStripePriceId(
   priceId: string | null | undefined,
+  catalog?: { id: string; stripePriceId?: string | null }[],
 ): OrgPlanId | null {
   if (!priceId) return null;
+  if (catalog) {
+    for (const p of catalog) {
+      const direct = p.stripePriceId?.trim();
+      if (direct && direct === priceId) return p.id;
+      if (stripePriceIdForPlan(p.id) === priceId) return p.id;
+    }
+  }
   for (const plan of ["PRO", "ENTERPRISE"] as const) {
     if (stripePriceIdForPlan(plan) === priceId) return plan;
   }
