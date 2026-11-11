@@ -69,6 +69,15 @@ export default function AcceptOrgInvitePage() {
   const userEmail = (profile?.email || user?.email || "").toLowerCase();
   const inviteEmail = (invite.data?.email || "").toLowerCase();
   const emailMatches = !!user && !!userEmail && userEmail === inviteEmail;
+  const hasAccount = invite.data?.hasAccount === true;
+  const authQuery = (extra: Record<string, string> = {}) => {
+    const q = new URLSearchParams({
+      email: invite.data?.email ?? "",
+      next: `/invite/${token}`,
+      ...extra,
+    });
+    return q.toString();
+  };
 
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-background px-4">
@@ -165,26 +174,50 @@ export default function AcceptOrgInvitePage() {
             ) : !user ? (
               <div className="space-y-3">
                 <p className="text-center text-sm text-muted-foreground">
-                  Sign in or create an account with{" "}
-                  <span className="font-medium text-foreground">
-                    {invite.data.email}
-                  </span>{" "}
-                  to continue.
+                  {hasAccount ? (
+                    <>
+                      Sign in with{" "}
+                      <span className="font-medium text-foreground">
+                        {invite.data.email}
+                      </span>{" "}
+                      to accept this invite.
+                    </>
+                  ) : (
+                    <>
+                      Create an account with{" "}
+                      <span className="font-medium text-foreground">
+                        {invite.data.email}
+                      </span>{" "}
+                      to accept this invite. No account exists for this email
+                      yet.
+                    </>
+                  )}
                 </p>
-                <Button asChild className="w-full">
-                  <Link
-                    href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`}
-                  >
-                    Sign in to accept
-                  </Link>
-                </Button>
-                <Button asChild variant="outline" className="w-full">
-                  <Link
-                    href={`/register?next=${encodeURIComponent(`/invite/${token}`)}`}
-                  >
-                    Create an account
-                  </Link>
-                </Button>
+                {hasAccount ? (
+                  <>
+                    <Button asChild className="w-full">
+                      <Link href={`/login?${authQuery()}`}>Sign in to accept</Link>
+                    </Button>
+                    <Button asChild variant="outline" className="w-full">
+                      <Link href={`/register?${authQuery()}`}>
+                        Create an account instead
+                      </Link>
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button asChild className="w-full">
+                      <Link href={`/register?${authQuery()}`}>
+                        Create an account
+                      </Link>
+                    </Button>
+                    <Button asChild variant="outline" className="w-full">
+                      <Link href={`/login?${authQuery()}`}>
+                        Already have an account? Sign in
+                      </Link>
+                    </Button>
+                  </>
+                )}
               </div>
             ) : !emailMatches ? (
               <div className="space-y-3 text-center">
@@ -193,17 +226,34 @@ export default function AcceptOrgInvitePage() {
                   <span className="font-medium text-foreground">
                     {userEmail || "another account"}
                   </span>
-                  . Switch to{" "}
-                  <span className="font-medium text-foreground">
-                    {invite.data.email}
-                  </span>{" "}
-                  to accept.
+                  .{" "}
+                  {hasAccount ? (
+                    <>
+                      Switch to{" "}
+                      <span className="font-medium text-foreground">
+                        {invite.data.email}
+                      </span>{" "}
+                      to accept.
+                    </>
+                  ) : (
+                    <>
+                      Create an account for{" "}
+                      <span className="font-medium text-foreground">
+                        {invite.data.email}
+                      </span>{" "}
+                      to accept — that email has no account yet.
+                    </>
+                  )}
                 </p>
                 <Button asChild variant="outline" className="w-full">
                   <Link
-                    href={`/login?${new URLSearchParams({ add: "1", email: invite.data.email, next: `/invite/${token}` })}`}
+                    href={
+                      hasAccount
+                        ? `/login?${authQuery({ add: "1" })}`
+                        : `/register?${authQuery({ add: "1" })}`
+                    }
                   >
-                    Switch account
+                    {hasAccount ? "Switch account" : "Create account to accept"}
                   </Link>
                 </Button>
               </div>

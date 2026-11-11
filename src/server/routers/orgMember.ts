@@ -400,8 +400,16 @@ export const orgMemberRouter = router({
         new Date(invite.expiresAt as string).getTime() < Date.now() ||
         org?.status === "DELETED";
 
+      const inviteEmail = normalizeEmail(invite.email as string);
+      const { data: existingProfile } = await ctx.supabase
+        .from("profiles")
+        .select("id")
+        .eq("email", inviteEmail)
+        .maybeSingle();
+
       return {
         email: invite.email as string,
+        hasAccount: !!existingProfile,
         role: invite.role as string,
         status: expired
           ? invite.status === "PENDING"
