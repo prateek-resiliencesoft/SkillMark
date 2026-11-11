@@ -2,11 +2,17 @@
 
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
 import {
+  CompletionNotifyPicker,
+  readyCompletionNotifyMembers,
+} from "@/components/interview/completion-notify-picker";
+import {
   PremadeQuestionPicker,
   selectedPremadePayload,
 } from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { useProject } from "@/components/project-provider";
+import type { CompletionNotifyMember } from "@/lib/completion-notify";
+import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -143,6 +149,7 @@ export function BulkCvGenerator({
   const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("mixed");
   const [includePremade, setIncludePremade] = useState(true);
   const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
+  const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>([]);
 
   const [rows, setRows] = useState<CvRow[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -163,6 +170,11 @@ export function BulkCvGenerator({
       setInterviewType(t);
     }
   }, [existingBatch.data?.settings?.interviewType]);
+
+  useEffect(() => {
+    const members = existingBatch.data?.settings?.completionNotifyMembers;
+    if (members) setNotifyMembers(parseCompletionNotifyMembers(members));
+  }, [existingBatch.data?.settings?.completionNotifyMembers]);
 
   const [sendOpen, setSendOpen] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
@@ -256,15 +268,14 @@ export function BulkCvGenerator({
     // Existing batch: refresh premade list so newly picked Qs apply to new candidates
     if (existingBatchId || batchId) {
       const id = existingBatchId ?? batchId!;
-      if (premadeQuestions) {
-        try {
-          await updateBatchSettings.mutateAsync({
-            batchId: id,
-            premadeQuestions,
-          });
-        } catch {
-          /* non-fatal — still generate with stored settings / server bank fallback */
-        }
+      try {
+        await updateBatchSettings.mutateAsync({
+          batchId: id,
+          ...(premadeQuestions ? { premadeQuestions } : {}),
+          completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
+        });
+      } catch {
+        /* non-fatal — still generate with stored settings / server bank fallback */
       }
       return id;
     }
@@ -287,6 +298,7 @@ export function BulkCvGenerator({
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
         defaultCountryCode: countryCode || undefined,
         premadeQuestions,
+        completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
       },
     });
     setBatchId(batch.id);
@@ -473,6 +485,13 @@ export function BulkCvGenerator({
             onIncludeChange={setIncludePremade}
             selectedIds={selectedPremadeIds}
             onSelectedChange={setSelectedPremadeIds}
+            disabled={!!batchId && !appendMode}
+          />
+
+          <CompletionNotifyPicker
+            organizationId={bankOrgId}
+            value={notifyMembers}
+            onChange={setNotifyMembers}
             disabled={!!batchId && !appendMode}
           />
         </CardContent>

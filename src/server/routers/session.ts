@@ -654,6 +654,11 @@ export const sessionRouter = router({
         .eq("id", input.id)
         .neq("status", "DISQUALIFIED");
 
+      // Fire-and-forget WhatsApp alert to assigned team members
+      void import("../completion-notify").then(({ notifySessionCompleted }) =>
+        notifySessionCompleted(ctx.supabase, input.id),
+      );
+
       return { success: true };
     }),
 
