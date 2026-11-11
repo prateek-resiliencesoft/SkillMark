@@ -4,11 +4,15 @@ import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { notifySessionCompleted } from "@/server/completion-notify";
 import { NextResponse } from "next/server";
 import { handleVoiceSave, type CompletionSession, type ProgressSession, type VoiceSaveOps, type VoiceSavePayload } from "./logic";
 
 const log = createLogger("api/voice/save");
 const voiceSaveOps: VoiceSaveOps = {
+  onCompleted(sessionId) {
+    void notifySessionCompleted(supabaseAdmin, sessionId);
+  },
   async insertMessages(sessionId, messages) {
     await supabaseAdmin.from("messages").insert(
       messages.map((m, i) => {

@@ -49,6 +49,7 @@ export const integrationRouter = router({
         apiKeyHint: maskSecret(row?.resilioApiKey),
         baseUrl: (row?.resilioBaseUrl as string | null) ?? RESILIO_DEFAULT_BASE_URL,
         templateName: (row?.resilioTemplateName as string | null) ?? "",
+        completionTemplateName: (row?.resilioCompletionTemplateName as string | null) ?? "",
         templateLanguage: (row?.resilioTemplateLanguage as string | null) ?? "en",
       },
       defaultEmailProvider: ((row?.defaultEmailProvider as string | null) ?? "resend") as "resend" | "brevo",
@@ -82,6 +83,7 @@ export const integrationRouter = router({
         resilioApiKey: secretInput,
         resilioBaseUrl: z.string().url().max(200).optional().or(z.literal("")),
         resilioTemplateName: z.string().max(200).optional(),
+        resilioCompletionTemplateName: z.string().max(200).optional(),
         resilioTemplateLanguage: z.string().max(10).optional(),
         defaultEmailProvider: z.enum(["resend", "brevo"]).optional(),
         defaultWhatsappProvider: z.enum(["resilio"]).optional(),
@@ -123,6 +125,9 @@ export const integrationRouter = router({
 
       if (input.resilioBaseUrl !== undefined) patch.resilioBaseUrl = input.resilioBaseUrl.trim() || null;
       if (input.resilioTemplateName !== undefined) patch.resilioTemplateName = input.resilioTemplateName.trim() || null;
+      if (input.resilioCompletionTemplateName !== undefined) {
+        patch.resilioCompletionTemplateName = input.resilioCompletionTemplateName.trim() || null;
+      }
       if (input.resilioTemplateLanguage !== undefined) patch.resilioTemplateLanguage = input.resilioTemplateLanguage.trim() || null;
 
       if (input.defaultEmailProvider !== undefined) patch.defaultEmailProvider = input.defaultEmailProvider;

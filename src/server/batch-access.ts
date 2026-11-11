@@ -87,3 +87,7 @@ export function appBaseUrl(): string {
 }
 
 export const inviteLink = (token: string) => `${appBaseUrl()}/i/invite/${token}`;
+
+/** Dashboard deep-link to a candidate's report (results tab + session). */
+export const sessionReportLink = (interviewId: string, sessionId: string) =>
+  `${appBaseUrl()}/interviews/${interviewId}/results?session=${sessionId}`;

@@ -2,6 +2,12 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import {
+  CompletionNotifyPicker,
+  readyCompletionNotifyMembers,
+} from "@/components/interview/completion-notify-picker";
+import { useOrg } from "@/components/org-provider";
+import { useProject } from "@/components/project-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,6 +22,8 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import type { CompletionNotifyMember } from "@/lib/completion-notify";
+import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -62,6 +70,10 @@ export default function SettingsTab() {
   const { interview, interviewId, updateMutation } = useEditInterview();
   const { toast } = useToast();
   const utils = trpc.useUtils();
+  const { currentOrg } = useOrg();
+  const { currentProject } = useProject();
+  const organizationId =
+    currentProject?.organizationId || currentOrg?.id || "";
 
   const publishMutation = trpc.interview.publish.useMutation();
 
@@ -84,6 +96,9 @@ export default function SettingsTab() {
     interview.antiCheatingEnabled ?? false,
   );
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>((interview as any).headMovementDetectionEnabled ?? false);
+  const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>(() =>
+    parseCompletionNotifyMembers((interview as any).completionNotifyMembers),
+  );
 
   const requireInvite = interview.requireInvite ?? true;
   const hasShareableLink = !requireInvite;
@@ -417,6 +432,19 @@ export default function SettingsTab() {
         </CardContent>
       </Card>
 
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle>Completion alerts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CompletionNotifyPicker
+            organizationId={organizationId}
+            value={notifyMembers}
+            onChange={setNotifyMembers}
+          />
+        </CardContent>
+      </Card>
+
       <div className="flex items-end">
         <Button
           onClick={() =>
@@ -437,6 +465,7 @@ export default function SettingsTab() {
                 : null,
               antiCheatingEnabled,
               headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
+              completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
             })
           }
           disabled={updateMutation.isLoading}
