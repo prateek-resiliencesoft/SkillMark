@@ -5,11 +5,9 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
-  PLAN_CATALOG,
   formatLimit,
   planEntry,
   stripePriceIdForPlan,
-  type OrgPlanId,
 } from "@/lib/billing/catalog";
 import {
   createBillingPortalSession,
@@ -17,11 +15,10 @@ import {
   createStripeCustomer,
   isStripeBillingEnabled,
 } from "@/lib/billing/stripe";
+import { loadPlatformSettings } from "../platform-settings";
 import { loadOrgLimits } from "../quotas";
 import { requireOrgAccess } from "../tenant";
 import { protectedProcedure, router } from "../trpc";
-
-const purchaseablePlan = z.enum(["PRO", "ENTERPRISE"]);
 
 export const billingRouter = router({
   status: protectedProcedure
@@ -46,11 +43,12 @@ export const billingRouter = router({
         throw new TRPCError({ code: "NOT_FOUND" });
       }
 
-      const { plan, limits } = await loadOrgLimits(
-        ctx.supabase,
-        input.organizationId,
-      );
-      const entry = planEntry(plan);
+      const [{ plan, limits }, platform] = await Promise.all([
+        loadOrgLimits(ctx.supabase, input.organizationId),
+        loadPlatformSettings(ctx.supabase),
+      ]);
+      const catalog = platform.planCatalog;
+      const entry = planEntry(plan, catalog);
       const stripeOn = isStripeBillingEnabled();
 
       return {
@@ -72,15 +70,16 @@ export const billingRouter = router({
         hasCustomer: Boolean(org.stripeCustomerId),
         hasSubscription: Boolean(org.stripeSubscriptionId),
         billingEmail: (org.billingEmail as string | null) ?? null,
-        catalog: PLAN_CATALOG.map((p) => ({
+        catalog: catalog.map((p) => ({
           id: p.id,
           name: p.name,
           blurb: p.blurb,
           limits: p.limits,
+          features: p.features,
           purchaseable:
             p.purchaseable &&
             stripeOn &&
-            Boolean(stripePriceIdForPlan(p.id as OrgPlanId)),
+            Boolean(stripePriceIdForPlan(p.id, catalog)),
           current: p.id === plan,
         })),
       };
@@ -90,7 +89,7 @@ export const billingRouter = router({
     .input(
       z.object({
         organizationId: z.string().uuid(),
-        plan: purchaseablePlan,
+        plan: z.string().trim().min(1).max(32),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -98,17 +97,7 @@ export const billingRouter = router({
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message:
-            "Card billing is not set up on this server. Ask your platform admin to enable it, or keep using self-hosted.",
-        });
-      }
-
-      const { loadPlatformSettings } = await import("../platform-settings");
-      const platform = await loadPlatformSettings(ctx.supabase);
-      if (!platform.instance.allowOrgSelfServeBilling) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "Self-serve billing is turned off. Ask your platform admin to change the plan.",
+            "Card billing is not configured on this instance. Ask your admin.",
         });
       }
 
@@ -119,59 +108,54 @@ export const billingRouter = router({
         { minRole: "OWNER", requireActive: true },
       );
 
-      if (!stripePriceIdForPlan(input.plan)) {
+      const platform = await loadPlatformSettings(ctx.supabase);
+      const planId = input.plan.trim().toUpperCase();
+      const entry = platform.planCatalog.find((p) => p.id === planId);
+      if (!entry?.purchaseable) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "That plan cannot be purchased.",
+        });
+      }
+      const priceId = stripePriceIdForPlan(planId, platform.planCatalog);
+      if (!priceId) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `The ${input.plan === "PRO" ? "Pro" : "Enterprise"} plan is not available for checkout yet.`,
+          message: `No Stripe price configured for ${entry.name}.`,
         });
       }
 
       const { data: org } = await ctx.supabase
         .from("organizations")
-        .select("id, name, stripeCustomerId, billingEmail, ownerId")
+        .select("id, name, billingEmail, stripeCustomerId")
         .eq("id", input.organizationId)
         .maybeSingle();
-
       if (!org) throw new TRPCError({ code: "NOT_FOUND" });
 
       let customerId = org.stripeCustomerId as string | null;
       if (!customerId) {
-        const { data: owner } = await ctx.supabase
-          .from("profiles")
-          .select("email, name")
-          .eq("id", org.ownerId)
-          .maybeSingle();
         const email =
           (org.billingEmail as string | null) ||
-          (owner?.email as string | null) ||
-          ctx.user.email;
-        if (!email) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Add a billing email on the owner account first.",
-          });
-        }
+          ctx.user.email ||
+          "billing@example.com";
         const customer = await createStripeCustomer({
           email,
-          name: (org.name as string) || "ResilienceSoft Interview organization",
-          organizationId: input.organizationId,
+          name: org.name as string,
+          organizationId: org.id as string,
         });
         customerId = customer.id;
         await ctx.supabase
           .from("organizations")
-          .update({
-            stripeCustomerId: customerId,
-            billingEmail: email,
-          })
-          .eq("id", input.organizationId);
+          .update({ stripeCustomerId: customerId, billingEmail: email })
+          .eq("id", org.id);
       }
 
       const session = await createCheckoutSession({
         customerId,
-        organizationId: input.organizationId,
-        plan: input.plan,
+        organizationId: org.id as string,
+        plan: planId,
+        priceId,
       });
-
       return { url: session.url };
     }),
 
@@ -181,33 +165,28 @@ export const billingRouter = router({
       if (!isStripeBillingEnabled()) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: "Card billing is not set up on this server.",
+          message: "Card billing is not configured on this instance.",
         });
       }
-
       await requireOrgAccess(
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
-        { minRole: "OWNER", requireActive: true },
+        { minRole: "OWNER" },
       );
-
       const { data: org } = await ctx.supabase
         .from("organizations")
         .select("stripeCustomerId")
         .eq("id", input.organizationId)
         .maybeSingle();
-
-      if (!org?.stripeCustomerId) {
+      const customerId = org?.stripeCustomerId as string | null;
+      if (!customerId) {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "No billing account yet. Choose a paid plan first.",
+          code: "PRECONDITION_FAILED",
+          message: "No billing customer yet. Start a paid plan first.",
         });
       }
-
-      const portal = await createBillingPortalSession({
-        customerId: org.stripeCustomerId as string,
-      });
+      const portal = await createBillingPortalSession({ customerId });
       return { url: portal.url };
     }),
 });

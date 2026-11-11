@@ -6,9 +6,9 @@
  */
 import { TRPCError } from "@trpc/server";
 import {
-  PLAN_CATALOG,
+  DEFAULT_PLAN_CATALOG,
+  limitsFromCatalog,
   type OrgLimits,
-  type OrgPlanId,
 } from "@/lib/billing/catalog";
 import { defaultPlanLimitsMap } from "@/lib/platform-settings";
 import type { Context } from "./context";
@@ -18,9 +18,8 @@ import type { OrgPlan } from "./tenant";
 export type { OrgLimits };
 export type QuotaKind = keyof OrgLimits;
 
-const FALLBACK_PLAN_LIMITS: Record<OrgPlanId, OrgLimits> = Object.fromEntries(
-  PLAN_CATALOG.map((p) => [p.id, p.limits]),
-) as Record<OrgPlanId, OrgLimits>;
+const FALLBACK_PLAN_LIMITS: Record<string, OrgLimits> =
+  limitsFromCatalog(DEFAULT_PLAN_CATALOG);
 
 const QUOTA_COPY: Record<QuotaKind, string> = {
   seats:
@@ -47,19 +46,21 @@ function asFiniteLimit(value: unknown): number | null | undefined {
 export function resolveOrgLimits(
   plan: OrgPlan | string | null | undefined,
   overrides?: Record<string, unknown> | null,
-  planDefaults?: Record<OrgPlanId, OrgLimits> | null,
+  planDefaults?: Record<string, OrgLimits> | null,
 ): OrgLimits {
   const catalog = planDefaults ?? FALLBACK_PLAN_LIMITS;
+  const key = plan || "SELF_HOSTED";
   const base =
-    catalog[(plan as OrgPlanId) ?? "SELF_HOSTED"] ??
+    catalog[key] ??
     catalog.SELF_HOSTED ??
-    defaultPlanLimitsMap().SELF_HOSTED;
+    defaultPlanLimitsMap().SELF_HOSTED ??
+    FALLBACK_PLAN_LIMITS.SELF_HOSTED;
   const out: OrgLimits = { ...base };
   if (!overrides) return out;
 
-  for (const key of ["seats", "interviews", "projects"] as const) {
-    const parsed = asFiniteLimit(overrides[key]);
-    if (parsed !== undefined) out[key] = parsed;
+  for (const k of ["seats", "interviews", "projects"] as const) {
+    const parsed = asFiniteLimit(overrides[k]);
+    if (parsed !== undefined) out[k] = parsed;
   }
   return out;
 }

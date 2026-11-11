@@ -2,9 +2,10 @@ import {
   defaultPlatformSettings,
   parseDefaultFeatureFlags,
   parseInstanceSettings,
-  parsePlanLimitsMap,
+  parsePlanCatalog,
   type PlatformSettingsBundle,
 } from "@/lib/platform-settings";
+import { limitsFromCatalog } from "@/lib/billing/catalog";
 import type { Context } from "./context";
 
 type Db = Context["supabase"];
@@ -22,10 +23,15 @@ export async function loadPlatformSettings(
   if (error || !data) return defaults;
 
   const map = new Map(data.map((r) => [r.key as string, r.value]));
+  const planCatalog = parsePlanCatalog(
+    map.get("planCatalog"),
+    map.get("planLimits"),
+  );
 
   return {
     instance: parseInstanceSettings(map.get("instance")),
-    planLimits: parsePlanLimitsMap(map.get("planLimits")),
+    planCatalog,
+    planLimits: limitsFromCatalog(planCatalog),
     defaultFeatureFlags: parseDefaultFeatureFlags(
       map.get("defaultFeatureFlags"),
     ),

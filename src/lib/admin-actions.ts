@@ -18,6 +18,7 @@ const LABELS: Record<string, string> = {
   "org.set_flags": "Updated organization features",
   "config.instance": "Updated instance settings",
   "config.plan_limits": "Updated plan limits",
+  "config.plan_catalog": "Updated plan catalog",
   "config.feature_flags": "Updated default features",
 };
 

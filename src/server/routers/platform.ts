@@ -27,9 +27,15 @@ import {
   seedUptimeVisibilityIfNeeded,
 } from "@/lib/uptime/visibility";
 import {
+  limitsFromCatalog,
+  planIdOk,
+  PROTECTED_PLAN_IDS,
+  type PlanCatalogEntry,
+} from "@/lib/billing/catalog";
+import {
   parseDefaultFeatureFlags,
   parseInstanceSettings,
-  parsePlanLimitsMap,
+  parsePlanCatalog,
 } from "@/lib/platform-settings";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -45,16 +51,37 @@ import {
 } from "../tenant";
 
 const orgStatusEnum = z.enum(["ACTIVE", "SUSPENDED", "DELETED"]);
-const orgPlanEnum = z.enum(["FREE", "PRO", "ENTERPRISE", "SELF_HOSTED"]);
+const limitValue = z.number().int().min(0).nullable();
+const orgPlanId = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .refine(planIdOk, "Plan id must be UPPER_SNAKE (A-Z, 0-9, underscore)");
 const memberRoleEnum = z.enum(["OWNER", "ADMIN", "MEMBER", "VIEWER"]);
 const platformRoleEnum = z.enum(["USER", "ADMIN", "ENTERPRISE"]);
 
-const PLAN_LABEL: Record<OrgPlan, string> = {
-  FREE: "Free",
-  PRO: "Pro",
-  ENTERPRISE: "Enterprise",
-  SELF_HOSTED: "Self-hosted",
-};
+const planFeatureFlagsSchema = z.object({
+  aiSettings: z.boolean(),
+  integrations: z.boolean(),
+  voiceInterviews: z.boolean(),
+  publicForms: z.boolean(),
+  usageDashboard: z.boolean(),
+});
+
+const planCatalogEntrySchema = z.object({
+  id: orgPlanId,
+  name: z.string().trim().min(1).max(80),
+  blurb: z.string().trim().max(280).default(""),
+  limits: z.object({
+    seats: limitValue,
+    interviews: limitValue,
+    projects: limitValue,
+  }),
+  purchaseable: z.boolean(),
+  stripePriceId: z.string().trim().max(120).nullable(),
+  stripePriceEnv: z.string().trim().max(80).nullable(),
+  features: planFeatureFlagsSchema,
+});
 
 const STATUS_LABEL: Record<OrgStatus, string> = {
   ACTIVE: "Active",
@@ -75,7 +102,9 @@ const PLATFORM_ROLE_LABEL: Record<string, string> = {
   ENTERPRISE: "Enterprise",
 };
 
-const limitValue = z.number().int().min(0).nullable();
+function planLabel(plan: string, catalog: PlanCatalogEntry[]): string {
+  return catalog.find((p) => p.id === plan)?.name ?? plan;
+}
 
 /** ids → paused_at for the given users (auth schema). */
 async function pausedMap(ids: string[]): Promise<Record<string, string>> {
@@ -221,7 +250,7 @@ export const platformRouter = router({
             status,
             statusLabel: STATUS_LABEL[status],
             plan,
-            planLabel: PLAN_LABEL[plan],
+            planLabel: plan,
             memberCount: memberCounts[o.id as string] ?? 0,
             owner: ownerMap[o.ownerId as string] ?? null,
             createdAt: o.createdAt as string,
@@ -332,6 +361,7 @@ export const platformRouter = router({
       const status = (org.status as OrgStatus) ?? "ACTIVE";
       const plan = (org.plan as OrgPlan) ?? "SELF_HOSTED";
       const limits = (org.limits as Record<string, unknown>) ?? {};
+      const platform = await loadPlatformSettings(ctx.supabase);
 
       return {
         id: org.id as string,
@@ -340,7 +370,7 @@ export const platformRouter = router({
         status,
         statusLabel: STATUS_LABEL[status],
         plan,
-        planLabel: PLAN_LABEL[plan],
+        planLabel: planLabel(plan, platform.planCatalog),
         limits: {
           seats: typeof limits.seats === "number" ? limits.seats : null,
           interviews:
@@ -437,13 +467,29 @@ export const platformRouter = router({
     .input(
       z.object({
         id: z.string().uuid(),
-        plan: orgPlanEnum,
+        plan: orgPlanId,
+        /** When true (default), copy the plan's feature flags onto the org. */
+        applyFeatures: z.boolean().optional().default(true),
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const settings = await loadPlatformSettings(ctx.supabase);
+      const entry = settings.planCatalog.find((p) => p.id === input.plan);
+      if (!entry) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Unknown plan "${input.plan}". Add it in Config → Plans first.`,
+        });
+      }
+
+      const patch: Record<string, unknown> = { plan: entry.id };
+      if (input.applyFeatures) {
+        patch.featureFlags = entry.features;
+      }
+
       const { data: org, error } = await ctx.supabase
         .from("organizations")
-        .update({ plan: input.plan })
+        .update(patch)
         .eq("id", input.id)
         .neq("status", "DELETED")
         .select("id, name, plan")
@@ -468,7 +514,7 @@ export const platformRouter = router({
       return {
         id: org.id as string,
         plan,
-        planLabel: PLAN_LABEL[plan],
+        planLabel: planLabel(plan, settings.planCatalog),
       };
     }),
 
@@ -1262,35 +1308,54 @@ export const platformRouter = router({
       return value;
     }),
 
-  updatePlanLimits: platformProcedure
-    .input(
-      z.object({
-        planLimits: z.record(
-          z.enum(["FREE", "PRO", "ENTERPRISE", "SELF_HOSTED"]),
-          z.object({
-            seats: limitValue,
-            interviews: limitValue,
-            projects: limitValue,
-          }),
-        ),
-      }),
-    )
+  /** Replace the editable plan catalog (limits + features + Stripe). */
+  updatePlanCatalog: platformProcedure
+    .input(z.object({ plans: z.array(planCatalogEntrySchema).min(1).max(40) }))
     .mutation(async ({ ctx, input }) => {
-      const value = parsePlanLimitsMap(input.planLimits);
+      const catalog = parsePlanCatalog(input.plans);
+      if (catalog.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "At least one valid plan is required.",
+        });
+      }
+      for (const id of PROTECTED_PLAN_IDS) {
+        if (!catalog.some((p) => p.id === id)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Protected plan ${id} cannot be removed.`,
+          });
+        }
+      }
+      const ids = catalog.map((p) => p.id);
+      if (new Set(ids).size !== ids.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Plan ids must be unique.",
+        });
+      }
+
+      const planLimits = limitsFromCatalog(catalog);
+      await upsertPlatformSetting(
+        ctx.supabase,
+        "planCatalog",
+        catalog,
+        ctx.user.id,
+      );
       await upsertPlatformSetting(
         ctx.supabase,
         "planLimits",
-        value,
+        planLimits,
         ctx.user.id,
       );
       await writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
-        action: "config.plan_limits",
+        action: "config.plan_catalog",
         targetType: "organization",
         targetId: null,
-        meta: { planLimits: value },
+        meta: { plans: ids },
       });
-      return value;
+      return catalog;
     }),
 
   updateDefaultFeatureFlags: platformProcedure
