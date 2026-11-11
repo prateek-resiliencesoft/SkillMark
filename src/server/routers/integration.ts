@@ -1,11 +1,20 @@
 import { encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import { RESILIO_DEFAULT_BASE_URL } from "@/lib/messaging/providers";
-import { DEFAULT_TEMPLATES, mergeTemplates, type TemplateVars } from "@/lib/messaging/templates";
+import {
+  DEFAULT_TEMPLATES,
+  mergeTemplates,
+  type TemplateVars,
+} from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { appBaseUrl } from "../batch-access";
-import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
+import {
+  deliverCompletionWhatsapp,
+  deliverEmail,
+  deliverWhatsapp,
+  loadDeliveryConfig,
+} from "../invite-delivery";
 import { isPlatformAdmin } from "../tenant";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
 
@@ -153,14 +162,17 @@ export const integrationRouter = router({
         organizationId: z.string(),
         channel: z.enum(["email", "whatsapp"]),
         provider: z.enum(["resend", "brevo", "resilio"]).optional(),
+        /** WhatsApp only: invite = interview_invite, completion = interview_completed */
+        whatsappTemplate: z.enum(["invite", "completion"]).optional().default("invite"),
         to: z.string().min(3).max(200),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "ADMIN");
       const cfg = await loadDeliveryConfig(ctx.supabase, input.organizationId);
+      const displayName = ctx.user.email?.split("@")[0] ?? "Test User";
       const vars: TemplateVars = {
-        name: ctx.user.email?.split("@")[0] ?? "Test Candidate",
+        name: displayName,
         interviewTitle: "Sample Interview",
         organization: cfg.organizationName,
         link: `${appBaseUrl()}/i/invite/test-link`,
@@ -168,12 +180,35 @@ export const integrationRouter = router({
         batchName: "Test batch",
         scheduleNotice: "You may start at your convenience.",
       };
-      const r =
-        input.channel === "email"
-          ? await deliverEmail(cfg, input.to.trim(), vars, undefined, input.provider as "resend" | "brevo" | undefined)
-          : await deliverWhatsapp(cfg, input.to.replace(/[^\d+]/g, ""), vars);
+
+      if (input.channel === "email") {
+        const r = await deliverEmail(
+          cfg,
+          input.to.trim(),
+          vars,
+          undefined,
+          input.provider as "resend" | "brevo" | undefined,
+        );
+        if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
+        return { ok: true, provider: r.provider };
+      }
+
+      const phone = input.to.replace(/[^\d+]/g, "");
+      if (input.whatsappTemplate === "completion") {
+        const r = await deliverCompletionWhatsapp(cfg, phone, {
+          recipientName: displayName,
+          candidateName: "Priya Sharma",
+          interviewTitle: "Sample Interview",
+          organization: cfg.organizationName,
+          link: `${appBaseUrl()}/interviews/test/results?session=test`,
+        });
+        if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
+        return { ok: true, provider: r.provider, template: cfg.resilio?.completionTemplateName };
+      }
+
+      const r = await deliverWhatsapp(cfg, phone, vars);
       if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
-      return { ok: true, provider: r.provider };
+      return { ok: true, provider: r.provider, template: cfg.resilio?.templateName };
     }),
 
   testOutboundWebhook: protectedProcedure

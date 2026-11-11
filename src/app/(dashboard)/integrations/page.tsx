@@ -13,6 +13,7 @@ import {
   WHATSAPP_COMPLETION_META_TEMPLATE,
   WHATSAPP_META_TEMPLATE,
   renderTemplate,
+  renderWhatsappCompletionPreview,
   renderWhatsappPreview,
   type TemplateVars,
 } from "@/lib/messaging/templates";
@@ -345,6 +346,7 @@ export default function IntegrationsSettingsPage() {
   const [testEmail, setTestEmail] = useState("");
   const [testEmailProvider, setTestEmailProvider] = useState<"resend" | "brevo">("resend");
   const [testPhone, setTestPhone] = useState("");
+  const [testWhatsappTemplate, setTestWhatsappTemplate] = useState<"invite" | "completion">("invite");
   const [testWebhookEvent, setTestWebhookEvent] = useState<"candidate.invited" | "session.started" | "session.completed">(
     "candidate.invited",
   );
@@ -412,6 +414,13 @@ export default function IntegrationsSettingsPage() {
     scheduledAt: activeScenario.scheduledAt,
     expiresAt: activeScenario.expiresAt,
     scheduleNotice: activeScenario.notice,
+  };
+  const completionSample = {
+    recipientName: "Alex Chen",
+    candidateName: "Priya Sharma",
+    interviewTitle: "Senior React Developer",
+    organization: SAMPLE.organization,
+    link: `${d.appUrl}/interviews/abc/results?session=xyz789`,
   };
 
   const copyMetaTemplate = async () => {
@@ -854,31 +863,14 @@ export default function IntegrationsSettingsPage() {
                 </Field>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Completion template name">
-                  <Input
-                    placeholder={WHATSAPP_COMPLETION_META_TEMPLATE.name}
-                    value={resilioCompletionTemplate}
-                    onChange={(e) => setResilioCompletionTemplate(e.target.value)}
-                    disabled={!canEdit}
-                  />
-                </Field>
-                <div className="flex items-end">
-                  <Button size="sm" variant="outline" onClick={copyCompletionMetaTemplate} className="h-9">
-                    {copiedCompletionMeta ? (
-                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
-                    ) : (
-                      <Copy className="mr-1.5 h-3.5 w-3.5" />
-                    )}
-                    {copiedCompletionMeta ? "Copied" : "Copy completion template"}
-                  </Button>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Completion template vars: {"{{1}}"} recipient, {"{{2}}"} candidate, {"{{3}}"} interview,{" "}
-                {"{{4}}"} org, {"{{5}}"} report link. Default name{" "}
-                <code>{WHATSAPP_COMPLETION_META_TEMPLATE.name}</code>.
-              </p>
+              <Field label="Completion template name">
+                <Input
+                  placeholder={WHATSAPP_COMPLETION_META_TEMPLATE.name}
+                  value={resilioCompletionTemplate}
+                  onChange={(e) => setResilioCompletionTemplate(e.target.value)}
+                  disabled={!canEdit}
+                />
+              </Field>
 
               <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -886,6 +878,7 @@ export default function IntegrationsSettingsPage() {
                     <p className="text-sm font-semibold">Invite template body</p>
                     <p className="text-xs text-muted-foreground">
                       UTILITY · en · <code>{resilioTemplate || WHATSAPP_META_TEMPLATE.name}</code>
+                      {" · "}candidate invite / interview ready
                     </p>
                   </div>
                   <Button size="sm" variant="outline" onClick={copyMetaTemplate} className="h-8">
@@ -909,6 +902,58 @@ export default function IntegrationsSettingsPage() {
                     <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
                       <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
                         <div className="whitespace-pre-wrap">{renderWhatsappPreview(sample, whatsappBody)}</div>
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
+                          <span>10:00 AM</span>
+                          <Check className="h-3 w-3 stroke-[3]" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">Completion template body</p>
+                    <p className="text-xs text-muted-foreground">
+                      UTILITY · en ·{" "}
+                      <code>
+                        {resilioCompletionTemplate || WHATSAPP_COMPLETION_META_TEMPLATE.name}
+                      </code>
+                      {" · "}team alert when candidate finishes
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={copyCompletionMetaTemplate} className="h-8">
+                    {copiedCompletionMeta ? (
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {copiedCompletionMeta ? "Copied" : "Copy for ResilioHub"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Vars: {"{{1}}"} recipient · {"{{2}}"} candidate · {"{{3}}"} interview · {"{{4}}"} org ·{" "}
+                  {"{{5}}"} report link (must not be last line — keep brand closer after).
+                </p>
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Meta body (fixed — submit in ResilioHub)</Label>
+                    <Textarea
+                      rows={8}
+                      value={WHATSAPP_COMPLETION_META_TEMPLATE.body}
+                      readOnly
+                      className="font-mono text-xs leading-relaxed"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Bubble preview</Label>
+                    <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
+                      <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
+                        <div className="whitespace-pre-wrap">
+                          {renderWhatsappCompletionPreview(completionSample)}
+                        </div>
                         <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
                           <span>10:00 AM</span>
                           <Check className="h-3 w-3 stroke-[3]" />
@@ -1208,7 +1253,39 @@ export default function IntegrationsSettingsPage() {
             </div>
 
             <div className="space-y-3 rounded-2xl border bg-background/80 p-4">
-              <p className="text-xs font-semibold">WhatsApp</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold">WhatsApp</p>
+                <div className="inline-flex rounded-md border p-0.5 text-[10px]">
+                  {(
+                    [
+                      { id: "invite" as const, label: "invite" },
+                      { id: "completion" as const, label: "completed" },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setTestWhatsappTemplate(opt.id)}
+                      className={cn(
+                        "rounded px-2 py-0.5",
+                        testWhatsappTemplate === opt.id
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Template:{" "}
+                <code>
+                  {testWhatsappTemplate === "completion"
+                    ? resilioCompletionTemplate || WHATSAPP_COMPLETION_META_TEMPLATE.name
+                    : resilioTemplate || WHATSAPP_META_TEMPLATE.name}
+                </code>
+              </p>
               <Input
                 placeholder="+919876543210"
                 value={testPhone}
@@ -1219,10 +1296,17 @@ export default function IntegrationsSettingsPage() {
                 variant="outline"
                 size="sm"
                 disabled={!testPhone || !d.resilio.apiKeyHint || test.isLoading}
-                onClick={() => test.mutate({ organizationId: orgId, channel: "whatsapp", to: testPhone })}
+                onClick={() =>
+                  test.mutate({
+                    organizationId: orgId,
+                    channel: "whatsapp",
+                    whatsappTemplate: testWhatsappTemplate,
+                    to: testPhone,
+                  })
+                }
               >
                 {test.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="mr-1.5 h-3.5 w-3.5" />}
-                Send WhatsApp
+                {testWhatsappTemplate === "completion" ? "Send completed test" : "Send invite test"}
               </Button>
             </div>
 
