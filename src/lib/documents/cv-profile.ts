@@ -74,7 +74,11 @@ Rules:
 - Never guess or infer missing values. Use null / [] instead.
 - Copy emails, phone numbers, dates and numbers character-for-character.
 - Keep experience in the order listed. Use "Present" for current roles only if the CV says so.
-- Return only the JSON object.`;
+- Return only the JSON object — no markdown fences, no trailing commas, no comments.`;
+
+const STRICT_RETRY_PROMPT = `Return ONE minified valid JSON object only. No markdown, no prose, no trailing commas.
+Keep arrays short (≤8 experience, ≤8 projects, ≤6 education, ≤20 techStack). Cap summary strings at 200 chars.
+Use null / [] when unknown.`;
 
 function isDeadModelError(msg: string): boolean {
   return /410|404|gone|retired|unavailable|no longer (available|supported)|not found/i.test(msg);
@@ -84,13 +88,14 @@ async function generateProfileJson(
   provider: LLMProvider,
   model: string,
   source: string,
+  strict = false,
 ) {
   return provider.generateResponse({
     model,
     temperature: 0,
-    maxTokens: 4096,
+    maxTokens: strict ? 3072 : 6144,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: strict ? `${STRICT_RETRY_PROMPT}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
       { role: "user", content: source },
     ],
   });
@@ -113,37 +118,48 @@ export async function extractCandidateProfile(
     attempts.push(fb);
   }
 
-  let res: Awaited<ReturnType<LLMProvider["generateResponse"]>> | undefined;
   let lastErr: unknown;
   for (const attempt of attempts) {
-    try {
-      res = await generateProfileJson(attempt.provider, attempt.model, source);
-      break;
-    } catch (err) {
-      lastErr = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
-        throw new Error(
-          "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
+    for (const strict of [false, true]) {
+      try {
+        const res = await generateProfileJson(
+          attempt.provider,
+          attempt.model,
+          source,
+          strict,
         );
+        const raw = extractJson<Record<string, unknown>>(
+          res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
+        );
+        return validateProfile(raw, source, options.defaultCountryCode);
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
+          throw new Error(
+            "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
+          );
+        }
+        // JSON parse / truncate → retry strict once on same model, then next model.
+        const isJsonFail =
+          /JSON|Unexpected token|Expected|position \d+|No JSON object/i.test(msg);
+        if (isJsonFail && !strict) continue;
+        // Dead/retired model → try next; other hard errors stop (avoid burning quota).
+        if (!isDeadModelError(msg) && !isJsonFail) throw err;
+        break;
       }
-      // Dead/retired model → try next; quota/other → stop (retrying burns more quota).
-      if (!isDeadModelError(msg)) throw err;
     }
   }
 
-  if (!res) {
-    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-    if (isDeadModelError(msg)) {
-      throw new Error(
-        `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
-      );
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  if (isDeadModelError(msg)) {
+    throw new Error(
+      `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
+    );
   }
-
-  const raw = extractJson<Record<string, unknown>>(res.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
-  return validateProfile(raw, source, options.defaultCountryCode);
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(msg || "Failed to parse CV profile");
 }
 
 /* ------------------------------------------------------------------ */
