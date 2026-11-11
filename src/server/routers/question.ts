@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { parseSkipIf, questionSkipIfSchema } from "@/lib/question-conditions";
 import { protectedProcedure, router } from "../trpc";
 import { getOrgMembership, assertMinRole, hasProjectAccess, filterAccessibleProjectIds, getEffectiveProjectRole, type MemberRole } from "../trpc";
 
@@ -24,7 +25,7 @@ const questionInput = z.object({
   probeOnShort: z.boolean().default(true),
   probeThreshold: z.number().nullable().optional(),
   showIf: z.any().optional(),
-  skipIf: z.any().optional(),
+  skipIf: questionSkipIfSchema,
   timeLimitSeconds: z.number().nullable().optional(),
   isRequired: z.boolean().default(true),
   allowFileUpload: z.boolean().default(false),
@@ -103,7 +104,7 @@ export const questionRouter = router({
       }
 
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { interviewId, starterCode, order: _order, ...rest } = input;
+      const { interviewId, starterCode, order: _order, skipIf, ...rest } = input;
 
       const { data: question, error } = await ctx.supabase
         .from("questions")
@@ -112,6 +113,7 @@ export const questionRouter = router({
           interviewId,
           order: resolvedOrder,
           starterCode: starterCode ?? null,
+          skipIf: parseSkipIf(skipIf),
         })
         .select()
         .single();
@@ -193,7 +195,7 @@ export const questionRouter = router({
   update: protectedProcedure
     .input(z.object({ id: z.string(), ...questionInput.partial().shape }))
     .mutation(async ({ ctx, input }) => {
-      const { id, starterCode, ...rest } = input;
+      const { id, starterCode, skipIf, ...rest } = input;
 
       const { data: question } = await ctx.supabase
         .from("questions")
@@ -218,6 +220,9 @@ export const questionRouter = router({
       const updateData: Record<string, unknown> = { ...rest };
       if (starterCode !== undefined) {
         updateData.starterCode = starterCode;
+      }
+      if (skipIf !== undefined) {
+        updateData.skipIf = parseSkipIf(skipIf);
       }
 
       const { data: updated } = await ctx.supabase

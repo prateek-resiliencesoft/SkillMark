@@ -117,7 +117,7 @@ export default function NewInterviewPage() {
       });
 
       const picked = selectedPremadePayload(
-        enabledPremadeQuery.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+        enabledPremadeQuery.data?.questions,
         selectedPremadeIds,
         includePremade,
       );

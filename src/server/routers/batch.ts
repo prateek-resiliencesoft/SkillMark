@@ -8,6 +8,7 @@ import { nanoid } from "@/lib/id";
 import { createLogger } from "@/lib/logger";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
+import { questionSkipIfSchema } from "@/lib/question-conditions";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -46,13 +47,7 @@ const batchSettings = z.object({
         description: z.string().optional(),
         options: z.any().optional(),
         starterCode: z.any().optional(),
-        skipIf: z
-          .object({
-            answerContainsAny: z.array(z.string()).max(20).optional(),
-            reason: z.string().max(200).optional(),
-          })
-          .nullable()
-          .optional(),
+        skipIf: questionSkipIfSchema,
       }),
     )
     .max(50)
