@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
+  flattenEnabledBankList,
   sectionsMatchingInterviewType,
   toPremadePayload,
   type PremadeBankQuestion,
@@ -25,6 +26,8 @@ export function PremadeQuestionPicker({
   onSelectedChange,
   disabled,
   compact,
+  /** Prefer project org so bank matches the interview being created. */
+  organizationId: organizationIdProp,
 }: {
   interviewType?: string;
   includePremade: boolean;
@@ -34,25 +37,31 @@ export function PremadeQuestionPicker({
   disabled?: boolean;
   /** Tighter copy for dialogs */
   compact?: boolean;
+  organizationId?: string;
 }) {
   const { currentOrg } = useOrg();
+  const organizationId = (organizationIdProp || currentOrg?.id || "").trim();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const lastSeedKey = useRef<string>("");
   const userTouchedRef = useRef(false);
   const selectedIdsRef = useRef(selectedIds);
   selectedIdsRef.current = selectedIds;
 
-  const bank = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
+  // Same endpoint as Questions page (auto-seeds + returns all rounds/items).
+  const bank = trpc.questionBank.list.useQuery(
+    { organizationId },
     {
-      enabled: !!currentOrg?.id,
+      enabled: !!organizationId,
       staleTime: 10_000,
       refetchOnMount: "always",
+      retry: 1,
     },
   );
 
-  const sections = bank.data?.sections ?? [];
-  const questions: PremadeBankQuestion[] = bank.data?.questions ?? [];
+  const { sections, questions } = useMemo(
+    () => flattenEnabledBankList(bank.data),
+    [bank.data],
+  );
 
   const suggestedSections = useMemo(
     () => sectionsMatchingInterviewType(interviewType, sections),
@@ -63,8 +72,7 @@ export function PremadeQuestionPicker({
     [suggestedSections],
   );
 
-  // Seed: select ALL bank questions so newly added rounds/Qs show + get included.
-  // "Suggested" button still narrows by interview type. Don't wipe after user edits.
+  // Seed selection + expand all rounds when bank loads.
   useEffect(() => {
     if (!includePremade || !questions.length || disabled) return;
 
@@ -75,7 +83,6 @@ export function PremadeQuestionPicker({
     const prevKey = lastSeedKey.current;
     lastSeedKey.current = seedKey;
 
-    // Always expand every round so questions are visible without hunting.
     setExpanded(new Set(sections.map((s) => s.id)));
 
     if (userTouchedRef.current && prevKey.startsWith("all:")) {
@@ -92,6 +99,15 @@ export function PremadeQuestionPicker({
     onSelectedChange(new Set(questions.map((q) => q.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed on bank/include only
   }, [includePremade, questions, sections, disabled]);
+
+  // Expand rounds even when there are zero questions (so empty state is visible).
+  useEffect(() => {
+    if (!includePremade || !sections.length) return;
+    setExpanded((prev) => {
+      if (prev.size === sections.length) return prev;
+      return new Set(sections.map((s) => s.id));
+    });
+  }, [includePremade, sections]);
 
   const selectedQuestions = useMemo(
     () => questions.filter((q) => selectedIds.has(q.id)),
@@ -158,8 +174,22 @@ export function PremadeQuestionPicker({
           />
         </div>
 
-        {includePremade && bank.isLoading && (
+        {!organizationId && (
+          <p className="text-xs text-destructive">
+            No organization selected — pick a project/org in the header, then refresh.
+          </p>
+        )}
+
+        {includePremade && !!organizationId && bank.isLoading && (
           <p className="text-xs text-muted-foreground">Loading question bank…</p>
+        )}
+
+        {includePremade && bank.isError && (
+          <p className="text-xs text-destructive">
+            Could not load question bank
+            {bank.error?.message ? `: ${bank.error.message}` : ""}. Open Questions to
+            confirm the bank loads there, then refresh.
+          </p>
         )}
 
         {includePremade && sections.length > 0 && (
@@ -174,7 +204,7 @@ export function PremadeQuestionPicker({
                   variant="ghost"
                   size="sm"
                   className="h-7 text-xs"
-                  disabled={disabled}
+                  disabled={disabled || !questions.length}
                   onClick={() => markTouched(new Set(questions.map((q) => q.id)))}
                 >
                   All
@@ -184,7 +214,7 @@ export function PremadeQuestionPicker({
                   variant="ghost"
                   size="sm"
                   className="h-7 text-xs"
-                  disabled={disabled}
+                  disabled={disabled || !questions.length}
                   onClick={() =>
                     markTouched(
                       new Set(
@@ -210,7 +240,7 @@ export function PremadeQuestionPicker({
               </div>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="max-h-72 space-y-1.5 overflow-y-auto code-scrollbar pr-0.5">
               {sections.map((sec) => {
                 const inSection = questions.filter((q) => q.sectionId === sec.id);
                 const selectedCount = inSection.filter((q) => selectedIds.has(q.id)).length;
@@ -224,7 +254,9 @@ export function PremadeQuestionPicker({
                     key={sec.id}
                     className={cn(
                       "rounded-lg border",
-                      selectedCount > 0 ? "border-primary/40 bg-primary/5" : "border-border bg-muted/20",
+                      selectedCount > 0
+                        ? "border-primary/40 bg-primary/5"
+                        : "border-border bg-muted/20",
                     )}
                   >
                     <div className="flex items-center gap-2 px-2.5 py-2">
@@ -266,7 +298,7 @@ export function PremadeQuestionPicker({
                       <div className="space-y-1 border-t px-2.5 py-2">
                         {inSection.length === 0 ? (
                           <p className="px-1 py-1 text-xs text-muted-foreground">
-                            No enabled questions in this round.
+                            No enabled questions in this round. Add them under Questions.
                           </p>
                         ) : (
                           inSection.map((q) => (
@@ -306,17 +338,18 @@ export function PremadeQuestionPicker({
           </div>
         )}
 
-        {includePremade && !bank.isLoading && sections.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            No enabled question-bank rounds yet. Add them under Questions.
-          </p>
-        )}
-
-        {includePremade && !bank.isLoading && sections.length > 0 && questions.length === 0 && (
-          <p className="text-xs text-muted-foreground">
-            Rounds exist but no enabled questions. Add or enable questions under Questions.
-          </p>
-        )}
+        {includePremade &&
+          !!organizationId &&
+          !bank.isLoading &&
+          !bank.isError &&
+          sections.length === 0 && (
+            <p className="text-xs text-muted-foreground">
+              No enabled question-bank rounds for this organization yet. Open{" "}
+              <span className="font-medium text-foreground">Questions</span>, turn{" "}
+              <span className="font-medium text-foreground">Auto-include</span> on for a
+              round, then refresh.
+            </p>
+          )}
       </div>
     </div>
   );
