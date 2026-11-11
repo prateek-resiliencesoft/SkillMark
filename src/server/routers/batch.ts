@@ -8,6 +8,7 @@ import { nanoid } from "@/lib/id";
 import { createLogger } from "@/lib/logger";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
+import { resolvePremadeQuestions } from "@/lib/auto-include-premade";
 import { questionSkipIfSchema } from "@/lib/question-conditions";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -211,13 +212,19 @@ export const batchRouter = router({
       // Structured profile first (cheap, dense), raw text after for details it missed.
       const resumeText = `${profileToResumeText(profile)}\n\n---\nOriginal CV text (excerpt):\n${input.resumeMarkdown.slice(0, 6000)}`;
       const interviewType = settings.interviewType ?? "technical";
+      // Explicit picker selection, else Auto-include Question Bank (enabled rounds/items).
+      const premade = await resolvePremadeQuestions(
+        ctx.supabase,
+        organizationId,
+        settings.premadeQuestions,
+      );
       const messages = buildGeneratorPrompt(
         `${settings.roleDescription}\n\nInterview type: ${interviewType}. This interview is for one specific candidate (${input.contact.name}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
         settings.durationMinutes,
         LANGUAGES.find((l) => l.value === settings.language)?.label ?? settings.language,
         settings.jobDescription,
         resumeText,
-        settings.premadeQuestions,
+        premade,
       );
 
       const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
@@ -241,8 +248,7 @@ export const batchRouter = router({
         });
       }
 
-      // Force exact premade wording (replace paraphrases + append missing)
-      const premade = settings.premadeQuestions ?? [];
+      // Exact bank wording first (screening / auto-include), then complementary AI Qs
       if (premade.length > 0) {
         const { enforceExactPremadeQuestions } = await import("@/lib/question-conditions");
         generated.questions = enforceExactPremadeQuestions(
@@ -390,6 +396,117 @@ export const batchRouter = router({
         .eq("id", input.candidateId);
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       return { ok: true };
+    }),
+
+  /**
+   * Remove a candidate from a batch only when they have not started the interview.
+   * Deletes the per-candidate interview (cascades questions / sessions / candidate).
+   */
+  removeCandidate: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+
+      const { data: c, error: loadErr } = await ctx.supabase
+        .from("candidates")
+        .select("id, batchId, interviewId, session:sessions(id, status, interviewBeganAt)")
+        .eq("id", input.candidateId)
+        .maybeSingle();
+      if (loadErr) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: loadErr.message });
+      }
+      if (!c || c.batchId !== input.batchId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found in this batch" });
+      }
+
+      const session = c.session as
+        | { id?: string; status?: string; interviewBeganAt?: string | null }
+        | null
+        | undefined;
+      const status = candidateStatus({ session });
+      const began = !!session?.interviewBeganAt;
+      if (status !== "NOT_STARTED" || began) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Can only remove candidates who have not started the interview",
+        });
+      }
+
+      if (c.interviewId) {
+        const { error } = await ctx.supabase.from("interviews").delete().eq("id", c.interviewId);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      } else {
+        const { error } = await ctx.supabase.from("candidates").delete().eq("id", input.candidateId);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+      return { ok: true };
+    }),
+
+  /** Bulk remove not-started candidates from a batch. */
+  removeCandidates: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+
+      const { data: rows, error: loadErr } = await ctx.supabase
+        .from("candidates")
+        .select("id, batchId, interviewId, session:sessions(id, status, interviewBeganAt)")
+        .eq("batchId", input.batchId)
+        .in("id", input.candidateIds);
+      if (loadErr) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: loadErr.message });
+      }
+
+      const removable: { id: string; interviewId: string | null }[] = [];
+      const blocked: string[] = [];
+      for (const c of rows ?? []) {
+        const session = c.session as
+          | { status?: string; interviewBeganAt?: string | null }
+          | null
+          | undefined;
+        const status = candidateStatus({ session });
+        if (status !== "NOT_STARTED" || session?.interviewBeganAt) {
+          blocked.push(c.id as string);
+          continue;
+        }
+        removable.push({
+          id: c.id as string,
+          interviewId: (c.interviewId as string | null) ?? null,
+        });
+      }
+
+      if (!removable.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: blocked.length
+            ? "Selected candidates have already started — none removed"
+            : "No matching candidates to remove",
+        });
+      }
+
+      const interviewIds = removable.map((r) => r.interviewId).filter(Boolean) as string[];
+      const orphanIds = removable.filter((r) => !r.interviewId).map((r) => r.id);
+
+      if (interviewIds.length) {
+        const { error } = await ctx.supabase.from("interviews").delete().in("id", interviewIds);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+      if (orphanIds.length) {
+        const { error } = await ctx.supabase.from("candidates").delete().in("id", orphanIds);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+
+      return { removed: removable.length, blocked: blocked.length };
     }),
 
   updateSchedule: protectedProcedure

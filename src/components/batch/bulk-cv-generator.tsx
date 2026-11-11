@@ -226,11 +226,24 @@ export function BulkCvGenerator({
   );
 
   const ensureBatch = async (): Promise<string> => {
-    const premadeQuestions = selectedPremadePayload(
+    // Prefer picker selection; if include is on but seed race left ids empty,
+    // fall back to ALL enabled bank questions so Screening Auto-include still applies.
+    let premadeQuestions = selectedPremadePayload(
       premade.data?.questions,
       selectedPremadeIds,
       includePremade,
     );
+    if (
+      includePremade &&
+      !premadeQuestions?.length &&
+      (premade.data?.questions?.length ?? 0) > 0
+    ) {
+      premadeQuestions = selectedPremadePayload(
+        premade.data?.questions,
+        new Set((premade.data?.questions ?? []).map((q) => q.id)),
+        true,
+      );
+    }
 
     // Existing batch: refresh premade list so newly picked Qs apply to new candidates
     if (existingBatchId || batchId) {
@@ -242,7 +255,7 @@ export function BulkCvGenerator({
             premadeQuestions,
           });
         } catch {
-          /* non-fatal — still generate with stored settings */
+          /* non-fatal — still generate with stored settings / server bank fallback */
         }
       }
       return id;
