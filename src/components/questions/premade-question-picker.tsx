@@ -38,10 +38,17 @@ export function PremadeQuestionPicker({
   const { currentOrg } = useOrg();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const lastSeedKey = useRef<string>("");
+  const userTouchedRef = useRef(false);
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
 
   const bank = trpc.questionBank.getEnabledQuestions.useQuery(
     { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+    {
+      enabled: !!currentOrg?.id,
+      staleTime: 10_000,
+      refetchOnMount: "always",
+    },
   );
 
   const sections = bank.data?.sections ?? [];
@@ -56,41 +63,68 @@ export function PremadeQuestionPicker({
     [suggestedSections],
   );
 
-  // Seed selection from interview-type-matched sections once bank loads / type changes
+  // Seed: select ALL bank questions so newly added rounds/Qs show + get included.
+  // "Suggested" button still narrows by interview type. Don't wipe after user edits.
   useEffect(() => {
     if (!includePremade || !questions.length || disabled) return;
-    const seedKey = `${interviewType ?? "mixed"}:${questions.map((q) => q.id).join(",")}`;
+
+    const idsKey = questions.map((q) => q.id).join(",");
+    const seedKey = `all:${idsKey}`;
     if (lastSeedKey.current === seedKey) return;
+
+    const prevKey = lastSeedKey.current;
     lastSeedKey.current = seedKey;
-    const ids = questions
-      .filter((q) => suggestedSectionIds.has(q.sectionId))
-      .map((q) => q.id);
-    onSelectedChange(new Set(ids));
-    setExpanded(new Set(suggestedSections.map((s) => s.id)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reseed only on bank/type
-  }, [includePremade, interviewType, questions, suggestedSectionIds, suggestedSections, disabled]);
+
+    // Always expand every round so questions are visible without hunting.
+    setExpanded(new Set(sections.map((s) => s.id)));
+
+    if (userTouchedRef.current && prevKey.startsWith("all:")) {
+      const prevIds = new Set(prevKey.slice(4).split(",").filter(Boolean));
+      const next = new Set(selectedIdsRef.current);
+      for (const q of questions) {
+        if (!prevIds.has(q.id)) next.add(q.id);
+      }
+      onSelectedChange(next);
+      return;
+    }
+
+    userTouchedRef.current = false;
+    onSelectedChange(new Set(questions.map((q) => q.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed on bank/include only
+  }, [includePremade, questions, sections, disabled]);
+
+  // Interview-type change: offer suggested selection only if user hasn't customized.
+  useEffect(() => {
+    if (!includePremade || !questions.length || disabled || userTouchedRef.current) return;
+    // no-op for selection — type only drives suggested badge / Suggested button
+  }, [interviewType, includePremade, questions.length, disabled]);
 
   const selectedQuestions = useMemo(
     () => questions.filter((q) => selectedIds.has(q.id)),
     [questions, selectedIds],
   );
 
+  const markTouched = (next: Set<string>) => {
+    userTouchedRef.current = true;
+    onSelectedChange(next);
+  };
+
   const toggleSection = (sectionId: string) => {
     const inSection = questions.filter((q) => q.sectionId === sectionId);
-    const allOn = inSection.every((q) => selectedIds.has(q.id));
+    const allOn = inSection.length > 0 && inSection.every((q) => selectedIds.has(q.id));
     const next = new Set(selectedIds);
     for (const q of inSection) {
       if (allOn) next.delete(q.id);
       else next.add(q.id);
     }
-    onSelectedChange(next);
+    markTouched(next);
   };
 
   const toggleQuestion = (id: string) => {
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    onSelectedChange(next);
+    markTouched(next);
   };
 
   const toggleExpand = (id: string) => {
@@ -115,7 +149,7 @@ export function PremadeQuestionPicker({
             </p>
             <p className="text-xs text-muted-foreground">
               {interviewType
-                ? `Suggested for “${interviewType}” interviews — expand a round to pick exact questions.`
+                ? `All enabled Question Bank rounds listed. “Suggested” highlights “${interviewType}” rounds.`
                 : "Pull from Question Bank. Expand a round to pick exact questions."}
             </p>
           </div>
@@ -123,9 +157,16 @@ export function PremadeQuestionPicker({
             className="mt-0.5 shrink-0"
             checked={includePremade}
             disabled={disabled}
-            onCheckedChange={onIncludeChange}
+            onCheckedChange={(v) => {
+              if (v) userTouchedRef.current = false;
+              onIncludeChange(v);
+            }}
           />
         </div>
+
+        {includePremade && bank.isLoading && (
+          <p className="text-xs text-muted-foreground">Loading question bank…</p>
+        )}
 
         {includePremade && sections.length > 0 && (
           <div className="space-y-2 border-t border-border/50 pt-2">
@@ -140,9 +181,7 @@ export function PremadeQuestionPicker({
                   size="sm"
                   className="h-7 text-xs"
                   disabled={disabled}
-                  onClick={() =>
-                    onSelectedChange(new Set(questions.map((q) => q.id)))
-                  }
+                  onClick={() => markTouched(new Set(questions.map((q) => q.id)))}
                 >
                   All
                 </Button>
@@ -153,7 +192,7 @@ export function PremadeQuestionPicker({
                   className="h-7 text-xs"
                   disabled={disabled}
                   onClick={() =>
-                    onSelectedChange(
+                    markTouched(
                       new Set(
                         questions
                           .filter((q) => suggestedSectionIds.has(q.sectionId))
@@ -170,7 +209,7 @@ export function PremadeQuestionPicker({
                   size="sm"
                   className="h-7 text-xs"
                   disabled={disabled}
-                  onClick={() => onSelectedChange(new Set())}
+                  onClick={() => markTouched(new Set())}
                 >
                   None
                 </Button>
@@ -276,6 +315,12 @@ export function PremadeQuestionPicker({
         {includePremade && !bank.isLoading && sections.length === 0 && (
           <p className="text-xs text-muted-foreground">
             No enabled question-bank rounds yet. Add them under Questions.
+          </p>
+        )}
+
+        {includePremade && !bank.isLoading && sections.length > 0 && questions.length === 0 && (
+          <p className="text-xs text-muted-foreground">
+            Rounds exist but no enabled questions. Add or enable questions under Questions.
           </p>
         )}
       </div>
