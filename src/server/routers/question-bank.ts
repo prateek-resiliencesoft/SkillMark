@@ -535,13 +535,15 @@ export const questionBankRouter = router({
         secQuery = secQuery.in("id", input.sectionIds);
       }
 
-      let { data: sections, error: secErr } = await secQuery;
+      const { data: initialSections, error: secErr } = await secQuery;
       if (secErr) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: secErr.message,
         });
       }
+
+      let sections = initialSections;
 
       // Parity with list(): seed defaults once so picker is never empty on a new org
       if ((!sections || sections.length === 0) && !input.sectionIds?.length) {
@@ -573,13 +575,14 @@ export const questionBankRouter = router({
 
       const activeSecIds = sections.map((s: EnabledBankSection) => s.id);
       // Prefer * so missing optional columns (e.g. skipIf pre-migrate) don't 500 the picker
-      let { data: items, error: itemsErr } = await ctx.supabase
+      const { data: initialItems, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
         .select("*")
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
 
+      let items = initialItems;
       if (itemsErr) {
         // Fallback without filter if schema cache lag — still try to return questions
         const retry = await ctx.supabase
