@@ -1,6 +1,8 @@
 import { nanoid } from "@/lib/id";
+import { findUserByEmail } from "@/lib/users";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { acceptOrgInviteForUser } from "../accept-org-invite";
 import { appBaseUrl } from "../batch-access";
 import { deliverEmail, loadDeliveryConfig } from "../invite-delivery";
 import { assertQuota } from "../quotas";
@@ -401,15 +403,12 @@ export const orgMemberRouter = router({
         org?.status === "DELETED";
 
       const inviteEmail = normalizeEmail(invite.email as string);
-      const { data: existingProfile } = await ctx.supabase
-        .from("profiles")
-        .select("id")
-        .eq("email", inviteEmail)
-        .maybeSingle();
+      // auth.users is the source of truth for login (not profiles).
+      const existingUser = await findUserByEmail(inviteEmail);
 
       return {
         email: invite.email as string,
-        hasAccount: !!existingProfile,
+        hasAccount: !!existingUser,
         role: invite.role as string,
         status: expired
           ? invite.status === "PENDING"
@@ -441,147 +440,7 @@ export const orgMemberRouter = router({
   acceptInvite: protectedProcedure
     .input(z.object({ token: z.string().min(8).max(64) }))
     .mutation(async ({ ctx, input }) => {
-      const { data: invite } = await ctx.supabase
-        .from("organization_invites")
-        .select(
-          "id, email, role, status, expiresAt, organizationId, projectId, projectRole",
-        )
-        .eq("token", input.token)
-        .maybeSingle();
-
-      if (!invite) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "This invite link is not valid. Ask your admin to send a new one.",
-        });
-      }
-      if (invite.status !== "PENDING") {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message:
-            invite.status === "ACCEPTED"
-              ? "This invite has already been used."
-              : invite.status === "REVOKED"
-                ? "This invite was cancelled by an admin. Ask them to send a new one."
-                : "This invite has expired. Ask your admin for a new one.",
-        });
-      }
-
-      if (new Date(invite.expiresAt as string).getTime() < Date.now()) {
-        await ctx.supabase
-          .from("organization_invites")
-          .update({ status: "EXPIRED" })
-          .eq("id", invite.id);
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "This invite has expired. Ask your admin for a new one.",
-        });
-      }
-
-      const { data: profile } = await ctx.supabase
-        .from("profiles")
-        .select("email")
-        .eq("id", ctx.user.id)
-        .maybeSingle();
-
-      const userEmail = normalizeEmail(
-        (profile?.email as string) || ctx.user.email || "",
-      );
-      if (!userEmail || userEmail !== normalizeEmail(invite.email as string)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: `This invite was sent to ${invite.email}, but you're signed in as ${userEmail || "another account"}. Switch to ${invite.email} to accept it.`,
-        });
-      }
-
-      const { data: org } = await ctx.supabase
-        .from("organizations")
-        .select("id, status")
-        .eq("id", invite.organizationId)
-        .maybeSingle();
-
-      if (!org || org.status === "DELETED") {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "This organization is no longer available",
-        });
-      }
-      if (org.status === "SUSPENDED") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message:
-            "This organization is paused. Ask the owner to resume it first.",
-        });
-      }
-
-      const projectId = invite.projectId as string | null;
-      if (projectId) {
-        // Snapshot current access before the newcomer joins, so the project
-        // becomes explicitly scoped and they only get this project.
-        await ensureProjectMembersPopulated(
-          ctx.supabase,
-          invite.organizationId as string,
-          projectId,
-        );
-      }
-
-      const existing = await getOrgMembership(
-        ctx.supabase,
-        invite.organizationId as string,
-        ctx.user.id,
-      );
-      if (!existing) {
-        await assertQuota(
-          ctx.supabase,
-          invite.organizationId as string,
-          "seats",
-          1,
-        );
-        const { error: memberErr } = await ctx.supabase
-          .from("organization_members")
-          .insert({
-            organizationId: invite.organizationId,
-            userId: ctx.user.id,
-            role: invite.role,
-          });
-        if (memberErr) {
-          console.error("[orgMember] accept insert failed", memberErr);
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Could not add you to the organization because of a server error. Try again in a moment.",
-          });
-        }
-      }
-
-      if (projectId) {
-        const { error: projectErr } = await ctx.supabase
-          .from("project_members")
-          .upsert(
-            {
-              projectId,
-              userId: ctx.user.id,
-              role: (invite.projectRole as string) ?? invite.role,
-            },
-            { onConflict: "projectId,userId" },
-          );
-        if (projectErr) {
-          console.error("[orgMember] accept project insert failed", projectErr);
-        }
-      }
-
-      await ctx.supabase
-        .from("organization_invites")
-        .update({
-          status: "ACCEPTED",
-          acceptedAt: new Date().toISOString(),
-          acceptedBy: ctx.user.id,
-        })
-        .eq("id", invite.id);
-
-      return {
-        organizationId: invite.organizationId as string,
-        role: invite.role as string,
-      };
+      return acceptOrgInviteForUser(ctx.supabase, ctx.user, input.token);
     }),
 
   updateRole: protectedProcedure

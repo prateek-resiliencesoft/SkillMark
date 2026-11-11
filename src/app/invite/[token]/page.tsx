@@ -5,13 +5,15 @@ import { useAuth } from "@/components/auth-provider";
 import { AuralLogo } from "@/components/ui/aural-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
-import { Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 function roleLabel(role: string) {
   switch (role) {
@@ -32,23 +34,19 @@ export default function AcceptOrgInvitePage() {
   const { user, profile, loading: authLoading } = useAuth();
   const utils = trpc.useUtils();
 
-  const invite = trpc.orgMember.getInvite.useQuery(
-    { token },
-    { retry: false },
-  );
+  const invite = trpc.orgMember.getInvite.useQuery({ token }, { retry: false });
 
   const accept = trpc.orgMember.acceptInvite.useMutation({
     onSuccess: async (data) => {
       toast({ title: "You're in" });
       await utils.organization.list.invalidate();
-      router.push("/organizations");
-      // Keep org id for the client switcher
       try {
         localStorage.setItem("aural:currentOrgId", data.organizationId);
         writeActiveOrgCookie(data.organizationId);
       } catch {
         /* ignore */
       }
+      router.push("/organizations");
     },
     onError: (err) => {
       toast({
@@ -58,6 +56,11 @@ export default function AcceptOrgInvitePage() {
       });
     },
   });
+
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [joining, setJoining] = useState(false);
 
   useEffect(() => {
     if (invite.data?.status === "ACCEPTED" && user) {
@@ -70,13 +73,53 @@ export default function AcceptOrgInvitePage() {
   const inviteEmail = (invite.data?.email || "").toLowerCase();
   const emailMatches = !!user && !!userEmail && userEmail === inviteEmail;
   const hasAccount = invite.data?.hasAccount === true;
-  const authQuery = (extra: Record<string, string> = {}) => {
-    const q = new URLSearchParams({
-      email: invite.data?.email ?? "",
-      next: `/invite/${token}`,
-      ...extra,
-    });
-    return q.toString();
+
+  const finishJoin = (organizationId: string) => {
+    toast({ title: "You're in" });
+    try {
+      localStorage.setItem("aural:currentOrgId", organizationId);
+      writeActiveOrgCookie(organizationId);
+    } catch {
+      /* ignore */
+    }
+    window.location.href = "/organizations";
+  };
+
+  const handleJoin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!invite.data?.email) return;
+    setJoining(true);
+    try {
+      const res = await fetch("/api/auth/invite-join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          token,
+          password,
+          name: hasAccount ? undefined : name.trim() || undefined,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: hasAccount ? "Could not sign in" : "Could not create account",
+          description: json.error || "Something went wrong. Try again.",
+          variant: "destructive",
+        });
+        setJoining(false);
+        return;
+      }
+      await utils.organization.list.invalidate();
+      finishJoin(String(json.organizationId));
+    } catch (err: unknown) {
+      toast({
+        title: "Connection error",
+        description: err instanceof Error ? err.message : "Could not reach the server.",
+        variant: "destructive",
+      });
+      setJoining(false);
+    }
   };
 
   return (
@@ -100,7 +143,7 @@ export default function AcceptOrgInvitePage() {
 
         {invite.isLoading || authLoading ? (
           <div className="space-y-3">
-            <Skeleton className="h-7 w-2/3 mx-auto" />
+            <Skeleton className="mx-auto h-7 w-2/3" />
             <Skeleton className="h-4 w-full" />
             <Skeleton className="h-10 w-full" />
           </div>
@@ -171,93 +214,7 @@ export default function AcceptOrgInvitePage() {
               <Button asChild className="w-full">
                 <Link href="/organizations">Back to ResilienceSoft Interview</Link>
               </Button>
-            ) : !user ? (
-              <div className="space-y-3">
-                <p className="text-center text-sm text-muted-foreground">
-                  {hasAccount ? (
-                    <>
-                      Sign in with{" "}
-                      <span className="font-medium text-foreground">
-                        {invite.data.email}
-                      </span>{" "}
-                      to accept this invite.
-                    </>
-                  ) : (
-                    <>
-                      Create an account with{" "}
-                      <span className="font-medium text-foreground">
-                        {invite.data.email}
-                      </span>{" "}
-                      to accept this invite. No account exists for this email
-                      yet.
-                    </>
-                  )}
-                </p>
-                {hasAccount ? (
-                  <>
-                    <Button asChild className="w-full">
-                      <Link href={`/login?${authQuery()}`}>Sign in to accept</Link>
-                    </Button>
-                    <Button asChild variant="outline" className="w-full">
-                      <Link href={`/register?${authQuery()}`}>
-                        Create an account instead
-                      </Link>
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button asChild className="w-full">
-                      <Link href={`/register?${authQuery()}`}>
-                        Create an account
-                      </Link>
-                    </Button>
-                    <Button asChild variant="outline" className="w-full">
-                      <Link href={`/login?${authQuery()}`}>
-                        Already have an account? Sign in
-                      </Link>
-                    </Button>
-                  </>
-                )}
-              </div>
-            ) : !emailMatches ? (
-              <div className="space-y-3 text-center">
-                <p className="text-sm text-muted-foreground">
-                  You&apos;re signed in as{" "}
-                  <span className="font-medium text-foreground">
-                    {userEmail || "another account"}
-                  </span>
-                  .{" "}
-                  {hasAccount ? (
-                    <>
-                      Switch to{" "}
-                      <span className="font-medium text-foreground">
-                        {invite.data.email}
-                      </span>{" "}
-                      to accept.
-                    </>
-                  ) : (
-                    <>
-                      Create an account for{" "}
-                      <span className="font-medium text-foreground">
-                        {invite.data.email}
-                      </span>{" "}
-                      to accept — that email has no account yet.
-                    </>
-                  )}
-                </p>
-                <Button asChild variant="outline" className="w-full">
-                  <Link
-                    href={
-                      hasAccount
-                        ? `/login?${authQuery({ add: "1" })}`
-                        : `/register?${authQuery({ add: "1" })}`
-                    }
-                  >
-                    {hasAccount ? "Switch account" : "Create account to accept"}
-                  </Link>
-                </Button>
-              </div>
-            ) : (
+            ) : emailMatches ? (
               <Button
                 className="w-full"
                 disabled={accept.isPending || !!invite.data.organization?.paused}
@@ -268,6 +225,95 @@ export default function AcceptOrgInvitePage() {
                 ) : null}
                 Accept invite
               </Button>
+            ) : (
+              <form onSubmit={handleJoin} className="space-y-4">
+                {user && !emailMatches ? (
+                  <p className="text-center text-sm text-muted-foreground">
+                    Signed in as{" "}
+                    <span className="font-medium text-foreground">
+                      {userEmail || "another account"}
+                    </span>
+                    . Join with{" "}
+                    <span className="font-medium text-foreground">
+                      {invite.data.email}
+                    </span>{" "}
+                    instead.
+                  </p>
+                ) : (
+                  <p className="text-center text-sm text-muted-foreground">
+                    {hasAccount
+                      ? "Enter the password for this email to join."
+                      : "Create a password for this email to join. No account yet."}
+                  </p>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="invite-email">Email</Label>
+                  <Input
+                    id="invite-email"
+                    type="email"
+                    value={invite.data.email}
+                    readOnly
+                    className="bg-muted/50"
+                  />
+                </div>
+
+                {!hasAccount ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="invite-name">Full name</Label>
+                    <Input
+                      id="invite-name"
+                      type="text"
+                      placeholder="Jane Doe"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="name"
+                    />
+                  </div>
+                ) : null}
+
+                <div className="space-y-2">
+                  <Label htmlFor="invite-password">
+                    {hasAccount ? "Password" : "Choose a password"}
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="invite-password"
+                      type={showPassword ? "text" : "password"}
+                      placeholder={hasAccount ? "Your password" : "At least 8 characters"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      minLength={hasAccount ? 1 : 8}
+                      autoComplete={hasAccount ? "current-password" : "new-password"}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={joining || !!invite.data.organization?.paused}
+                >
+                  {joining ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  {hasAccount ? "Sign in and join" : "Create account and join"}
+                </Button>
+              </form>
             )}
           </div>
         )}
