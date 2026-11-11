@@ -6,6 +6,7 @@ import {
   selectedPremadePayload,
 } from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
+import { useProject } from "@/components/project-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { CandidateProfile, ReviewFlag } from "@/lib/documents/cv-profile";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -116,6 +118,8 @@ export function BulkCvGenerator({
   const router = useRouter();
   const { toast } = useToast();
   const { currentOrg } = useOrg();
+  const { currentProject } = useProject();
+  const bankOrgId = currentProject?.organizationId || currentOrg?.id || "";
   const fileInput = useRef<HTMLInputElement>(null);
   const appendMode = !!existingBatchId;
 
@@ -164,9 +168,13 @@ export function BulkCvGenerator({
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const previewRow = previewKey ? rows.find((r) => r.key === previewKey) ?? null : null;
 
-  const premade = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 10_000, refetchOnMount: "always" },
+  const bankListQuery = trpc.questionBank.list.useQuery(
+    { organizationId: bankOrgId },
+    { enabled: !!bankOrgId, staleTime: 10_000, refetchOnMount: "always" },
+  );
+  const premadeQuestionsList = useMemo(
+    () => flattenEnabledBankList(bankListQuery.data).questions,
+    [bankListQuery.data],
   );
 
   const createBatch = trpc.batch.create.useMutation();
@@ -229,18 +237,18 @@ export function BulkCvGenerator({
     // Prefer picker selection; if include is on but seed race left ids empty,
     // fall back to ALL enabled bank questions so Screening Auto-include still applies.
     let premadeQuestions = selectedPremadePayload(
-      premade.data?.questions,
+      premadeQuestionsList,
       selectedPremadeIds,
       includePremade,
     );
     if (
       includePremade &&
       !premadeQuestions?.length &&
-      (premade.data?.questions?.length ?? 0) > 0
+      premadeQuestionsList.length > 0
     ) {
       premadeQuestions = selectedPremadePayload(
-        premade.data?.questions,
-        new Set((premade.data?.questions ?? []).map((q) => q.id)),
+        premadeQuestionsList,
+        new Set(premadeQuestionsList.map((q) => q.id)),
         true,
       );
     }
@@ -459,6 +467,7 @@ export function BulkCvGenerator({
           </div>
 
           <PremadeQuestionPicker
+            organizationId={bankOrgId}
             interviewType={interviewType}
             includePremade={includePremade}
             onIncludeChange={setIncludePremade}
@@ -472,6 +481,7 @@ export function BulkCvGenerator({
 
       {appendMode && compact && (
         <PremadeQuestionPicker
+          organizationId={bankOrgId}
           interviewType={interviewType}
           includePremade={includePremade}
           onIncludeChange={setIncludePremade}

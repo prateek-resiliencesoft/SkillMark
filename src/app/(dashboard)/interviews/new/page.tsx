@@ -31,6 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import {
   Files,
@@ -43,7 +44,7 @@ import {
   Video,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 export default function NewInterviewPage() {
   const router = useRouter();
@@ -53,6 +54,8 @@ export default function NewInterviewPage() {
   const { currentProject } = useProject();
   const projectId =
     searchParams.get("projectId") ?? currentProject?.id ?? undefined;
+  const bankOrgId =
+    currentProject?.organizationId || currentOrg?.id || "";
   const { toast } = useToast();
   const [tab, setTab] = useState(searchParams.get("tab") === "bulk" ? "bulk" : "ai");
   const isZh = locale === "zh";
@@ -79,9 +82,13 @@ export default function NewInterviewPage() {
   >("mixed");
   const [loading, setLoading] = useState(false);
 
-  const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+  const bankListQuery = trpc.questionBank.list.useQuery(
+    { organizationId: bankOrgId },
+    { enabled: !!bankOrgId, staleTime: 10_000, refetchOnMount: "always" },
+  );
+  const enabledPremadeQuestions = useMemo(
+    () => flattenEnabledBankList(bankListQuery.data).questions,
+    [bankListQuery.data],
   );
 
   const createQuestionMutation = trpc.question.create.useMutation();
@@ -117,16 +124,14 @@ export default function NewInterviewPage() {
       });
 
       const picked = selectedPremadePayload(
-        enabledPremadeQuery.data?.questions,
+        enabledPremadeQuestions,
         selectedPremadeIds,
         includePremade,
       );
       if (picked?.length) {
         for (let i = 0; i < picked.length; i++) {
           const q = picked[i];
-          const full = enabledPremadeQuery.data?.questions?.find(
-            (bq) => bq.text === q.text,
-          );
+          const full = enabledPremadeQuestions.find((bq) => bq.text === q.text);
           await createQuestionMutation.mutateAsync({
             interviewId: interview.id,
             order: i,
@@ -503,6 +508,7 @@ export default function NewInterviewPage() {
                     </Select>
                   </div>
                   <PremadeQuestionPicker
+                    organizationId={bankOrgId}
                     interviewType={premadeInterviewType}
                     includePremade={includePremade}
                     onIncludeChange={setIncludePremade}
