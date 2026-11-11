@@ -31,14 +31,14 @@ ${jobDescription && resumeText ? "- When both are provided, focus on the interse
     : "";
 
   const premadeInstruction = (premadeQuestions && premadeQuestions.length > 0)
-    ? `\nPREMADE STANDARDIZED QUESTIONS (MANDATORY — EXACT WORDING):
+    ? `\nPREMADE STANDARDIZED QUESTIONS (MANDATORY) — EXACT WORDING:
 The recruiter has designated the following pre-approved standard questions. Copy each "text" field CHARACTER-FOR-CHARACTER into your output. Do NOT paraphrase, shorten, expand, translate, or polish them.
 ${premadeQuestions.map((q, idx) => `${idx + 1}. [Round: ${q.sectionName || "General"}] (${q.type || "OPEN_ENDED"}): "${q.text}"${q.description ? ` (Description: ${q.description})` : ""}${(q as { skipIf?: { reason?: string; answerContainsAny?: string[] } }).skipIf?.answerContainsAny?.length ? ` [skipIf answered about: ${(q as { skipIf: { answerContainsAny: string[] } }).skipIf.answerContainsAny.join(", ")}]` : ""}`).join("\n")}
 
 CRITICAL INSTRUCTIONS FOR PREMADE QUESTIONS:
 - Include EVERY premade question with the EXACT same "text" string (byte-identical to the quotes above).
 - Keep their question type. Copy description/options/starterCode/skipIf as given (including skipIf.answerContainsAny keywords).
-- DO NOT invent a reworded twin of any premade question.
+- DO NOT duplicate or invent a reworded twin of any premade question.
 - Generate additional COMPLEMENTARY questions for areas not already covered by the premade list.
 - Arrange in logical progression: warm-up/screening → technical → behavioral/HR, keeping premade texts untouched.\n`
     : "";
