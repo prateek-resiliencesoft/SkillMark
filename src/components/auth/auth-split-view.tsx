@@ -45,9 +45,11 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
     const q = new URLSearchParams();
     if (rawNext && nextUrl === rawNext) q.set("next", rawNext);
     if (addMode) q.set("add", "1");
+    if (prefillEmail) q.set("email", prefillEmail);
     const str = q.toString();
     return str ? `?${str}` : "";
   })();
+  const fromInvite = nextUrl.startsWith("/invite/");
 
   const { toast } = useToast();
   const { t } = useAppLocale();
@@ -98,6 +100,11 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
+  // Keep email in sync when arriving via invite / switch-account query params.
+  useEffect(() => {
+    if (prefillEmail) setEmail(prefillEmail);
+  }, [prefillEmail]);
+
   const supabase = createClient();
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -106,21 +113,25 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
     try {
       const { error } = await supabase.auth.signInWithPassword({
-        email,
+        email: email.trim(),
         password,
       });
 
       if (error) {
-        const errorDesc =
+        const invalidCreds =
           error.message?.toLowerCase().includes("invalid login credentials") ||
-          error.message?.toLowerCase().includes("invalid email or password")
-            ? "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
-            : error.message || "Unable to sign in. Please check your credentials.";
+          error.message?.toLowerCase().includes("invalid email or password");
+        const errorDesc = invalidCreds
+          ? fromInvite
+            ? "No account matches that email and password. Create an account with the invited email, then accept the invite."
+            : "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
+          : error.message || "Unable to sign in. Please check your credentials.";
         toast({
           title: "Sign In Failed",
           description: errorDesc,
           variant: "destructive",
         });
+        if (invalidCreds && fromInvite) switchTab("register");
         setLoading(false);
       } else {
         window.location.href = nextUrl;
@@ -144,7 +155,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
     try {
       const { error, data } = await supabase.auth.signUp({
-        email,
+        email: email.trim(),
         password,
         options: {
           data: {
@@ -304,8 +315,12 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                         {isLogin
                           ? addMode
                             ? "Sign in to add another account to this browser"
-                            : t("auth.signInSubtitle") || "Sign in to continue to your dashboard"
-                          : "Create your recruiter or admin account in seconds"}
+                            : fromInvite
+                              ? "Sign in with the invited email to accept"
+                              : t("auth.signInSubtitle") || "Sign in to continue to your dashboard"
+                          : fromInvite
+                            ? "Create an account with the invited email to join"
+                            : "Create your recruiter or admin account in seconds"}
                       </p>
                     </div>
 
@@ -351,7 +366,8 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             required
-                            className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary"
+                            readOnly={fromInvite && !!prefillEmail}
+                            className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary read-only:bg-muted/50"
                           />
                         </div>
                       </div>
@@ -369,7 +385,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required
-                            minLength={6}
+                            minLength={8}
                             className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary pr-10"
                           />
                           <button
