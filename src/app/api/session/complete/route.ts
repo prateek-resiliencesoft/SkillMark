@@ -8,6 +8,7 @@ import { checkRateLimit } from "@/lib/api-rate-limit";
 import { clientIp } from "@/server/integrations/applications";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { notifySessionCompleted } from "@/server/completion-notify";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/session/complete");
@@ -74,6 +75,7 @@ export async function POST(req: Request) {
       .eq("id", sessionId);
 
     log.info(`Session ${sessionId} completed via safety-net (${duration}s)`);
+    void notifySessionCompleted(supabaseAdmin, sessionId);
 
     return NextResponse.json({ ok: true });
   } catch {

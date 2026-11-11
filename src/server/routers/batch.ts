@@ -9,6 +9,7 @@ import { createLogger } from "@/lib/logger";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
 import { resolvePremadeQuestions } from "@/lib/auto-include-premade";
+import { completionNotifyMembersSchema } from "@/lib/completion-notify";
 import { questionSkipIfSchema } from "@/lib/question-conditions";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -53,6 +54,8 @@ const batchSettings = z.object({
     )
     .max(50)
     .optional(),
+  /** Team members to WhatsApp when any candidate in this batch finishes. */
+  completionNotifyMembers: completionNotifyMembersSchema.optional(),
 });
 export type BatchSettings = z.infer<typeof batchSettings>;
 
@@ -278,6 +281,7 @@ export const batchRouter = router({
           userId: ctx.user.id,
           requireInvite: true,
           batchId: batch.id,
+          completionNotifyMembers: settings.completionNotifyMembers ?? [],
         })
         .select("id, title")
         .single();
@@ -356,6 +360,7 @@ export const batchRouter = router({
         premadeQuestions: batchSettings.shape.premadeQuestions,
         roleDescription: z.string().max(4000).optional(),
         jobDescription: z.string().max(20_000).optional(),
+        completionNotifyMembers: completionNotifyMembersSchema.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -367,6 +372,9 @@ export const batchRouter = router({
         ...(input.premadeQuestions !== undefined ? { premadeQuestions: input.premadeQuestions } : {}),
         ...(input.roleDescription !== undefined ? { roleDescription: input.roleDescription } : {}),
         ...(input.jobDescription !== undefined ? { jobDescription: input.jobDescription } : {}),
+        ...(input.completionNotifyMembers !== undefined
+          ? { completionNotifyMembers: input.completionNotifyMembers }
+          : {}),
       };
       const { error } = await ctx.supabase
         .from("interview_batches")

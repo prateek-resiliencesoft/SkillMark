@@ -114,6 +114,8 @@ export type VoiceSaveOps = {
     error: (...args: unknown[]) => void;
   };
   now: () => Date;
+  /** Optional hook after status → COMPLETED (e.g. WhatsApp team notify). */
+  onCompleted?: (sessionId: string) => void;
 };
 
 export async function handleVoiceSave(
@@ -152,6 +154,8 @@ export async function handleVoiceSave(
         });
 
         ops.log.info(`Session ${sessionId} marked COMPLETED (${duration}s)`);
+
+        ops.onCompleted?.(sessionId);
 
         const interview = session.interview;
         ops

@@ -109,9 +109,46 @@ This link is personal to you. Please open it on a laptop using Chrome or Edge, w
   ],
 };
 
+/**
+ * Meta UTILITY template for team alerts when a candidate finishes.
+ * {{1}} recipient name, {{2}} candidate name, {{3}} interview title,
+ * {{4}} organization, {{5}} report deep-link.
+ */
+export const WHATSAPP_COMPLETION_META_TEMPLATE = {
+  name: "interview_completed",
+  category: "UTILITY",
+  language: "en",
+  // Meta rejects bodies that end on a variable — keep a fixed sentence after {{5}}.
+  body: `Hi {{1}}, {{2}} just completed the interview for {{3}} at {{4}}.
+
+Open the report here:
+{{5}}
+
+Thanks — Resiliencesoft Interview AI.`,
+  example: [
+    "Alex Chen",
+    "Priya Sharma",
+    "Senior React Developer",
+    "Acme Corp",
+    "https://app.example.com/interviews/abc/results?session=xyz",
+  ],
+};
+
+export interface CompletionTemplateVars {
+  recipientName: string;
+  candidateName: string;
+  interviewTitle: string;
+  organization: string;
+  link: string;
+}
+
 export function whatsappBodyVariables(v: TemplateVars): string[] {
   const notice = v.scheduleNotice ?? formatScheduleNotice(v.scheduledAt, v.expiresAt);
   return [v.name, v.interviewTitle, v.organization, notice, v.link];
+}
+
+export function whatsappCompletionBodyVariables(v: CompletionTemplateVars): string[] {
+  return [v.recipientName, v.candidateName, v.interviewTitle, v.organization, v.link];
 }
 
 export function renderWhatsappPreview(v: TemplateVars, customBody?: string): string {

@@ -6,7 +6,10 @@ import {
   formatScheduleNotice,
   mergeTemplates,
   renderTemplate,
+  WHATSAPP_COMPLETION_META_TEMPLATE,
   whatsappBodyVariables,
+  whatsappCompletionBodyVariables,
+  type CompletionTemplateVars,
   type MessageTemplates,
   type TemplateVars,
 } from "@/lib/messaging/templates";
@@ -22,7 +25,12 @@ export interface DeliveryConfig {
   defaultWhatsappProvider: "resilio";
   resend: { apiKey: string; from: string; replyTo: string | null } | null;
   brevo: { apiKey: string; fromEmail: string; fromName: string | null; replyTo: string | null } | null;
-  resilio: { apiKey: string; baseUrl: string | null; templateName: string } | null;
+  resilio: {
+    apiKey: string;
+    baseUrl: string | null;
+    templateName: string;
+    completionTemplateName: string;
+  } | null;
   outboundWebhook: { url: string; secret: string | null; events: string[] } | null;
   inboundWebhookSecret: string | null;
 }
@@ -56,7 +64,14 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
         : null,
     resilio:
       resilioKey && row?.resilioTemplateName
-        ? { apiKey: resilioKey, baseUrl: row.resilioBaseUrl ?? null, templateName: row.resilioTemplateName }
+        ? {
+            apiKey: resilioKey,
+            baseUrl: row.resilioBaseUrl ?? null,
+            templateName: row.resilioTemplateName,
+            completionTemplateName:
+              (row.resilioCompletionTemplateName as string | null)?.trim() ||
+              WHATSAPP_COMPLETION_META_TEMPLATE.name,
+          }
         : null,
     outboundWebhook: row?.outboundWebhookUrl
       ? {
@@ -130,6 +145,25 @@ export async function deliverWhatsapp(cfg: DeliveryConfig, to: string | null, va
     to,
     templateName: cfg.resilio.templateName,
     bodyVariables: whatsappBodyVariables(vars),
+  });
+  return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "resilio" };
+}
+
+/** Completion alert — uses the separate Meta `interview_completed` template. */
+export async function deliverCompletionWhatsapp(
+  cfg: DeliveryConfig,
+  to: string | null,
+  vars: CompletionTemplateVars,
+) {
+  if (!cfg.resilio) return { status: "failed" as ChannelOutcome, error: "ResilioHub WhatsApp is not configured" };
+  if (!to) return { status: "skipped" as ChannelOutcome, error: "No phone number" };
+  if (!to.startsWith("+")) return { status: "skipped" as ChannelOutcome, error: "Phone needs a country code (e.g. +91…)" };
+  const r = await sendResilioTemplate({
+    apiKey: cfg.resilio.apiKey,
+    baseUrl: cfg.resilio.baseUrl,
+    to,
+    templateName: cfg.resilio.completionTemplateName,
+    bodyVariables: whatsappCompletionBodyVariables(vars),
   });
   return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "resilio" };
 }

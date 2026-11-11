@@ -357,6 +357,16 @@ export const interviewRouter = router({
         llmModel: z.string().optional(),
         antiCheatingEnabled: z.boolean().default(false),
         headMovementDetectionEnabled: z.boolean().default(false),
+        completionNotifyMembers: z
+          .array(
+            z.object({
+              userId: z.string().uuid(),
+              phone: z.string().min(8).max(20),
+              name: z.string().max(120).optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -601,6 +611,16 @@ export const interviewRouter = router({
         invitedEmails: z.array(z.string().email()).optional(),
         antiCheatingEnabled: z.boolean().optional(),
         headMovementDetectionEnabled: z.boolean().optional(),
+        completionNotifyMembers: z
+          .array(
+            z.object({
+              userId: z.string().uuid(),
+              phone: z.string().min(8).max(20),
+              name: z.string().max(120).optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

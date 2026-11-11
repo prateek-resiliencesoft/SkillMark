@@ -2,10 +2,16 @@
 
 import { BulkCvGenerator, FlagsPopover } from "@/components/batch/bulk-cv-generator";
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
+import {
+  CompletionNotifyPicker,
+  readyCompletionNotifyMembers,
+} from "@/components/interview/completion-notify-picker";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { CompletionNotifyMember } from "@/lib/completion-notify";
+import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -52,7 +58,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Status = "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ABANDONED" | "DISQUALIFIED";
 const STATUS_META: Record<Status, { label: string; className: string }> = {
@@ -79,6 +85,24 @@ export default function BatchDetailPage() {
   const [sendTo, setSendTo] = useState<string[] | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string; name: string; email: string; phone: string } | null>(null);
+  const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>([]);
+
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const settings = batch.data?.settings as any;
+    if (settings) {
+      setNotifyMembers(parseCompletionNotifyMembers(settings.completionNotifyMembers));
+    }
+  }, [batch.data?.settings]);
+
+  const updateSettings = trpc.batch.updateSettings.useMutation({
+    onSuccess: () => {
+      void utils.batch.getById.invalidate({ id });
+      toast({ title: "Completion alerts saved" });
+    },
+    onError: (e) =>
+      toast({ title: "Could not save alerts", description: e.message, variant: "destructive" }),
+  });
 
   const updateContact = trpc.batch.updateContact.useMutation({
     onSuccess: () => {
@@ -305,6 +329,33 @@ export default function BatchDetailPage() {
           );
         })}
       </div>
+
+      {b.canEdit && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Completion alerts</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <CompletionNotifyPicker
+              organizationId={currentOrg?.id ?? ""}
+              value={notifyMembers}
+              onChange={setNotifyMembers}
+            />
+            <Button
+              size="sm"
+              disabled={updateSettings.isLoading}
+              onClick={() =>
+                updateSettings.mutate({
+                  batchId: id,
+                  completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
+                })
+              }
+            >
+              Save alert recipients
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="space-y-4 p-4">
