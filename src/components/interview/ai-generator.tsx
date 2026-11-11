@@ -1,6 +1,10 @@
 "use client";
 
 import { QUESTION_TYPE_STYLES, QuestionCard } from "@/components/interview/question-card";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { AiButton } from "@/components/ui/ai-button";
 import {
@@ -270,18 +274,16 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>(false);
   const [includePremade, setIncludePremade] = useState(true);
-  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(new Set());
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
+  const [premadeInterviewType, setPremadeInterviewType] = useState<
+    "technical" | "behavioral" | "mixed" | "screening"
+  >("mixed");
 
   const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
     { organizationId: currentOrg?.id ?? "" },
     { enabled: !!currentOrg?.id, staleTime: 30_000 },
   );
 
-  useEffect(() => {
-    if (enabledPremadeQuery.data?.sections) {
-      setSelectedSectionIds(new Set(enabledPremadeQuery.data.sections.map((s) => s.id)));
-    }
-  }, [enabledPremadeQuery.data?.sections]);
   const [generating, setGenerating] = useState(false);
   const [streamPhase, setStreamPhase] = useState<"idle" | "thinking" | "writing">("idle");
   const [thinkingText, setThinkingText] = useState("");
@@ -452,11 +454,11 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setFeedback("");
 
     try {
-      const premadeToInclude = includePremade
-        ? (enabledPremadeQuery.data?.questions ?? []).filter((q) =>
-            selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId),
-          )
-        : [];
+      const premadeToInclude = selectedPremadePayload(
+        enabledPremadeQuery.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+        selectedPremadeIds,
+        includePremade,
+      );
 
       const response = await fetch("/api/ai/generate", {
         method: "POST",
@@ -469,7 +471,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
           projectId,
           ...(jdText && { jobDescription: jdText }),
           ...(resumeText && { resumeText }),
-          ...(premadeToInclude.length > 0 && { premadeQuestions: premadeToInclude }),
+          ...(premadeToInclude?.length ? { premadeQuestions: premadeToInclude } : {}),
         }),
       });
 
@@ -587,6 +589,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
             options: q.options ?? undefined,
             followUpPrompts: q.followUpPrompts ?? undefined,
             starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : undefined,
+            skipIf: q.skipIf ?? undefined,
           })
         )
       );
@@ -1093,68 +1096,34 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
             </div>
           </div>
 
-          {/* Premade Section Questions */}
           <div className="space-y-2">
-            <Label className="font-semibold text-sm">Premade Section Questions</Label>
-            <div className="rounded-xl border border-border/80 bg-card/60 p-3 sm:p-4 space-y-3">
-              <div className="flex items-start justify-between gap-3 sm:items-center">
-                <div className="min-w-0 space-y-0.5">
-                  <p className="text-sm font-semibold text-foreground">
-                    Include Standard Round Questions
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Automatically pulls enabled questions from your Question Bank (Screening, Technical, HR) and instructs the AI to generate complementary questions without duplicates.
-                  </p>
-                </div>
-                <Switch
-                  className="mt-0.5 shrink-0 sm:mt-0"
-                  checked={includePremade}
-                  onCheckedChange={setIncludePremade}
-                />
-              </div>
-
-              {includePremade && (enabledPremadeQuery.data?.sections?.length ?? 0) > 0 && (
-                <div className="pt-2 border-t border-border/50 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Rounds To Include ({enabledPremadeQuery.data?.questions.length ?? 0} questions active):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {(enabledPremadeQuery.data?.sections ?? []).map((sec) => {
-                      const isSelected = selectedSectionIds.has(sec.id);
-                      const count = (enabledPremadeQuery.data?.questions ?? []).filter(
-                        (q) => q.sectionId === sec.id,
-                      ).length;
-                      return (
-                        <button
-                          key={sec.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedSectionIds((prev) => {
-                              const next = new Set(prev);
-                              if (isSelected) next.delete(sec.id);
-                              else next.add(sec.id);
-                              return next;
-                            });
-                          }}
-                          className={cn(
-                            "flex max-w-full min-h-[36px] items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer",
-                            isSelected
-                              ? "bg-primary/10 border-primary text-primary"
-                              : "bg-muted/40 border-border text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
-                          <span className="truncate">{sec.name}</span>
-                          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-background/80 border">
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label className="text-sm font-semibold">Premade section questions</Label>
+              <Select
+                value={premadeInterviewType}
+                onValueChange={(v) =>
+                  setPremadeInterviewType(v as typeof premadeInterviewType)
+                }
+              >
+                <SelectTrigger className="h-8 w-[160px] text-xs">
+                  <SelectValue placeholder="Interview type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mixed">Mixed (all)</SelectItem>
+                  <SelectItem value="screening">Screening</SelectItem>
+                  <SelectItem value="technical">Technical</SelectItem>
+                  <SelectItem value="behavioral">Behavioral</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+            <PremadeQuestionPicker
+              interviewType={premadeInterviewType}
+              includePremade={includePremade}
+              onIncludeChange={setIncludePremade}
+              selectedIds={selectedPremadeIds}
+              onSelectedChange={setSelectedPremadeIds}
+              compact
+            />
           </div>
 
           <AiButton
@@ -1678,6 +1647,7 @@ function ImportDialog({
       isRequired: true,
       options: q.options as GeneratedQuestion["options"],
       starterCode: q.starterCode as GeneratedQuestion["starterCode"],
+      skipIf: (q as { skipIf?: GeneratedQuestion["skipIf"] }).skipIf ?? null,
     }));
     onImport(mapped);
     setSelectedIds(new Set());

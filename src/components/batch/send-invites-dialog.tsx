@@ -41,6 +41,12 @@ export interface Recipient {
   phone: string | null;
   scheduledAt?: string | null;
   expiresAt?: string | null;
+  emailStatus?: string | null;
+  whatsappStatus?: string | null;
+}
+
+function isUnsent(r: Recipient): boolean {
+  return r.emailStatus !== "sent" && r.whatsappStatus !== "sent";
 }
 
 const CHANNELS: { value: SendChannel; label: string; icon: React.ElementType }[] = [
@@ -97,13 +103,14 @@ export function SendInvitesDialog({
   onOpenChange: (open: boolean) => void;
   batchId: string;
   organizationId: string | undefined;
-  /** Candidates to send to. The whole list is sent in one go. */
+  /** Candidates available in the dialog. User can select a subset before sending. */
   recipients: Recipient[];
   onSent?: () => void;
 }) {
   const { toast } = useToast();
   const [channel, setChannel] = useState<SendChannel>("both");
   const [onlyUnsent, setOnlyUnsent] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Global schedule configuration
   const [isScheduled, setIsScheduled] = useState(false);
@@ -114,6 +121,11 @@ export function SendInvitesDialog({
   // Per-candidate override configuration
   const [isPerCandidate, setIsPerCandidate] = useState(false);
   const [candidateOverrides, setCandidateOverrides] = useState<Record<string, CandidateScheduleState>>({});
+
+  const selectedRecipients = useMemo(
+    () => recipients.filter((r) => selectedIds.has(r.id)),
+    [recipients, selectedIds],
+  );
 
   const integration = trpc.integration.get.useQuery(
     { organizationId: organizationId ?? "" },
@@ -144,7 +156,7 @@ export function SendInvitesDialog({
     else if (!emailReady && whatsappReady) setChannel("whatsapp");
   }, [integration.data, emailReady, whatsappReady]);
 
-  // Set default scheduled date to upcoming Saturday or tomorrow 10:00 AM on initial open
+  // Set defaults + selection when dialog opens
   useEffect(() => {
     if (!open) return;
     const now = new Date();
@@ -158,6 +170,16 @@ export function SendInvitesDialog({
     // Default custom expiry to 7 days from target
     const expiryTarget = new Date(target.getTime() + 7 * 24 * 60 * 60 * 1000);
     setCustomExpiry(toLocalDatetimeString(expiryTarget));
+
+    // Prefer unsent when statuses known; else select all
+    const hasStatusInfo = recipients.some((r) => r.emailStatus != null || r.whatsappStatus != null);
+    const unsent = recipients.filter(isUnsent);
+    const initial =
+      hasStatusInfo && unsent.length > 0 && unsent.length < recipients.length
+        ? unsent.map((r) => r.id)
+        : recipients.map((r) => r.id);
+    setSelectedIds(new Set(initial));
+    setOnlyUnsent(true);
 
     // Prefill per-candidate state from existing records if any
     const initialOverrides: Record<string, CandidateScheduleState> = {};
@@ -191,9 +213,11 @@ export function SendInvitesDialog({
 
   const wantsEmail = channel !== "whatsapp";
   const wantsWhatsapp = channel !== "email";
-  const missingEmail = wantsEmail ? recipients.filter((r) => !r.email).length : 0;
-  const missingPhone = wantsWhatsapp ? recipients.filter((r) => !r.phone?.startsWith("+")).length : 0;
+  const missingEmail = wantsEmail ? selectedRecipients.filter((r) => !r.email).length : 0;
+  const missingPhone = wantsWhatsapp ? selectedRecipients.filter((r) => !r.phone?.startsWith("+")).length : 0;
   const blocked = (wantsEmail && !emailReady) || (wantsWhatsapp && !whatsappReady);
+  const unsentCount = recipients.filter(isUnsent).length;
+  const allSelected = recipients.length > 0 && selectedRecipients.length === recipients.length;
 
   // Calculate default preview notice
   const defaultScheduledIso = isScheduled && scheduledDate ? new Date(scheduledDate).toISOString() : null;
@@ -204,8 +228,8 @@ export function SendInvitesDialog({
   );
 
   const applyBatchScheduleToAll = () => {
-    const updated: Record<string, CandidateScheduleState> = {};
-    for (const r of recipients) {
+    const updated: Record<string, CandidateScheduleState> = { ...candidateOverrides };
+    for (const r of selectedRecipients) {
       updated[r.id] = {
         isScheduled,
         scheduledDate,
@@ -214,7 +238,16 @@ export function SendInvitesDialog({
       };
     }
     setCandidateOverrides(updated);
-    toast({ title: "Schedule applied to all candidates" });
+    toast({ title: "Schedule applied to selected candidates" });
+  };
+
+  const toggleSelected = (id: string, on: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   };
 
   const updateCandidate = (id: string, patch: Partial<CandidateScheduleState>) => {
@@ -233,10 +266,15 @@ export function SendInvitesDialog({
   };
 
   const handleSend = () => {
+    if (!selectedRecipients.length) {
+      toast({ title: "Select at least one candidate", variant: "destructive" });
+      return;
+    }
+
     let candidateSchedulesPayload: { candidateId: string; scheduledAt?: string | null; expiresAt?: string | null }[] | undefined;
 
     if (isPerCandidate) {
-      candidateSchedulesPayload = recipients.map((r) => {
+      candidateSchedulesPayload = selectedRecipients.map((r) => {
         const state = candidateOverrides[r.id];
         const sAt = state?.isScheduled && state.scheduledDate ? new Date(state.scheduledDate).toISOString() : null;
         const eAt = state ? computeExpiresAt(state.isScheduled ? state.scheduledDate : null, state.validityPreset, state.customExpiry) : null;
@@ -253,10 +291,10 @@ export function SendInvitesDialog({
 
     send.mutate({
       batchId,
-      candidateIds: recipients.map((r) => r.id),
+      candidateIds: selectedRecipients.map((r) => r.id),
       channels: { email: wantsEmail, whatsapp: wantsWhatsapp },
       emailProvider: wantsEmail ? effectiveEmailProvider : undefined,
-      onlyUnsent: recipients.length > 1 && onlyUnsent,
+      onlyUnsent: selectedRecipients.length > 1 && onlyUnsent,
       defaultScheduledAt: defaultScheduledIso,
       defaultExpiresAt: defaultExpiresIso,
       candidateSchedules: candidateSchedulesPayload,
@@ -268,14 +306,105 @@ export function SendInvitesDialog({
       <DialogContent className="max-w-xl max-h-[90vh] flex flex-col p-6">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <span>Send interview invite{recipients.length === 1 ? ` to ${recipients[0].name}` : `s (${recipients.length} candidates)`}</span>
+            <span>
+              Send interview invite
+              {recipients.length === 1
+                ? ` to ${recipients[0].name}`
+                : selectedRecipients.length
+                  ? `s (${selectedRecipients.length} of ${recipients.length} selected)`
+                  : `s (${recipients.length} candidates)`}
+            </span>
           </DialogTitle>
           <DialogDescription>
-            Configure delivery channels, scheduled interview date/time, and invite link validity window.
+            Choose recipients, delivery channels, schedule, and invite link validity.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto pr-1 space-y-5 py-2">
+          {recipients.length > 1 && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Recipients
+                </Label>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setSelectedIds(new Set(recipients.map((r) => r.id)))}
+                  >
+                    Select all
+                  </Button>
+                  {unsentCount > 0 && unsentCount < recipients.length && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setSelectedIds(new Set(recipients.filter(isUnsent).map((r) => r.id)))}
+                    >
+                      Unsent only ({unsentCount})
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setSelectedIds(new Set())}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <ScrollArea className="h-40 rounded-md border">
+                <div className="space-y-1 p-2">
+                  {recipients.map((r) => {
+                    const checked = selectedIds.has(r.id);
+                    const sent = !isUnsent(r);
+                    return (
+                      <label
+                        key={r.id}
+                        className={cn(
+                          "flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60",
+                          checked && "bg-muted/40",
+                        )}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) => toggleSelected(r.id, v === true)}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="font-medium">{r.name}</span>
+                          <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                            {[r.email, r.phone].filter(Boolean).join(" · ") || "no contact"}
+                          </span>
+                        </span>
+                        <span
+                          className={cn(
+                            "mt-0.5 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                            sent
+                              ? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300"
+                              : "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {sent ? "Sent" : "Not sent"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+              <p className="text-xs text-muted-foreground">
+                {selectedRecipients.length} selected
+                {!allSelected && recipients.length > 0 ? ` · ${recipients.length - selectedRecipients.length} skipped` : ""}
+              </p>
+            </div>
+          )}
+
           {/* Channel selector */}
           <div className="space-y-2">
             <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Delivery Channel</Label>
@@ -376,7 +505,7 @@ export function SendInvitesDialog({
                 <Calendar className="h-4 w-4 text-primary" />
                 <span className="text-sm font-semibold">Interview Schedule & Link Validity</span>
               </div>
-              {recipients.length > 1 && (
+              {selectedRecipients.length > 1 && (
                 <div className="flex items-center gap-2">
                   <Label htmlFor="per-candidate-toggle" className="text-xs text-muted-foreground cursor-pointer">
                     Customize per candidate
@@ -488,7 +617,7 @@ export function SendInvitesDialog({
 
                 <ScrollArea className="h-64 rounded-md border p-3">
                   <div className="space-y-4">
-                    {recipients.map((c) => {
+                    {selectedRecipients.map((c) => {
                       const state = candidateOverrides[c.id] ?? {
                         isScheduled: false,
                         scheduledDate,
@@ -574,7 +703,7 @@ export function SendInvitesDialog({
             </ul>
           )}
 
-          {recipients.length > 1 && (
+          {selectedRecipients.length > 1 && (
             <div className="flex items-center gap-2">
               <Checkbox id="only-unsent" checked={onlyUnsent} onCheckedChange={(v) => setOnlyUnsent(v === true)} />
               <Label htmlFor="only-unsent" className="text-sm font-normal">
@@ -589,11 +718,13 @@ export function SendInvitesDialog({
             Cancel
           </Button>
           <Button
-            disabled={blocked || send.isLoading || recipients.length === 0}
+            disabled={blocked || send.isLoading || selectedRecipients.length === 0}
             onClick={handleSend}
           >
             {send.isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Send Invites
+            {selectedRecipients.length === 1
+              ? "Send Invite"
+              : `Send to ${selectedRecipients.length || 0}`}
           </Button>
         </DialogFooter>
       </DialogContent>

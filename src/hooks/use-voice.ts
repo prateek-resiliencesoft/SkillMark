@@ -46,6 +46,7 @@ export interface InterviewContext {
     options?: any;
     starterCode?: { language: string; code: string } | null;
     order: number;
+    skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
   }>;
 }
 
@@ -82,6 +83,10 @@ interface TrackedMessage {
   role: "user" | "assistant";
   content: string;
   source?: "voice" | "chat";
+  /** ISO speak-time from the client (not server insert time). */
+  timestamp: string;
+  /** Monotonic sequence for stable ordering within a session. */
+  seq: number;
 }
 
 /**
@@ -139,6 +144,9 @@ export function useVoice({
   );
   const isListeningRef = useRef(false);
   const trackedMessagesRef = useRef<TrackedMessage[]>([]);
+  const msgSeqRef = useRef(0);
+  /** Serialize progress saves so earlier questions never insert after later ones. */
+  const saveChainRef = useRef(Promise.resolve());
   const micHoldUntilRef = useRef(0);
   const bargeInFramesRef = useRef(0);
 
@@ -403,6 +411,8 @@ export function useVoice({
 
       // Reset tracked messages
       trackedMessagesRef.current = [];
+      msgSeqRef.current = 0;
+      saveChainRef.current = Promise.resolve();
 
       relayConnectorRef.current?.close();
 
@@ -499,6 +509,18 @@ export function useVoice({
     []
   );
 
+  const trackMessage = useCallback(
+    (msg: Omit<TrackedMessage, "timestamp" | "seq">) => {
+      msgSeqRef.current += 1;
+      trackedMessagesRef.current.push({
+        ...msg,
+        timestamp: new Date().toISOString(),
+        seq: msgSeqRef.current,
+      });
+    },
+    [],
+  );
+
   /** Save accumulated messages to the server (incremental, non-completing).
    *  Called on each question transition so progress is not lost. */
   const saveProgress = useCallback(
@@ -507,7 +529,7 @@ export function useVoice({
       // before this is called by the question_change handler).
       const pendingAsrText = asrBufferRef.current.trim();
       if (pendingAsrText) {
-        trackedMessagesRef.current.push({ role: "user", content: pendingAsrText });
+        trackMessage({ role: "user", content: pendingAsrText });
         asrBufferRef.current = "";
       }
 
@@ -516,26 +538,39 @@ export function useVoice({
 
       if (messages.length === 0 && typeof currentQuestionIndex !== "number") return;
 
-      try {
-        await fetch("/api/voice/save", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, messages, currentQuestionIndex }),
-        });
-        log.info(
-          `Progress saved: ${messages.length} msgs, Q${currentQuestionIndex + 1}`
-        );
-      } catch (err) {
-        log.error("Failed to save progress:", err);
-        reportSessionError(sessionId, {
-          category: "client",
-          severity: "warning",
-          message: `Failed to save voice progress: ${err instanceof Error ? err.message : String(err)}`,
-          context: { stage: "voice_save", questionIndex: currentQuestionIndex },
-        });
-      }
+      const run = async () => {
+        try {
+          const res = await fetch("/api/voice/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, messages, currentQuestionIndex }),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          log.info(
+            `Progress saved: ${messages.length} msgs, Q${currentQuestionIndex + 1}`,
+          );
+        } catch (err) {
+          // Put unsaved messages back so final complete / retry can still persist them
+          trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
+          log.error("Failed to save progress:", err);
+          reportSessionError(sessionId, {
+            category: "client",
+            severity: "warning",
+            message: `Failed to save voice progress: ${err instanceof Error ? err.message : String(err)}`,
+            context: { stage: "voice_save", questionIndex: currentQuestionIndex },
+          });
+        }
+      };
+
+      // Queue saves so question N never inserts after N+1 on the wire
+      const next = saveChainRef.current.then(run, run);
+      saveChainRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      await next;
     },
-    [sessionId]
+    [sessionId, trackMessage],
   );
 
   /** Handle JSON messages from relay */
@@ -590,10 +625,7 @@ export function useVoice({
             } else {
               lastFinalUserTranscriptRef.current = { text: normalized, at: Date.now() };
               onTranscript?.(finalText, true);
-              trackedMessagesRef.current.push({
-                role: "user",
-                content: finalText,
-              });
+              trackMessage({ role: "user", content: finalText });
               log.debug(
                 `Tracked USER: "${finalText.slice(0, 60)}..."`
               );
@@ -664,10 +696,7 @@ export function useVoice({
             } else {
               lastOnAIResponseRef.current = fullResponse;
               onAIResponse?.(fullResponse);
-              trackedMessagesRef.current.push({
-                role: "assistant",
-                content: fullResponse,
-              });
+              trackMessage({ role: "assistant", content: fullResponse });
               log.debug(
                 `Tracked ASSISTANT (${msg.type}): "${fullResponse.slice(0, 60)}..."`
               );
@@ -682,10 +711,7 @@ export function useVoice({
             const text = chatBufferRef.current.trim();
             lastOnAIResponseRef.current = text;
             onAIResponse?.(text);
-            trackedMessagesRef.current.push({
-              role: "assistant",
-              content: text,
-            });
+            trackMessage({ role: "assistant", content: text });
           }
           chatBufferRef.current = "";
           lastOnAIResponseRef.current = "";
@@ -792,7 +818,7 @@ export function useVoice({
           break;
       }
     },
-    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId]
+    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId, trackMessage]
   );
 
   const clearEndpointTimer = useCallback(() => {
@@ -1081,10 +1107,10 @@ export function useVoice({
       const connector = relayConnectorRef.current;
       if (!connector?.isReady) return;
 
-      trackedMessagesRef.current.push({ role: "user", content: trimmed, source: "chat" });
+      trackMessage({ role: "user", content: trimmed, source: "chat" });
       connector.sendJson({ type: "text_input", content: trimmed });
     },
-    [],
+    [trackMessage],
   );
 
   /** Send code editor content to the relay for agent context */
@@ -1101,30 +1127,35 @@ export function useVoice({
 
   /** Save remaining tracked messages and complete the session */
   const saveAndComplete = useCallback(async () => {
+    // Wait for any in-flight question progress saves first
+    try {
+      await saveChainRef.current;
+    } catch {
+      /* already logged in saveProgress */
+    }
+
     // Flush any pending buffers before saving
     const pendingAsrText = asrBufferRef.current.trim();
     if (pendingAsrText) {
-      trackedMessagesRef.current.push({ role: "user", content: pendingAsrText });
+      trackMessage({ role: "user", content: pendingAsrText });
       asrBufferRef.current = "";
     }
     const pendingChatText = chatBufferRef.current.trim();
     if (pendingChatText) {
-      trackedMessagesRef.current.push({
-        role: "assistant",
-        content: pendingChatText,
-      });
+      trackMessage({ role: "assistant", content: pendingChatText });
       chatBufferRef.current = "";
     }
 
-    const messages = trackedMessagesRef.current;
+    const messages = [...trackedMessagesRef.current];
+    trackedMessagesRef.current = [];
     if (messages.length === 0 && !sessionId) return;
 
     log.info(
-      `Saving ${messages.length} remaining messages and completing session`
+      `Saving ${messages.length} remaining messages and completing session`,
     );
 
     try {
-      await fetch("/api/voice/save", {
+      const res = await fetch("/api/voice/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1133,10 +1164,12 @@ export function useVoice({
           complete: true,
         }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
+      trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
       log.error("Failed to save voice data:", err);
     }
-  }, [sessionId]);
+  }, [sessionId, trackMessage]);
 
   /** Disconnect, save messages, and clean up everything */
   const disconnect = useCallback(async () => {

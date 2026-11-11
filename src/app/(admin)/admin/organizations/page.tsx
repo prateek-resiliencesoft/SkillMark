@@ -19,13 +19,6 @@ import Link from "next/link";
 import { useDeferredValue, useState } from "react";
 
 
-const PLAN_OPTIONS = [
-  { value: "FREE", label: "Free" },
-  { value: "PRO", label: "Pro" },
-  { value: "ENTERPRISE", label: "Enterprise" },
-  { value: "SELF_HOSTED", label: "Self-hosted" },
-] as const;
-
 export default function AdminOrganizationsPage() {
   const { toast } = useToast();
   const utils = trpc.useUtils();
@@ -39,6 +32,14 @@ export default function AdminOrganizationsPage() {
     name: string;
     paused: boolean;
   } | null>(null);
+
+  const settings = trpc.platform.getSettings.useQuery(undefined, {
+    staleTime: 30_000,
+  });
+  const planOptions = (settings.data?.planCatalog ?? []).map((p) => ({
+    value: p.id,
+    label: p.name,
+  }));
 
   const list = trpc.platform.listOrganizations.useQuery(
     {
@@ -192,11 +193,11 @@ export default function AdminOrganizationsPage() {
                       <>
                         <Select
                           value={org.plan}
-                          disabled={busy}
+                          disabled={busy || planOptions.length === 0}
                           onValueChange={(plan) =>
                             setPlan.mutate({
                               id: org.id,
-                              plan: plan as (typeof PLAN_OPTIONS)[number]["value"],
+                              plan,
                             })
                           }
                         >
@@ -204,7 +205,7 @@ export default function AdminOrganizationsPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {PLAN_OPTIONS.map((p) => (
+                            {planOptions.map((p) => (
                               <SelectItem key={p.value} value={p.value}>
                                 {p.label}
                               </SelectItem>

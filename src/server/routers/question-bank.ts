@@ -314,6 +314,13 @@ export const questionBankRouter = router({
           .nullable()
           .optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: z
+          .object({
+            answerContainsAny: z.array(z.string()).max(20).optional(),
+            reason: z.string().max(200).optional(),
+          })
+          .nullable()
+          .optional(),
         isEnabled: z.boolean().default(true),
       }),
     )
@@ -347,6 +354,7 @@ export const questionBankRouter = router({
           options: input.options ?? null,
           starterCode: input.starterCode ?? null,
           followUpPrompts: input.followUpPrompts ?? null,
+          skipIf: input.skipIf ?? null,
           order: nextOrder,
           isEnabled: input.isEnabled,
         })
@@ -372,6 +380,13 @@ export const questionBankRouter = router({
         options: z.any().optional(),
         starterCode: z.any().optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: z
+          .object({
+            answerContainsAny: z.array(z.string()).max(20).optional(),
+            reason: z.string().max(200).optional(),
+          })
+          .nullable()
+          .optional(),
         isEnabled: z.boolean().optional(),
         order: z.number().optional(),
         sectionId: z.string().optional(),
@@ -512,18 +527,31 @@ export const questionBankRouter = router({
         secQuery = secQuery.in("id", input.sectionIds);
       }
 
-      const { data: sections } = await secQuery;
+      const { data: sections, error: secErr } = await secQuery;
+      if (secErr) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: secErr.message,
+        });
+      }
       if (!sections || sections.length === 0) {
         return { sections: [], questions: [] };
       }
 
       const activeSecIds = sections.map((s) => s.id);
-      const { data: items } = await ctx.supabase
+      const { data: items, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
         .select("*")
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
+
+      if (itemsErr) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: itemsErr.message,
+        });
+      }
 
       const secMap = new Map(sections.map((s) => [s.id, s.name]));
 
@@ -538,3 +566,4 @@ export const questionBankRouter = router({
       };
     }),
 });
+

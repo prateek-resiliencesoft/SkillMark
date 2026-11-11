@@ -14,6 +14,11 @@ export function buildInterviewerPrompt(ctx: InterviewContext): LLMMessage[] {
     .map((q, i) => {
       let line = `${i + 1}. [${q.type}] ${q.text}`;
       if (q.description) line += ` (${q.description})`;
+      const skipIf = q.skipIf as { answerContainsAny?: string[]; reason?: string } | null;
+      if (skipIf?.answerContainsAny?.length) {
+        line += ` | SKIP IF prior answers already cover: ${skipIf.answerContainsAny.join(", ")}`;
+        if (skipIf.reason) line += ` (${skipIf.reason})`;
+      }
       const opts = q.options as { options: string[]; allowMultiple?: boolean } | null;
       const qType = q.type as string;
       if ((qType === "SINGLE_CHOICE" || qType === "MULTIPLE_CHOICE") && opts?.options?.length) {
@@ -45,6 +50,8 @@ YOUR ROLE:
 4. Maintain a ${interview.aiTone.toLowerCase()} but natural conversational style
 5. Never ask multiple questions at once
 6. Keep track of what has been discussed to avoid repetition
+7. When asking a SCRIPT question, speak its text VERBATIM — do not paraphrase, soften, or reword the scripted question text
+8. If a script question has a skipIf note and the candidate already covered those topics earlier (e.g. in their intro), SKIP it silently and move to the next script question (still emit [NEXT_QUESTION] when advancing)
 
 FOLLOW-UP STRATEGY (${interview.followUpDepth} depth):
 ${interview.followUpDepth === "LIGHT" ? "- Only ask scripted questions, no follow-ups" : ""}
@@ -53,12 +60,13 @@ ${interview.followUpDepth === "DEEP" ? "- Probe deeply until you feel the topic 
 
 CONVERSATION FLOW:
 1. If this is the start, introduce yourself warmly and explain the interview purpose
-2. Ask the current question from the script
+2. Ask the CURRENT QUESTION text EXACTLY as written in the script (verbatim)
 3. After each response:
    - Acknowledge what they shared (1 sentence)
    - If follow-up depth allows, ask 1 probing question OR move to next script question
-4. After all script questions, ask: "Is there anything else you'd like to add?"
-5. Thank them sincerely and signal the interview is complete
+4. Before asking the next script question, check its SKIP IF note — if already answered in prior responses, skip it
+5. After all script questions, ask: "Is there anything else you'd like to add?"
+6. Thank them sincerely and signal the interview is complete
 
 RETURNING TO PREVIOUS QUESTIONS:
 - The participant may request to go back to a previous question to add more details

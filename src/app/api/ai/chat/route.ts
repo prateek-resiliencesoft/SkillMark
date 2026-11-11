@@ -3,6 +3,7 @@ import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
 import { resolveProvider } from "@/lib/ai/registry";
 import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
+import { nextAskableQuestionIndex } from "@/lib/question-conditions";
 import { recordAiCallErrors } from "@/lib/session-error-log-server";
 import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -104,10 +105,21 @@ export async function POST(req: Request) {
       wordCount: cleanContent.split(/\s+/).length,
     });
 
+    let nextQuestionIndex: number | undefined;
     if (questionAdvanced) {
-      const nextIndex = (currentQuestionIndex ?? 0) + 1;
-      const questions = (interview.questions ?? []) as { id: string }[];
-      const nextQuestion = questions[nextIndex];
+      const questions = (interview.questions ?? []) as {
+        id: string;
+        skipIf?: unknown;
+      }[];
+      const priorUser = (messages as { role: string; content: string }[])
+        .filter((m) => m.role === "user")
+        .map((m) => m.content);
+      nextQuestionIndex = nextAskableQuestionIndex(
+        questions,
+        (currentQuestionIndex ?? 0) + 1,
+        priorUser,
+      );
+      const nextQuestion = questions[nextQuestionIndex];
       if (nextQuestion) {
         await supabaseAdmin
           .from("sessions")
@@ -120,6 +132,7 @@ export async function POST(req: Request) {
       content: cleanContent,
       questionAdvanced,
       isComplete,
+      nextQuestionIndex,
     });
   } catch (error) {
     log.error("Chat AI error:", error);

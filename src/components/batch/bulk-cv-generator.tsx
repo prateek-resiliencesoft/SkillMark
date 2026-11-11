@@ -1,6 +1,10 @@
 "use client";
 
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +30,6 @@ import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
-  Check,
   CheckCircle2,
   Download,
   Eye,
@@ -95,14 +98,31 @@ const STATUS_LABEL: Record<RowStatus, string> = {
   generate_error: "Generation failed",
 };
 
-export function BulkCvGenerator({ projectId }: { projectId?: string }) {
+export function BulkCvGenerator({
+  projectId,
+  existingBatchId,
+  existingBatchName,
+  compact,
+  onFinished,
+}: {
+  projectId?: string;
+  /** Add CVs into this batch instead of creating a new one. */
+  existingBatchId?: string;
+  existingBatchName?: string;
+  /** Hide the shared batch-settings card (for add-to-existing dialogs). */
+  compact?: boolean;
+  onFinished?: (batchId: string) => void;
+}) {
   const router = useRouter();
   const { toast } = useToast();
   const { currentOrg } = useOrg();
   const fileInput = useRef<HTMLInputElement>(null);
+  const appendMode = !!existingBatchId;
 
   const [batchName, setBatchName] = useState(
-    () => `Batch ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`,
+    () =>
+      existingBatchName ??
+      `Batch ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`,
   );
   const [roleDescription, setRoleDescription] = useState("");
   const [jobDescription, setJobDescription] = useState("");
@@ -116,30 +136,41 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState(false);
-  const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("technical");
+  const [interviewType, setInterviewType] = useState<"technical" | "behavioral" | "mixed" | "screening">("mixed");
   const [includePremade, setIncludePremade] = useState(true);
-  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(new Set());
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
 
   const [rows, setRows] = useState<CvRow[]>([]);
   const [dragging, setDragging] = useState(false);
-  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchId, setBatchId] = useState<string | null>(existingBatchId ?? null);
   const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (existingBatchId) setBatchId(existingBatchId);
+  }, [existingBatchId]);
+
+  const existingBatch = trpc.batch.getById.useQuery(
+    { id: existingBatchId ?? "" },
+    { enabled: !!existingBatchId },
+  );
+  useEffect(() => {
+    const t = existingBatch.data?.settings?.interviewType;
+    if (t === "technical" || t === "behavioral" || t === "mixed" || t === "screening") {
+      setInterviewType(t);
+    }
+  }, [existingBatch.data?.settings?.interviewType]);
+
   const [sendOpen, setSendOpen] = useState(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const previewRow = previewKey ? rows.find((r) => r.key === previewKey) ?? null : null;
 
   const premade = trpc.questionBank.getEnabledQuestions.useQuery(
     { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+    { enabled: !!currentOrg?.id, staleTime: 10_000, refetchOnMount: "always" },
   );
 
-  useEffect(() => {
-    if (premade.data?.sections) {
-      setSelectedSectionIds(new Set(premade.data.sections.map((s) => s.id)));
-    }
-  }, [premade.data?.sections]);
-
   const createBatch = trpc.batch.create.useMutation();
+  const updateBatchSettings = trpc.batch.updateSettings.useMutation();
   const generateCandidate = trpc.batch.generateCandidate.useMutation();
 
   const patchRow = useCallback((key: string, patch: Partial<CvRow>) => {
@@ -195,19 +226,28 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   );
 
   const ensureBatch = async (): Promise<string> => {
-    if (batchId) return batchId;
-    const premadeQuestions = includePremade
-      ? (premade.data?.questions ?? [])
-          .filter((q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId))
-          .map((q) => ({
-            text: q.text as string,
-            type: (q.type as string) ?? undefined,
-            sectionName: q.sectionName as string,
-            description: (q.description as string | null) ?? undefined,
-            options: q.options ?? undefined,
-            starterCode: q.starterCode ?? undefined,
-          }))
-      : undefined;
+    const premadeQuestions = selectedPremadePayload(
+      premade.data?.questions as Parameters<typeof selectedPremadePayload>[0],
+      selectedPremadeIds,
+      includePremade,
+    );
+
+    // Existing batch: refresh premade list so newly picked Qs apply to new candidates
+    if (existingBatchId || batchId) {
+      const id = existingBatchId ?? batchId!;
+      if (premadeQuestions) {
+        try {
+          await updateBatchSettings.mutateAsync({
+            batchId: id,
+            premadeQuestions,
+          });
+        } catch {
+          /* non-fatal — still generate with stored settings */
+        }
+      }
+      return id;
+    }
+
     const batch = await createBatch.mutateAsync({
       projectId,
       name: batchName.trim(),
@@ -225,7 +265,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
         defaultCountryCode: countryCode || undefined,
-        premadeQuestions: premadeQuestions?.length ? premadeQuestions : undefined,
+        premadeQuestions,
       },
     });
     setBatchId(batch.id);
@@ -253,6 +293,15 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
               phone: row.phone.trim() || null,
             },
           });
+          // Persist original CV so sessions screen can open it later
+          try {
+            const fd = new FormData();
+            fd.append("file", row.file);
+            fd.append("candidateId", r.candidateId);
+            await fetch("/api/batches/upload-cv", { method: "POST", body: fd });
+          } catch {
+            /* non-fatal — resumeMarkdown still on profile */
+          }
           patchRow(row.key, {
             status: "generated",
             candidateId: r.candidateId,
@@ -281,10 +330,24 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
   const readyValid = ready.filter((r) => !rowProblem(r));
   const generated = rows.filter((r) => r.status === "generated");
   const parsingCount = rows.filter((r) => r.status === "queued" || r.status === "parsing").length;
-  const canGenerate = !!batchName.trim() && !!roleDescription.trim() && readyValid.length > 0 && !running;
+  const canGenerate =
+    readyValid.length > 0 &&
+    !running &&
+    (appendMode || (!!batchName.trim() && !!roleDescription.trim()));
 
   return (
     <div className="space-y-6">
+      {appendMode && (
+        <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm">
+          Adding candidates to{" "}
+          <span className="font-medium text-foreground">
+            {existingBatchName ?? "this batch"}
+          </span>
+          . New interviews use the batch&apos;s existing role settings.
+        </div>
+      )}
+
+      {!compact && (
       <Card>
         <CardHeader>
           <CardTitle>1. Batch & role</CardTitle>
@@ -382,69 +445,32 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
             <SettingSelect label="Language" value={language} onChange={setLanguage} options={LANGUAGES} disabled={!!batchId} />
           </div>
 
-          <div className="space-y-2">
-            <Label className="font-semibold text-sm">Premade section questions</Label>
-            <div className="space-y-3 rounded-xl border border-border/80 bg-card/60 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-semibold text-foreground">Include standard round questions</p>
-                  <p className="text-xs text-muted-foreground">
-                    Pulls enabled Question Bank rounds (Screening, Technical, HR). AI fills gaps without duplicates.
-                  </p>
-                </div>
-                <Switch checked={includePremade} disabled={!!batchId} onCheckedChange={setIncludePremade} />
-              </div>
-
-              {includePremade && (premade.data?.sections?.length ?? 0) > 0 && (
-                <div className="space-y-2 border-t border-border/50 pt-2">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Rounds to include (
-                    {(premade.data?.questions ?? []).filter(
-                      (q) => selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId),
-                    ).length}{" "}
-                    questions):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {(premade.data?.sections ?? []).map((sec) => {
-                      const isSelected = selectedSectionIds.has(sec.id);
-                      const count = (premade.data?.questions ?? []).filter((q) => q.sectionId === sec.id).length;
-                      return (
-                        <button
-                          key={sec.id}
-                          type="button"
-                          disabled={!!batchId}
-                          onClick={() => {
-                            setSelectedSectionIds((prev) => {
-                              const next = new Set(prev);
-                              if (isSelected) next.delete(sec.id);
-                              else next.add(sec.id);
-                              return next;
-                            });
-                          }}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-50",
-                            isSelected
-                              ? "border-primary bg-primary/10 text-primary"
-                              : "border-border bg-muted/40 text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
-                          <span>{sec.name}</span>
-                          <span className="rounded-full border bg-background/80 px-1.5 text-[10px]">{count}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <PremadeQuestionPicker
+            interviewType={interviewType}
+            includePremade={includePremade}
+            onIncludeChange={setIncludePremade}
+            selectedIds={selectedPremadeIds}
+            onSelectedChange={setSelectedPremadeIds}
+            disabled={!!batchId && !appendMode}
+          />
         </CardContent>
       </Card>
+      )}
+
+      {appendMode && compact && (
+        <PremadeQuestionPicker
+          interviewType={interviewType}
+          includePremade={includePremade}
+          onIncludeChange={setIncludePremade}
+          selectedIds={selectedPremadeIds}
+          onSelectedChange={setSelectedPremadeIds}
+          compact
+        />
+      )}
 
       <Card>
         <CardHeader>
-          <CardTitle>2. Upload CVs</CardTitle>
+          <CardTitle>{compact ? "1. Upload CVs" : "2. Upload CVs"}</CardTitle>
           <CardDescription>
             PDF, DOCX, scanned PDFs and photos. Fields we can&apos;t read reliably are left blank and flagged — check them
             before generating.
@@ -587,7 +613,7 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>3. Generate & send</CardTitle>
+          <CardTitle>{compact ? "2. Generate" : "3. Generate & send"}</CardTitle>
           <CardDescription>
             Every candidate gets a unique private link that opens only their interview — no username or password to manage.
           </CardDescription>
@@ -595,7 +621,11 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
         <CardContent className="flex flex-wrap items-center gap-3">
           <Button disabled={!canGenerate} onClick={() => void generateRows(readyValid)}>
             {running && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {batchId ? `Generate ${readyValid.length} more` : `Create batch & generate ${readyValid.length} interview${readyValid.length === 1 ? "" : "s"}`}
+            {appendMode
+              ? `Add ${readyValid.length} candidate${readyValid.length === 1 ? "" : "s"}`
+              : batchId
+                ? `Generate ${readyValid.length} more`
+                : `Create batch & generate ${readyValid.length} interview${readyValid.length === 1 ? "" : "s"}`}
           </Button>
           {parsingCount > 0 && <span className="text-sm text-muted-foreground">Reading {parsingCount} CV(s)…</span>}
           {ready.length > readyValid.length && (
@@ -606,15 +636,29 @@ export function BulkCvGenerator({ projectId }: { projectId?: string }) {
             <div className="flex w-full flex-wrap items-center gap-2 border-t pt-4">
               <span className="mr-auto text-sm">
                 <CheckCircle2 className="mr-1 inline h-4 w-4 text-green-600" />
-                {generated.length} interview{generated.length === 1 ? "" : "s"} ready. Send links now?
+                {generated.length} interview{generated.length === 1 ? "" : "s"} ready
+                {appendMode ? "." : ". Send links now?"}
               </span>
-              <Button onClick={() => setSendOpen(true)}>Send to all {generated.length}</Button>
-              <Button variant="outline" onClick={() => router.push(`/batches/${batchId}`)}>
-                Send one by one
-              </Button>
-              <Button variant="ghost" onClick={() => router.push(`/batches/${batchId}`)}>
-                Don&apos;t send now
-              </Button>
+              {appendMode ? (
+                <Button
+                  onClick={() => {
+                    if (onFinished) onFinished(batchId);
+                    else router.push(`/batches/${batchId}`);
+                  }}
+                >
+                  Done
+                </Button>
+              ) : (
+                <>
+                  <Button onClick={() => setSendOpen(true)}>Send to all {generated.length}</Button>
+                  <Button variant="outline" onClick={() => router.push(`/batches/${batchId}`)}>
+                    Send one by one
+                  </Button>
+                  <Button variant="ghost" onClick={() => router.push(`/batches/${batchId}`)}>
+                    Don&apos;t send now
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </CardContent>

@@ -130,9 +130,15 @@ export function buildReportData(d: any): ReportData {
     reasoning: String(c?.reasoning ?? ""),
   }));
   const qes = (obj.questionEvaluations ?? []) as any[];
-  const rawMessages = ((d?.messages ?? []) as any[]).filter(
-    (m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE",
-  );
+  const rawMessages = ((d?.messages ?? []) as any[])
+    .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
+    .slice()
+    .sort((a, b) => {
+      const ta = new Date(a.timestamp ?? 0).getTime();
+      const tb = new Date(b.timestamp ?? 0).getTime();
+      if (ta !== tb) return ta - tb;
+      return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+    });
   const messages = rawMessages.map((m) => ({ role: String(m.role), content: String(m.content ?? "") }));
   const questions: ReportQuestion[] = qes.map((q, i) => ({
     index: i + 1,

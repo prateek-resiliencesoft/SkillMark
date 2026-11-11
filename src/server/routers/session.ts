@@ -348,6 +348,7 @@ export const sessionRouter = router({
           ascending: true,
         })
         .order("timestamp", { referencedTable: "messages", ascending: true })
+        .order("id", { referencedTable: "messages", ascending: true })
         .single();
 
       if (!session) {
@@ -986,17 +987,21 @@ export const sessionRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await assertNotDisqualified(ctx.supabase, input.sessionId);
-
+      // Media finalize must work after complete/disqualify (end race + strike DQ).
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, status, interview:interviews!inner(project:projects!inner(organizationId))",
+          "id, status, mediaClearedAt, interview:interviews!inner(project:projects!inner(organizationId))",
         )
         .eq("id", input.sessionId)
         .maybeSingle();
 
-      if (!session || session.status !== "IN_PROGRESS") {
+      const status = session?.status as string | undefined;
+      const allowed =
+        status === "IN_PROGRESS" ||
+        status === "COMPLETED" ||
+        status === "DISQUALIFIED";
+      if (!session || !allowed || (session as { mediaClearedAt?: string | null }).mediaClearedAt) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "This interview session is not available.",

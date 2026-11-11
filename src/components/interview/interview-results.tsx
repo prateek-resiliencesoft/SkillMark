@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { STRIKE_LABEL } from "@/lib/head-movement";
 import { buildReportData } from "@/lib/report-data";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
 import {
@@ -290,7 +291,7 @@ function SessionDetail({
   const completeSession = trpc.session.complete.useMutation();
   const [generating, setGenerating] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
+  const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [pdfCapture, setPdfCapture] = useState(false);
   const [lightboxImg, setLightboxImg] = useState<{
@@ -298,6 +299,7 @@ function SessionDetail({
     alt: string;
   } | null>(null);
   const [audioCanPlay, setAudioCanPlay] = useState(false);
+  const [audioFailed, setAudioFailed] = useState(false);
   const [exportProgress, setExportProgress] = useState("");
   const [exportPercent, setExportPercent] = useState(0);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -528,8 +530,9 @@ function SessionDetail({
     timestamp: number;
     detail?: string;
     imageUrl?: string;
+    imagePath?: string;
   }[];
-  const headMovementEvents = antiCheatingLog.filter((v) => v.type === "head_movement");
+  const strikeEvents = antiCheatingLog;
 
   const hasReport = !!(
     summary.data?.summary ||
@@ -541,7 +544,39 @@ function SessionDetail({
   );
 
   const report = useMemo(() => buildReportData(summary.data), [summary.data]);
+  const transcriptMessages = useMemo(() => {
+    const msgs = (summary.data?.messages ?? []) as {
+      id: string;
+      role: string;
+      content: string;
+      contentType?: string;
+      transcription?: string | null;
+      timestamp?: string;
+    }[];
+    return msgs
+      .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
+      .slice()
+      .sort((a, b) => {
+        const ta = new Date(a.timestamp ?? 0).getTime();
+        const tb = new Date(b.timestamp ?? 0).getTime();
+        if (ta !== tb) return ta - tb;
+        return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+      });
+  }, [summary.data?.messages]);
   const [pdfBuilderOpen, setPdfBuilderOpen] = useState(false);
+
+  const formatMsgTime = (ts?: string) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -924,31 +959,50 @@ function SessionDetail({
             })()}
 
             <ReportIntegrity data={report} sessionId={sessionId} />
-            {headMovementEvents.length > 0 && (
+            {strikeEvents.length > 0 && (
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
-                    <Camera className="h-4 w-4 text-amber-600" /> Head movement snapshots
+                    <Camera className="h-4 w-4 text-amber-600" /> Strike evidence
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    {headMovementEvents.map((v, i) => (
-                      <div key={`${v.timestamp}-${i}`} className="overflow-hidden rounded-md border">
-                        {v.imageUrl ? (
-                          <a href={v.imageUrl} target="_blank" rel="noreferrer">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={v.imageUrl} alt={`Head movement violation ${i + 1}`} className="aspect-video w-full object-cover" />
-                          </a>
-                        ) : (
-                          <div className="flex aspect-video items-center justify-center bg-muted text-xs text-muted-foreground">No snapshot</div>
-                        )}
-                        <div className="px-2 py-1 text-xs text-muted-foreground">
-                          #{i + 1} · {new Date(v.timestamp).toLocaleTimeString()}
-                          {v.detail ? ` · ${v.detail}` : ""}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {strikeEvents.map((v, i) => {
+                      const label = STRIKE_LABEL[v.type] ?? v.type;
+                      const reason = v.detail || label;
+                      return (
+                        <div key={`${v.timestamp}-${i}`} className="overflow-hidden rounded-md border">
+                          {v.imageUrl ? (
+                            <button
+                              type="button"
+                              className="block w-full"
+                              onClick={() => setLightboxImg({ src: v.imageUrl!, alt: reason })}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={v.imageUrl}
+                                alt={`Strike ${i + 1}: ${reason}`}
+                                className="aspect-video w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex aspect-video items-center justify-center bg-muted px-3 text-center text-xs text-muted-foreground">
+                              No snapshot captured
+                            </div>
+                          )}
+                          <div className="space-y-0.5 px-2 py-1.5 text-xs">
+                            <p className="font-medium text-foreground">
+                              Strike {i + 1}: {label}
+                            </p>
+                            <p className="text-muted-foreground">
+                              {new Date(v.timestamp).toLocaleString()}
+                              {v.detail && v.detail !== label ? ` · ${v.detail}` : ""}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </CardContent>
               </Card>
@@ -1025,23 +1079,53 @@ function SessionDetail({
               );
             })()}
 
-            {/* Audio Recording — hidden until audio is loadable */}
+            {/* Audio Recording */}
             {summary.data?.audioRecordingUrl && (
-              <Card className={cn(!audioCanPlay && "hidden")}>
+              <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Mic className="h-4 w-4" />
                     Audio Recording
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-2">
+                  {!audioCanPlay && !audioFailed && (
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Loading recording…
+                    </p>
+                  )}
+                  {audioFailed && (
+                    <p className="text-xs text-destructive">
+                      Recording file could not be played. Try opening it in a new tab or re-approve media review.
+                    </p>
+                  )}
                   <audio
                     controls
                     preload="auto"
                     src={summary.data.audioRecordingUrl}
-                    className="w-full"
-                    onCanPlay={() => setAudioCanPlay(true)}
+                    className={cn("w-full", !audioCanPlay && !audioFailed && "opacity-50")}
+                    onCanPlay={() => {
+                      setAudioCanPlay(true);
+                      setAudioFailed(false);
+                    }}
+                    onError={() => setAudioFailed(true)}
                   />
+                </CardContent>
+              </Card>
+            )}
+            {!summary.data?.audioRecordingUrl && !summary.data?.mediaClearedAt && summary.data?.status === "COMPLETED" && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Mic className="h-4 w-4" />
+                    Audio Recording
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    No recording was saved for this session. New interviews always capture mic + AI audio when the session ends cleanly.
+                  </p>
                 </CardContent>
               </Card>
             )}
@@ -1170,12 +1254,7 @@ function SessionDetail({
                     <MessageCircle className="h-4 w-4" />
                     Transcript
                     <Badge variant="secondary" className="ml-1 font-normal">
-                      {summary.data?.messages.filter(
-                        (m: any) =>
-                          m.contentType !== "WHITEBOARD" &&
-                          (m.contentType as string) !== "CODE",
-                      ).length ?? 0}{" "}
-                      messages
+                      {transcriptMessages.length} messages
                     </Badge>
                   </CardTitle>
                   {!pdfCapture &&
@@ -1189,129 +1268,61 @@ function SessionDetail({
               {(transcriptOpen || pdfCapture) && (
                 <CardContent>
                   <div className={pdfCapture ? "space-y-4" : ""}>
-                    {!pdfCapture ? (
-                      <ScrollArea className="h-[500px]">
-                        <div className="space-y-4 pr-4">
-                          {summary.data?.messages.length === 0 && (
-                            <p className="py-8 text-center text-muted-foreground">
-                              No messages recorded for this session.
-                            </p>
-                          )}
-                          {summary.data?.messages
-                            .filter(
-                              (m: any) =>
-                                m.contentType !== "WHITEBOARD" &&
-                                (m.contentType as string) !== "CODE",
-                            )
-                            .map((msg: any) => {
-                              const isUser = msg.role === "USER";
-                              const isChat = msg.transcription === "chat";
-                              return (
-                                <div
-                                  key={msg.id}
-                                  className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}
-                                >
-                                  <div
-                                    className={`max-w-[75%] rounded-lg px-4 py-2.5 ${
-                                      isUser
-                                        ? "bg-primary text-primary-foreground"
-                                        : "bg-secondary-100 dark:bg-secondary text-secondary-900 dark:text-secondary-foreground"
-                                    }`}
-                                  >
-                                    <div className="mb-1 flex items-center justify-between gap-3">
-                                      <span
-                                        className={`flex items-center gap-1 text-xs font-semibold ${isUser ? "text-primary-foreground/80" : "text-secondary-700 dark:text-secondary-300"}`}
-                                      >
-                                        {isUser ? (
-                                          isChat ? (
-                                            <MessageSquare className="h-3 w-3" />
-                                          ) : (
-                                            <Mic className="h-3 w-3" />
-                                          )
-                                        ) : (
-                                          <Volume2 className="h-3 w-3" />
-                                        )}
-                                        {isUser ? "Participant" : "Interviewer"}
-                                      </span>
-                                      <span
-                                        className={`text-[10px] ${isUser ? "text-primary-foreground/60" : "text-secondary-600 dark:text-secondary-400"}`}
-                                      >
-                                        {new Date(
-                                          msg.timestamp,
-                                        ).toLocaleTimeString(undefined, {
-                                          hour: "2-digit",
-                                          minute: "2-digit",
-                                          second: "2-digit",
-                                        })}
-                                      </span>
-                                    </div>
-                                    <p className="text-sm leading-relaxed">
-                                      {msg.content}
-                                    </p>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                        </div>
-                      </ScrollArea>
+                    {transcriptMessages.length === 0 ? (
+                      <p className="py-8 text-center text-muted-foreground">
+                        No messages recorded for this session.
+                      </p>
                     ) : (
-                      /* PDF capture mode: no ScrollArea, render all messages flat */
-                      <div className="space-y-4">
-                        {summary.data?.messages
-                          .filter(
-                            (m: any) =>
-                              m.contentType !== "WHITEBOARD" &&
-                              (m.contentType as string) !== "CODE",
-                          )
-                          .map((msg: any) => {
-                            const isUser = msg.role === "USER";
-                            const isChat = msg.transcription === "chat";
-                            return (
+                      <div
+                        className={
+                          pdfCapture
+                            ? "space-y-4"
+                            : "max-h-[min(70vh,900px)] space-y-4 overflow-y-auto pr-2 code-scrollbar"
+                        }
+                      >
+                        {transcriptMessages.map((msg) => {
+                          const isUser = msg.role === "USER";
+                          const isChat = msg.transcription === "chat";
+                          return (
+                            <div
+                              key={msg.id}
+                              className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}
+                            >
                               <div
-                                key={msg.id}
-                                className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}
+                                className={`max-w-[85%] rounded-lg px-4 py-2.5 ${
+                                  isUser
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-secondary-100 dark:bg-secondary text-secondary-900 dark:text-secondary-foreground"
+                                }`}
                               >
-                                <div
-                                  className={`max-w-[75%] rounded-lg px-4 py-2.5 ${
-                                    isUser
-                                      ? "bg-primary text-primary-foreground"
-                                      : "bg-secondary-100 dark:bg-secondary text-secondary-900 dark:text-secondary-foreground"
-                                  }`}
-                                >
-                                  <div className="mb-1 flex items-center justify-between gap-3">
-                                    <span
-                                      className={`flex items-center gap-1 text-xs font-semibold ${isUser ? "text-primary-foreground/80" : "text-secondary-700 dark:text-secondary-300"}`}
-                                    >
-                                      {isUser ? (
-                                        isChat ? (
-                                          <MessageSquare className="h-3 w-3" />
-                                        ) : (
-                                          <Mic className="h-3 w-3" />
-                                        )
+                                <div className="mb-1 flex items-center justify-between gap-3">
+                                  <span
+                                    className={`flex items-center gap-1 text-xs font-semibold ${isUser ? "text-primary-foreground/80" : "text-secondary-700 dark:text-secondary-300"}`}
+                                  >
+                                    {isUser ? (
+                                      isChat ? (
+                                        <MessageSquare className="h-3 w-3" />
                                       ) : (
-                                        <Volume2 className="h-3 w-3" />
-                                      )}
-                                      {isUser ? "Participant" : "Interviewer"}
-                                    </span>
-                                    <span
-                                      className={`text-[10px] ${isUser ? "text-primary-foreground/60" : "text-secondary-600 dark:text-secondary-400"}`}
-                                    >
-                                      {new Date(
-                                        msg.timestamp,
-                                      ).toLocaleTimeString(undefined, {
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                        second: "2-digit",
-                                      })}
-                                    </span>
-                                  </div>
-                                  <p className="text-sm leading-relaxed">
-                                    {msg.content}
-                                  </p>
+                                        <Mic className="h-3 w-3" />
+                                      )
+                                    ) : (
+                                      <Volume2 className="h-3 w-3" />
+                                    )}
+                                    {isUser ? "Participant" : "Interviewer"}
+                                  </span>
+                                  <span
+                                    className={`shrink-0 text-[10px] ${isUser ? "text-primary-foreground/60" : "text-secondary-600 dark:text-secondary-400"}`}
+                                  >
+                                    {formatMsgTime(msg.timestamp)}
+                                  </span>
                                 </div>
+                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                                  {msg.content}
+                                </p>
                               </div>
-                            );
-                          })}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

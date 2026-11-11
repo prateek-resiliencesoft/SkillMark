@@ -108,6 +108,7 @@ type CandidateRow = {
   inviteToken: string | null;
   session: any;
   createdAt: string;
+  hasResume?: boolean;
 };
 
 type WalkInRow = {
@@ -312,6 +313,11 @@ function isFormApplicant(row: UnifiedRow): boolean {
   if (row.type !== "candidate") return false;
   const n = (row.notes ?? "").toLowerCase();
   return n.includes("applied via") || n.includes("hosted form");
+}
+
+function hasResume(row: UnifiedRow): boolean {
+  if (row.type !== "candidate") return false;
+  return !!row.hasResume || isFormApplicant(row);
 }
 
 function getSourceLabel(row: UnifiedRow): "Walk-in" | "Form" | "Invited" {
@@ -606,24 +612,31 @@ export function CandidateManager({
 
   // ── Build unified rows ──
   const candidates: CandidateRow[] = (candidateList.data?.candidates ?? []).map(
-    (c: any) => ({
-      type: "candidate" as const,
-      id: c.id,
-      email: c.email,
-      name: c.name,
-      phone: c.phone,
-      gender: c.gender ?? null,
-      birthday: c.birthday ?? null,
-      education: c.education ?? null,
-      school: c.school ?? null,
-      major: c.major ?? null,
-      graduationYear: c.graduationYear ?? null,
-      workExperience: c.workExperience ?? null,
-      notes: c.notes ?? null,
-      inviteToken: c.inviteToken,
-      session: c.session,
-      createdAt: c.createdAt,
-    }),
+    (c: any) => {
+      const profile = c.profile as
+        | { cvPath?: string; resumeMarkdown?: string; fileName?: string }
+        | null
+        | undefined;
+      return {
+        type: "candidate" as const,
+        id: c.id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        gender: c.gender ?? null,
+        birthday: c.birthday ?? null,
+        education: c.education ?? null,
+        school: c.school ?? null,
+        major: c.major ?? null,
+        graduationYear: c.graduationYear ?? null,
+        workExperience: c.workExperience ?? null,
+        notes: c.notes ?? null,
+        inviteToken: c.inviteToken,
+        session: c.session,
+        createdAt: c.createdAt,
+        hasResume: !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName),
+      };
+    },
   );
 
   const walkIns: WalkInRow[] = (candidateList.data?.walkInSessions ?? []).map(
@@ -1377,22 +1390,33 @@ export function CandidateManager({
                               <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
-                          {row.type === "candidate" && isFormApplicant(row) && (
+                          {row.type === "candidate" && hasResume(row) && (
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7"
-                              title="View CV"
+                              title="View resume"
                               onClick={async () => {
                                 try {
-                                  const cv = await utils.interviewForm.cvLink.fetch({
+                                  const cv = await utils.candidate.resumeAccess.fetch({
                                     candidateId: row.id,
                                   });
-                                  window.open(cv.url, "_blank", "noopener,noreferrer");
+                                  if (cv.url) {
+                                    window.open(cv.url, "_blank", "noopener,noreferrer");
+                                    return;
+                                  }
+                                  if (cv.markdown) {
+                                    const blob = new Blob([cv.markdown], { type: "text/markdown" });
+                                    const url = URL.createObjectURL(blob);
+                                    window.open(url, "_blank", "noopener,noreferrer");
+                                    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                                    return;
+                                  }
+                                  throw new Error("No resume file");
                                 } catch (e) {
                                   toast({
-                                    title: "CV unavailable",
-                                    description: e instanceof Error ? e.message : "Could not open CV",
+                                    title: "Resume unavailable",
+                                    description: e instanceof Error ? e.message : "Could not open resume",
                                     variant: "destructive",
                                   });
                                 }

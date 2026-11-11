@@ -55,7 +55,7 @@ export default function ProjectMembersPage() {
   const { locale } = useAppLocale();
   const { currentOrg } = useOrg();
   const { currentProject } = useProject();
-  useAuth();
+  const { user } = useAuth();
   const utils = trpc.useUtils();
   const isZh = locale === "zh";
   const roleLabel = (role: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER") =>
@@ -70,9 +70,9 @@ export default function ProjectMembersPage() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">(
-    "MEMBER",
-  );
+  const [inviteRole, setInviteRole] = useState<
+    "OWNER" | "ADMIN" | "MEMBER" | "VIEWER"
+  >("MEMBER");
   const [editingRoleUserId, setEditingRoleUserId] = useState<string | null>(
     null,
   );
@@ -203,7 +203,10 @@ export default function ProjectMembersPage() {
     );
   }
 
+  const isOwner = currentOrg.role === "OWNER";
   const isAdmin = isAdminRole;
+  const canRemoveFromProject = (orgRole: string, userId: string) =>
+    isAdmin && userId !== user?.id && (orgRole !== "OWNER" || isOwner);
   const projectInvites = (invitesQuery.data ?? []).filter(
     (inv) => !!currentProject && inv.projectId === currentProject.id,
   );
@@ -277,6 +280,11 @@ export default function ProjectMembersPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      {isOwner && (
+                        <SelectItem value="OWNER">
+                          {isZh ? "所有者" : "Owner"}
+                        </SelectItem>
+                      )}
                       <SelectItem value="ADMIN">
                         {isZh ? "管理员" : "Admin"}
                       </SelectItem>
@@ -463,9 +471,7 @@ export default function ProjectMembersPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {m.role === "OWNER" ? (
-                        <Badge variant="default">{roleLabel("OWNER")}</Badge>
-                      ) : editingRoleUserId === m.userId && currentProject ? (
+                      {editingRoleUserId === m.userId && currentProject ? (
                         <Select
                           value={projectRoles[m.userId] ?? m.role}
                           onValueChange={(v) =>
@@ -473,7 +479,11 @@ export default function ProjectMembersPage() {
                               organizationId: currentOrg.id,
                               projectId: currentProject.id,
                               userId: m.userId,
-                              role: v as "ADMIN" | "MEMBER" | "VIEWER",
+                              role: v as
+                                | "OWNER"
+                                | "ADMIN"
+                                | "MEMBER"
+                                | "VIEWER",
                             })
                           }
                           onOpenChange={(open) => {
@@ -485,6 +495,11 @@ export default function ProjectMembersPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            {isOwner && (
+                              <SelectItem value="OWNER">
+                                {isZh ? "所有者" : "OWNER"}
+                              </SelectItem>
+                            )}
                             <SelectItem value="ADMIN">
                               {isZh ? "管理员" : "ADMIN"}
                             </SelectItem>
@@ -527,7 +542,8 @@ export default function ProjectMembersPage() {
                     </TableCell>
                     {isAdmin && (
                       <TableCell>
-                        {m.role !== "OWNER" && currentProject && (
+                        {canRemoveFromProject(m.role, m.userId) &&
+                          currentProject && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button

@@ -46,6 +46,13 @@ const batchSettings = z.object({
         description: z.string().optional(),
         options: z.any().optional(),
         starterCode: z.any().optional(),
+        skipIf: z
+          .object({
+            answerContainsAny: z.array(z.string()).max(20).optional(),
+            reason: z.string().max(200).optional(),
+          })
+          .nullable()
+          .optional(),
       }),
     )
     .max(50)
@@ -239,6 +246,16 @@ export const batchRouter = router({
         });
       }
 
+      // Force exact premade wording (replace paraphrases + append missing)
+      const premade = settings.premadeQuestions ?? [];
+      if (premade.length > 0) {
+        const { enforceExactPremadeQuestions } = await import("@/lib/question-conditions");
+        generated.questions = enforceExactPremadeQuestions(
+          generated.questions,
+          premade,
+        ) as typeof generated.questions;
+      }
+
       const { data: interview, error: ivError } = await ctx.supabase
         .from("interviews")
         .insert({
@@ -267,18 +284,24 @@ export const batchRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: ivError?.message ?? "Failed to create interview" });
       }
 
-      const questionRows = generated.questions.map((q, i) => ({
-        interviewId: interview.id,
-        order: i,
-        text: q.text,
-        type: (QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "OPEN_ENDED",
-        description: q.description ?? null,
-        timeLimitSeconds: q.timeLimitSeconds ?? null,
-        isRequired: q.isRequired ?? true,
-        options: q.options ?? null,
-        followUpPrompts: q.followUpPrompts ?? null,
-        starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
-      }));
+      const questionRows = generated.questions.map((q, i) => {
+        const pm = premade.find(
+          (p) => p.text.trim().toLowerCase() === (q.text ?? "").trim().toLowerCase(),
+        );
+        return {
+          interviewId: interview.id,
+          order: i,
+          text: q.text,
+          type: (QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "OPEN_ENDED",
+          description: q.description ?? null,
+          timeLimitSeconds: q.timeLimitSeconds ?? null,
+          isRequired: q.isRequired ?? true,
+          options: q.options ?? null,
+          followUpPrompts: q.followUpPrompts ?? null,
+          starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
+          skipIf: pm?.skipIf ?? (q as { skipIf?: unknown }).skipIf ?? null,
+        };
+      });
       const { error: qError } = await ctx.supabase.from("questions").insert(questionRows);
       if (qError) {
         await ctx.supabase.from("interviews").delete().eq("id", interview.id);
@@ -299,7 +322,13 @@ export const batchRouter = router({
           graduationYear: edu?.graduationYear ?? null,
           workExperience: experienceBucket(profile.totalExperienceYears) ?? null,
           notes: profile.summary,
-          profile: { ...profile, reviewFlags: input.reviewFlags, fileName: input.fileName, extractionMethod: input.extractionMethod },
+          profile: {
+            ...profile,
+            reviewFlags: input.reviewFlags,
+            fileName: input.fileName,
+            extractionMethod: input.extractionMethod,
+            resumeMarkdown: input.resumeMarkdown.slice(0, 60_000),
+          },
           inviteToken: nanoid(12),
         })
         .select("id, inviteToken")
@@ -316,6 +345,34 @@ export const batchRouter = router({
         questionCount: questionRows.length,
         inviteLink: inviteLink(candidate.inviteToken),
       };
+    }),
+
+  /** Update premade (and related) settings for future candidate generation. */
+  updateSettings: protectedProcedure
+    .input(
+      z.object({
+        batchId: z.string(),
+        premadeQuestions: batchSettings.shape.premadeQuestions,
+        roleDescription: z.string().max(4000).optional(),
+        jobDescription: z.string().max(20_000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+      const prev = (batch.settings ?? {}) as BatchSettings;
+      const next: BatchSettings = {
+        ...prev,
+        ...(input.premadeQuestions !== undefined ? { premadeQuestions: input.premadeQuestions } : {}),
+        ...(input.roleDescription !== undefined ? { roleDescription: input.roleDescription } : {}),
+        ...(input.jobDescription !== undefined ? { jobDescription: input.jobDescription } : {}),
+      };
+      const { error } = await ctx.supabase
+        .from("interview_batches")
+        .update({ settings: next })
+        .eq("id", input.batchId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { success: true };
     }),
 
   updateContact: protectedProcedure

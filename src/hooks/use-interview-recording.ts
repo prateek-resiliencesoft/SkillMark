@@ -24,6 +24,8 @@ export interface ScreenshotEntry {
 interface UseInterviewRecordingOptions {
   sessionId: string;
   enabled: boolean;
+  /** When false, record audio only (no camera/screen prompts or screenshots). */
+  captureVideo?: boolean;
   screenshotIntervalMs?: number;
 }
 
@@ -88,6 +90,7 @@ function resolveBlobDuration(blob: Blob): Promise<number | undefined> {
 export function useInterviewRecording({
   sessionId,
   enabled,
+  captureVideo = true,
   screenshotIntervalMs = 60_000,
 }: UseInterviewRecordingOptions) {
   const [isRecording, setIsRecording] = useState(false);
@@ -315,48 +318,50 @@ export function useInterviewRecording({
       recorder.start(5000); // collect chunks every 5s
       recorderRef.current = recorder;
 
-      // Acquire camera + screen
-      await acquireStreams();
+      if (captureVideo) {
+        // Acquire camera + screen
+        await acquireStreams();
 
-      // Set up hidden video elements for screenshot capture
-      if (!cameraVideoRef.current) {
-        const v = document.createElement("video");
-        v.muted = true;
-        v.playsInline = true;
-        v.style.display = "none";
-        document.body.appendChild(v);
-        cameraVideoRef.current = v;
-      }
-      if (!screenVideoRef.current) {
-        const v = document.createElement("video");
-        v.muted = true;
-        v.playsInline = true;
-        v.style.display = "none";
-        document.body.appendChild(v);
-        screenVideoRef.current = v;
-      }
-
-      // Bind streams to hidden video elements for canvas capture
-      const bindStream = (video: HTMLVideoElement, stream: MediaStream | null) => {
-        if (stream) {
-          video.srcObject = stream;
-          video.play().catch(() => {});
+        // Set up hidden video elements for screenshot capture
+        if (!cameraVideoRef.current) {
+          const v = document.createElement("video");
+          v.muted = true;
+          v.playsInline = true;
+          v.style.display = "none";
+          document.body.appendChild(v);
+          cameraVideoRef.current = v;
         }
-      };
-      // Use refs (set in acquireStreams via state update + useEffect sync)
-      // Small delay to let state sync
-      setTimeout(() => {
-        bindStream(cameraVideoRef.current!, cameraStreamRef.current);
-        bindStream(screenVideoRef.current!, screenStreamRef.current);
-      }, 500);
+        if (!screenVideoRef.current) {
+          const v = document.createElement("video");
+          v.muted = true;
+          v.playsInline = true;
+          v.style.display = "none";
+          document.body.appendChild(v);
+          screenVideoRef.current = v;
+        }
 
-      // Start periodic screenshot timer
-      screenshotTimerRef.current = setInterval(takeScreenshots, screenshotIntervalMs);
+        // Bind streams to hidden video elements for canvas capture
+        const bindStream = (video: HTMLVideoElement, stream: MediaStream | null) => {
+          if (stream) {
+            video.srcObject = stream;
+            video.play().catch(() => {});
+          }
+        };
+        // Use refs (set in acquireStreams via state update + useEffect sync)
+        // Small delay to let state sync
+        setTimeout(() => {
+          bindStream(cameraVideoRef.current!, cameraStreamRef.current);
+          bindStream(screenVideoRef.current!, screenStreamRef.current);
+        }, 500);
+
+        // Start periodic screenshot timer
+        screenshotTimerRef.current = setInterval(takeScreenshots, screenshotIntervalMs);
+      }
 
       setIsRecording(true);
-      log.info("Started");
+      log.info("Started", captureVideo ? "(audio+video)" : "(audio only)");
     },
-    [enabled, isRecording, acquireStreams, attachMicStream, takeScreenshots, screenshotIntervalMs],
+    [enabled, captureVideo, isRecording, acquireStreams, attachMicStream, takeScreenshots, screenshotIntervalMs],
   );
 
   /**
