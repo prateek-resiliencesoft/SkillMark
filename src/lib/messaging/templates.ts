@@ -160,6 +160,15 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
   return text;
 }
 
+export function renderWhatsappCompletionPreview(
+  v: CompletionTemplateVars,
+  customBody?: string,
+): string {
+  const values = whatsappCompletionBodyVariables(v);
+  const template = customBody?.trim() || WHATSAPP_COMPLETION_META_TEMPLATE.body;
+  return template.replace(/\{\{(\d)\}\}/g, (m, i: string) => values[Number(i) - 1] ?? m);
+}
+
 export function mergeTemplates(stored: Partial<MessageTemplates> | null | undefined): MessageTemplates {
   return {
     emailSubject: stored?.emailSubject?.trim() || DEFAULT_TEMPLATES.emailSubject,
