@@ -16,7 +16,9 @@ export const organizationRouter = router({
     const { data: memberships } = await ctx.supabase
       .from("organization_members")
       .select(
-        "role, organization:organizations(id, name, slug, ownerId, status, plan, defaultInterviewerGender, createdAt, updatedAt)",
+        // Use * so a missed migration (e.g. defaultInterviewerGender) cannot
+        // fail the whole list and hide orgs from the switcher.
+        "role, organization:organizations(*)",
       )
       .eq("userId", ctx.user.id);
 

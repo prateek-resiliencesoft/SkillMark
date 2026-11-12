@@ -190,6 +190,7 @@ export default function InviteSessionPage() {
     return (
       <IntervieweeOnboarding
         sessionId={session?.id}
+        inviteToken={token}
         interviewTitle={interview.title}
         interviewDescription={interview.description}
         questionCount={interview.questions?.length ?? 0}

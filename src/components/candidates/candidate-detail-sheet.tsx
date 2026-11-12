@@ -17,6 +17,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { needsFreshInviteLink } from "@/lib/session-link";
+import { formatSessionStatusLabel } from "@/lib/preflight";
+import { PreflightProgress } from "@/components/candidates/preflight-progress";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -68,6 +70,13 @@ const STATUS_STYLE: Record<string, string> = {
   IN_PROGRESS: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
   ABANDONED: "bg-destructive/10 text-destructive border-destructive/20",
   DISQUALIFIED: "bg-destructive/10 text-destructive border-destructive/20",
+  "Opened link": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "Setting up": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "In Progress": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  Completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+  Abandoned: "bg-destructive/10 text-destructive border-destructive/20",
+  Disqualified: "bg-destructive/10 text-destructive border-destructive/20",
+  "Not Started": "bg-muted text-muted-foreground",
 };
 
 function SendPill({ label, status, at }: { label: string; status?: string | null; at?: string | null }) {
@@ -155,7 +164,8 @@ export function CandidateDetailSheet({
 
   const errors = validateCandidateForm(form);
   const sessionStatus: string = c?.session?.status ?? "NOT_STARTED";
-  const started = !!c?.session && sessionStatus !== "NOT_STARTED";
+  const sessionLabel = formatSessionStatusLabel(c?.session ?? null);
+  const interviewBegun = !!(c?.session?.interviewBeganAt || sessionStatus === "COMPLETED" || sessionStatus === "DISQUALIFIED");
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
   const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
@@ -259,8 +269,8 @@ export function CandidateDetailSheet({
                   <SheetTitle className="truncate text-lg">{c.name}</SheetTitle>
                   <SheetDescription className="truncate">{c.interview?.title}</SheetDescription>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
-                      {sessionStatus.replace("_", " ").toLowerCase()}
+                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
+                      {sessionLabel}
                     </span>
                     {score != null && <Badge variant="outline" className="text-[11px]">Score {Math.round(score)}</Badge>}
                     <SendPill label="WhatsApp" status={c.whatsappStatus} at={c.whatsappSentAt} />
@@ -281,7 +291,7 @@ export function CandidateDetailSheet({
             {q.isError && <p className="text-sm text-destructive">{q.error.message}</p>}
             {c && editing && (
               <div className="space-y-3">
-                {started && (
+                {interviewBegun && (
                   <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     This interview is already {sessionStatus === "COMPLETED" ? "completed" : "in progress"}. Changes update the
@@ -405,9 +415,15 @@ export function CandidateDetailSheet({
                   <Row icon={CalendarClock} label="Created" value={fmt(c.createdAt)} />
                   <Row icon={CalendarClock} label="Scheduled" value={fmt(c.scheduledAt)} />
                   <Row icon={CalendarClock} label="Link expires" value={fmt(c.expiresAt)} />
-                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.startedAt ?? c.session?.createdAt)} />
+                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.interviewBeganAt ?? (interviewBegun ? (c.session?.startedAt ?? c.session?.createdAt) : null))} />
                   <Row icon={CalendarClock} label="Completed" value={fmt(c.session?.completedAt)} />
-                  {started && (
+                  <PreflightProgress
+                    events={c.preflightEvents}
+                    inviteToken={c.inviteToken}
+                    device={c.session?.preflightDevice}
+                    lastActivityAt={c.session?.lastActivityAt}
+                  />
+                  {interviewBegun && (
                     <a
                       href={`/interviews/${c.interviewId}/edit/sessions?session=${c.session.id}`}
                       target="_blank"

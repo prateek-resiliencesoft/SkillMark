@@ -41,6 +41,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { formatSessionStatusLabel } from "@/lib/preflight";
 import { trpc } from "@/lib/trpc/client";
 import {
     ArrowDown,
@@ -244,11 +245,23 @@ function getSessionBadgeVariant(
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "COMPLETED":
+    case "Completed":
+    case "已完成":
       return "default";
     case "IN_PROGRESS":
+    case "In Progress":
+    case "Opened link":
+    case "Setting up":
+    case "进行中":
+    case "已打开链接":
+    case "准备中":
       return "outline";
     case "ABANDONED":
+    case "Abandoned":
     case "DISQUALIFIED":
+    case "Disqualified":
+    case "已放弃":
+    case "已取消资格":
       return "destructive";
     default:
       return "secondary";
@@ -419,22 +432,26 @@ export default function CandidatesPage() {
     { value: "30d", label: isZh ? "过去 30 天" : "Past 30 days" },
     { value: "90d", label: isZh ? "过去 90 天" : "Past 90 days" },
   ];
-  const statusLabel = useCallback((status: string) => {
-    if (!isZh)
-      return status === "Not Started"
-        ? "NOT STARTED"
-        : status.replace("_", " ");
-    switch (status) {
-      case "COMPLETED":
+  const statusLabel = useCallback((row: UnifiedRow) => {
+    const label = formatSessionStatusLabel(row.session);
+    if (!isZh) return label;
+    switch (label) {
+      case "Completed":
         return "已完成";
-      case "IN_PROGRESS":
+      case "In Progress":
         return "进行中";
-      case "ABANDONED":
+      case "Abandoned":
         return "已放弃";
       case "Not Started":
         return "未开始";
+      case "Opened link":
+        return "已打开链接";
+      case "Setting up":
+        return "准备中";
+      case "Disqualified":
+        return "已取消资格";
       default:
-        return status;
+        return label;
     }
   }, [isZh]);
   const sourceLabel = useCallback((source: "walkin" | "candidate") =>
@@ -843,7 +860,7 @@ export default function CandidatesPage() {
             record[col.label] = sourceLabel(row.type);
             break;
           case "status":
-            record[col.label] = statusLabel(status);
+            record[col.label] = statusLabel(row);
             break;
         }
       }
@@ -979,10 +996,10 @@ export default function CandidatesPage() {
       case "status":
         return (
           <Badge
-            variant={getSessionBadgeVariant(status)}
+            variant={getSessionBadgeVariant(statusLabel(row))}
             className="whitespace-nowrap"
           >
-            {statusLabel(status)}
+            {statusLabel(row)}
           </Badge>
         );
       default:

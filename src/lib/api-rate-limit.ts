@@ -10,8 +10,9 @@ setInterval(() => {
   });
 }, 60_000).unref();
 
-export function checkRateLimit(identifier: string): Response | null {
+export function checkRateLimit(identifier: string, max: number = maxRequests): Response | null {
   const now = Date.now();
+  const limit = max > 0 ? max : maxRequests;
   let entry = hits.get(identifier);
 
   if (!entry || entry.resetAt <= now) {
@@ -22,7 +23,7 @@ export function checkRateLimit(identifier: string): Response | null {
 
   entry.count++;
 
-  if (entry.count > maxRequests) {
+  if (entry.count > limit) {
     const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
     return Response.json(
       {
@@ -36,7 +37,7 @@ export function checkRateLimit(identifier: string): Response | null {
         status: 429,
         headers: {
           "Retry-After": String(retryAfter),
-          "X-RateLimit-Limit": String(maxRequests),
+          "X-RateLimit-Limit": String(limit),
           "X-RateLimit-Remaining": "0",
           "X-RateLimit-Reset": String(Math.ceil(entry.resetAt / 1000)),
         },
