@@ -133,20 +133,20 @@ test("Production browser defaults use same-origin relay paths instead of raw rel
   const targets = buildRelayTargets({
     language: "en",
     browserProtocol: "https:",
-    browserHost: "aural-ai.com",
+    browserHost: "resiliencesoftinterview.com",
   });
 
-  assert.equal(targets[0].url, "wss://aural-ai.com/ws/voice");
-  assert.equal(targets[1].url, "wss://aural-ai.com/ws/openai-voice");
+  assert.equal(targets[0].url, "wss://resiliencesoftinterview.com/ws/voice");
+  assert.equal(targets[1].url, "wss://resiliencesoftinterview.com/ws/openai-voice");
 });
 
 test("Same-origin voice relay URL derives a same-origin OpenAI relay path", () => {
   const urls = resolveRelayUrls({
-    voiceRelayUrl: "wss://aural-ai.com/ws/voice",
+    voiceRelayUrl: "wss://resiliencesoftinterview.com/ws/voice",
   });
 
-  assert.equal(urls.voiceRelayUrl, "wss://aural-ai.com/ws/voice");
-  assert.equal(urls.openAiRelayUrl, "wss://aural-ai.com/ws/openai-voice");
+  assert.equal(urls.voiceRelayUrl, "wss://resiliencesoftinterview.com/ws/voice");
+  assert.equal(urls.openAiRelayUrl, "wss://resiliencesoftinterview.com/ws/openai-voice");
 });
 
 test("RelayConnector falls back to the secondary relay when the primary never becomes ready", async () => {

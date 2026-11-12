@@ -14,8 +14,8 @@ Thanks for your interest in contributing! This guide will help you get started.
 
 ```bash
 # 1. Fork and clone
-git clone https://github.com/<your-username>/aural-oss.git
-cd aural-oss
+git clone https://github.com/<your-username>/SkillMark.git
+cd SkillMark
 
 # 2. Install dependencies
 npm install
@@ -80,7 +80,7 @@ npm run test:web      # Unit tests
 
 ## Reporting Bugs
 
-Please use the [Bug Report](https://github.com/1146345502/aural-oss/issues/new?template=bug_report.md) issue template. Include:
+Please use the [Bug Report](https://github.com/prateek-resiliencesoft/SkillMark/issues/new?template=bug_report.md) issue template. Include:
 
 - Steps to reproduce
 - Expected vs. actual behavior
@@ -89,7 +89,7 @@ Please use the [Bug Report](https://github.com/1146345502/aural-oss/issues/new?t
 
 ## Feature Requests
 
-Use the [Feature Request](https://github.com/1146345502/aural-oss/issues/new?template=feature_request.md) issue template. Describe:
+Use the [Feature Request](https://github.com/prateek-resiliencesoft/SkillMark/issues/new?template=feature_request.md) issue template. Describe:
 
 - The problem you're solving
 - Your proposed solution

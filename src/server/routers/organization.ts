@@ -16,7 +16,7 @@ export const organizationRouter = router({
     const { data: memberships } = await ctx.supabase
       .from("organization_members")
       .select(
-        "role, organization:organizations(id, name, slug, ownerId, status, plan, createdAt, updatedAt)",
+        "role, organization:organizations(id, name, slug, ownerId, status, plan, defaultInterviewerGender, createdAt, updatedAt)",
       )
       .eq("userId", ctx.user.id);
 
@@ -32,6 +32,7 @@ export const organizationRouter = router({
           ownerId: string;
           status?: string;
           plan?: string;
+          defaultInterviewerGender?: string;
           createdAt: string;
           updatedAt: string;
         } | null;
@@ -40,6 +41,7 @@ export const organizationRouter = router({
           ...org,
           status: org.status ?? "ACTIVE",
           plan: org.plan ?? "SELF_HOSTED",
+          defaultInterviewerGender: org.defaultInterviewerGender === "MALE" ? "MALE" : "FEMALE",
           role: m.role as string,
         };
       })
@@ -221,6 +223,7 @@ export const organizationRouter = router({
       z.object({
         id: z.string(),
         name: z.string().min(1).max(100).optional(),
+        defaultInterviewerGender: z.enum(["FEMALE", "MALE"]).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

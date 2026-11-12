@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
 import { DocsSearch } from "./docs-search";
 import { ExternalLink } from "lucide-react";
 
@@ -13,7 +13,7 @@ export function DocsHeader() {
           href="/docs"
           className="flex items-center gap-1.5 shrink-0 group"
         >
-          <AuralLogo
+          <ProductLogo
             size={30}
             className="transition-transform duration-300 group-hover:scale-110"
           />

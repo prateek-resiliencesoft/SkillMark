@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
+import { interviewerPromptIdentity, resolveOpenAiVoice } from "../src/lib/interviewer-persona";
 import {
   type BigModelAsrConfig,
   BIGMODEL_ASR_URL,
@@ -39,6 +40,9 @@ const AZURE_ENDPOINT = process.env.AZURE_OPENAI_ENDPOINT || "";
 const AZURE_API_KEY = process.env.AZURE_OPENAI_API_KEY || "";
 const AZURE_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-realtime-1.5";
 const AZURE_VOICE = (process.env.AZURE_OPENAI_VOICE || "ash").toLowerCase();
+function sessionOpenAiVoice(gender?: string) {
+  return resolveOpenAiVoice(gender);
+}
 const OPENAI_REALTIME_TRANSCRIPTION_MODEL =
   process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL || "whisper-1";
 
@@ -196,6 +200,7 @@ interface InterviewContext {
   title: string;
   objective?: string | null;
   aiName: string;
+  aiGender?: string;
   aiTone: string;
   language: string;
   followUpDepth: string;
@@ -284,7 +289,8 @@ function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
   const currentQ = startIdx + 1;
 
   if (isZh) {
-    return `你是"${ctx.aiName}"，一位${ctx.aiTone}的AI面试官。
+    const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "zh");
+    return `${ident.line}
 
 ## 面试信息
 - 主题: "${ctx.title}"
@@ -338,7 +344,8 @@ ${questionList}
 - 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。`;
   }
 
-  return `You are "${ctx.aiName}", a ${ctx.aiTone} AI interviewer.
+  const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "en");
+  return `${ident.line}
 
 ## Interview Details
 - Topic: "${ctx.title}"
@@ -1812,7 +1819,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
           input: buildRealtimeAudioInputConfig(),
           output: {
             format: { type: "audio/pcm", rate: 24000 },
-            voice: AZURE_VOICE,
+            voice: sessionOpenAiVoice(ctx.aiGender),
           },
         },
         tools: OPENAI_TOOLS,

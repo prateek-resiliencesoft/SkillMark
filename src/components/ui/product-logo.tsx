@@ -1,13 +1,13 @@
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 
-interface AuralLogoProps {
+interface ProductLogoProps {
   size?: number;
   className?: string;
   priority?: boolean;
 }
 
-export function AuralLogo({ size = 32, className, priority }: AuralLogoProps) {
+export function ProductLogo({ size = 32, className, priority }: ProductLogoProps) {
   return (
     <div
       className={cn(
@@ -28,4 +28,3 @@ export function AuralLogo({ size = 32, className, priority }: AuralLogoProps) {
   );
 }
 
-export { AuralLogo as ProductLogo };
