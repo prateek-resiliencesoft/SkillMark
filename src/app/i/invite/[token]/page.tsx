@@ -9,6 +9,7 @@ import { PreparingScreen } from "@/components/session/preparing-screen";
 import { LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
+import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 export default function InvitePage() {
   const params = useParams();
@@ -100,9 +101,13 @@ export default function InvitePage() {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
               <Link2Off className="h-6 w-6 text-muted-foreground" />
             </div>
-            <h2 className="text-xl font-semibold">Invalid Invite Link</h2>
+            <h2 className="text-xl font-semibold">
+              {/expired/i.test(candidate.error?.message ?? "") ? "This link has expired" : "Invalid Invite Link"}
+            </h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This invite link is invalid or the interview is no longer available.
+              {/expired/i.test(candidate.error?.message ?? "")
+                ? EXPIRED_INVITE_MESSAGE
+                : "This invite link is invalid or the interview is no longer available."}
             </p>
           </CardContent>
         </Card>
@@ -126,16 +131,16 @@ export default function InvitePage() {
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
               <Clock className="h-7 w-7" />
             </div>
-            <h2 className="text-xl font-semibold">Interview Link Expired</h2>
+            <h2 className="text-xl font-semibold">This link has expired</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This interview invitation expired on{" "}
+              {EXPIRED_INVITE_MESSAGE}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This invitation expired on{" "}
               <span className="font-medium text-foreground">
                 {formatDateTime(candidate.data.expiresAt)}
               </span>
               .
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Please contact the hiring team or organization that invited you to request a new link or extension.
             </p>
           </CardContent>
         </Card>

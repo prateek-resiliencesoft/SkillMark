@@ -56,6 +56,7 @@ export interface GeneratedInterview {
     videoEnabled?: boolean;
     followUpDepth: "LIGHT" | "MODERATE" | "DEEP";
     aiTone: "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY";
+    aiGender?: "FEMALE" | "MALE";
     aiName: string;
   };
 }

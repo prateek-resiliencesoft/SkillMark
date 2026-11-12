@@ -1,13 +1,25 @@
 "use client";
 
 import { useAppLocale } from "@/components/app-locale-provider";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useOrg } from "@/components/org-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import {
   Card,
   CardContent,
@@ -38,6 +50,16 @@ export default function OrgSettingsGeneralPage() {
   const isZh = locale === "zh";
 
   const [name, setName] = useState(currentOrg?.name ?? "");
+  const [defaultInterviewerGender, setDefaultInterviewerGender] =
+    useState<InterviewerGender>(
+      normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+    );
+  useEffect(() => {
+    setName(currentOrg?.name ?? "");
+    setDefaultInterviewerGender(
+      normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+    );
+  }, [currentOrg?.id, currentOrg?.name, currentOrg?.defaultInterviewerGender]);
 
   const updateMutation = trpc.organization.update.useMutation({
     onSuccess: () => {
@@ -162,6 +184,59 @@ export default function OrgSettingsGeneralPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{isZh ? "默认面试官" : "Default interviewer"}</CardTitle>
+            <CardDescription>
+              {isZh
+                ? "新建面试时默认使用的面试官性别。单个面试仍可覆盖此设置。"
+                : "Used when creating a new interview. You can still change it on each interview."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>{isZh ? "面试官性别" : "Interviewer gender"}</Label>
+              <Select
+                value={defaultInterviewerGender}
+                onValueChange={(v) =>
+                  setDefaultInterviewerGender(v as InterviewerGender)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>
+                      {isZh ? g.labelZh : g.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              onClick={() =>
+                updateMutation.mutate({
+                  id: currentOrg.id,
+                  defaultInterviewerGender,
+                })
+              }
+              disabled={
+                updateMutation.isPending ||
+                defaultInterviewerGender ===
+                  normalizeInterviewerGender(currentOrg.defaultInterviewerGender)
+              }
+            >
+              {updateMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              {isZh ? "保存" : "Save"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {isAdmin && (
         <Card>

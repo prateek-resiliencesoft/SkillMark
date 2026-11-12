@@ -18,6 +18,7 @@ import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log";
 import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
+import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 
 const log = createLogger("gemini-relay");
 
@@ -224,6 +225,7 @@ interface InterviewContext {
   title: string;
   objective?: string | null;
   aiName: string;
+  aiGender?: string;
   aiTone: string;
   language: string;
   followUpDepth: string;
@@ -314,7 +316,8 @@ function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
   const focus = buildCandidateFocusSection(ctx.candidateFocus, sorted.length);
 
   if (isZh) {
-    return `你是"${ctx.aiName}"，一位${ctx.aiTone}的AI面试官。
+    const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "zh");
+    return `${ident.line}
 
 ## 面试信息
 - 主题: "${ctx.title}"
@@ -368,7 +371,8 @@ ${questionList}
 - 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。${focus}`;
   }
 
-  return `You are "${ctx.aiName}", a ${ctx.aiTone} AI interviewer.
+  const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "en");
+  return `${ident.line}
 
 ## Interview Details
 - Topic: "${ctx.title}"
@@ -491,6 +495,7 @@ interface GeminiConnectOpts {
    * activityStart / activityEnd from Silero VAD + smart endpointing.
    */
   clientVad?: boolean;
+  gender?: string;
 }
 
 async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
@@ -527,7 +532,7 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
           responseModalities: ["AUDIO"],
           speechConfig: {
             languageCode: opts.langCode,
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: GEMINI_VOICE } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: resolveGeminiVoice(opts.gender) } },
           },
           thinkingConfig: { thinkingLevel: "MINIMAL" },
         },
@@ -585,7 +590,7 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
 
 const wss = new WebSocketServer({ port: RELAY_PORT });
 log.info(`Gemini voice relay listening on ws://localhost:${RELAY_PORT}`);
-log.info(`Model: ${GEMINI_LIVE_MODEL}, Voice: ${GEMINI_VOICE}`);
+log.info(`Model: ${GEMINI_LIVE_MODEL}, default fallback voice: ${GEMINI_VOICE}`);
 
 wss.on("connection", (browserWs) => {
   log.info("Browser connected, waiting for init...");
@@ -952,6 +957,7 @@ async function handleInterview(
         const ws = await connectGemini({
           apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
           clientVad: clientVadEnabled,
+          gender: ctx.aiGender,
           systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
         });
         gem = ws;
@@ -978,7 +984,7 @@ async function handleInterview(
 
   // ── Initial connection ──
   try {
-    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
+    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
     attach(gem);
     log.info(`Gemini session established (clientVad=${clientVadEnabled})`);
     send({ type: "ready", sessionId: "gemini-session", clientVad: clientVadEnabled });

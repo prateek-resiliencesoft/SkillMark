@@ -35,6 +35,7 @@ import {
   responseInvitesUserReply,
 } from "./voice-relay-helpers";
 import { bt } from "../src/lib/i18n";
+import { interviewerPromptIdentity } from "../src/lib/interviewer-persona";
 import { createLogger } from "../src/lib/logger";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { SPOKEN, PROMPTS } from "./voice-relay-prompts";
@@ -78,6 +79,7 @@ interface InterviewContext {
   title: string;
   objective?: string | null;
   aiName: string;
+  aiGender?: string;
   aiTone: string;
   language: string;
   followUpDepth: string;

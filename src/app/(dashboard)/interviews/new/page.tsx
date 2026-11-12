@@ -31,6 +31,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -44,7 +49,7 @@ import {
   Video,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export default function NewInterviewPage() {
   const router = useRouter();
@@ -68,6 +73,14 @@ export default function NewInterviewPage() {
   const [aiTone, setAiTone] = useState<
     "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY"
   >("FRIENDLY");
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+  );
+  useEffect(() => {
+    if (currentOrg?.defaultInterviewerGender) {
+      setAiGender(normalizeInterviewerGender(currentOrg.defaultInterviewerGender));
+    }
+  }, [currentOrg?.defaultInterviewerGender]);
   const [followUpDepth, setFollowUpDepth] = useState<
     "LIGHT" | "MODERATE" | "DEEP"
   >("MODERATE");
@@ -116,6 +129,7 @@ export default function NewInterviewPage() {
         voiceEnabled,
         videoEnabled,
         aiTone,
+        aiGender,
         followUpDepth,
         language,
         timeLimitMinutes: duration,
@@ -428,7 +442,25 @@ export default function NewInterviewPage() {
                   <Label className="block text-sm font-medium">
                     {isZh ? "AI 配置" : "AI Configuration"}
                   </Label>
-                  <div className="grid gap-4 rounded-lg border p-3 sm:grid-cols-3">
+                  <div className="grid gap-4 rounded-lg border p-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label>{isZh ? "面试官性别" : "Interviewer gender"}</Label>
+                      <Select
+                        value={aiGender}
+                        onValueChange={(v) => setAiGender(v as InterviewerGender)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                            <SelectItem key={g.value} value={g.value}>
+                              {isZh ? g.labelZh : g.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div className="space-y-2">
                       <Label>{isZh ? "语气" : "Tone"}</Label>
                       <Select

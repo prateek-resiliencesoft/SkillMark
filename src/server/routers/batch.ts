@@ -1,4 +1,5 @@
 import { extractJson } from "@/lib/ai/extract-json";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import type { GeneratedInterview } from "@/lib/ai/types";
@@ -36,6 +37,7 @@ const batchSettings = z.object({
   voiceEnabled: z.boolean().default(true),
   videoEnabled: z.boolean().default(true),
   aiTone: z.enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"]).default("FRIENDLY"),
+  aiGender: z.enum(["FEMALE", "MALE"]).default("FEMALE"),
   followUpDepth: z.enum(["LIGHT", "MODERATE", "DEEP"]).default("MODERATE"),
   antiCheatingEnabled: z.boolean().default(false),
   headMovementDetectionEnabled: z.boolean().default(false),
@@ -119,7 +121,7 @@ export const batchRouter = router({
 
       const { data: batches, error } = await ctx.supabase
         .from("interview_batches")
-        .select("id, name, createdAt, settings, candidates(id, emailStatus, whatsappStatus, session:sessions(status))")
+        .select("id, name, createdAt, settings, candidates(id, emailStatus, whatsappStatus, session:sessions!candidates_sessionId_fkey(status))")
         .eq("projectId", projectId)
         .order("createdAt", { ascending: false });
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
@@ -142,7 +144,7 @@ export const batchRouter = router({
     const { data: candidates, error } = await ctx.supabase
       .from("candidates")
       .select(
-        "*, session:sessions(id, status, startedAt, completedAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
+        "*, session:sessions!candidates_sessionId_fkey(id, status, startedAt, completedAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
       )
       .eq("batchId", input.id)
       .order("createdAt", { ascending: true });
@@ -270,7 +272,11 @@ export const batchRouter = router({
           chatEnabled: settings.chatEnabled,
           voiceEnabled: settings.voiceEnabled,
           videoEnabled: settings.voiceEnabled && settings.videoEnabled,
-          aiName: generated.recommendedSettings?.aiName || "ResilienceSoft Interview",
+          aiGender: normalizeInterviewerGender(settings.aiGender ?? generated.recommendedSettings?.aiGender),
+          aiName: resolveInterviewerName(
+            generated.recommendedSettings?.aiName,
+            settings.aiGender ?? generated.recommendedSettings?.aiGender,
+          ),
           aiTone: settings.aiTone,
           followUpDepth: settings.followUpDepth,
           language: settings.language,
@@ -418,7 +424,7 @@ export const batchRouter = router({
 
       const { data: c, error: loadErr } = await ctx.supabase
         .from("candidates")
-        .select("id, batchId, interviewId, session:sessions(id, status, interviewBeganAt)")
+        .select("id, batchId, interviewId, session:sessions!candidates_sessionId_fkey(id, status, interviewBeganAt)")
         .eq("id", input.candidateId)
         .maybeSingle();
       if (loadErr) {
@@ -464,7 +470,7 @@ export const batchRouter = router({
 
       const { data: rows, error: loadErr } = await ctx.supabase
         .from("candidates")
-        .select("id, batchId, interviewId, session:sessions(id, status, interviewBeganAt)")
+        .select("id, batchId, interviewId, session:sessions!candidates_sessionId_fkey(id, status, interviewBeganAt)")
         .eq("batchId", input.batchId)
         .in("id", input.candidateIds);
       if (loadErr) {

@@ -165,7 +165,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
   }, async ({ form_id, limit }) => {
     const form = await resolveFormForKey(form_id, auth);
     if (form instanceof Response) return fail(form.status === 404 ? "NOT_FOUND" : "FORBIDDEN", (await form.json()).error.message);
-    const { data } = await supabaseAdmin.from("applications").select("*, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))").eq("formId", form.id).order("createdAt", { ascending: false }).limit(limit);
+    const { data } = await supabaseAdmin.from("applications").select("*, candidate:candidates(inviteToken, sessionId, session:sessions!candidates_sessionId_fkey(id, status))").eq("formId", form.id).order("createdAt", { ascending: false }).limit(limit);
     return ok(await Promise.all((data ?? []).map((a: any) => serializeApplication(a, form, a.candidate ?? null, a.candidate?.session ?? null, base, false))));
   }, { readOnlyHint: true });
 

@@ -162,6 +162,7 @@ export default function SlugSessionPage() {
     const mockContext: InterviewContext = {
       title: interview.data.title,
       aiName: interview.data.aiName ?? "ResilienceSoft Interview",
+      aiGender: interview.data.aiGender ?? "FEMALE",
       aiTone: "professional",
       language: interview.data.language ?? "en-US",
       followUpDepth: "medium",
@@ -218,6 +219,7 @@ export default function SlugSessionPage() {
       title: interview.data.title,
       objective: interview.data.objective,
       aiName: interview.data.aiName,
+      aiGender: interview.data.aiGender,
       aiTone: interview.data.aiTone,
       language: interview.data.language,
       followUpDepth: interview.data.followUpDepth,

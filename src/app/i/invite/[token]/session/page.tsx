@@ -15,6 +15,7 @@ import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
   () => import("@/components/session/chat-interface").then((m) => m.ChatInterface),
@@ -133,16 +134,16 @@ export default function InviteSessionPage() {
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
               <Clock className="h-7 w-7" />
             </div>
-            <h2 className="text-xl font-semibold">Interview Link Expired</h2>
+            <h2 className="text-xl font-semibold">This link has expired</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This interview invitation expired on{" "}
+              {EXPIRED_INVITE_MESSAGE}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This invitation expired on{" "}
               <span className="font-medium text-foreground">
                 {formatDateTime(candidate.data.expiresAt)}
               </span>
               .
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Please contact the hiring team or organization that invited you to request a new link or extension.
             </p>
           </CardContent>
         </Card>
@@ -214,6 +215,7 @@ export default function InviteSessionPage() {
       title: interview.title,
       objective: interview.objective,
       aiName: interview.aiName,
+      aiGender: interview.aiGender,
       aiTone: interview.aiTone,
       language: interview.language,
       followUpDepth: interview.followUpDepth,

@@ -818,7 +818,8 @@ To run an interview: 1. Create interview (\`POST /interviews\`), 2. Add question
           chatEnabled: { type: "boolean", default: true },
           voiceEnabled: { type: "boolean", default: false },
           videoEnabled: { type: "boolean", default: false },
-          aiName: { type: "string", default: "ResilienceSoft Interview", example: "Alex" },
+          aiGender: { type: "string", enum: ["FEMALE", "MALE"], default: "FEMALE", example: "FEMALE" },
+          aiName: { type: "string", example: "Sarah", description: "Interviewer persona name. Defaults to Sarah (female) or Alex (male) based on aiGender." },
           aiTone: {
             type: "string",
             enum: ["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"],
@@ -854,6 +855,7 @@ To run an interview: 1. Create interview (\`POST /interviews\`), 2. Add question
           chatEnabled: { type: "boolean" },
           voiceEnabled: { type: "boolean" },
           videoEnabled: { type: "boolean" },
+          aiGender: { type: "string", enum: ["FEMALE", "MALE"] },
           aiName: { type: ["string", "null"] },
           aiTone: { type: "string", enum: ["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"] },
           followUpDepth: { type: "string", enum: ["LIGHT", "MODERATE", "DEEP"] },

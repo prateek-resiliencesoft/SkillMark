@@ -25,6 +25,13 @@ import { useToast } from "@/hooks/use-toast";
 import type { CompletionNotifyMember } from "@/lib/completion-notify";
 import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  getInterviewerPersona,
+  isDefaultInterviewerName,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import { trpc } from "@/lib/trpc/client";
 import {
     Copy,
@@ -84,6 +91,9 @@ export default function SettingsTab() {
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(interview.voiceEnabled ?? false);
   const [videoEnabled, setVideoEnabled] = useState<boolean>(interview.videoEnabled ?? false);
   const [aiName, setAiName] = useState<string>(interview.aiName);
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender((interview as { aiGender?: string }).aiGender),
+  );
   const [aiTone, setAiTone] = useState<string>(interview.aiTone);
   const [followUpDepth, setFollowUpDepth] = useState<string>(interview.followUpDepth);
   const [language, setLanguage] = useState<string>(
@@ -332,6 +342,30 @@ export default function SettingsTab() {
             <Input value={aiName} onChange={(e) => setAiName(e.target.value)} />
           </div>
           <div className="space-y-2">
+            <Label>Interviewer gender</Label>
+            <Select
+              value={aiGender}
+              onValueChange={(v) => {
+                const next = v as InterviewerGender;
+                setAiGender(next);
+                if (isDefaultInterviewerName(aiName)) {
+                  setAiName(getInterviewerPersona(next).name);
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                  <SelectItem key={g.value} value={g.value}>
+                    {g.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
             <Label>Tone</Label>
             <Select value={aiTone} onValueChange={setAiTone}>
               <SelectTrigger>
@@ -457,6 +491,7 @@ export default function SettingsTab() {
               voiceEnabled,
               videoEnabled,
               aiName,
+              aiGender,
               aiTone,
               followUpDepth,
               language,

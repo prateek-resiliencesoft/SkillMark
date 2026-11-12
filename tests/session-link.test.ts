@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { HEARTBEAT_GRACE_MS, isHeartbeatStale, isLinkConsumed } from "@/lib/session-link";
+import { HEARTBEAT_GRACE_MS, isHeartbeatStale, isLinkConsumed, needsFreshInviteLink } from "@/lib/session-link";
 
 const NOW = 1_800_000_000_000;
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -56,5 +56,48 @@ describe("isLinkConsumed", () => {
   it("keeps open sessions usable", () => {
     assert.equal(isLinkConsumed("IN_PROGRESS"), false);
     assert.equal(isLinkConsumed(undefined), false);
+  });
+});
+
+describe("needsFreshInviteLink", () => {
+  it("is true for abandoned sessions", () => {
+    assert.equal(needsFreshInviteLink({ session: { status: "ABANDONED" }, nowMs: NOW }), true);
+  });
+
+  it("is true when the invite expiry has passed and no session has started", () => {
+    assert.equal(
+      needsFreshInviteLink({ session: null, expiresAt: ago(1_000), nowMs: NOW }),
+      true,
+    );
+  });
+
+  it("is true for an in-progress session whose heartbeat is stale", () => {
+    assert.equal(
+      needsFreshInviteLink({
+        session: {
+          status: "IN_PROGRESS",
+          interviewBeganAt: ago(60_000),
+          lastHeartbeatAt: ago(HEARTBEAT_GRACE_MS + 1),
+        },
+        nowMs: NOW,
+      }),
+      true,
+    );
+  });
+
+  it("is false for a still-valid unused or active link", () => {
+    assert.equal(needsFreshInviteLink({ session: null, expiresAt: null, nowMs: NOW }), false);
+    assert.equal(
+      needsFreshInviteLink({
+        session: { status: "IN_PROGRESS", interviewBeganAt: ago(10_000), lastHeartbeatAt: ago(1_000) },
+        nowMs: NOW,
+      }),
+      false,
+    );
+  });
+
+  it("is false for completed or disqualified sessions (no retake from this action)", () => {
+    assert.equal(needsFreshInviteLink({ session: { status: "COMPLETED" }, nowMs: NOW }), false);
+    assert.equal(needsFreshInviteLink({ session: { status: "DISQUALIFIED" }, nowMs: NOW }), false);
   });
 });

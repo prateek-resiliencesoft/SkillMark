@@ -295,7 +295,7 @@ export const interviewFormRouter = router({
     const form = await loadForm(ctx, input.id);
     const { data } = await ctx.supabase
       .from("applications")
-      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, files, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))")
+      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, files, candidate:candidates(inviteToken, sessionId, session:sessions!candidates_sessionId_fkey(id, status))")
       .eq("formId", form.id)
       .order("createdAt", { ascending: false })
       .limit(200);
