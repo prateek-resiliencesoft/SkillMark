@@ -25,7 +25,7 @@ export async function POST(req: Request) {
 
     const { data: interview } = await supabaseAdmin
       .from("interviews")
-      .select("id, title, aiName, questions(id)")
+      .select("id, title, aiName, aiGender, questions(id)")
       .eq("id", access.interviewId)
       .order("order", { referencedTable: "questions", ascending: true })
       .maybeSingle();
@@ -43,6 +43,7 @@ export async function POST(req: Request) {
       sessionId: access.sessionId,
       interviewTitle: interview.title,
       aiName: interview.aiName,
+      aiGender: interview.aiGender,
       questionCount: questions.length,
     });
   } catch (error) {

@@ -214,6 +214,7 @@ export default function InviteSessionPage() {
       title: interview.title,
       objective: interview.objective,
       aiName: interview.aiName,
+      aiGender: interview.aiGender,
       aiTone: interview.aiTone,
       language: interview.language,
       followUpDepth: interview.followUpDepth,

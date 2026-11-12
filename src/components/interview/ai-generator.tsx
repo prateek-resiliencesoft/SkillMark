@@ -52,6 +52,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { AssessmentCriterion, GeneratedInterview, GeneratedQuestion } from "@/lib/ai/types";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -274,6 +279,14 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [aiTone, setAiTone] = useState<"CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY">("FRIENDLY");
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+  );
+  useEffect(() => {
+    if (currentOrg?.defaultInterviewerGender) {
+      setAiGender(normalizeInterviewerGender(currentOrg.defaultInterviewerGender));
+    }
+  }, [currentOrg?.defaultInterviewerGender]);
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [language, setLanguage] = useState("en");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
@@ -578,6 +591,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
         videoEnabled,
         language,
         aiTone,
+        aiGender,
         aiName: result.recommendedSettings.aiName,
         followUpDepth,
         antiCheatingEnabled,
@@ -972,6 +986,21 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               </Select>
             </div>
             <div className="space-y-2">
+              <Label>Interviewer gender</Label>
+              <Select value={aiGender} onValueChange={(v) => setAiGender(v as InterviewerGender)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>
+                      {g.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
               <Label>Tone</Label>
               <Select value={aiTone} onValueChange={(v) => setAiTone(v as typeof aiTone)}>
                 <SelectTrigger>
@@ -1214,6 +1243,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               {voiceEnabled && <Badge>Voice</Badge>}
               {videoEnabled && <Badge>Video</Badge>}
               <Badge variant="outline">{aiTone}</Badge>
+              <Badge variant="outline">{aiGender === "MALE" ? "Male" : "Female"}</Badge>
               <Badge variant="secondary">
                 ~{result.estimatedDurationMinutes} min
               </Badge>

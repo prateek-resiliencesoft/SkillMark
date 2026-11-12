@@ -33,6 +33,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { CandidateProfile, ReviewFlag } from "@/lib/documents/cv-profile";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
@@ -143,6 +148,9 @@ export function BulkCvGenerator({
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [aiTone, setAiTone] = useState<"CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY">("FRIENDLY");
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+  );
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState(false);
@@ -293,6 +301,7 @@ export function BulkCvGenerator({
         voiceEnabled,
         videoEnabled,
         aiTone,
+        aiGender,
         followUpDepth,
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
@@ -465,6 +474,13 @@ export function BulkCvGenerator({
               value={interviewType}
               onChange={(v) => setInterviewType(v as typeof interviewType)}
               options={INTERVIEW_TYPES}
+              disabled={!!batchId}
+            />
+            <SettingSelect
+              label="Interviewer gender"
+              value={aiGender}
+              onChange={(v) => setAiGender(v as InterviewerGender)}
+              options={INTERVIEWER_GENDER_OPTIONS.map((g) => ({ value: g.value, label: g.label }))}
               disabled={!!batchId}
             />
             <SettingSelect label="Tone" value={aiTone} onChange={(v) => setAiTone(v as typeof aiTone)} options={AI_TONES} disabled={!!batchId} />

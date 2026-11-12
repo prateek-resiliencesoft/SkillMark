@@ -2,7 +2,7 @@
 
 import { writeActiveOrgCookie } from "@/lib/active-org";
 import { useAuth } from "@/components/auth-provider";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -135,7 +135,7 @@ export default function AcceptOrgInvitePage() {
 
       <div className="relative w-full max-w-md space-y-6 rounded-2xl border bg-card/70 p-8 shadow-sm backdrop-blur-sm">
         <div className="flex flex-col items-center gap-2 text-center">
-          <AuralLogo size={36} priority />
+          <ProductLogo size={36} priority />
           <p className="font-heading text-xs font-bold tracking-[2px]">
             RESILIENCESOFT INTERVIEW AI
           </p>

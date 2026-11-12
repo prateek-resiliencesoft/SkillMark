@@ -26,6 +26,7 @@ export interface OrgInfo {
   /** ACTIVE | SUSPENDED — paused orgs are read-mostly for members. */
   status?: string;
   plan?: string;
+  defaultInterviewerGender?: "FEMALE" | "MALE";
 }
 
 interface OrgContextValue {

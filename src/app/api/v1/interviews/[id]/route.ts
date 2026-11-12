@@ -4,6 +4,7 @@ import {
   validateApiKey,
 } from "@/lib/api-key-auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 
 export async function GET(
   request: Request,
@@ -56,6 +57,7 @@ const PATCH_FIELDS = [
   "voiceEnabled",
   "videoEnabled",
   "aiName",
+  "aiGender",
   "aiTone",
   "followUpDepth",
   "language",
@@ -139,6 +141,13 @@ export async function PATCH(
       patch[key] = val;
       continue;
     }
+    if (key === "aiGender") {
+      if (val !== "FEMALE" && val !== "MALE") {
+        return apiError("BAD_REQUEST", "Invalid aiGender.", 400);
+      }
+      patch.aiGender = val;
+      continue;
+    }
     if (key === "aiTone") {
       if (
         val !== "CASUAL" &&
@@ -188,6 +197,23 @@ export async function PATCH(
 
   if (Object.keys(patch).length === 0) {
     return apiError("BAD_REQUEST", "No valid fields to update.", 400);
+  }
+
+  if (patch.aiGender || patch.aiName !== undefined) {
+    let currentName = typeof patch.aiName === "string" ? patch.aiName : undefined;
+    let currentGender = typeof patch.aiGender === "string" ? patch.aiGender : undefined;
+    if (currentName === undefined || currentGender === undefined) {
+      const { data: current } = await supabaseAdmin
+        .from("interviews")
+        .select("aiName, aiGender")
+        .eq("id", id)
+        .in("projectId", auth.projectIds)
+        .maybeSingle();
+      currentName = currentName ?? (current?.aiName as string | undefined);
+      currentGender = currentGender ?? (current?.aiGender as string | undefined);
+    }
+    patch.aiGender = normalizeInterviewerGender(currentGender);
+    patch.aiName = resolveInterviewerName(currentName, currentGender);
   }
 
   const { data: updated, error } = await supabaseAdmin

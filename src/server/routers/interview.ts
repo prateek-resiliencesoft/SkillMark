@@ -3,6 +3,7 @@ import { INTERVIEW_TEMPLATES } from "@/lib/interview-templates";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import {
   assertMinRole,
   filterAccessibleProjectIds,
@@ -344,7 +345,8 @@ export const interviewRouter = router({
         chatEnabled: z.boolean().default(true),
         voiceEnabled: z.boolean().default(false),
         videoEnabled: z.boolean().default(false),
-        aiName: z.string().default("ResilienceSoft Interview"),
+        aiName: z.string().optional(),
+        aiGender: z.enum(["FEMALE", "MALE"]).optional(),
         aiTone: z
           .enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"])
           .default("PROFESSIONAL"),
@@ -454,8 +456,18 @@ export const interviewRouter = router({
       const { assertQuota } = await import("../quotas");
       await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
 
+      const { data: orgDefaults } = await ctx.supabase
+        .from("organizations")
+        .select("defaultInterviewerGender")
+        .eq("id", project.organizationId)
+        .maybeSingle();
+      const aiGender = normalizeInterviewerGender(
+        input.aiGender ?? (orgDefaults as { defaultInterviewerGender?: string } | null)?.defaultInterviewerGender,
+      );
+      const aiName = resolveInterviewerName(input.aiName, aiGender);
+
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { projectId: _pid, ...rest } = input;
+      const { projectId: _pid, aiName: _n, aiGender: _g, ...rest } = input;
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .insert({
@@ -463,6 +475,8 @@ export const interviewRouter = router({
           projectId,
           userId: ctx.user.id,
           requireInvite: true,
+          aiGender,
+          aiName,
         })
         .select()
         .single();
@@ -537,12 +551,24 @@ export const interviewRouter = router({
       const { assertQuota } = await import("../quotas");
       await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
 
+      const { data: orgDefaults } = await ctx.supabase
+        .from("organizations")
+        .select("defaultInterviewerGender")
+        .eq("id", project.organizationId)
+        .maybeSingle();
+      const aiGender = normalizeInterviewerGender(
+        (orgDefaults as { defaultInterviewerGender?: string } | null)?.defaultInterviewerGender,
+      );
+      const aiName = resolveInterviewerName(undefined, aiGender);
+
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .insert({
           title: template.title,
           description: template.description,
           objective: template.objective,
+          aiGender,
+          aiName,
           aiTone: template.aiTone,
           followUpDepth: template.followUpDepth,
           assessmentCriteria: template.assessmentCriteria,
@@ -597,6 +623,7 @@ export const interviewRouter = router({
         videoEnabled: z.boolean().optional(),
         aiPersona: z.string().optional(),
         aiName: z.string().optional(),
+        aiGender: z.enum(["FEMALE", "MALE"]).optional(),
         aiTone: z
           .enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"])
           .optional(),
@@ -643,6 +670,16 @@ export const interviewRouter = router({
       assertMinRole(result.role, "MEMBER");
 
       const { id, ...data } = input;
+      const nextGender = normalizeInterviewerGender(
+        data.aiGender ?? (result.interview as { aiGender?: string }).aiGender,
+      );
+      if (data.aiGender || data.aiName !== undefined) {
+        data.aiName = resolveInterviewerName(
+          data.aiName ?? result.interview.aiName,
+          data.aiGender ?? nextGender,
+        );
+        if (data.aiGender) data.aiGender = nextGender;
+      }
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .update(data)
@@ -830,6 +867,7 @@ export const interviewRouter = router({
           projectId: source.projectId,
           aiPersona: source.aiPersona,
           aiName: source.aiName,
+          aiGender: (source as { aiGender?: string }).aiGender ?? "FEMALE",
           aiTone: source.aiTone,
           followUpDepth: source.followUpDepth,
           language: source.language,

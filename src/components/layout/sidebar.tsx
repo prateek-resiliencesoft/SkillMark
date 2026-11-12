@@ -8,7 +8,7 @@ import { TourCelebration } from "@/components/tour/tour-celebration";
 import { TourOverlay } from "@/components/tour/tour-overlay";
 import { TourProvider } from "@/components/tour/tour-provider";
 import { TourWelcome } from "@/components/tour/tour-welcome";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
 import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -266,7 +266,7 @@ export function Sidebar({
       <div className="flex h-14 items-center border-b px-4">
         <Link href="/organizations" className="flex items-center gap-2">
           {collapsed ? (
-            <AuralLogo size={28} className="shrink-0" priority />
+            <ProductLogo size={28} className="shrink-0" priority />
           ) : (
             <BrandWordmark height={36} priority />
           )}

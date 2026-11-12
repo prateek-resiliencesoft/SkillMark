@@ -63,6 +63,7 @@ export type Database = {
           stripeCustomerId: string | null;
           stripeSubscriptionId: string | null;
           billingEmail: string | null;
+          defaultInterviewerGender: Database["public"]["Enums"]["InterviewerGender"];
           createdAt: string;
           updatedAt: string;
         };
@@ -78,6 +79,7 @@ export type Database = {
           stripeCustomerId?: string | null;
           stripeSubscriptionId?: string | null;
           billingEmail?: string | null;
+          defaultInterviewerGender?: Database["public"]["Enums"]["InterviewerGender"];
           createdAt?: string;
           updatedAt?: string;
         };
@@ -234,6 +236,7 @@ export type Database = {
           projectId: string | null;
           aiPersona: string | null;
           aiName: string;
+          aiGender: Database["public"]["Enums"]["InterviewerGender"];
           aiTone: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth: Database["public"]["Enums"]["FollowUpDepth"];
           language: string;
@@ -263,6 +266,7 @@ export type Database = {
           projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
+          aiGender?: Database["public"]["Enums"]["InterviewerGender"];
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth?: Database["public"]["Enums"]["FollowUpDepth"];
           language?: string;
@@ -292,6 +296,7 @@ export type Database = {
           projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
+          aiGender?: Database["public"]["Enums"]["InterviewerGender"];
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth?: Database["public"]["Enums"]["FollowUpDepth"];
           language?: string;
@@ -735,6 +740,7 @@ export type Database = {
     Views: Record<string, never>;
     Functions: Record<string, never>;
     Enums: {
+      InterviewerGender: "FEMALE" | "MALE",
       UserRole: "USER" | "ADMIN" | "ENTERPRISE";
       MemberRole: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
       OrgStatus: "ACTIVE" | "SUSPENDED" | "DELETED";

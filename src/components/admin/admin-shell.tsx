@@ -4,7 +4,7 @@
  * Control-center chrome with a left sidebar (mirrors the product shell).
  * Separate from org context so operators do not confuse scopes.
  */
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
 import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -99,7 +99,7 @@ export function AdminShell({
         <div className="flex h-14 items-center border-b px-4">
           <Link href="/admin" className="flex items-center gap-2">
             {collapsed ? (
-              <AuralLogo size={28} className="shrink-0" priority />
+              <ProductLogo size={28} className="shrink-0" priority />
             ) : (
               <BrandWordmark height={36} priority />
             )}

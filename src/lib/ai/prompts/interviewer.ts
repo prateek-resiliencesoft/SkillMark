@@ -1,4 +1,5 @@
 import type { Tables } from "@/lib/supabase/types";
+import { interviewerPromptIdentity } from "@/lib/interviewer-persona";
 import type { LLMMessage } from "../types";
 
 interface InterviewContext {
@@ -34,7 +35,8 @@ export function buildInterviewerPrompt(ctx: InterviewContext): LLMMessage[] {
     interview.videoEnabled && "Video",
   ].filter(Boolean).join(", ");
 
-  const systemPrompt = `You are ${interview.aiName}, an expert interviewer conducting a structured conversation.
+  const ident = interviewerPromptIdentity(interview.aiName, (interview as { aiGender?: string }).aiGender, interview.aiTone, "en");
+  const systemPrompt = `${ident.line} You are conducting a structured conversation.
 
 INTERVIEW CONTEXT:
 - Title: ${interview.title}

@@ -33,6 +33,7 @@ export interface InterviewContext {
   title: string;
   objective?: string | null;
   aiName: string;
+  aiGender?: string;
   aiTone: string;
   language: string;
   followUpDepth: string;

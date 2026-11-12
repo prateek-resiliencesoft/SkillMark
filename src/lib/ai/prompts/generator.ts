@@ -19,7 +19,7 @@ export function buildGeneratorPrompt(
   premadeQuestions?: PremadeQuestionInput[],
 ): LLMMessage[] {
   const languageInstruction = language && language !== "en"
-    ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiName MUST stay exactly "ResilienceSoft Interview".\n`
+    ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n`
     : "";
 
   const contextInstruction = (jobDescription || resumeText)
@@ -68,7 +68,7 @@ GUIDELINES:
 - For CODING questions, set "options" to null. Write a clear problem statement in the question text. Include a "starterCode" object with "language" and "code" fields containing a code template for the participant.
 - Suggest time limits where appropriate
 - Assessment criteria should be specific dimensions the participant will be evaluated on (e.g. "Communication Skills", "Problem Solving Ability", "Cultural Fit")
-- recommendedSettings.aiName MUST be exactly "ResilienceSoft Interview". Never use "Aural" or any other name.
+- recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.
 
 QUESTION TYPES:
 - "OPEN_ENDED": Free-form text or verbal response. Set "options" to null.
@@ -104,7 +104,8 @@ OUTPUT VALID JSON ONLY (no markdown, no explanation):
     "mode": "CHAT" | "VOICE" | "HYBRID",
     "followUpDepth": "LIGHT" | "MODERATE" | "DEEP",
     "aiTone": "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY",
-    "aiName": "string suggestion"
+    "aiGender": "FEMALE" | "MALE",
+    "aiName": "Sarah" | "Alex"
   }
 }`,
     },
@@ -149,8 +150,8 @@ export function buildImprovePrompt(
     {
       role: "system",
       content: `You are an expert interview designer. Improve an existing interview based on user feedback.
-${language && language !== "en" ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiName MUST stay exactly "ResilienceSoft Interview".\n` : ""}
-The interviewer name (recommendedSettings.aiName) MUST be exactly "ResilienceSoft Interview". Never use "Aural" or any other name.
+${language && language !== "en" ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n` : ""}
+recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.
 QUESTION TYPES:
 - "OPEN_ENDED": Free-form text or verbal response. Set "options" to null.
 - "SINGLE_CHOICE": Participant picks exactly one option. MUST include "options" with 2-6 option strings.
@@ -184,7 +185,8 @@ OUTPUT VALID JSON ONLY (no markdown, no explanation):
     "mode": "CHAT" | "VOICE" | "HYBRID",
     "followUpDepth": "LIGHT" | "MODERATE" | "DEEP",
     "aiTone": "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY",
-    "aiName": "string suggestion"
+    "aiGender": "FEMALE" | "MALE",
+    "aiName": "Sarah" | "Alex"
   }
 }
 

@@ -1,4 +1,5 @@
 import { extractJson } from "@/lib/ai/extract-json";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import type { GeneratedInterview } from "@/lib/ai/types";
@@ -36,6 +37,7 @@ const batchSettings = z.object({
   voiceEnabled: z.boolean().default(true),
   videoEnabled: z.boolean().default(true),
   aiTone: z.enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"]).default("FRIENDLY"),
+  aiGender: z.enum(["FEMALE", "MALE"]).default("FEMALE"),
   followUpDepth: z.enum(["LIGHT", "MODERATE", "DEEP"]).default("MODERATE"),
   antiCheatingEnabled: z.boolean().default(false),
   headMovementDetectionEnabled: z.boolean().default(false),
@@ -270,7 +272,11 @@ export const batchRouter = router({
           chatEnabled: settings.chatEnabled,
           voiceEnabled: settings.voiceEnabled,
           videoEnabled: settings.voiceEnabled && settings.videoEnabled,
-          aiName: generated.recommendedSettings?.aiName || "ResilienceSoft Interview",
+          aiGender: normalizeInterviewerGender(settings.aiGender ?? generated.recommendedSettings?.aiGender),
+          aiName: resolveInterviewerName(
+            generated.recommendedSettings?.aiName,
+            settings.aiGender ?? generated.recommendedSettings?.aiGender,
+          ),
           aiTone: settings.aiTone,
           followUpDepth: settings.followUpDepth,
           language: settings.language,

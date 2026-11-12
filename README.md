@@ -1,7 +1,7 @@
 > **Update (Oct 2026): Supabase has been removed.** Resiliencesoft Interview AI now runs on plain Postgres (Docker), PostgREST, its own cookie/JWT auth and local-disk storage. For the current setup, run commands and VPS deploy steps, see [docs/RUN.md](docs/RUN.md). Any Supabase instructions below are out of date.
 
 <p align="center">
-  <a href="https://aural-ai.com">
+  <a href="https://resiliencesoftinterview.com">
     <img src="public/images/skillmark-logo.png" alt="Resiliencesoft Interview AI" width="80" height="80" />
   </a>
 </p>
@@ -14,9 +14,9 @@
 </p>
 
 <p align="center">
-  <a href="https://aural-ai.com">Website</a> &nbsp;·&nbsp;
+  <a href="https://resiliencesoftinterview.com">Website</a> &nbsp;·&nbsp;
   <a href="https://youtu.be/Mmn1tjTzuwQ">Video Intro</a> &nbsp;·&nbsp;
-  <a href="https://aural-ai.com/docs">Docs</a> &nbsp;·&nbsp;
+  <a href="https://resiliencesoftinterview.com/docs">Docs</a> &nbsp;·&nbsp;
   <a href="#deployment">Deploy</a>
 </p>
 
@@ -32,7 +32,7 @@
 <br/>
 
 <p align="center">
-  <a href="https://aural-ai.com">
+  <a href="https://resiliencesoftinterview.com">
     <img src="public/images/marketing/hero-screenshots.webp" alt="Resiliencesoft Interview AI — interview platform" width="820" />
   </a>
 </p>
@@ -44,7 +44,7 @@
 
 <p align="center">
   <b>
-    <a href="https://aural-ai.com">Try Cloud &rarr;</a>
+    <a href="https://resiliencesoftinterview.com">Try Cloud &rarr;</a>
   </b>
   &nbsp;&nbsp;&nbsp;
   <b>
@@ -387,7 +387,7 @@ npm run dev:voice:gemini
 
 Open [http://localhost:3000/login](http://localhost:3000/login) or [http://localhost:3000/register](http://localhost:3000/register).
 
-> **Note:** Managed cloud at [aural-ai.com](https://aural-ai.com) is the upstream Aural SaaS — Resiliencesoft Interview AI is the Resiliencesoft fork for self-host and customization.
+> **Note:** Managed product site: [resiliencesoftinterview.com](https://resiliencesoftinterview.com). This repository is the ResilienceSoft Interview codebase for self-host and customization.
 
 ---
 
@@ -570,11 +570,11 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Credits & upstream
 
-Resiliencesoft Interview AI is maintained by **Resiliencesoft** as a fork of the open-source **Aural** project.
+ResilienceSoft Interview is maintained by **ResilienceSoft**. It is a fork of the open-source Aural project (upstream attribution only).
 
 - Official upstream: [github.com/1146345502/aural-oss](https://github.com/1146345502/aural-oss)
-- Product site: [aural-ai.com](https://aural-ai.com)
-- Built originally by [AuraTerra Nexus](https://aural-ai.com) — thank you for releasing Aural under MIT so the community can build on it.
+- Product site: [resiliencesoftinterview.com](https://resiliencesoftinterview.com)
+- Originally released as Aural under MIT by AuraTerra Nexus — thank you. Upstream: [github.com/1146345502/aural-oss](https://github.com/1146345502/aural-oss).
 
 We keep attribution and the MIT license intact. New Resiliencesoft Interview AI work (Postgres/PostgREST stack, Integrations UI, Settings → AI keys, Interview Form Integration, and related product changes) is developed by Resiliencesoft.
 
