@@ -1,4 +1,6 @@
-import { expireIfStale } from "@/lib/session-link-server";
+import { expireIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
+import { needsFreshInviteLink } from "@/lib/session-link";
+import { inviteLink } from "../batch-access";
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
@@ -9,7 +11,7 @@ import {
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
-import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
+import { loadDeliveryConfig, resolveInviteSchedule, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
@@ -225,6 +227,103 @@ export const candidateRouter = router({
       return sendCandidateInvite(ctx.supabase, organizationId, c.id, input.channels);
     }),
 
+  /**
+   * Invalidate the current invite token, detach the abandoned/expired session
+   * (kept for audit), and issue a fresh link the candidate can start again.
+   */
+  sendNewLink: protectedProcedure
+    .input(z.object({ candidateId: z.string(), channels: sendViaSchema.optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("*, session:sessions(*)")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      const { role, organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let session = (c as { session?: any }).session ?? null;
+      if (session && typeof session === "object" && !Array.isArray(session)) {
+        session = await expireIfStale(session);
+      } else {
+        session = null;
+      }
+
+      const status = session?.status as string | undefined;
+      if (status === "COMPLETED" || status === "DISQUALIFIED") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This interview is already finished. A new link cannot be issued.",
+        });
+      }
+      if (
+        !needsFreshInviteLink({
+          session,
+          expiresAt: (c.expiresAt as string | null) ?? null,
+        })
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This link is still valid. Use Resend to send it again, or wait until the session expires.",
+        });
+      }
+
+      const oldToken = (c.inviteToken as string | null) ?? null;
+      const inviteToken = nanoid(12);
+      const { expiresAt } = resolveInviteSchedule({ inviteSchedule: "immediate" });
+      const revoked = Array.isArray(c.revokedInviteTokens)
+        ? [...(c.revokedInviteTokens as string[])]
+        : [];
+      if (oldToken && !revoked.includes(oldToken)) revoked.push(oldToken);
+
+      if (session?.id) {
+        const now = new Date().toISOString();
+        await ctx.supabase
+          .from("sessions")
+          .update({
+            candidateId: c.id,
+            supersededAt: now,
+            ...(session.status === "IN_PROGRESS" ? { status: "ABANDONED", endReason: "DISCONNECTED" } : {}),
+          })
+          .eq("id", session.id);
+      }
+
+      const { data: updated, error } = await ctx.supabase
+        .from("candidates")
+        .update({
+          inviteToken,
+          expiresAt,
+          scheduledAt: null,
+          sessionId: null,
+          revokedInviteTokens: revoked,
+          updatedAt: new Date().toISOString(),
+        })
+        .eq("id", c.id)
+        .select("id, inviteToken, expiresAt")
+        .single();
+      if (error || !updated) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error?.message ?? "Could not issue a new invite link",
+        });
+      }
+
+      const channels = input.channels ?? {
+        email: !!c.email,
+        whatsapp: !!c.phone,
+      };
+      const delivery = await sendCandidateInvite(ctx.supabase, organizationId, c.id, channels);
+
+      return {
+        inviteToken: updated.inviteToken as string,
+        inviteLink: inviteLink(updated.inviteToken as string),
+        expiresAt: updated.expiresAt as string | null,
+        delivery,
+      };
+    }),
+
   bulkCreate: protectedProcedure
     .input(
       z.object({
@@ -323,6 +422,7 @@ export const candidateRouter = router({
         .select("*, messages(id)")
         .eq("interviewId", input.interviewId)
         .is("dataArchivedAt", null)
+        .is("candidateId", null)
         .order("createdAt", { ascending: false });
 
       if (linkedSessionIds.length > 0) {
@@ -616,6 +716,12 @@ export const candidateRouter = router({
         .single();
 
       if (!candidate) {
+        if (await isRevokedInviteToken(input.token)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This link has expired. Please ask the recruiter for a new link.",
+          });
+        }
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Invalid invite link",

@@ -16,6 +16,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { needsFreshInviteLink } from "@/lib/session-link";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -157,6 +158,7 @@ export function CandidateDetailSheet({
   const started = !!c?.session && sessionStatus !== "NOT_STARTED";
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
+  const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
   const tailored: { text: string; skill?: string | null }[] = Array.isArray(c?.tailoredQuestions) ? c.tailoredQuestions : [];
 
   const update = trpc.candidate.update.useMutation({
@@ -172,21 +174,41 @@ export function CandidateDetailSheet({
     onError: (err) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
+  const describeDelivery = (d: { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } } | undefined) => {
+    const parts: string[] = [];
+    let fail = false;
+    for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+      const r = d?.[ch];
+      if (!r) continue;
+      if (r.status !== "sent") fail = true;
+      parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+    }
+    return { parts, fail };
+  };
+
   const resend = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
-      const parts: string[] = [];
-      let fail = false;
-      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-        const r = d[ch];
-        if (!r) continue;
-        if (r.status !== "sent") fail = true;
-        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-      }
+      const { parts, fail } = describeDelivery(d);
       toast({ title: fail ? "Some messages not sent" : "Invite link sent", description: parts.join(" · ") || "Nothing to send", variant: fail ? "destructive" : undefined });
       void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
       onSaved();
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
+  });
+
+  const sendNew = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      const { parts, fail } = describeDelivery(d.delivery);
+      const sent = parts.join(" · ");
+      toast({
+        title: fail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
+        description: sent || "Copy the link to share it with the candidate.",
+        variant: fail ? "destructive" : undefined,
+      });
+      void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
+      onSaved();
+    },
+    onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
   });
 
   const save = () => {
@@ -290,17 +312,32 @@ export function CandidateDetailSheet({
                       </Button>
                       <Button
                         size="sm"
-                        disabled={resend.isLoading || !(delivery.data?.email || delivery.data?.whatsapp)}
-                        title={delivery.data?.email || delivery.data?.whatsapp ? "Send the link again" : "Configure WhatsApp/Email in Integrations"}
-                        onClick={() =>
-                          resend.mutate({
-                            candidateId: c.id,
-                            channels: { email: !!delivery.data?.email && !!c.email, whatsapp: !!delivery.data?.whatsapp && !!c.phone },
-                          })
+                        disabled={resend.isLoading || sendNew.isLoading || (!needsNewLink && !(delivery.data?.email || delivery.data?.whatsapp))}
+                        title={
+                          needsNewLink
+                            ? "Invalidate this link, start a fresh session, and send the new link"
+                            : delivery.data?.email || delivery.data?.whatsapp
+                              ? "Send the current link again"
+                              : "Configure WhatsApp/Email in Integrations"
                         }
+                        onClick={() => {
+                          const channels = {
+                            email: !!delivery.data?.email && !!c.email,
+                            whatsapp: !!delivery.data?.whatsapp && !!c.phone,
+                          };
+                          if (needsNewLink) {
+                            sendNew.mutate({ candidateId: c.id, channels });
+                          } else {
+                            resend.mutate({ candidateId: c.id, channels });
+                          }
+                        }}
                       >
-                        {resend.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-                        Resend
+                        {resend.isLoading || sendNew.isLoading ? (
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Send className="mr-1.5 h-3.5 w-3.5" />
+                        )}
+                        {needsNewLink ? "Send new link" : "Resend"}
                       </Button>
                     </div>
                   ) : (

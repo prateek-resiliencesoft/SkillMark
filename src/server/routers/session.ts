@@ -1,3 +1,4 @@
+import { isRevokedInviteToken } from "@/lib/session-link-server";
 import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
@@ -248,6 +249,12 @@ export const sessionRouter = router({
         .single();
 
       if (!candidate) {
+        if (await isRevokedInviteToken(input.inviteToken)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This link has expired. Please ask the recruiter for a new link.",
+          });
+        }
         throw new TRPCError({ code: "NOT_FOUND", message: "Invalid invite link" });
       }
 

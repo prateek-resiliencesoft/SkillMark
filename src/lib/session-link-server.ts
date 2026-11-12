@@ -39,3 +39,14 @@ export async function expireIfStale<
   await abandonSession(session.id, "DISCONNECTED");
   return { ...session, status: "ABANDONED" };
 }
+
+/** True when this token was rotated off a candidate by "Send new link". */
+export async function isRevokedInviteToken(token: string): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from("candidates")
+    .select("id")
+    .contains("revokedInviteTokens", [token])
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}

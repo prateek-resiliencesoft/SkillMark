@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CheckCircle2, Clock, WifiOff } from "lucide-react";
 import { useState } from "react";
+import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 export const PRODUCT_SITE_URL = "https://resiliencesoftinterview.com";
 
@@ -56,22 +57,22 @@ export function CandidateThankYou({ timeLimitReached = false }: { timeLimitReach
   );
 }
 
-/** Shown when a one-time link was already used, ended, or interrupted. */
-export function LinkExpiredScreen({ reason = "used" }: { reason?: "used" | "interrupted" }) {
+/** Shown when a one-time link was already used, ended, interrupted, or revoked. */
+export function LinkExpiredScreen({ reason = "used" }: { reason?: "used" | "interrupted" | "expired" }) {
   return (
     <Shell>
       <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
         {reason === "interrupted" ? <WifiOff className="h-7 w-7" /> : <Clock className="h-7 w-7" />}
       </div>
-      <h2 className="text-xl font-semibold">This link is expired</h2>
+      <h2 className="text-xl font-semibold">This link has expired</h2>
       <p className="mt-2 text-sm text-muted-foreground">
-        {reason === "interrupted"
-          ? "Your connection was lost or the interview tab was closed, so this interview has ended and the link can no longer be used."
-          : "This interview link can only be used once, and it has already been used."}
+        {reason === "used"
+          ? "This interview link can only be used once, and it has already been used."
+          : EXPIRED_INVITE_MESSAGE}
       </p>
-      <p className="mt-3 text-xs text-muted-foreground">
-        If you think this is a mistake, please contact the hiring team that invited you.
-      </p>
+      {reason === "used" && (
+        <p className="mt-3 text-xs text-muted-foreground">{EXPIRED_INVITE_MESSAGE}</p>
+      )}
     </Shell>
   );
 }
