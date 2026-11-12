@@ -44,6 +44,8 @@ import {
     User,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
+import { mediaErrorCode } from "@/lib/preflight";
+import { PreflightProvider, usePreflightReport } from "@/hooks/use-preflight-tracker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatInterface } from "./chat-interface";
 import { IntervieweeTourOverlay } from "./interviewee-tour-overlay";
@@ -67,6 +69,8 @@ interface IntervieweeOnboardingProps {
   expiresAt?: string | null;
   /** Invite links are single-use: closing the tab or losing connection ends the interview. */
   oneTimeLink?: boolean;
+  /** Invite token used to authorize pre-interview activity events. */
+  inviteToken?: string;
   onComplete: () => void;
 }
 
@@ -112,17 +116,21 @@ export function PreviewWrapper({
     onReady();
   }, [onReady]);
 
+  const report = usePreflightReport();
+
   const handleStartTour = useCallback(() => {
     setWelcomed(true);
+    report("tour", "shown");
     tour?.restart();
-  }, [tour]);
+  }, [tour, report]);
 
   // Skipping the tour starts the interview straight away (still marks the tour as seen).
   const handleSkipTour = useCallback(() => {
     setWelcomed(true);
+    report("tour", "skipped");
     tour?.skip();
     fireReady();
-  }, [tour, fireReady]);
+  }, [tour, fireReady, report]);
 
   // Finishing (or skipping mid-way through) the tour also starts the interview directly.
   useEffect(() => {
@@ -230,6 +238,7 @@ function CameraCheck({
   onDone: () => void;
   allowSkip?: boolean;
 }) {
+  const report = usePreflightReport();
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -253,10 +262,20 @@ function CameraCheck({
       streamRef.current = stream;
       setPhoto(null);
       setStreaming(true);
-    } catch {
-      setError("Unable to access camera. Please check permissions.");
+      report("camera_permission", "granted");
+    } catch (err) {
+      const code = mediaErrorCode(err);
+      report("camera_permission", "denied");
+      report("error", "error", { code, source: "camera" });
+      setError(
+        code === "permission_denied"
+          ? "Camera permission was denied. Allow camera access for this site, then retry."
+          : code === "device_not_found"
+            ? "No camera was found. Connect a camera and retry."
+            : "Unable to access camera. Please check permissions.",
+      );
     }
-  }, []);
+  }, [report]);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -278,8 +297,9 @@ function CameraCheck({
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     stopCamera();
     setPhoto(dataUrl);
+    report("photo_captured", "done");
     onDone();
-  }, [stopCamera, onDone]);
+  }, [stopCamera, onDone, report]);
 
   const retake = useCallback(() => {
     setPhoto(null);
@@ -400,7 +420,7 @@ function CameraCheck({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setCameraSkipped(true); onDone(); }}>
+            <AlertDialogAction onClick={() => { setCameraSkipped(true); report("photo_captured", "skipped"); onDone(); }}>
               Skip anyway
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -450,6 +470,7 @@ function MicCheck({
   const [level, setLevel] = useState(0);
   const [speakerOk, setSpeakerOk] = useState(false);
   const [failMessage, setFailMessage] = useState<string | null>(null);
+  const report = usePreflightReport();
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -551,8 +572,9 @@ function MicCheck({
     stopMicCapture();
     await playRecordingPreview();
     setPhase("idle");
+    report("mic_check", "passed");
     onDoneRef.current();
-  }, [playRecordingPreview, stopMicCapture]);
+  }, [playRecordingPreview, stopMicCapture, report]);
 
   const failTest = useCallback(
     (message: string) => {
@@ -560,8 +582,9 @@ function MicCheck({
       setFailMessage(message);
       setError(null);
       setPhase("confirm");
+      report("mic_check", "failed", { message });
     },
-    [stopMicCapture],
+    [stopMicCapture, report],
   );
 
   const startListening = useCallback(async () => {
@@ -697,11 +720,14 @@ function MicCheck({
         }
       };
     } catch (err) {
+      const code = mediaErrorCode(err);
+      report("mic_permission", "denied");
+      report("error", "error", { code, source: "microphone" });
       setError(describeMicError(err));
       setPhase("idle");
       stopMicCapture();
     }
-  }, [failTest, passTest, stopMicCapture]);
+  }, [failTest, passTest, stopMicCapture, report]);
 
   /**
    * Play the pre-generated Kore clip via a single HTMLAudioElement.
@@ -718,7 +744,11 @@ function MicCheck({
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("unsupported");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((t) => t.stop());
+      report("mic_permission", "granted");
     } catch (err) {
+      const code = mediaErrorCode(err);
+      report("mic_permission", "denied");
+      report("error", "error", { code, source: "microphone" });
       setError(describeMicError(err));
       setPhase("idle");
       return;
@@ -766,15 +796,17 @@ function MicCheck({
       }
       audioRef.current = null;
       setSpeakerOk(true);
+      report("speaker_test", "played");
       void startListening();
     } catch {
       audioRef.current = null;
+      report("error", "error", { code: "speaker_failed", source: "speaker" });
       setError(
         "Could not play the speaker test clip. Check your speakers/volume and retry.",
       );
       setPhase("idle");
     }
-  }, [startListening, stopSpeaker]);
+  }, [startListening, stopSpeaker, report]);
 
   useEffect(() => {
     return () => {
@@ -888,6 +920,7 @@ function MicCheck({
                 stopAll();
                 setPhase("idle");
                 setSkipped(true);
+                report("mic_check", "skipped");
                 onDoneRef.current();
               }}
               className="w-full"
@@ -998,6 +1031,7 @@ function MicCheck({
               onClick={() => {
                 setPhase("idle");
                 setSkipped(true);
+                report("mic_check", "skipped");
                 onDone();
               }}
             >
@@ -1019,6 +1053,7 @@ function ScreenCheck({
   onDone: () => void;
   allowSkip?: boolean;
 }) {
+  const report = usePreflightReport();
   const [error, setError] = useState<string | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [showSkipDialog, setShowSkipDialog] = useState(false);
@@ -1035,6 +1070,7 @@ function ScreenCheck({
     if (!supported && !done && !autoSkippedRef.current) {
       autoSkippedRef.current = true;
       setScreenSkipped(true);
+      report("screen_share", "skipped", { reason: "unsupported" });
       onDone();
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1074,11 +1110,18 @@ function ScreenCheck({
       // Keep the stream alive for the interview recording to reuse
       setStoredScreenStream(stream);
       videoEl.srcObject = null;
+      videoTrack?.addEventListener("ended", () => {
+        report("screen_share", "stopped");
+      });
+      report("screen_share", "started");
       onDone();
-    } catch {
+    } catch (err) {
+      const code = mediaErrorCode(err);
+      report("screen_share", "denied");
+      report("error", "error", { code, source: "screen" });
       setError("Screen capture was denied or cancelled.");
     }
-  }, [onDone]);
+  }, [onDone, report]);
 
   if (!isSupported) {
     return (
@@ -1197,7 +1240,7 @@ function ScreenCheck({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setScreenSkipped(true); onDone(); }}>
+            <AlertDialogAction onClick={() => { setScreenSkipped(true); report("screen_share", "skipped"); onDone(); }}>
               Skip anyway
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1207,7 +1250,15 @@ function ScreenCheck({
   );
 }
 
-export function IntervieweeOnboarding({
+export function IntervieweeOnboarding(props: IntervieweeOnboardingProps) {
+  return (
+    <PreflightProvider token={props.inviteToken} sessionId={props.sessionId}>
+      <OnboardingBody {...props} />
+    </PreflightProvider>
+  );
+}
+
+function OnboardingBody({
   sessionId,
   interviewTitle,
   interviewDescription,
@@ -1224,6 +1275,7 @@ export function IntervieweeOnboarding({
   oneTimeLink = false,
   onComplete,
 }: IntervieweeOnboardingProps) {
+  const report = usePreflightReport();
   const [step, setStep] = useState<OnboardingStep>("info");
   const [agreed, setAgreed] = useState(false);
 
@@ -1235,9 +1287,10 @@ export function IntervieweeOnboarding({
   const allChecksDone = cameraDone && micDone && screenDone;
 
   const handleComplete = useCallback(() => {
+    report("interview_started", "done");
     setStarting(true);
     onComplete();
-  }, [onComplete]);
+  }, [onComplete, report]);
 
   const header = (
     <header className="sticky top-0 z-50 flex h-14 items-center border-b bg-card px-4 sm:px-6">
@@ -1411,7 +1464,10 @@ export function IntervieweeOnboarding({
             </label>
             <Button
               disabled={!agreed}
-              onClick={() => setStep("checklist")}
+              onClick={() => {
+                report("consent_accepted", "done");
+                setStep("checklist");
+              }}
               className="h-11 w-40 sm:h-10"
             >
               Next

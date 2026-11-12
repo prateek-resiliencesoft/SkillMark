@@ -1,3 +1,5 @@
+import { isPreflightStale } from "@/lib/preflight";
+
 /**
  * One-time interview links.
  *
@@ -22,6 +24,9 @@ export type LinkSessionState = {
   status: string;
   interviewBeganAt?: string | null;
   lastHeartbeatAt?: string | null;
+  lastActivityAt?: string | null;
+  startedAt?: string | null;
+  createdAt?: string | null;
 };
 
 /** True when the interview began, is still open, and heartbeats stopped. */
@@ -51,6 +56,7 @@ export function needsFreshInviteLink(opts: {
   if (status === "COMPLETED" || status === "DISQUALIFIED") return false;
   if (status === "ABANDONED") return true;
   if (opts.session && isHeartbeatStale(opts.session, now)) return true;
+  if (opts.session && isPreflightStale(opts.session, now)) return true;
   if (opts.expiresAt && new Date(opts.expiresAt).getTime() < now) return true;
   return false;
 }

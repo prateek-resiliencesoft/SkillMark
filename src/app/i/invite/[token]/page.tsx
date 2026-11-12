@@ -10,6 +10,7 @@ import { LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
+import { collectDeviceInfo } from "@/lib/preflight";
 
 export default function InvitePage() {
   const params = useParams();
@@ -26,6 +27,30 @@ export default function InvitePage() {
   );
 
   const sessionPath = `/i/invite/${token}/session`;
+
+  const linkOpened = useRef(false);
+  useEffect(() => {
+    if (!token || !candidate.data || linkOpened.current) return;
+    if (candidate.data.expiresAt && new Date(candidate.data.expiresAt).getTime() < Date.now()) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const session = (candidate.data as any).session;
+    if (session && (session.status === "COMPLETED" || session.status === "ABANDONED" || session.status === "DISQUALIFIED")) {
+      return;
+    }
+    linkOpened.current = true;
+    void fetch("/api/session/preflight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        sessionId: session?.id,
+        type: "link_opened",
+        status: "done",
+        device: collectDeviceInfo(),
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [token, candidate.data]);
 
   const goToSession = useCallback(() => {
     router.push(sessionPath);

@@ -45,6 +45,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { needsFreshInviteLink } from "@/lib/session-link";
+import { formatSessionStatusLabel } from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -273,11 +274,17 @@ function getSessionBadgeVariant(
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "COMPLETED":
+    case "Completed":
       return "default";
     case "IN_PROGRESS":
+    case "In Progress":
+    case "Opened link":
+    case "Setting up":
       return "outline";
     case "ABANDONED":
+    case "Abandoned":
     case "DISQUALIFIED":
+    case "Disqualified":
       return "destructive";
     default:
       return "secondary";
@@ -900,10 +907,7 @@ export function CandidateManager({
             record[col.label] = getSourceLabel(row);
             break;
           case "status":
-            record[col.label] =
-              status === "Not Started"
-                ? "NOT STARTED"
-                : status.replace("_", " ");
+            record[col.label] = formatSessionStatusLabel(row.session);
             break;
         }
       }
@@ -1212,6 +1216,7 @@ export function CandidateManager({
                 <TableBody>
                   {paginatedRows.map((row) => {
                     const status = getSessionStatus(row);
+                    const statusLabel = formatSessionStatusLabel(row.session);
                     const session = row.session;
                     const hasSession = !!session && status !== "Not Started";
                     const compositeId = `${row.type}-${row.id}`;
@@ -1339,12 +1344,10 @@ export function CandidateManager({
                       })(),
                       status: (
                         <Badge
-                          variant={getSessionBadgeVariant(status)}
+                          variant={getSessionBadgeVariant(statusLabel)}
                           className="whitespace-nowrap"
                         >
-                          {status === "Not Started"
-                            ? "NOT STARTED"
-                            : status.replace("_", " ")}
+                          {statusLabel}
                         </Badge>
                       ),
                     };

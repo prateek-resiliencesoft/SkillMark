@@ -1,4 +1,5 @@
-import { expireIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
+import { expireIfStale, expireNestedSession, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
+import { listPreflightEvents, recordPreflightEvent } from "@/lib/preflight-server";
 import { needsFreshInviteLink } from "@/lib/session-link";
 import { inviteLink } from "../batch-access";
 import { nanoid } from "@/lib/id";
@@ -137,7 +138,9 @@ export const candidateRouter = router({
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
       await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
-      return c;
+      const withSession = await expireNestedSession(c);
+      const preflightEvents = await listPreflightEvents(c.id);
+      return { ...withSession, preflightEvents };
     }),
 
   /**
@@ -444,7 +447,9 @@ export const candidateRouter = router({
         }),
       );
 
-      return { candidates: activeCandidates, walkInSessions };
+      const expiredCandidates = await Promise.all(activeCandidates.map((row) => expireNestedSession(row)));
+      const expiredWalkIns = await expireSessionsIfStale(walkInSessions);
+      return { candidates: expiredCandidates, walkInSessions: expiredWalkIns };
     }),
 
   update: protectedProcedure
@@ -699,9 +704,11 @@ export const candidateRouter = router({
         }),
       );
 
+      const expiredCandidates = await Promise.all((candidates ?? []).map((row) => expireNestedSession(row)));
+      const expiredWalkIns = await expireSessionsIfStale(walkInSessions);
       return {
-        candidates: candidates ?? [],
-        walkInSessions,
+        candidates: expiredCandidates,
+        walkInSessions: expiredWalkIns,
         interviewMap,
       };
     }),
@@ -743,9 +750,26 @@ export const candidateRouter = router({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const linked = (candidate as any).session;
       if (linked && typeof linked === "object" && !Array.isArray(linked)) {
-        return { ...candidate, session: await expireIfStale(linked) };
+        const session = await expireIfStale(linked);
+        if (session.status === "IN_PROGRESS" && !session.interviewBeganAt) {
+          void recordPreflightEvent({
+            candidateId: candidate.id,
+            sessionId: session.id,
+            inviteToken: input.token,
+            type: "link_opened",
+            status: "done",
+          });
+        }
+        return { ...candidate, session };
       }
 
+      void recordPreflightEvent({
+        candidateId: candidate.id,
+        sessionId: candidate.sessionId ?? null,
+        inviteToken: input.token,
+        type: "link_opened",
+        status: "done",
+      });
       return candidate;
     }),
 });
