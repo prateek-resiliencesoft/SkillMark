@@ -132,7 +132,7 @@ export const candidateRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions(*), interview:interviews(id, title, timeLimitMinutes)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(id, title, timeLimitMinutes)")
         .eq("id", input.id)
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
@@ -236,7 +236,7 @@ export const candidateRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions(*)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
         .eq("id", input.candidateId)
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
@@ -403,9 +403,11 @@ export const candidateRouter = router({
     .query(async ({ ctx, input }) => {
       await verifyInterviewAccess(ctx.supabase, input.interviewId, ctx.user.id);
 
+      // Hint the sessionId FK — sessions.candidateId (migration 26) adds a second
+      // relationship, and an unhinted session:sessions(*) embed fails with PGRST201.
       const { data: candidates } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions(*)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
         .eq("interviewId", input.interviewId)
         .order("createdAt", { ascending: false });
 
@@ -493,7 +495,7 @@ export const candidateRouter = router({
         .from("candidates")
         .update({ ...fields, updatedAt: new Date().toISOString() })
         .eq("id", id)
-        .select("*, session:sessions(*)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
         .single();
 
       if (error) {
@@ -661,7 +663,7 @@ export const candidateRouter = router({
       const { data: candidates } = await ctx.supabase
         .from("candidates")
         .select(
-          "*, session:sessions(*), interview:interviews!inner(id, title)",
+          "*, session:sessions!candidates_sessionId_fkey(*), interview:interviews!inner(id, title)",
         )
         .in("interviewId", interviewIds)
         .order("createdAt", { ascending: false })
@@ -710,7 +712,7 @@ export const candidateRouter = router({
       const { data: candidate } = await ctx.supabase
         .from("candidates")
         .select(
-          "*, session:sessions(*), interview:interviews(*, questions(*))",
+          "*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(*, questions(*))",
         )
         .eq("inviteToken", input.token)
         .single();
