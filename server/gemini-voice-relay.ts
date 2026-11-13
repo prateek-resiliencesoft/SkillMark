@@ -20,7 +20,7 @@ import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
-import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silenceCheckCue } from "../src/lib/voice/relay-keepalive";
+import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silenceCheckCue, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
 import { stuckTurnReason } from "../src/lib/voice/turn-guard";
 import { ENDPOINTING_CONFIG } from "../src/lib/voice/endpointing-config";
 
@@ -426,7 +426,8 @@ When transitioning to a CODING or WHITEBOARD question:
 - TURN-TAKING: Ask ONE question (or one follow-up), then STOP talking and wait silently for the participant to answer. Never answer your own question, never guess what they would say, and never keep talking after a question.
 - Only respond after the participant has finished speaking. If they pause briefly mid-answer, keep waiting. Base your reply on what they actually said.
 - CHECK-IN CUES: ONLY when you receive a message that starts with [ANSWER_CHECK_IN], ask ONE short warm question such as whether they would like to add anything or if you should move on. Do NOT advance the question in that same turn. If they say no / move on / that's all, continue normally. If they keep answering, listen. NEVER ask “would you like to add anything” (or similar) on your own — only when you see [ANSWER_CHECK_IN].
-- SILENCE CHECKS: ONLY when you receive a message that starts with [SILENCE_CHECK], say ONE very short line exactly in that spirit (for example "Hello, are you there? Can you hear me?"), then stop and wait. It is not an answer from the participant: do NOT call signal_question_change, do NOT repeat or change the question, and do NOT comment on their answer.
+- SILENCE CHECKS: ONLY when you receive a message that starts with [SILENCE_CHECK], say ONE very short line exactly in that spirit (for example "Are you there?"), then stop and wait. It is not an answer from the participant: do NOT call signal_question_change, do NOT repeat or change the question, and do NOT comment on their answer.
+- NO ANSWER: when you receive a message that starts with [NO_ANSWER], the system has already moved to the next question because the participant did not answer. Do NOT call signal_question_change; say one short transition line and ask the question you are given, then wait.
 - If your previous sentence was cut off (you will be told with [SYSTEM]), repeat your last question briefly in one sentence, then stop and wait.
 - You MUST use the signal_question_change function to transition between questions. NEVER verbally say "let's move on" without also calling the function — the UI only updates when the function is called.
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
@@ -1329,6 +1330,33 @@ async function handleInterview(
           questionIndex: currentQuestionIndex,
         });
         sayText(silenceCheckCue(attempt));
+        return;
+      }
+      if (msg.type === "no_answer_skip") {
+        // Candidate stayed silent after the question AND after "Are you there?".
+        // Move on explicitly (the AI's own signal_question_change would be
+        // rejected as premature because nobody answered). Not an answer.
+        const busy = clientTurnOpen || Date.now() < playbackEndsAt || !!responseWatchdog
+          || userTextSinceModel || !!userBuf.trim() || interviewDone || pendingComplete;
+        if (busy || userSpokeThisQuestion) {
+          log.info(`no_answer_skip ignored (${userSpokeThisQuestion ? "candidate answered" : "busy"})`);
+          send({ type: "no_answer_skip_ignored" });
+          return;
+        }
+        const fromIdx = currentQuestionIndex;
+        log.info(`no_answer_skip — Q${fromIdx + 1} left unanswered, moving on`);
+        logSessionError(sessionId, new Error(`Candidate did not answer question ${fromIdx + 1} (silent after "Are you there?") — moved to the next question`), "warning", {
+          stage: "no_answer_skip",
+          questionIndex: fromIdx,
+        });
+        send({ type: "question_unanswered", questionIndex: fromIdx });
+        if (fromIdx + 1 >= sortedQuestions.length) {
+          beginEnding();
+          sayText(noAnswerAdvanceCue(0, null));
+        } else {
+          moveTo(fromIdx + 1, true);
+          sayText(noAnswerAdvanceCue(currentQuestionIndex + 1, sortedQuestions[currentQuestionIndex]?.text ?? ""));
+        }
         return;
       }
       if (msg.type === "answer_check_in") {

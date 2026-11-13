@@ -49,9 +49,14 @@ export function pcm16Rms(pcm: Buffer): number {
 }
 
 /** What the AI is told to say when the candidate has been silent after a question. */
-export function silenceCheckCue(attempt: number): string {
-  if (attempt <= 1) {
-    return "[SILENCE_CHECK] The participant has been silent for a while after your question. Say only a short, friendly check such as: \"Hello, are you there? Can you hear me?\" Then wait. Do not repeat the question and do not call any function.";
+export function silenceCheckCue(_attempt: number): string {
+  return "[SILENCE_CHECK] The participant has been silent for a few seconds after your question. Say only: \"Are you there?\" (nothing else), then wait. Do not repeat the question and do not call any function.";
+}
+
+/** What the AI is told when the candidate never answered and we move on. */
+export function noAnswerAdvanceCue(nextQuestionNumber: number, questionText: string | null): string {
+  if (!questionText) {
+    return "[NO_ANSWER] The participant did not answer the last question. Say briefly that you will wrap up, then give a short, polite farewell.";
   }
-  return "[SILENCE_CHECK] The participant is still silent. Say only a short line such as: \"I still can't hear you. Please check that your microphone is on and not muted, then answer whenever you're ready.\" Then wait. Do not call any function.";
+  return `[NO_ANSWER] The participant did not answer, so we are moving on. The system already moved to question ${nextQuestionNumber}; do NOT call signal_question_change. Say one short line like "Let's move to the next question." and then ask: "${questionText}"`;
 }

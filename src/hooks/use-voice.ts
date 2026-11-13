@@ -15,13 +15,15 @@ import {
   nextJitterTargetMs,
   shouldFlushPlaybackQueue,
 } from "@/lib/voice/playback-jitter-buffer";
-import { BargeInDetector, SilenceCheck, stuckTurnReason } from "@/lib/voice/turn-guard";
+import { BargeInDetector, SilenceCheck, stuckTurnReason, hasRecentVoiceEnergy } from "@/lib/voice/turn-guard";
 import { VAD_FAILSAFE_CONFIG } from "@/lib/voice/vad-failsafe";
 import { decideEndpoint } from "@/lib/voice/endpointing";
 import { ENDPOINTING_CONFIG } from "@/lib/voice/endpointing-config";
 import {
-  createInterviewVad,
+  startInterviewVad,
   preloadVadAssets,
+  lastVadStartError,
+  activeVadProcessor,
   type InterviewVad,
 } from "@/lib/voice/silero-vad-client";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -108,6 +110,8 @@ interface VoiceState {
   totalQuestions: number;
   /** Candidate stayed silent through the spoken checks — show "we can't hear you". */
   micCheckPrompt: boolean;
+  /** Voice connection dropped and is retrying (show "Reconnecting…"). */
+  isReconnecting: boolean;
 }
 
 interface TrackedMessage {
@@ -159,6 +163,7 @@ export function useVoice({
     currentQuestionIndex: interviewContext.startQuestionIndex ?? 0,
     totalQuestions: interviewContext.questions.length,
     micCheckPrompt: false,
+    isReconnecting: false,
   });
 
   const relayConnectorRef = useRef<RelayConnector<Record<string, unknown>> | null>(null);
@@ -197,6 +202,8 @@ export function useVoice({
   const awaitingAiReplyUntilRef = useRef(0);
   /** "Hello, are you there?" state machine. */
   const silenceCheckRef = useRef(new SilenceCheck());
+  /** Loudest mic level since the "Are you there?" check (no signal at all → mic box). */
+  const micPeakSinceCheckRef = useRef(0);
   const relayReconnectingRef = useRef(false);
   const interviewCompleteRef = useRef(false);
   const isSpeakingRef = useRef(false);
@@ -564,6 +571,8 @@ export function useVoice({
               target.kind
             )} @ ${target.url}`
           );
+          relayReconnectingRef.current = false;
+          setState((s) => (s.isReconnecting ? { ...s, isReconnecting: false } : s));
           if (isFailover) {
             replayLatestRelayContext(activeConnector);
           }
@@ -581,7 +590,24 @@ export function useVoice({
             context: { stage: "relay_failover", from: from.kind, to: to.kind },
           });
         },
+        // Keep trying for ~1 minute (network blips) before giving up.
+        retryDelaysMs: [1_000, 2_000, 4_000, 8_000, 15_000, 30_000],
+        onReconnecting: ({ round, totalRounds, lastError }) => {
+          log.warn(`Voice relay unreachable (${lastError.message}) — retry ${round}/${totalRounds}`);
+          relayReconnectingRef.current = true;
+          setState((s) => ({ ...s, isReconnecting: true }));
+          if (round === 1) {
+            reportSessionError(sessionId, {
+              category: "voice",
+              severity: "warning",
+              message: `Voice connection lost (${lastError.message}) — reconnecting`,
+              context: { stage: "relay_reconnecting" },
+            });
+          }
+        },
         onPermanentFailure: (error) => {
+          relayReconnectingRef.current = false;
+          setState((s) => ({ ...s, isReconnecting: false }));
           log.error("Voice relay exhausted all targets:", error.message);
           reportSessionError(sessionId, {
             category: "voice",
@@ -1283,9 +1309,18 @@ export function useVoice({
 
       // Optional Silero VAD on the same mic stream (self-hosted /vad assets).
       if (clientVadEnabledRef.current && !vadRef.current) {
-        const vad = await createInterviewVad({
+        // startInterviewVad never throws (worklet → retry → ScriptProcessor → null).
+        // Before, a worklet load failure threw out of startListening, so the mic
+        // processor below was never wired up and Silero never ran.
+        const vad = await startInterviewVad({
           getStream: async () => mediaStreamRef.current ?? stream,
           onSpeechStart: () => {
+            // Noise gate: Silero alone can call wind / fan / keyboard noise
+            // "speech". Only open a turn when the mic also had voice-level energy
+            // above the room's noise floor in the last moment.
+            if (!hasRecentVoiceEnergy(performance.now(), lastVoiceAtRef.current)) {
+              return;
+            }
             // While the AI is talking (or its reply is on the way), ignore
             // normal-threshold starts — cutting the AI needs sustained,
             // confident speech (BargeInDetector in onSpeechProb).
@@ -1318,7 +1353,10 @@ export function useVoice({
             if (!turnActiveRef.current && !aiBusy) {
               if (probability >= ENDPOINTING_CONFIG.positiveSpeechThreshold) {
                 postAiSpeechFramesRef.current += 1;
-                if (postAiSpeechFramesRef.current >= 3) {
+                if (
+                  postAiSpeechFramesRef.current >= ENDPOINTING_CONFIG.minSpeechFrames &&
+                  hasRecentVoiceEnergy(now, lastVoiceAtRef.current)
+                ) {
                   postAiSpeechFramesRef.current = 0;
                   beginUserTurn();
                 }
@@ -1342,9 +1380,16 @@ export function useVoice({
         });
         if (vad) {
           vadRef.current = vad;
-          await vad.start();
           vadFailsafeRef.current.vadStarted(performance.now());
-          log.info("Silero VAD started (client endpointing)");
+          log.info(`Silero VAD started (client endpointing, ${activeVadProcessor ?? "?"})`);
+          if (activeVadProcessor === "ScriptProcessor") {
+            reportSessionError(sessionId, {
+              category: "voice",
+              severity: "info",
+              message: "Browser speech detection started without an audio worklet (older audio method used)",
+              context: { stage: "client_vad_script_processor", reason: lastVadStartError ?? undefined },
+            });
+          }
         } else {
           clientVadEnabledRef.current = false;
           relayConnectorRef.current?.sendJson({ type: "client_vad", enabled: false, reason: "vad_start_failed" });
@@ -1353,7 +1398,7 @@ export function useVoice({
             category: "voice",
             severity: "info",
             message: "Browser speech detection failed to start — using the AI's own speech detection",
-            context: { stage: "client_vad_off", reason: "vad_start_failed" },
+            context: { stage: "client_vad_off", reason: "vad_start_failed", error: lastVadStartError ?? undefined },
           });
         }
       }
@@ -1375,6 +1420,7 @@ export function useVoice({
         const now = performance.now();
         const aiSpeaking = now < micHoldUntilRef.current;
         lastMicRmsRef.current = rms;
+        if (rms > micPeakSinceCheckRef.current) micPeakSinceCheckRef.current = rms;
 
         // Voice-level energy (relative to the room's noise floor). Outside AI
         // playback it means the candidate is talking → no "are you there?".
@@ -1637,23 +1683,31 @@ export function useVoice({
       });
       if (!action) return;
       if (action.type === "ask") {
-        log.info(`Candidate silent — silence check #${action.attempt}`);
+        log.info("Candidate silent ~3s after the question — asking \"Are you there?\"");
+        micPeakSinceCheckRef.current = 0;
         connector.sendJson({
           type: "silence_check",
           attempt: action.attempt,
           questionIndex: currentQuestionIndexRef.current,
         });
       } else {
-        log.warn("Candidate still silent after spoken checks — showing microphone prompt");
-        setState((s) => ({ ...s, micCheckPrompt: true }));
+        const noSignal = micPeakSinceCheckRef.current < ENDPOINTING_CONFIG.noMicSignalRms;
+        log.warn(`Candidate still silent after "Are you there?" — moving to the next question${noSignal ? " (mic shows no signal)" : ""}`);
+        connector.sendJson({
+          type: "no_answer_skip",
+          questionIndex: currentQuestionIndexRef.current,
+        });
+        if (noSignal) setState((s) => ({ ...s, micCheckPrompt: true }));
         reportSessionError(sessionId, {
           category: "voice",
           severity: "warning",
-          message: "Candidate stayed silent after two \"are you there?\" checks — asked them on screen to check their microphone",
+          message: noSignal
+            ? "Candidate did not answer and the microphone showed no signal — moved on and asked them on screen to check the mic"
+            : "Candidate did not answer after \"Are you there?\" — moved to the next question (left unanswered)",
           context: {
-            stage: "silence_check_prompt",
+            stage: "no_answer_skip",
             questionIndex: currentQuestionIndexRef.current,
-            micRms: Number(lastMicRmsRef.current.toFixed(4)),
+            micPeakRms: Number(micPeakSinceCheckRef.current.toFixed(4)),
           },
         });
       }

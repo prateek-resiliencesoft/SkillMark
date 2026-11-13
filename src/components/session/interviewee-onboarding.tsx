@@ -18,7 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { InterviewContext } from "@/hooks/use-voice";
 import { getMicTestSamplePhrase } from "@/lib/i18n";
-import { createInterviewVad, type InterviewVad } from "@/lib/voice/silero-vad-client";
+import { startInterviewVad, type InterviewVad } from "@/lib/voice/silero-vad-client";
 import {
   evaluateMicTest,
   MIC_TEST_CHECK,
@@ -617,7 +617,8 @@ function MicCheck({
       micCtxRef.current = ctx;
       if (ctx.state === "suspended") await ctx.resume().catch(() => {});
 
-      const vad = await createInterviewVad({
+      // Never throws: worklet → retry → ScriptProcessor → null (energy-only check).
+      const vad = await startInterviewVad({
         getStream: async () => micStreamRef.current ?? stream,
         onSpeechStart: () => {
           vadSpeakingRef.current = true;
@@ -629,10 +630,7 @@ function MicCheck({
           if (p >= 0.6) vadSpeakingRef.current = true;
         },
       });
-      if (vad) {
-        vadRef.current = vad;
-        await vad.start();
-      }
+      if (vad) vadRef.current = vad;
 
       const workletCode = `
         class MicProcessor extends AudioWorkletProcessor {
@@ -653,18 +651,36 @@ function MicCheck({
         }
         registerProcessor('mic-processor', MicProcessor);
       `;
-      const blob = new Blob([workletCode], { type: "application/javascript" });
-      const workletUrl = URL.createObjectURL(blob);
-      await ctx.audioWorklet.addModule(workletUrl);
-      URL.revokeObjectURL(workletUrl);
-
       const source = ctx.createMediaStreamSource(stream);
-      const worklet = new AudioWorkletNode(ctx, "mic-processor");
-      source.connect(worklet);
-      // Do not connect to destination (avoids feedback / echo into speakers).
-      worklet.port.onmessage = (e) => {
+      // Mic-level reader: AudioWorklet from an inline Blob URL; if the browser
+      // can't load it ("Unable to load a worklet's module"), use a
+      // ScriptProcessor so the mic test still works.
+      let onChunk: ((input: Float32Array) => void) | null = null;
+      try {
+        if (!ctx.audioWorklet) throw new Error("AudioWorklet not supported");
+        const blob = new Blob([workletCode], { type: "application/javascript" });
+        const workletUrl = URL.createObjectURL(blob);
+        try {
+          await ctx.audioWorklet.addModule(workletUrl);
+        } finally {
+          URL.revokeObjectURL(workletUrl);
+        }
+        const worklet = new AudioWorkletNode(ctx, "mic-processor");
+        source.connect(worklet);
+        // Do not connect to destination (avoids feedback / echo into speakers).
+        worklet.port.onmessage = (e) => onChunk?.(e.data as Float32Array);
+      } catch {
+        const sp = ctx.createScriptProcessor(4096, 1, 1);
+        source.connect(sp);
+        // Chrome needs the node connected to run; output is silent (zeros).
+        sp.connect(ctx.destination);
+        sp.onaudioprocess = (ev) => {
+          ev.outputBuffer.getChannelData(0).fill(0);
+          onChunk?.(new Float32Array(ev.inputBuffer.getChannelData(0)));
+        };
+      }
+      onChunk = (input: Float32Array) => {
         if (finishedRef.current) return;
-        const input = e.data as Float32Array;
         let sum = 0;
         let peak = 0;
         for (let i = 0; i < input.length; i++) {

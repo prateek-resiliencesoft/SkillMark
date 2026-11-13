@@ -75,22 +75,21 @@ export function stuckTurnReason(
 
 export type SilenceCheckAction =
   | { type: "ask"; attempt: number }
-  | { type: "show_prompt"; attempt: number };
+  | { type: "skip"; attempt: number };
 
 /**
- * After the AI finishes speaking, counts candidate silence.
- *  1st / 2nd timeout → ask the AI to say a short "are you there?" check.
- *  next timeout      → show the on-screen microphone prompt (once).
+ * After the AI finishes asking, counts candidate silence.
+ *  ~3s silence  → ask the AI to say a short "Are you there?".
+ *  ~4s more     → move on to the next question (marked unanswered).
  * Any candidate speech (a turn opening, or voice-level mic energy) resets it.
- * It never advances the question and never counts as an answer.
  */
 export class SilenceCheck {
   private waitingSince: number | null = null;
   private attempts = 0;
   private suppressedUntil = 0;
-  private promptShown = false;
+  private done = false;
 
-  constructor(private readonly cfg: Pick<Cfg, "silenceCheckAfterMs" | "silenceCheckRepeatMs" | "silenceCheckSpokenMax" | "silenceCheckAiGraceMs"> = ENDPOINTING_CONFIG) {}
+  constructor(private readonly cfg: Pick<Cfg, "silenceCheckAfterMs" | "silenceSkipAfterMs" | "silenceCheckAiGraceMs"> = ENDPOINTING_CONFIG) {}
 
   get attemptCount() {
     return this.attempts;
@@ -102,7 +101,7 @@ export class SilenceCheck {
 
   /** The AI finished speaking (its question, or a check). Start / restart the count. */
   aiFinished(now: number) {
-    if (this.promptShown) return;
+    if (this.done) return;
     this.waitingSince = now;
   }
 
@@ -115,14 +114,14 @@ export class SilenceCheck {
   candidateActivity() {
     this.waitingSince = null;
     this.attempts = 0;
-    this.promptShown = false;
+    this.done = false;
   }
 
   /** New question: start fresh (counting begins when the AI finishes asking it). */
   reset() {
     this.waitingSince = null;
     this.attempts = 0;
-    this.promptShown = false;
+    this.done = false;
     this.suppressedUntil = 0;
   }
 
@@ -136,20 +135,32 @@ export class SilenceCheck {
     now: number,
     s: { turnActive: boolean; aiBusy: boolean; voiceOnMic: boolean },
   ): SilenceCheckAction | null {
-    if (this.waitingSince == null || this.promptShown) return null;
+    if (this.waitingSince == null || this.done) return null;
     if (s.turnActive || s.aiBusy || s.voiceOnMic) return null;
     if (now < this.suppressedUntil) return null;
-    const limit = this.attempts === 0 ? this.cfg.silenceCheckAfterMs : this.cfg.silenceCheckRepeatMs;
+    const limit = this.attempts === 0 ? this.cfg.silenceCheckAfterMs : this.cfg.silenceSkipAfterMs;
     if (now - this.waitingSince < limit) return null;
 
     this.attempts += 1;
-    if (this.attempts <= this.cfg.silenceCheckSpokenMax) {
+    if (this.attempts === 1) {
       // If the AI never speaks the check, keep counting after a grace period.
       this.waitingSince = now + this.cfg.silenceCheckAiGraceMs;
-      return { type: "ask", attempt: this.attempts };
+      return { type: "ask", attempt: 1 };
     }
-    this.promptShown = true;
+    this.done = true;
     this.waitingSince = null;
-    return { type: "show_prompt", attempt: this.attempts };
+    return { type: "skip", attempt: this.attempts };
   }
+}
+
+/**
+ * Noise gate for Silero: a "speech" decision only counts when the mic also
+ * carried voice-level energy (above the adaptive noise floor) very recently.
+ */
+export function hasRecentVoiceEnergy(
+  now: number,
+  lastVoiceAt: number,
+  windowMs: number = ENDPOINTING_CONFIG.voiceEnergyWindowMs,
+): boolean {
+  return lastVoiceAt > 0 && now - lastVoiceAt <= windowMs;
 }
