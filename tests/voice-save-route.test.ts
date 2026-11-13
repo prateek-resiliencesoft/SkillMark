@@ -141,6 +141,7 @@ test("handleVoiceSave inserts mapped text messages before updating completion st
       completedAt: "2026-03-11T10:05:00.000Z",
       startedAt: "2026-03-11T10:01:00.000Z",
       totalDurationSeconds: 240,
+      endReason: "COMPLETED",
     },
   });
   assert.equal(summaryCalls.length, 1);

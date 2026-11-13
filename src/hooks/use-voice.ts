@@ -1668,6 +1668,34 @@ export function useVoice({
     }
   }, [sessionId, trackMessage]);
 
+  /**
+   * Tab is closing: hand the unsaved transcript to the server with sendBeacon
+   * (fetch would be cancelled). With `complete`, the server also marks the
+   * session COMPLETED so a finished interview is never left as Abandoned.
+   */
+  const beaconFlush = useCallback(
+    (complete: boolean): boolean => {
+      if (!sessionId || typeof navigator === "undefined" || !navigator.sendBeacon) return false;
+      const pendingAsrText = asrBufferRef.current.trim();
+      if (pendingAsrText) {
+        trackMessage({ role: "user", content: pendingAsrText });
+        asrBufferRef.current = "";
+      }
+      const pendingChatText = chatBufferRef.current.trim();
+      if (pendingChatText) {
+        trackMessage({ role: "assistant", content: pendingChatText });
+        chatBufferRef.current = "";
+      }
+      const messages = [...trackedMessagesRef.current];
+      if (!complete && messages.length === 0) return true;
+      const blob = new Blob([JSON.stringify({ sessionId, messages, complete })], { type: "application/json" });
+      const sent = navigator.sendBeacon("/api/voice/save", blob);
+      if (sent) trackedMessagesRef.current = [];
+      return sent;
+    },
+    [sessionId, trackMessage],
+  );
+
   // ── Silent-candidate check + stuck "AI speaking" guard (every 500ms) ──
   useEffect(() => {
     if (!state.isConnected) return;
@@ -1766,5 +1794,8 @@ export function useVoice({
     interruptPlayback,
     dismissMicCheckPrompt,
     mediaStreamRef,
+    /** Save the transcript and mark the session COMPLETED (safe to call twice). */
+    completeSession: saveAndComplete,
+    beaconFlush,
   };
 }

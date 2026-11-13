@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { ActivitySegment } from "@/app/api/voice/save/logic";
 import { isPreflightStale } from "@/lib/preflight";
 import { isHeartbeatStale, type EndReason } from "@/lib/session-link";
+import { REPORT_DELAY_AFTER_ABANDON_MS } from "@/lib/session-report-policy";
 
 /**
  * End an in-progress session as ABANDONED (link becomes unusable).
@@ -21,12 +22,23 @@ export async function abandonSession(sessionId: string, reason: EndReason): Prom
     s.leftAt === null ? { ...s, leftAt } : s,
   );
 
-  const { error } = await supabaseAdmin
+  const { data: updated, error } = await supabaseAdmin
     .from("sessions")
     .update({ status: "ABANDONED", endReason: reason, activitySegments: segments })
     .eq("id", sessionId)
-    .eq("status", "IN_PROGRESS");
-  return !error;
+    .eq("status", "IN_PROGRESS")
+    .select("id");
+  const ended = !error && Array.isArray(updated) && updated.length > 0;
+  if (ended) {
+    // Left early: still build a report from whatever was answered (skipped when
+    // there are no answers). Delayed so a late completion / last batch lands first.
+    void import("@/lib/session-report-server")
+      .then(({ scheduleSessionReport }) =>
+        scheduleSessionReport(sessionId, `abandoned:${reason}`, REPORT_DELAY_AFTER_ABANDON_MS),
+      )
+      .catch(() => undefined);
+  }
+  return ended;
 }
 
 /**

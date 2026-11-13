@@ -7,6 +7,7 @@ import { resolveTaskModels } from "@/lib/ai/registry";
 import { getAuthUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { flagCaptureFailureIfNeeded } from "@/lib/session-summary";
+import { setReportStatus } from "@/lib/session-report-server";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/ai/summarize");
@@ -93,6 +94,7 @@ export async function POST(req: Request) {
       .map((m) => ({ role: String(m.role).toLowerCase(), content: m.content }));
 
     if (await flagCaptureFailureIfNeeded(sessionId, textMessages, "api/ai/summarize")) {
+      await setReportStatus(sessionId, "READY", { reportError: null });
       return NextResponse.json({ captureFailure: true });
     }
     const drawingsInput =
@@ -183,6 +185,7 @@ export async function POST(req: Request) {
         insights: insightsData,
       })
       .eq("id", sessionId);
+    await setReportStatus(sessionId, "READY", { reportError: null });
 
     return NextResponse.json(parsed);
   } catch (error) {
