@@ -99,11 +99,15 @@ export const ENDPOINTING_CONFIG = {
   /** Open turn with no voice-level mic energy for this long → close it. */
   turnNoVoiceForceEndMs: 8_000,
 
-  // ── Silent-candidate check ("Are you there?" → next question) ─────
-  /** Silence after the AI finishes a question before it asks "Are you there?". */
-  silenceCheckAfterMs: 3_000,
-  /** Silence after the AI finishes the "Are you there?" line before moving to the next question. */
-  silenceSkipAfterMs: 4_000,
+  // ── Silent-candidate reminders (all timed from the end of AI playback) ──
+  /** Silence after the AI finishes a question before "Are you there? Can you hear me?" (spec: 8–10s). */
+  silenceFirstPromptMs: 9_000,
+  /** Silence after reminder 1 / reminder 2 finishes before the next reminder. */
+  silencePromptGapMs: 5_000,
+  /** Silence after the last reminder ("I'll wait a little longer") before the silence policy runs. */
+  silenceFinalWaitMs: 8_000,
+  /** What happens after the final wait. Only "next_question" (left unanswered) for now. */
+  silencePolicy: "next_question" as "next_question",
   /**
    * If the relay/AI never speaks the check, start counting again after this long
    * so the sequence can't stall.
