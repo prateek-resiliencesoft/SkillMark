@@ -677,6 +677,11 @@ export const sessionRouter = router({
         .eq("id", input.id)
         .neq("status", "DISQUALIFIED");
 
+      // Build the report server-side right away (idempotent, retried).
+      void import("@/lib/session-report-server").then(({ scheduleSessionReport }) =>
+        scheduleSessionReport(input.id, "completed:manual-end", 0),
+      );
+
       // Fire-and-forget WhatsApp alert to assigned team members
       void import("../completion-notify").then(({ notifySessionCompleted }) =>
         notifySessionCompleted(ctx.supabase, input.id),

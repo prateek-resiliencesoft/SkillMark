@@ -14,11 +14,15 @@ export function useInterviewLinkGuard(opts: {
   sessionId: string | undefined;
   active: boolean;
   onExpired: () => void;
+  /** True once the interview is finishing: no abandon beacon, no cut-off. */
+  isEnding?: () => boolean;
 }) {
   const { sessionId, active, onExpired } = opts;
   const expiredRef = useRef(false);
   const cbRef = useRef(onExpired);
   cbRef.current = onExpired;
+  const endingRef = useRef(opts.isEnding);
+  endingRef.current = opts.isEnding;
 
   useEffect(() => {
     if (!active || !sessionId) return;
@@ -28,6 +32,9 @@ export function useInterviewLinkGuard(opts: {
 
     const expire = () => {
       if (expiredRef.current) return;
+      // Finishing (saving / uploading): never cut the interview off here, or
+      // the completion save would be lost and the session left Abandoned.
+      if (endingRef.current?.()) return;
       expiredRef.current = true;
       stopped = true;
       cbRef.current();
@@ -58,6 +65,8 @@ export function useInterviewLinkGuard(opts: {
 
     const onPageHide = () => {
       if (expiredRef.current) return;
+      // A finished interview completes via its own beacon, never "abandon".
+      if (endingRef.current?.()) return;
       const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
       navigator.sendBeacon("/api/session/abandon", blob);
     };

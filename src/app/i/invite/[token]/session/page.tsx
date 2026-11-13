@@ -14,7 +14,7 @@ import { Clock } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
@@ -32,6 +32,8 @@ export default function InviteSessionPage() {
   const router = useRouter();
 
   const [completed, setCompleted] = useState(false);
+  // Set as soon as the interview starts finishing (before saves complete).
+  const endingRef = useRef(false);
   const [completionReason, setCompletionReason] = useState<string | undefined>();
   const [disqualified, setDisqualified] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
@@ -75,6 +77,7 @@ export default function InviteSessionPage() {
     sessionId: session?.id,
     active: onboardingDone && !completed && !disqualified && !linkExpired,
     onExpired: () => setLinkExpired(true),
+    isEnding: () => endingRef.current,
   });
 
   // Onboarding accepted → mark the interview as begun (link becomes single-use).
@@ -252,6 +255,9 @@ export default function InviteSessionPage() {
           durationMinutes={interview.timeLimitMinutes ?? undefined}
           chatEnabled={!!interview.chatEnabled}
           onComplete={handleComplete}
+          onEnding={() => {
+            endingRef.current = true;
+          }}
           videoMode={!!interview.videoEnabled}
         />
       </>

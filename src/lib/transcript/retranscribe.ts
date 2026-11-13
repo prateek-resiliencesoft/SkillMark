@@ -5,8 +5,10 @@
  * USER lines were saved) but the browser recording still has their answers.
  * Server-only.
  *
- * - Interviewer (ASSISTANT) rows are kept as-is.
- * - Voice USER rows are replaced; typed chat answers are kept.
+ * - Interviewer (ASSISTANT) rows are the source of truth and are never touched.
+ * - Only speech the model labels "candidate" becomes USER rows; anything that
+ *   repeats an interviewer line (the AI voice is on the recording) is dropped.
+ * - Voice USER rows are replaced (re-running replaces, never stacks); typed chat answers are kept.
  * - Replaced USER rows are backed up as JSON next to the recording first.
  * - New rows are marked transcription = 'recording'.
  * - The report is regenerated afterwards.
@@ -23,7 +25,7 @@ import { generateSummaryForSession, type SummaryOutcome } from "@/lib/session-su
 import { readFile, storage } from "@/lib/storage";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { objectPathFromSignedUrl, pathBelongsToSession } from "@/lib/tenant-storage";
-import { alignCandidateTurns, type TranscribedTurn } from "./align";
+import { planTranscriptReplacement, type StoredMessage, type TranscribedTurn } from "./align";
 
 const log = createLogger("retranscribe");
 
@@ -183,21 +185,26 @@ export function buildPrompt(interviewerLines: string[], language: string | null 
   const numbered = interviewerLines
     .map((t, i) => `${i + 1}. ${t.replace(/\s+/g, " ").slice(0, 400)}`)
     .join("\n");
-  return `This is the audio recording of a job interview. Two people speak: the INTERVIEWER (an AI voice) and the CANDIDATE.
+  return `This is the audio recording of a job interview. It contains two voices:
+- INTERVIEWER: a synthetic AI voice that asks the questions. Its words are listed below.
+- CANDIDATE: the human being interviewed, speaking into their microphone.
+The interviewer's voice is mixed into the recording and can also be picked up again through the candidate's speakers (a quieter echo). Any speech that matches an interviewer line below is the INTERVIEWER, never the candidate.
+
 Transcribe the whole recording as speaker turns, in order.
 
 Rules:
 - Write exactly what was said. Never invent, summarise, or fix content. Use "[inaudible]" for words you cannot make out.
 - Keep the language as spoken${language ? ` (interview language: ${language})` : ""}.
-- speaker is "interviewer" or "candidate".
-- startSec is when the turn starts, in seconds from the start of the recording.
-- For every candidate turn set afterLine to the number of the most recent interviewer line below that was spoken before it (0 if the candidate speaks before line 1). For interviewer turns set afterLine to the number of the line it matches, or 0.
-- Skip silence and background noise. If the candidate never speaks, return no candidate turns.
+- speaker is exactly "interviewer" or "candidate". Never put interviewer words inside a candidate turn; split the turn instead.
+- startSec / endSec are when the turn starts and ends, in seconds from the start of the recording.
+- For every interviewer turn set afterLine to the number of the line below it matches (0 if none).
+- For every candidate turn set afterLine to the number of the most recent interviewer line spoken before it (0 if the candidate speaks before line 1).
+- Skip silence, background noise, typing, and echoes. If the candidate never speaks, return no candidate turns.
 
 Interviewer lines already saved for this interview:
 ${numbered || "(none)"}
 
-Return JSON only: {"turns":[{"speaker":"interviewer"|"candidate","startSec":number,"afterLine":number,"text":string}]}`;
+Return JSON only: {"turns":[{"speaker":"interviewer"|"candidate","startSec":number,"endSec":number,"afterLine":number,"text":string}]}`;
 }
 
 async function callGemini(opts: {
@@ -295,10 +302,24 @@ export async function transcribeAudio(
   throw lastErr instanceof Error ? lastErr : new Error("Transcription failed");
 }
 
+const running = new Set<string>();
+
 export async function retranscribeSessionFromRecording(
   sessionId: string,
   opts: { source: string },
 ): Promise<RetranscribeResult> {
+  if (running.has(sessionId)) {
+    throw new RetranscribeError("A re-transcribe for this session is already running. Try again in a few minutes.", 409);
+  }
+  running.add(sessionId);
+  try {
+    return await retranscribeInner(sessionId, opts);
+  } finally {
+    running.delete(sessionId);
+  }
+}
+
+async function retranscribeInner(sessionId: string, opts: { source: string }): Promise<RetranscribeResult> {
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
@@ -339,9 +360,6 @@ export async function retranscribeSessionFromRecording(
     .order("timestamp", { ascending: true });
   const messages = (rows ?? []) as DbMessage[];
   const assistant = messages.filter((m) => m.role === "ASSISTANT");
-  const replaceable = messages.filter(
-    (m) => m.role === "USER" && (m.transcription == null || m.transcription === "recording"),
-  );
 
   log.info(
     `Transcribing recording for ${sessionId} (${Math.round(audio.length / 1024)} KB, ${mime}${prepared.converted ? ", converted with ffmpeg" : ""})`,
@@ -353,10 +371,16 @@ export async function retranscribeSessionFromRecording(
     buildPrompt(assistant.map((m) => m.content), s.interview.language),
   );
 
-  const aligned = alignCandidateTurns(
-    turns,
-    assistant.map((m) => ({ timestamp: m.timestamp, questionId: m.questionId })),
-  );
+  // Re-read right before writing so a run started meanwhile can't leave stacked rows.
+  const { data: freshRows } = await supabaseAdmin
+    .from("messages")
+    .select("id, role, content, contentType, timestamp, questionId, transcription")
+    .eq("sessionId", sessionId)
+    .eq("contentType", "TEXT")
+    .order("timestamp", { ascending: true });
+  const plan = planTranscriptReplacement((freshRows ?? messages) as StoredMessage[], turns);
+  const aligned = plan.insert;
+  const replaceable = plan.replaced;
   if (aligned.length === 0) {
     throw new RetranscribeError("No candidate speech was found in the recording. Nothing was changed.", 422);
   }
@@ -371,13 +395,10 @@ export async function retranscribeSessionFromRecording(
         contentType: "application/json",
       });
     if (error) throw new RetranscribeError(`Could not back up the old transcript: ${error.message}`, 500);
-    const { error: delErr } = await supabaseAdmin
-      .from("messages")
-      .delete()
-      .in("id", replaceable.map((m) => m.id));
-    if (delErr) throw new RetranscribeError(`Could not replace the old transcript: ${delErr.message}`, 500);
   }
 
+  // Insert the new candidate lines first, then remove the old ones by id, so a
+  // failed insert never loses the old transcript and a re-run never stacks lines.
   const { error: insErr } = await supabaseAdmin.from("messages").insert(
     aligned.map((t) => ({
       sessionId,
@@ -391,6 +412,15 @@ export async function retranscribeSessionFromRecording(
     })),
   );
   if (insErr) throw new RetranscribeError(`Could not save the new transcript: ${insErr.message}`, 500);
+  if (plan.deleteIds.length > 0) {
+    const { error: delErr } = await supabaseAdmin
+      .from("messages")
+      .delete()
+      .eq("sessionId", sessionId)
+      .eq("role", "USER")
+      .in("id", plan.deleteIds);
+    if (delErr) throw new RetranscribeError(`Could not replace the old transcript: ${delErr.message}`, 500);
+  }
 
   const candidateWords = aligned.reduce((n, t) => n + t.text.split(/\s+/).length, 0);
   void recordSessionError({

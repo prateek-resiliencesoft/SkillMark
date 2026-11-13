@@ -1,5 +1,7 @@
 import { createLogger } from "@/lib/logger";
 import { generateSessionSummary } from "@/lib/session-summary";
+import { scheduleSessionReport } from "@/lib/session-report-server";
+import { REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { finalizeRecordingParts } from "@/lib/recording-parts-server";
@@ -8,6 +10,10 @@ import { handleVoiceSave, type CompletionSession, type ProgressSession, type Voi
 
 const log = createLogger("api/voice/save");
 const voiceSaveOps: VoiceSaveOps = {
+  scheduleReport(sessionId, { force }) {
+    // Short delay so the final transcript batch (disconnect flush) lands first.
+    scheduleSessionReport(sessionId, "completed", REPORT_DELAY_AFTER_COMPLETE_MS, { force });
+  },
   onCompleted(sessionId) {
     void notifySessionCompleted(supabaseAdmin, sessionId);
     // Fallback: if the browser never linked a recording (closed tab, slow final
@@ -100,7 +106,8 @@ const voiceSaveOps: VoiceSaveOps = {
  * and fire-and-forget an AI summary/analysis so the interviewee isn't blocked.
  */
 export async function POST(req: Request) {
-  const payload = (await req.json()) as VoiceSavePayload;
+  // Also receives sendBeacon posts on tab close; parse leniently.
+  const payload = ((await req.json().catch(() => null)) ?? {}) as VoiceSavePayload;
   const result = await handleVoiceSave(payload, voiceSaveOps);
   return NextResponse.json(result.body, { status: result.status });
 }

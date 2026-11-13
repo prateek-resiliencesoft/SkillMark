@@ -1,4 +1,5 @@
 import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
+import { canMarkCompleted } from "@/lib/session-report-policy";
 
 export type VoiceSavePayload = {
   sessionId?: string;
@@ -71,6 +72,8 @@ export function computeMessageBasedDuration(
 }
 
 export type CompletionSession = {
+  /** Current status; COMPLETED / DISQUALIFIED are never re-completed. */
+  status?: string;
   startedAt: string;
   interview: {
     title: string;
@@ -116,6 +119,12 @@ export type VoiceSaveOps = {
     error: (...args: unknown[]) => void;
   };
   now: () => Date;
+  /**
+   * Queue the automatic report (idempotent, retried server-side). When set it
+   * replaces the direct generateSummary call. `force` regenerates after a
+   * session that was marked ABANDONED turns out to have completed.
+   */
+  scheduleReport?: (sessionId: string, opts: { force: boolean }) => void;
   /** Optional hook after status → COMPLETED (e.g. WhatsApp team notify). */
   onCompleted?: (sessionId: string) => void;
   /** Newest saved message for the session (used to drop repeated candidate lines). */
@@ -150,7 +159,12 @@ export async function handleVoiceSave(
     if (complete) {
       const session = await ops.loadSessionForCompletion(sessionId);
 
-      if (session) {
+      if (session && session.status && !canMarkCompleted(session.status)) {
+        // Repeated completion (end flow + disconnect, beacon) or disqualified:
+        // keep the first completion and don't regenerate the report.
+        ops.log.info(`Session ${sessionId} already ${session.status}; completion ignored`);
+      } else if (session) {
+        const wasAbandoned = session.status === "ABANDONED";
         const firstMessageTimestamp =
           await ops.loadFirstMessageTimestamp(sessionId);
 
@@ -165,14 +179,19 @@ export async function handleVoiceSave(
           completedAt: now.toISOString(),
           startedAt: new Date(actualStart).toISOString(),
           totalDurationSeconds: duration,
+          endReason: "COMPLETED",
         });
 
-        ops.log.info(`Session ${sessionId} marked COMPLETED (${duration}s)`);
+        ops.log.info(
+          `Session ${sessionId} marked COMPLETED (${duration}s)${wasAbandoned ? " — was ABANDONED (late completion)" : ""}`,
+        );
 
         ops.onCompleted?.(sessionId);
 
         const interview = session.interview;
-        ops
+        if (ops.scheduleReport) {
+          ops.scheduleReport(sessionId, { force: wasAbandoned });
+        } else ops
           .generateSummary(
             sessionId,
             interview.title,
