@@ -1,3 +1,5 @@
+import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
+
 export type VoiceSavePayload = {
   sessionId?: string;
   messages?: Array<{
@@ -116,6 +118,8 @@ export type VoiceSaveOps = {
   now: () => Date;
   /** Optional hook after status → COMPLETED (e.g. WhatsApp team notify). */
   onCompleted?: (sessionId: string) => void;
+  /** Newest saved message for the session (used to drop repeated candidate lines). */
+  loadLastMessage?: (sessionId: string) => Promise<{ role: string; content: string } | null>;
 };
 
 export async function handleVoiceSave(
@@ -130,7 +134,17 @@ export async function handleVoiceSave(
 
   try {
     if (messages && Array.isArray(messages) && messages.length > 0) {
-      await ops.insertMessages(sessionId, messages);
+      let lastSaved: { role: string; content: string } | null = null;
+      if (ops.loadLastMessage) {
+        try {
+          lastSaved = await ops.loadLastMessage(sessionId);
+        } catch {
+          lastSaved = null;
+        }
+      }
+      const { kept, dropped } = dropRepeatedUserLines(lastSaved, messages);
+      if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);
+      if (kept.length > 0) await ops.insertMessages(sessionId, kept);
     }
 
     if (complete) {
