@@ -107,7 +107,7 @@ export const ENDPOINTING_CONFIG = {
   /** Silence after the last reminder ("I'll wait a little longer") before the silence policy runs. */
   silenceFinalWaitMs: 8_000,
   /** What happens after the final wait. Only "next_question" (left unanswered) for now. */
-  silencePolicy: "next_question" as "next_question",
+  silencePolicy: "next_question" as const,
   /**
    * If the relay/AI never speaks the check, start counting again after this long
    * so the sequence can't stall.
