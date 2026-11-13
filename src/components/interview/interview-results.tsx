@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { sessionStatusNote } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
@@ -335,12 +336,15 @@ function SessionDetail({
   }, [sessionId, summary, currentOrg?.id, toast]);
 
   const handleRequestReport = useCallback(() => {
-    if (summary.data?.status === "IN_PROGRESS") {
+    // Ask to end first only when the candidate's tab is really still live.
+    const hb = summary.data?.lastHeartbeatAt ? new Date(summary.data.lastHeartbeatAt).getTime() : 0;
+    const live = summary.data?.status === "IN_PROGRESS" && Date.now() - hb < 60_000;
+    if (live) {
       setShowEndConfirm(true);
     } else {
       handleGenerateSummary();
     }
-  }, [summary.data?.status, handleGenerateSummary]);
+  }, [summary.data?.status, summary.data?.lastHeartbeatAt, handleGenerateSummary]);
 
   const handleConfirmEndAndGenerate = useCallback(async () => {
     try {
@@ -581,8 +585,8 @@ function SessionDetail({
     : (insightsData?.captureFailure ?? null);
   const transcriptFromRecording =
     !Array.isArray(insightsData) && insightsData?.transcriptSource === "recording";
-  const canRetranscribe =
-    !!summary.data?.audioRecordingUrl && summary.data?.status === "COMPLETED";
+  const canRetranscribe = !!summary.data?.audioRecordingUrl;
+  const statusNote = sessionStatusNote(summary.data?.status);
 
   const sentimentData = summary.data?.sentiment as {
     overall?: string;
@@ -644,6 +648,11 @@ function SessionDetail({
 
   return (
     <div className="space-y-6">
+      {statusNote && (
+        <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+          {statusNote}
+        </p>
+      )}
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <Button variant="outline" onClick={onBack}>

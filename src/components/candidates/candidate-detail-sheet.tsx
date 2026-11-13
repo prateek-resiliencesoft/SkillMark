@@ -20,6 +20,7 @@ import { getSessionOverallScore } from "@/lib/session-score";
 import { needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel } from "@/lib/preflight";
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
+import { sessionStatusNote } from "@/lib/session-activity";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -169,7 +170,28 @@ export function CandidateDetailSheet({
   const errors = validateCandidateForm(form);
   const sessionStatus: string = c?.session?.status ?? "NOT_STARTED";
   const sessionLabel = formatSessionStatusLabel(c?.session ?? null);
-  const interviewBegun = !!(c?.session?.interviewBeganAt || sessionStatus === "COMPLETED" || sessionStatus === "DISQUALIFIED");
+  const activity = (c?.activity ?? null) as {
+    messages: { id: string; role: string; content: string; timestamp?: string | null }[];
+    messageCount: number;
+    candidateLines: number;
+    questionsAnswered: number;
+    durationSeconds: number | null;
+    firstMessageAt: string | null;
+    lastMessageAt: string | null;
+    recordingUrl: string | null;
+    hasRecording: boolean;
+  } | null;
+  const [showTranscript, setShowTranscript] = useState(false);
+  const interviewBegun = !!(
+    c?.session?.interviewBeganAt ||
+    sessionStatus === "COMPLETED" ||
+    sessionStatus === "DISQUALIFIED" ||
+    (activity?.messageCount ?? 0) > 0 ||
+    activity?.hasRecording
+  );
+  const statusNote = interviewBegun ? sessionStatusNote(sessionStatus) : null;
+  const fmtDur = (s: number | null | undefined) =>
+    s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
   const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
@@ -426,6 +448,9 @@ export function CandidateDetailSheet({
                     inviteToken={c.inviteToken}
                     device={c.session?.preflightDevice}
                     lastActivityAt={c.session?.lastActivityAt}
+                    available={c.preflightAvailable !== false}
+                    session={c.session ?? null}
+                    firstMessageAt={activity?.firstMessageAt ?? null}
                   />
                   {interviewBegun && (
                     <a
@@ -438,6 +463,51 @@ export function CandidateDetailSheet({
                     </a>
                   )}
                 </section>
+
+                {/* Interview activity — shown for any status once the candidate attempted it */}
+                {c.session && interviewBegun && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-1 text-sm font-semibold">Interview</h4>
+                    {statusNote && <p className="mb-2 text-xs text-muted-foreground">{statusNote}</p>}
+                    <Row icon={CalendarClock} label="Duration" value={fmtDur(activity?.durationSeconds)} />
+                    <Row icon={MessageCircle} label="Questions answered" value={activity ? String(activity.questionsAnswered) : null} />
+                    <Row
+                      icon={MessageCircle}
+                      label="Transcript"
+                      value={activity ? `${activity.messageCount} lines (${activity.candidateLines} from the candidate)` : null}
+                    />
+                    {activity?.recordingUrl ? (
+                      <audio controls preload="none" src={activity.recordingUrl} className="mt-2 w-full" />
+                    ) : activity?.hasRecording ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Recording saved. Open the report to play it.</p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">No recording saved.</p>
+                    )}
+                    {(activity?.messageCount ?? 0) > 0 && (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-primary hover:underline"
+                          onClick={() => setShowTranscript((v) => !v)}
+                        >
+                          {showTranscript ? "Hide transcript" : "Show transcript"}
+                        </button>
+                        {showTranscript && (
+                          <ol className="mt-2 max-h-80 space-y-1.5 overflow-y-auto rounded-md border p-2 text-xs">
+                            {activity!.messages.map((m) => (
+                              <li key={m.id}>
+                                <span className="font-semibold">
+                                  {String(m.role).toUpperCase() === "USER" ? "Candidate" : "Interviewer"}:
+                                </span>{" "}
+                                {m.content}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 {/* Skills & tailoring */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
