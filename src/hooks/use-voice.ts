@@ -1623,10 +1623,12 @@ export function useVoice({
   }, []);
 
   /** Save remaining tracked messages and complete the session */
-  const saveAndComplete = useCallback(async () => {
-    // Wait for any in-flight question progress saves first
+  const completedOnServerRef = useRef(false);
+  const saveAndComplete = useCallback(async (): Promise<boolean> => {
+    // Wait for in-flight question progress saves first (bounded: a hung save
+    // must never block the completion write).
     try {
-      await saveChainRef.current;
+      await Promise.race([saveChainRef.current, new Promise((r) => setTimeout(r, 4_000))]);
     } catch {
       /* already logged in saveProgress */
     }
@@ -1645,27 +1647,70 @@ export function useVoice({
 
     const messages = [...trackedMessagesRef.current];
     trackedMessagesRef.current = [];
-    if (messages.length === 0 && !sessionId) return;
+    if (!sessionId) return false;
+    if (completedOnServerRef.current && messages.length === 0) return true;
 
     log.info(
       `Saving ${messages.length} remaining messages and completing session`,
     );
 
+    // Retry with backoff; the server treats a repeat completion as a no-op.
+    const delays = [0, 1_000, 3_000, 6_000];
+    let lastErr: unknown = null;
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10_000);
+      try {
+        const res = await fetch("/api/voice/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, messages, complete: true }),
+          keepalive: JSON.stringify(messages).length < 60_000,
+          signal: ctrl.signal,
+        });
+        const body = (await res.json().catch(() => ({}))) as { completed?: boolean; error?: string };
+        if (!res.ok || body.completed === false) {
+          throw new Error(`HTTP ${res.status}${body.error ? `: ${body.error}` : ""}`);
+        }
+        completedOnServerRef.current = true;
+        return true;
+      } catch (err) {
+        lastErr = err;
+        log.warn(`Completion save attempt ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Last resort: the status-only safety net (also via beacon if fetch is dead).
+    trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
+    log.error("Failed to save voice data:", lastErr);
+    reportSessionError(sessionId, {
+      category: "client",
+      severity: "error",
+      message: `Completion save failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+      context: { stage: "voice_complete" },
+    });
     try {
-      const res = await fetch("/api/voice/save", {
+      const res = await fetch("/api/session/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          messages,
-          complete: true,
-        }),
+        body: JSON.stringify({ sessionId }),
+        keepalive: true,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
-      log.error("Failed to save voice data:", err);
+      if (res.ok) {
+        completedOnServerRef.current = true;
+        return true;
+      }
+    } catch {
+      /* fall through to beacon */
     }
+    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+      const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+      navigator.sendBeacon("/api/session/complete", blob);
+    }
+    return false;
   }, [sessionId, trackMessage]);
 
   /**

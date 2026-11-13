@@ -6,7 +6,7 @@ import { trpc } from "@/lib/trpc/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Link2Off, Clock } from "lucide-react";
 import { PreparingScreen } from "@/components/session/preparing-screen";
-import { LinkExpiredScreen } from "@/components/session/candidate-end-screens";
+import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
@@ -171,6 +171,10 @@ export default function InvitePage() {
         </Card>
       </div>
     );
+  }
+
+  if (session?.status === "COMPLETED") {
+    return <CandidateThankYou />;
   }
 
   // One-time link already used (finished, interrupted, or running in another tab)

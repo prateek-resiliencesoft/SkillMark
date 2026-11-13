@@ -112,7 +112,7 @@ test("handleVoiceSave inserts mapped text messages before updating completion st
   );
 
   assert.equal(result.status, 200);
-  assert.deepEqual(result.body, { ok: true });
+  assert.deepEqual(result.body, { ok: true, completed: true, status: "COMPLETED" });
   assert.deepEqual(insertedMessages, [
     [
       {

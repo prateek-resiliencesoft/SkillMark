@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useProject } from "@/components/project-provider";
 import {
@@ -559,7 +560,7 @@ export default function CandidatesPage() {
   // ── Data ──
   const candidateList = trpc.candidate.listAll.useQuery(
     { limit: 200, projectId: projectId ?? undefined },
-    { enabled: !!projectId },
+    { enabled: !!projectId, refetchInterval: (data) => livePollInterval(data) },
   );
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({

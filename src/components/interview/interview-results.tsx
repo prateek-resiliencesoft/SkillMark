@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
@@ -171,10 +172,10 @@ export function InterviewResults({
   );
   const utils = trpc.useUtils();
 
-  const sessions = trpc.session.listByInterview.useQuery({
-    interviewId,
-    limit: 100,
-  });
+  const sessions = trpc.session.listByInterview.useQuery(
+    { interviewId, limit: 100 },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   if (selectedSessionId) {

@@ -1,5 +1,6 @@
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -118,7 +119,10 @@ export function CandidateDetailSheet({
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const open = !!candidateId;
-  const q = trpc.candidate.getById.useQuery({ id: candidateId ?? "" }, { enabled: open });
+  const q = trpc.candidate.getById.useQuery(
+    { id: candidateId ?? "" },
+    { enabled: open, refetchInterval: (data) => livePollInterval(data) },
+  );
   const c = q.data as any;
   const delivery = trpc.candidate.deliveryOptions.useQuery(
     { interviewId: c?.interviewId ?? "" },

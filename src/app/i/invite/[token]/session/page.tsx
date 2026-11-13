@@ -163,7 +163,8 @@ export default function InviteSessionPage() {
   }
 
   if (session.status === "COMPLETED") {
-    return <LinkExpiredScreen reason="used" />;
+    // Reload after finishing: the same thank-you screen, nothing else.
+    return <CandidateThankYou />;
   }
 
   if (startError) {

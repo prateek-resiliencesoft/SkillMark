@@ -1,5 +1,6 @@
 "use client";
 
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import {
     CodeEditorCanvas,
@@ -1371,20 +1372,8 @@ export function VoiceInterface({
     }, 8000);
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
-  const completionScreen = (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent className="py-12 text-center">
-          <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-          <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-          <p className="mt-2 text-muted-foreground">
-            Your interview has been completed successfully. We appreciate your
-            time and thoughtful responses.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  // Same thank-you screen as the session page uses after completion / on reload.
+  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];
