@@ -828,9 +828,15 @@ export function useVoice({
           log.warn(`Server closed a stuck candidate turn (${String(msg.reason)})`);
           break;
 
+        case "silence_prompt_ignored":
         case "silence_check_ignored":
-          // Relay was busy (reply pending, AI talking) — try again later.
-          silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
+          // Relay was busy (reply pending, AI talking) — retry the same reminder later.
+          silenceCheckRef.current.promptRejected(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
+          break;
+
+        case "no_answer_skip_ignored":
+          // Relay was busy (candidate turn / reply in flight) — try again later.
+          silenceCheckRef.current.skipRejected(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           break;
 
         case "interrupt":
@@ -854,6 +860,8 @@ export function useVoice({
               }
               asrBufferRef.current = text.trim();
               liveTranscriptRef.current = text.trim();
+              // Transcribed words = genuine speech (also covers server-VAD fallback).
+              if (/[\p{L}\p{N}]{2,}/u.test(text)) silenceCheckRef.current.candidateActivity();
               setState((s) => ({ ...s, userTranscript: text }));
               onTranscript?.(text, false);
             }
@@ -902,6 +910,8 @@ export function useVoice({
             }
           }
           asrBufferRef.current = "";
+          // Their words are final; if the AI never replies, reminders still run.
+          if (finalText && !turnActiveRef.current) silenceCheckRef.current.candidateFinished(performance.now());
           setState((s) => ({
             ...s,
             userTranscript: "",
@@ -1176,6 +1186,8 @@ export function useVoice({
       // Close the audio turn first so Gemini finalizes what they said, then
       // optionally cue a once-per-question gentle check-in for hesitant answers.
       sendActivity("activity_end");
+      // If the AI then never replies, the silence reminders still run.
+      silenceCheckRef.current.candidateFinished(performance.now());
       // The AI's reply is on its way: a breath or noise right now must not
       // reopen the turn and cut that reply (needs sustained speech instead).
       awaitingAiReplyUntilRef.current = performance.now() + ENDPOINTING_CONFIG.continuationWindowMs;
@@ -1429,12 +1441,10 @@ export function useVoice({
           VAD_FAILSAFE_CONFIG.absoluteMinRms * 2,
           floor != null ? floor * VAD_FAILSAFE_CONFIG.noiseFloorRatio : 0,
         );
+        // Energy alone is NOT speech (fan, keyboard, traffic): it never resets the
+        // silence reminders. Only a gated VAD turn or transcribed words do.
         if (!aiSpeaking && rms >= voiceRms) {
           lastVoiceAtRef.current = now;
-          if (silenceCheckRef.current.isWaiting || silenceCheckRef.current.attemptCount > 0) {
-            silenceCheckRef.current.candidateActivity();
-            setState((s) => (s.micCheckPrompt ? { ...s, micCheckPrompt: false } : s));
-          }
         }
 
         // Stuck-turn guard: a turn opened but never closed (missed speech end)
@@ -1676,25 +1686,35 @@ export function useVoice({
       if (interviewCompleteRef.current || !isListeningRef.current) return;
       const connector = relayConnectorRef.current;
       if (!connector?.isReady) return;
+      // Genuine speech in progress. Client VAD: an open turn / gated speech
+      // segment. Server-VAD fallback (no client turns): voice-level energy above
+      // the adaptive noise floor only PAUSES the count (never resets it), so a
+      // candidate who is talking is never skipped; the relay also refuses while
+      // it hears them.
+      const speechInProgress = clientVadEnabledRef.current
+        ? lastSpeechSegmentStartRef.current != null
+        : now - lastVoiceAtRef.current < 1_500;
       const action = silenceCheckRef.current.tick(now, {
         turnActive: turnActiveRef.current,
-        aiBusy: isAiBusy(now) || relayReconnectingRef.current || queuedAudioSamplesRef.current > 0,
-        voiceOnMic: now - lastVoiceAtRef.current < 1_500,
+        aiBusy: isSpeakingRef.current || isAiBusy(now) || relayReconnectingRef.current || queuedAudioSamplesRef.current > 0,
+        speechInProgress,
       });
       if (!action) return;
-      if (action.type === "ask") {
-        log.info("Candidate silent ~3s after the question — asking \"Are you there?\"");
-        micPeakSinceCheckRef.current = 0;
+      if (action.type === "prompt") {
+        log.info(`Candidate silent — reminder ${action.stage}: "${action.text}"`);
+        if (action.stage === 1) micPeakSinceCheckRef.current = 0;
         connector.sendJson({
-          type: "silence_check",
-          attempt: action.attempt,
+          type: "silence_prompt",
+          stage: action.stage,
+          text: action.text,
           questionIndex: currentQuestionIndexRef.current,
         });
       } else {
         const noSignal = micPeakSinceCheckRef.current < ENDPOINTING_CONFIG.noMicSignalRms;
-        log.warn(`Candidate still silent after "Are you there?" — moving to the next question${noSignal ? " (mic shows no signal)" : ""}`);
+        log.warn(`Candidate still silent after all reminders — moving to the next question${noSignal ? " (mic shows no signal)" : ""}`);
         connector.sendJson({
           type: "no_answer_skip",
+          policy: action.policy,
           questionIndex: currentQuestionIndexRef.current,
         });
         if (noSignal) setState((s) => ({ ...s, micCheckPrompt: true }));
@@ -1703,7 +1723,7 @@ export function useVoice({
           severity: "warning",
           message: noSignal
             ? "Candidate did not answer and the microphone showed no signal — moved on and asked them on screen to check the mic"
-            : "Candidate did not answer after \"Are you there?\" — moved to the next question (left unanswered)",
+            : "Candidate did not answer after three reminders — moved to the next question",
           context: {
             stage: "no_answer_skip",
             questionIndex: currentQuestionIndexRef.current,

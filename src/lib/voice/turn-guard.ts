@@ -2,9 +2,10 @@
  * Pure turn-taking helpers for the voice interview (no browser APIs, unit-tested):
  *  - BargeInDetector: only cut the AI's voice on sustained candidate speech.
  *  - stuckTurnReason: close a candidate turn that never got a speech-end.
- *  - SilenceCheck: "Hello, are you there?" when the candidate says nothing.
+ *  - SilenceCheck: staged reminders, then the next question, when the candidate says nothing.
  */
 import { ENDPOINTING_CONFIG } from "./endpointing-config";
+import { SILENCE_PROMPTS } from "./relay-keepalive";
 
 type Cfg = typeof ENDPOINTING_CONFIG;
 
@@ -73,33 +74,61 @@ export function stuckTurnReason(
   return null;
 }
 
+export { SILENCE_PROMPTS };
+
+export type SilencePromptStage = 1 | 2 | 3;
+
 export type SilenceCheckAction =
-  | { type: "ask"; attempt: number }
-  | { type: "skip"; attempt: number };
+  | { type: "prompt"; stage: SilencePromptStage; text: string }
+  | { type: "skip"; policy: Cfg["silencePolicy"] };
+
+export type SilenceCfg = {
+  silenceFirstPromptMs: number;
+  silencePromptGapMs: number;
+  silenceFinalWaitMs: number;
+  silenceCheckAiGraceMs: number;
+  silencePolicy: Cfg["silencePolicy"];
+};
 
 /**
- * After the AI finishes asking, counts candidate silence.
- *  ~3s silence  → ask the AI to say a short "Are you there?".
- *  ~4s more     → move on to the next question (marked unanswered).
- * Any candidate speech (a turn opening, or voice-level mic energy) resets it.
+ * Staged silence handling after the AI finishes asking (timed from the end of
+ * AI playback, never from generation):
+ *   9s silence → "Are you there? Can you hear me?"
+ *   5s more    → "I can't hear your response. Are you still connected?"
+ *   5s more    → "It seems you've gone silent. I'll wait a little longer."
+ *   8s more    → silence policy (default: next question, left unanswered).
+ * Each wait restarts when the reminder finishes playing.
+ * Only genuine candidate speech (a gated VAD turn, or transcribed words) calls
+ * candidateActivity() and cancels everything. Noise never resets the timer.
+ * Nothing fires while a candidate turn is open, speech is in progress, or the
+ * AI is speaking.
  */
 export class SilenceCheck {
   private waitingSince: number | null = null;
-  private attempts = 0;
+  private stage = 0; // reminders already sent for this question (0–3)
   private suppressedUntil = 0;
   private done = false;
 
-  constructor(private readonly cfg: Pick<Cfg, "silenceCheckAfterMs" | "silenceSkipAfterMs" | "silenceCheckAiGraceMs"> = ENDPOINTING_CONFIG) {}
+  constructor(private readonly cfg: SilenceCfg = ENDPOINTING_CONFIG) {}
 
+  /** Reminders sent so far for this question (0–3). */
   get attemptCount() {
-    return this.attempts;
+    return this.stage;
+  }
+
+  get currentStage() {
+    return this.stage;
   }
 
   get isWaiting() {
     return this.waitingSince != null;
   }
 
-  /** The AI finished speaking (its question, or a check). Start / restart the count. */
+  get isDone() {
+    return this.done;
+  }
+
+  /** AI playback ended (question or reminder). Start / restart the wait. */
   aiFinished(now: number) {
     if (this.done) return;
     this.waitingSince = now;
@@ -110,17 +139,27 @@ export class SilenceCheck {
     this.waitingSince = null;
   }
 
-  /** The candidate spoke. Clear everything. */
+  /** Genuine candidate speech. Cancel every pending reminder. */
   candidateActivity() {
     this.waitingSince = null;
-    this.attempts = 0;
+    this.stage = 0;
     this.done = false;
+  }
+
+  /**
+   * The candidate's turn closed. If the AI then never replies, count from here
+   * so we still never listen forever (the AI's reply pauses this as usual).
+   */
+  candidateFinished(now: number) {
+    this.stage = 0;
+    this.done = false;
+    this.waitingSince = now;
   }
 
   /** New question: start fresh (counting begins when the AI finishes asking it). */
   reset() {
     this.waitingSince = null;
-    this.attempts = 0;
+    this.stage = 0;
     this.done = false;
     this.suppressedUntil = 0;
   }
@@ -131,25 +170,47 @@ export class SilenceCheck {
     if (this.waitingSince != null) this.waitingSince = Math.max(this.waitingSince, now);
   }
 
+  /** The relay refused the last reminder (busy) — step back so it is retried. */
+  promptRejected(now: number, suppressMs: number) {
+    if (this.stage > 0) this.stage -= 1;
+    this.done = false;
+    this.waitingSince = now;
+    this.suppress(now, suppressMs);
+  }
+
+  /** The relay refused the skip because it was busy — retry after a pause. */
+  skipRejected(now: number, suppressMs: number) {
+    this.done = false;
+    this.waitingSince = now;
+    this.suppress(now, suppressMs);
+  }
+
+  private limitMs(): number {
+    if (this.stage === 0) return this.cfg.silenceFirstPromptMs;
+    if (this.stage < SILENCE_PROMPTS.length) return this.cfg.silencePromptGapMs;
+    return this.cfg.silenceFinalWaitMs;
+  }
+
   tick(
     now: number,
-    s: { turnActive: boolean; aiBusy: boolean; voiceOnMic: boolean },
+    s: { turnActive: boolean; aiBusy: boolean; speechInProgress: boolean },
   ): SilenceCheckAction | null {
     if (this.waitingSince == null || this.done) return null;
-    if (s.turnActive || s.aiBusy || s.voiceOnMic) return null;
+    if (s.turnActive || s.aiBusy || s.speechInProgress) return null;
     if (now < this.suppressedUntil) return null;
-    const limit = this.attempts === 0 ? this.cfg.silenceCheckAfterMs : this.cfg.silenceSkipAfterMs;
-    if (now - this.waitingSince < limit) return null;
+    if (now - this.waitingSince < this.limitMs()) return null;
 
-    this.attempts += 1;
-    if (this.attempts === 1) {
-      // If the AI never speaks the check, keep counting after a grace period.
+    if (this.stage < SILENCE_PROMPTS.length) {
+      this.stage += 1;
+      // Normally the reminder's playback restarts the wait (aiStarted/aiFinished).
+      // If the AI never speaks it, keep counting after a grace period.
       this.waitingSince = now + this.cfg.silenceCheckAiGraceMs;
-      return { type: "ask", attempt: 1 };
+      const stage = this.stage as SilencePromptStage;
+      return { type: "prompt", stage, text: SILENCE_PROMPTS[stage - 1] };
     }
     this.done = true;
     this.waitingSince = null;
-    return { type: "skip", attempt: this.attempts };
+    return { type: "skip", policy: this.cfg.silencePolicy };
   }
 }
 
