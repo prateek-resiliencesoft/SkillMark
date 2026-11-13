@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -40,7 +39,6 @@ import { useVoice, type InterviewContext } from "@/hooks/use-voice";
 import {
     AlertCircle,
     Check,
-    CheckCircle2,
     ChevronLeft,
     ChevronRight,
     ChevronDown,

@@ -98,7 +98,7 @@ export function PreflightProgress({
       )}
       {!usingDerived && !available && (
         <p className="mb-2 text-[11px] text-muted-foreground">
-          Setup step tracking isn't enabled on this server yet (database update 27).
+          Setup step tracking isn&apos;t enabled on this server yet (database update 27).
         </p>
       )}
       {!usingDerived && stuck && stuck.type !== "interview_started" && (
