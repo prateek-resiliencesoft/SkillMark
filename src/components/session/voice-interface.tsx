@@ -1521,6 +1521,14 @@ export function VoiceInterface({
   // ── Render ──────────────────────────────────────────────────────
   return shouldShowCompletionScreen ? completionScreen : (
     <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
+      {voice.isReconnecting && !locallyCompleted && (
+        <div
+          role="status"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        >
+          Connection lost. Reconnecting…
+        </div>
+      )}
       {voice.micCheckPrompt && voice.isConnected && !locallyCompleted && (
         <div
           role="alert"

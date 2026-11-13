@@ -61,6 +61,13 @@ interface RelayConnectorOptions<TJsonMessage extends Record<string, unknown>> {
   onConnected?: (context: RelayConnectedContext) => void;
   onFailover?: (context: RelayFailoverContext) => void;
   onPermanentFailure?: (error: Error) => void;
+  /**
+   * Waits (ms) before each extra round of tries over ALL relays after every
+   * relay failed once. Empty = give up after one round (old behaviour).
+   */
+  retryDelaysMs?: number[];
+  /** Called before each extra retry round (show "Reconnecting…"). */
+  onReconnecting?: (info: { round: number; totalRounds: number; lastError: Error }) => void;
 }
 
 const DEFAULT_VOICE_RELAY_PORT = "8766";
@@ -246,6 +253,8 @@ export class RelayConnector<TJsonMessage extends Record<string, unknown>> {
   private readonly onConnected?: RelayConnectorOptions<TJsonMessage>["onConnected"];
   private readonly onFailover?: RelayConnectorOptions<TJsonMessage>["onFailover"];
   private readonly onPermanentFailure?: RelayConnectorOptions<TJsonMessage>["onPermanentFailure"];
+  private readonly retryDelaysMs: number[];
+  private readonly onReconnecting?: RelayConnectorOptions<TJsonMessage>["onReconnecting"];
 
   private socket: RelaySocketLike | null = null;
   private currentIndex = -1;
@@ -268,6 +277,8 @@ export class RelayConnector<TJsonMessage extends Record<string, unknown>> {
     this.onConnected = options.onConnected;
     this.onFailover = options.onFailover;
     this.onPermanentFailure = options.onPermanentFailure;
+    this.retryDelaysMs = options.retryDelaysMs ?? [];
+    this.onReconnecting = options.onReconnecting;
   }
 
   get target(): RelayTarget | null {
@@ -291,15 +302,15 @@ export class RelayConnector<TJsonMessage extends Record<string, unknown>> {
   }
 
   async failover(reason: string): Promise<RelayTarget | null> {
-    if (this.destroyed || this.targets.length < 2 || this.currentIndex < 0) {
-      return null;
-    }
+    if (this.destroyed || this.currentIndex < 0) return null;
+    if (this.targets.length < 2 && this.retryDelaysMs.length === 0) return null;
     if (this.failoverPromise) return this.failoverPromise;
 
     const from = this.currentTarget;
-    const candidateIndices = this.targets
+    const others = this.targets
       .map((_, index) => index)
       .filter((index) => index !== this.currentIndex);
+    const candidateIndices = others.length ? others : [this.currentIndex];
 
     this.ready = false;
     const activeSocket = this.socket;
@@ -352,23 +363,41 @@ export class RelayConnector<TJsonMessage extends Record<string, unknown>> {
     reason?: string
   ): Promise<RelayTarget> {
     let lastError: Error | null = null;
+    const allIndices = this.targets.map((_, index) => index);
+    const totalRounds = 1 + this.retryDelaysMs.length;
 
-    for (const index of candidateIndices) {
-      try {
-        const target = await this.connectCandidate(index, isFailover);
-        if (isFailover && from && from.url !== target.url) {
-          this.onFailover?.({ from, to: target, reason: reason || "relay failover" });
+    for (let round = 0; round < totalRounds; round++) {
+      if (round > 0) {
+        if (this.destroyed) break;
+        this.onReconnecting?.({
+          round,
+          totalRounds: totalRounds - 1,
+          lastError: lastError ?? new Error("relay unavailable"),
+        });
+        await new Promise((r) => setTimeout(r, this.retryDelaysMs[round - 1]));
+        if (this.destroyed) break;
+      }
+      // First round: the given candidates. Retry rounds: every relay,
+      // including the one that just dropped (a network blip is the usual cause).
+      const indices = round === 0 ? candidateIndices : allIndices;
+      for (const index of indices) {
+        if (this.destroyed) break;
+        try {
+          const target = await this.connectCandidate(index, isFailover || round > 0);
+          if (isFailover && from && from.url !== target.url) {
+            this.onFailover?.({ from, to: target, reason: reason || "relay failover" });
+          }
+          return target;
+        } catch (error) {
+          lastError =
+            error instanceof Error ? error : new Error(String(error));
         }
-        return target;
-      } catch (error) {
-        lastError =
-          error instanceof Error ? error : new Error(String(error));
       }
     }
 
     const finalError =
       lastError || new Error("All voice relay targets failed");
-    this.onPermanentFailure?.(finalError);
+    if (!this.destroyed) this.onPermanentFailure?.(finalError);
     throw finalError;
   }
 

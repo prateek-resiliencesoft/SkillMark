@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ENDPOINTING_CONFIG } from "@/lib/voice/endpointing-config";
-import { BargeInDetector, SILERO_FRAME_MS, SilenceCheck, stuckTurnReason } from "@/lib/voice/turn-guard";
+import { BargeInDetector, SILERO_FRAME_MS, SilenceCheck, stuckTurnReason, hasRecentVoiceEnergy } from "@/lib/voice/turn-guard";
+import { absoluteAssetBase, vadProcessorOrder } from "@/lib/voice/silero-vad-client";
 import { nextJitterTargetMs, JITTER_BUFFER_ADAPTIVE_MAX_MS, JITTER_BUFFER_TARGET_MS } from "@/lib/voice/playback-jitter-buffer";
-import { pcm16Rms, silenceCheckCue } from "@/lib/voice/relay-keepalive";
+import { pcm16Rms, silenceCheckCue, noAnswerAdvanceCue } from "@/lib/voice/relay-keepalive";
 
 const LOUD = 0.05;
 const framesFor = (ms: number) => Math.ceil(ms / SILERO_FRAME_MS);
@@ -73,20 +74,18 @@ test("stuck turn: Ankit's case — a turn open for 9 minutes is always closed", 
 // ── Silence check ──────────────────────────────────────────────────
 const idle = { turnActive: false, aiBusy: false, voiceOnMic: false };
 
-test("silence check: asks after 10s, again after 10s more, then shows the on-screen prompt", () => {
+test("silence check: asks \"Are you there?\" after 3s, then moves on 4s after the AI finishes asking", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.equal(c.tick(9_000, idle), null);
-  assert.deepEqual(c.tick(10_000, idle), { type: "ask", attempt: 1 });
-  // AI speaks the check, finishes at 13s
+  assert.equal(c.tick(2_900, idle), null);
+  assert.deepEqual(c.tick(3_000, idle), { type: "ask", attempt: 1 });
+  // AI speaks the check, finishes at 4.5s
   c.aiStarted();
-  assert.equal(c.tick(12_000, idle), null);
-  c.aiFinished(13_000);
-  assert.equal(c.tick(22_000, idle), null);
-  assert.deepEqual(c.tick(23_000, idle), { type: "ask", attempt: 2 });
-  c.aiFinished(26_000);
-  assert.deepEqual(c.tick(36_000, idle), { type: "show_prompt", attempt: 3 });
-  // Only once
+  assert.equal(c.tick(4_000, idle), null);
+  c.aiFinished(4_500);
+  assert.equal(c.tick(8_400, idle), null);
+  assert.deepEqual(c.tick(8_500, idle), { type: "skip", attempt: 2 });
+  // Only once per question
   assert.equal(c.tick(60_000, idle), null);
 });
 
@@ -98,48 +97,77 @@ test("silence check: never fires while the candidate talks, the AI talks, or the
   assert.equal(c.tick(20_000, { ...idle, voiceOnMic: true }), null);
 });
 
-test("silence check: candidate speech resets the sequence", () => {
+test("silence check: candidate speech (thinking out loud) resets the sequence — no skip", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.deepEqual(c.tick(10_000, idle), { type: "ask", attempt: 1 });
+  assert.deepEqual(c.tick(3_000, idle), { type: "ask", attempt: 1 });
   c.candidateActivity();
   assert.equal(c.attemptCount, 0);
   assert.equal(c.tick(50_000, idle), null); // not waiting until the AI speaks again
   c.aiFinished(50_000);
-  assert.deepEqual(c.tick(60_000, idle), { type: "ask", attempt: 1 });
+  assert.deepEqual(c.tick(53_000, idle), { type: "ask", attempt: 1 });
 });
 
 test("silence check: suppressed while another prompt (check-in / watchdog) is in flight", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  c.suppress(9_000, 8_000);
-  assert.equal(c.tick(12_000, idle), null);
-  assert.equal(c.tick(16_000, idle), null);
-  assert.deepEqual(c.tick(19_000, idle), { type: "ask", attempt: 1 });
+  c.suppress(2_000, 5_000);
+  assert.equal(c.tick(3_000, idle), null);
+  assert.equal(c.tick(6_900, idle), null);
+  assert.deepEqual(c.tick(7_000, idle), { type: "ask", attempt: 1 });
 });
 
-test("silence check: keeps counting if the AI never speaks the check", () => {
+test("silence check: still moves on if the AI never speaks the check", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.deepEqual(c.tick(10_000, idle), { type: "ask", attempt: 1 });
-  const next = 10_000 + ENDPOINTING_CONFIG.silenceCheckAiGraceMs + ENDPOINTING_CONFIG.silenceCheckRepeatMs;
+  assert.deepEqual(c.tick(3_000, idle), { type: "ask", attempt: 1 });
+  const next = 3_000 + ENDPOINTING_CONFIG.silenceCheckAiGraceMs + ENDPOINTING_CONFIG.silenceSkipAfterMs;
   assert.equal(c.tick(next - 1, idle), null);
-  assert.deepEqual(c.tick(next, idle), { type: "ask", attempt: 2 });
+  assert.deepEqual(c.tick(next, idle), { type: "skip", attempt: 2 });
 });
 
 test("silence check: new question starts fresh", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  c.tick(10_000, idle);
+  c.tick(3_000, idle);
   c.reset();
   assert.equal(c.tick(30_000, idle), null);
   assert.equal(c.attemptCount, 0);
 });
 
-test("silence check cue tells the AI not to advance and suggests the mic on the second ask", () => {
+test("silence cues: short \"Are you there?\" and an explicit no-answer advance", () => {
   assert.match(silenceCheckCue(1), /^\[SILENCE_CHECK\]/);
   assert.match(silenceCheckCue(1), /are you there/i);
-  assert.match(silenceCheckCue(2), /microphone/i);
+  assert.match(noAnswerAdvanceCue(3, "Tell me about X"), /^\[NO_ANSWER\].*question 3.*Tell me about X/);
+  assert.match(noAnswerAdvanceCue(3, "Q"), /do NOT call signal_question_change/);
+  assert.match(noAnswerAdvanceCue(0, null), /farewell/);
+});
+
+// ── Noise gate / VAD tuning ────────────────────────────────────────
+test("noise gate: Silero speech only counts with recent voice-level mic energy", () => {
+  assert.equal(hasRecentVoiceEnergy(10_000, 0), false); // never had voice
+  assert.equal(hasRecentVoiceEnergy(10_000, 9_500), true);
+  assert.equal(hasRecentVoiceEnergy(10_000, 10_000 - ENDPOINTING_CONFIG.voiceEnergyWindowMs - 1), false);
+});
+
+test("VAD tuning follows the Silero noisy-audio advice", () => {
+  // High start threshold for noisy rooms, hysteresis below it, min speech length.
+  assert.ok(ENDPOINTING_CONFIG.positiveSpeechThreshold >= 0.8);
+  assert.ok(ENDPOINTING_CONFIG.negativeSpeechThreshold < ENDPOINTING_CONFIG.positiveSpeechThreshold);
+  assert.ok(ENDPOINTING_CONFIG.positiveSpeechThreshold - ENDPOINTING_CONFIG.negativeSpeechThreshold >= 0.15);
+  assert.ok(ENDPOINTING_CONFIG.minSpeechMs >= 250);
+  assert.ok(ENDPOINTING_CONFIG.minSpeechFrames * SILERO_FRAME_MS >= 250);
+  assert.equal(ENDPOINTING_CONFIG.model, "v5");
+  // Barge-in stays stricter than a normal turn start.
+  assert.ok(ENDPOINTING_CONFIG.bargeInSpeechThreshold >= ENDPOINTING_CONFIG.positiveSpeechThreshold);
+});
+
+test("VAD asset URLs are absolute and the processor falls back to ScriptProcessor", () => {
+  assert.equal(absoluteAssetBase("/vad/", "https://dev.example.com"), "https://dev.example.com/vad/");
+  assert.equal(absoluteAssetBase("/vad", "https://dev.example.com"), "https://dev.example.com/vad/");
+  assert.equal(absoluteAssetBase("https://cdn.example.com/vad/", "https://x.com"), "https://cdn.example.com/vad/");
+  assert.deepEqual(vadProcessorOrder(true), ["AudioWorklet", "ScriptProcessor"]);
+  assert.deepEqual(vadProcessorOrder(false), ["ScriptProcessor"]);
 });
 
 // ── Playback / relay helpers ───────────────────────────────────────
