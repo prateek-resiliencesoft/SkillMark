@@ -10,6 +10,7 @@ import {
   type PreflightEvent,
 } from "@/lib/preflight";
 import { cn } from "@/lib/utils";
+import { derivePreflightEvents, scopePreflightEvents } from "@/lib/session-activity";
 
 function statusText(item: { status: string | null; pending: boolean; retries?: number }): string {
   if (item.pending) return "Not yet";
@@ -42,20 +43,36 @@ export function PreflightProgress({
   inviteToken,
   device,
   lastActivityAt,
+  available = true,
+  session,
+  firstMessageAt,
 }: {
   events: PreflightEvent[] | null | undefined;
   inviteToken?: string | null;
   device?: DeviceInfo | null;
   lastActivityAt?: string | null;
+  /** False when the setup-events table is missing (migration 27 not applied). */
+  available?: boolean;
+  /** The session shown in the panel (scopes events; rebuilds steps for old sessions). */
+  session?: { id?: string; createdAt?: string | null; startedAt?: string | null; interviewBeganAt?: string | null } | null;
+  firstMessageAt?: string | null;
 }) {
-  const list = Array.isArray(events) ? events : [];
-  const items = buildPreflightTimeline(list, inviteToken);
+  const raw = Array.isArray(events) ? events : [];
+  const scoped = scopePreflightEvents(raw, { sessionId: session?.id ?? null, inviteToken });
+  const hasRecorded = scoped.some((e) => e.type !== "heartbeat" && e.type !== "error");
+  // No step-by-step rows for this session (older session / table missing):
+  // show only what the session record proves instead of a column of "Not yet".
+  const derived = !hasRecorded && session ? derivePreflightEvents(session, firstMessageAt) : [];
+  const usingDerived = derived.length > 0;
+  const list = usingDerived ? derived : scoped;
+  const allItems = buildPreflightTimeline(list);
+  const items = usingDerived ? allItems.filter((i) => !i.pending) : allItems;
   const stuck = preflightStuckStep(items);
   const last = latestPreflightActivity(list) ?? lastActivityAt ?? null;
   const ago = formatRelativeAgo(last);
   const deviceLabel = formatDeviceInfo(device);
-  const errors = list.filter((e) => e.type === "error" && (!inviteToken || !e.inviteToken || e.inviteToken === inviteToken));
-  const hasAny = list.some((e) => e.type !== "heartbeat" && (!inviteToken || !e.inviteToken || e.inviteToken === inviteToken));
+  const errors = scoped.filter((e) => e.type === "error");
+  const hasAny = list.some((e) => e.type !== "heartbeat");
 
   if (!hasAny && !lastActivityAt) {
     return (
@@ -72,7 +89,19 @@ export function PreflightProgress({
         <h5 className="text-xs font-semibold">Pre-interview progress</h5>
         {ago && <span className="shrink-0 text-[11px] text-muted-foreground">Last activity {ago}</span>}
       </div>
-      {stuck && stuck.type !== "interview_started" && (
+      {usingDerived && (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          {available
+            ? "Detailed setup steps weren't recorded for this session. Showing what the session record shows."
+            : "Setup step tracking isn't enabled on this server yet (database update 27). Showing what the session record shows."}
+        </p>
+      )}
+      {!usingDerived && !available && (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          Setup step tracking isn't enabled on this server yet (database update 27).
+        </p>
+      )}
+      {!usingDerived && stuck && stuck.type !== "interview_started" && (
         <p className="mb-2 text-[11px] text-muted-foreground">
           {stuck.problem ? `Stuck at ${stuck.label.toLowerCase()}` : `Currently at ${stuck.label.toLowerCase()}`}
         </p>

@@ -25,8 +25,9 @@ export async function POST(req: Request) {
 
     // Beats arrived too late (laptop slept / network gap): the link is gone.
     if (isHeartbeatStale(session)) {
-      await abandonSession(sessionId, "DISCONNECTED");
-      return NextResponse.json({ ok: true, expired: true, status: "ABANDONED" });
+      const ended = await abandonSession(sessionId, "DISCONNECTED");
+      const status = ended || "ABANDONED";
+      return NextResponse.json({ ok: true, expired: status !== "COMPLETED", status });
     }
 
     await supabaseAdmin

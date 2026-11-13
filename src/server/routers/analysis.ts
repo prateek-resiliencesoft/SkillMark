@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { effectiveDurationSeconds, lastMessageAt } from "@/lib/session-activity";
 import {
   objectPathFromSignedUrl,
   pathBelongsToSession,
@@ -18,7 +19,7 @@ interface ScreenshotEntry {
  * Re-sign only when the object path is owned by this session's organization.
  * Prevents a poisoned path/URL from minting access to another tenant's media.
  */
-async function resolveSessionSignedUrl(
+export async function resolveSessionSignedUrl(
   bucket: string,
   urlOrPath: string,
   sessionId: string,
@@ -162,7 +163,12 @@ export const analysisRouter = router({
         themes: session.themes,
         sentiment: session.sentiment,
         messages: session.messages,
-        totalDurationSeconds: session.totalDurationSeconds,
+        totalDurationSeconds: effectiveDurationSeconds(
+          session as never,
+          lastMessageAt((session.messages ?? []) as { role: string; timestamp?: string }[]),
+        ),
+        lastHeartbeatAt: (session as { lastHeartbeatAt?: string | null }).lastHeartbeatAt ?? null,
+        interviewBeganAt: (session as { interviewBeganAt?: string | null }).interviewBeganAt ?? null,
         audioRecordingUrl,
         audioDuration: (session as Record<string, unknown>).audioDuration as number | null,
         screenshots,

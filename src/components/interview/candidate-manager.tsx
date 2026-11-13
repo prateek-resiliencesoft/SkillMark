@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { effectiveDurationSeconds } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
@@ -377,7 +378,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return row.session?.totalDurationSeconds ?? -1;
+      return effectiveDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -895,7 +896,7 @@ export function CandidateManager({
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(session.totalDurationSeconds)
+              ? formatDuration(effectiveDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -1304,7 +1305,7 @@ export function CandidateManager({
                         );
                       })(),
                       duration: hasSession
-                        ? formatDuration(session.totalDurationSeconds)
+                        ? formatDuration(effectiveDurationSeconds(session))
                         : "-",
                       started: (
                         <span className="whitespace-nowrap">
@@ -1453,7 +1454,7 @@ export function CandidateManager({
                               <FileText className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
-                          {hasSession && status === "COMPLETED" ? (
+                          {hasSession && (status === "COMPLETED" || status === "ABANDONED" || status === "DISQUALIFIED" || (status === "IN_PROGRESS" && !!session.interviewBeganAt)) ? (
                             <Button
                               variant="ghost"
                               size="icon"

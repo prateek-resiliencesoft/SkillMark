@@ -1,5 +1,5 @@
 import { expireIfStale, expireNestedSession, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
-import { listPreflightEvents, recordPreflightEvent } from "@/lib/preflight-server";
+import { recordPreflightEvent } from "@/lib/preflight-server";
 import { needsFreshInviteLink } from "@/lib/session-link";
 import { inviteLink } from "../batch-access";
 import { nanoid } from "@/lib/id";
@@ -7,6 +7,9 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { listPreflightEventsWithStatus } from "@/lib/preflight-server";
+import { countAnsweredQuestions, effectiveDurationSeconds, lastMessageAt, type ActivityMessage } from "@/lib/session-activity";
+import { resolveSessionSignedUrl } from "./analysis";
 import {
     assertMinRole, filterAccessibleProjectIds,
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
@@ -139,8 +142,13 @@ export const candidateRouter = router({
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
       await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
       const withSession = await expireNestedSession(c);
-      const preflightEvents = await listPreflightEvents(c.id);
-      return { ...withSession, preflightEvents };
+      const { events: preflightEvents, available: preflightAvailable } =
+        await listPreflightEventsWithStatus(c.id);
+      const activity = await loadSessionActivity(
+        withSession.session as Record<string, unknown> | null,
+        c.interviewId as string,
+      );
+      return { ...withSession, preflightEvents, preflightAvailable, activity };
     }),
 
   /**
@@ -773,3 +781,47 @@ export const candidateRouter = router({
       return candidate;
     }),
 });
+
+/**
+ * Saved transcript, recording and counts for the candidate panel — for any
+ * session status (in progress, ended early, completed, disqualified).
+ */
+async function loadSessionActivity(session: Record<string, unknown> | null, interviewId: string) {
+  if (!session?.id) return null;
+  const sessionId = session.id as string;
+  const { data: msgs } = await supabaseAdmin
+    .from("messages")
+    .select("id, role, content, contentType, questionId, timestamp, transcription")
+    .eq("sessionId", sessionId)
+    .order("timestamp", { ascending: true });
+  const messages = ((msgs ?? []) as (ActivityMessage & { id: string })[]).filter(
+    (m) => !m.contentType || m.contentType === "TEXT",
+  );
+  let recordingUrl: string | null = null;
+  const stored = session.audioRecordingUrl as string | null;
+  if (stored && !session.mediaClearedAt) {
+    try {
+      const { data: iv } = await supabaseAdmin
+        .from("interviews")
+        .select("project:projects(organizationId)")
+        .eq("id", interviewId)
+        .maybeSingle();
+      const orgId = (iv?.project as { organizationId?: string } | null)?.organizationId;
+      if (orgId) recordingUrl = await resolveSessionSignedUrl("recordings", stored, sessionId, orgId);
+    } catch {
+      recordingUrl = null;
+    }
+  }
+  const last = lastMessageAt(messages);
+  return {
+    messages,
+    messageCount: messages.length,
+    candidateLines: messages.filter((m) => String(m.role).toUpperCase() === "USER").length,
+    questionsAnswered: countAnsweredQuestions(messages),
+    durationSeconds: effectiveDurationSeconds(session as never, last),
+    firstMessageAt: messages[0]?.timestamp ?? null,
+    lastMessageAt: last,
+    recordingUrl,
+    hasRecording: !!stored && !session.mediaClearedAt,
+  };
+}

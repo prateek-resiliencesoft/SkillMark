@@ -2,13 +2,19 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { ActivitySegment } from "@/app/api/voice/save/logic";
 import { isPreflightStale } from "@/lib/preflight";
 import { isHeartbeatStale, type EndReason } from "@/lib/session-link";
-import { REPORT_DELAY_AFTER_ABANDON_MS } from "@/lib/session-report-policy";
+import { REPORT_DELAY_AFTER_ABANDON_MS, REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
+import { reachedClosing } from "@/lib/session-activity";
 
 /**
- * End an in-progress session as ABANDONED (link becomes unusable).
- * Only touches IN_PROGRESS rows so it can never undo a completion.
+ * End an in-progress session (link becomes unusable). ABANDONED normally; if
+ * the interviewer had already said goodbye (only the completion call was
+ * lost), it's recorded as COMPLETED. Only touches IN_PROGRESS rows so it can
+ * never undo a completion. Returns the new status, or false.
  */
-export async function abandonSession(sessionId: string, reason: EndReason): Promise<boolean> {
+export async function abandonSession(
+  sessionId: string,
+  reason: EndReason,
+): Promise<false | "ABANDONED" | "COMPLETED"> {
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select("id, status, activitySegments, lastHeartbeatAt")
@@ -22,13 +28,38 @@ export async function abandonSession(sessionId: string, reason: EndReason): Prom
     s.leftAt === null ? { ...s, leftAt } : s,
   );
 
+  let finished = false;
+  try {
+    const { data: msgs } = await supabaseAdmin
+      .from("messages")
+      .select("role, content, timestamp")
+      .eq("sessionId", sessionId)
+      .order("timestamp", { ascending: false })
+      .limit(6);
+    finished = reachedClosing(((msgs ?? []) as { role: string; content: string }[]).reverse());
+  } catch {
+    finished = false;
+  }
+
   const { data: updated, error } = await supabaseAdmin
     .from("sessions")
-    .update({ status: "ABANDONED", endReason: reason, activitySegments: segments })
+    .update(
+      finished
+        ? { status: "COMPLETED", completedAt: leftAt, endReason: "COMPLETED", activitySegments: segments }
+        : { status: "ABANDONED", endReason: reason, activitySegments: segments },
+    )
     .eq("id", sessionId)
     .eq("status", "IN_PROGRESS")
     .select("id");
   const ended = !error && Array.isArray(updated) && updated.length > 0;
+  if (ended && finished) {
+    void import("@/lib/session-report-server")
+      .then(({ scheduleSessionReport }) =>
+        scheduleSessionReport(sessionId, "completed:closing-reached", REPORT_DELAY_AFTER_COMPLETE_MS),
+      )
+      .catch(() => undefined);
+    return "COMPLETED";
+  }
   if (ended) {
     // Left early: still build a report from whatever was answered (skipped when
     // there are no answers). Delayed so a late completion / last batch lands first.
@@ -38,7 +69,7 @@ export async function abandonSession(sessionId: string, reason: EndReason): Prom
       )
       .catch(() => undefined);
   }
-  return ended;
+  return ended ? "ABANDONED" : false;
 }
 
 /**
@@ -57,8 +88,8 @@ export async function expireIfStale<
   },
 >(session: T): Promise<T> {
   if (isHeartbeatStale(session) || isPreflightStale(session)) {
-    await abandonSession(session.id, "DISCONNECTED");
-    return { ...session, status: "ABANDONED" };
+    const ended = await abandonSession(session.id, "DISCONNECTED");
+    return { ...session, status: ended || "ABANDONED" };
   }
   return session;
 }
