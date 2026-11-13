@@ -157,3 +157,36 @@ describe("voice save completion", () => {
     assert.deepEqual(t.scheduled, [{ force: true }]);
   });
 });
+
+describe("dashboard live polling", async () => {
+  const { livePollInterval, LIVE_POLL_MS } = await import("@/lib/live-poll");
+  it("polls while a session is in progress or a report is pending", () => {
+    assert.equal(livePollInterval([{ session: { status: "IN_PROGRESS" } }]), LIVE_POLL_MS);
+    assert.equal(livePollInterval({ items: [{ status: "COMPLETED", reportStatus: "PENDING" }] }), LIVE_POLL_MS);
+  });
+  it("stops once everything has ended", () => {
+    assert.equal(livePollInterval([{ status: "COMPLETED", reportStatus: "READY" }]), false);
+    assert.equal(livePollInterval(undefined), false);
+  });
+});
+
+describe("voice save completion response", () => {
+  it("reports completed:true so the client can stop retrying", async () => {
+    const t = makeOps("IN_PROGRESS");
+    const r = await handleVoiceSave({ sessionId: "s1", complete: true }, t.ops);
+    assert.equal(r.body.completed, true);
+  });
+  it("returns 404 (not a silent 200) when the session can't be loaded", async () => {
+    const t = makeOps("IN_PROGRESS");
+    t.ops.loadSessionForCompletion = async () => null;
+    const r = await handleVoiceSave({ sessionId: "s1", complete: true }, t.ops);
+    assert.equal(r.status, 404);
+    assert.equal(r.body.completed, false);
+  });
+  it("a repeat completion is acknowledged as completed", async () => {
+    const t = makeOps("COMPLETED");
+    const r = await handleVoiceSave({ sessionId: "s1", complete: true }, t.ops);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.completed, true);
+  });
+});

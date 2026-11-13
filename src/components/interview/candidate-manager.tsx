@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -545,7 +546,10 @@ export function CandidateManager({
   }, [columnOrder]);
 
   // ── Data ──
-  const candidateList = trpc.candidate.list.useQuery({ interviewId });
+  const candidateList = trpc.candidate.list.useQuery(
+    { interviewId },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({

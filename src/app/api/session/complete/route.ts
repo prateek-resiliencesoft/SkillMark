@@ -67,17 +67,26 @@ export async function POST(req: Request) {
       );
     }
 
-    await supabaseAdmin
+    const writeCompletion = (withReason: boolean) =>
+      supabaseAdmin
       .from("sessions")
       .update({
         status: "COMPLETED" as const,
         completedAt: now.toISOString(),
         activitySegments: closed,
         totalDurationSeconds: duration,
-        endReason: "COMPLETED",
+        ...(withReason ? { endReason: "COMPLETED" } : {}),
       })
       .eq("id", sessionId)
       .in("status", ["IN_PROGRESS", "ABANDONED", "NOT_STARTED"]);
+    let { error: writeErr } = await writeCompletion(true);
+    if (writeErr && /endReason|42703|PGRST204/.test(`${writeErr.code} ${writeErr.message}`)) {
+      ({ error: writeErr } = await writeCompletion(false));
+    }
+    if (writeErr) {
+      log.error(`Session ${sessionId} completion write failed: ${writeErr.message}`);
+      return NextResponse.json({ error: "Could not complete session" }, { status: 500 });
+    }
 
     log.info(`Session ${sessionId} completed via safety-net (${duration}s)`);
     void notifySessionCompleted(supabaseAdmin, sessionId);

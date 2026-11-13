@@ -44,7 +44,7 @@ const voiceSaveOps: VoiceSaveOps = {
     );
   },
   async loadSessionForCompletion(sessionId) {
-    const { data } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from("sessions")
       .select(
         `*, interview:interviews!inner(title, objective, language, userId, projectId, assessmentCriteria, questions(text, order, type), project:projects(organizationId))`,
@@ -54,9 +54,29 @@ const voiceSaveOps: VoiceSaveOps = {
         referencedTable: "interviews.questions",
         ascending: true,
       })
-      .single();
-
-    return (data as CompletionSession | null) ?? null;
+      .maybeSingle();
+    if (data) return data as CompletionSession;
+    if (error) log.error(`Completion load (with interview) failed for ${sessionId}: ${error.message}`);
+    // Fallback: the status write must never depend on the interview join.
+    const { data: bare } = await supabaseAdmin
+      .from("sessions")
+      .select("status, startedAt")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (!bare) return null;
+    return {
+      status: bare.status as string,
+      startedAt: bare.startedAt as string,
+      interview: {
+        title: "",
+        objective: null,
+        language: "en",
+        userId: "",
+        projectId: "",
+        assessmentCriteria: null,
+        questions: [],
+      },
+    };
   },
   async loadLastMessage(sessionId) {
     const { data } = await supabaseAdmin
@@ -93,7 +113,17 @@ const voiceSaveOps: VoiceSaveOps = {
     return (data as ProgressSession | null) ?? null;
   },
   async updateSession(sessionId, payload) {
-    await supabaseAdmin.from("sessions").update(payload).eq("id", sessionId);
+    const { error } = await supabaseAdmin.from("sessions").update(payload).eq("id", sessionId);
+    if (!error) return;
+    // Optional columns (endReason) missing on an older DB: retry the core write.
+    if ("endReason" in payload && /endReason|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+      const { endReason: _drop, ...rest } = payload;
+      void _drop;
+      const retry = await supabaseAdmin.from("sessions").update(rest).eq("id", sessionId);
+      if (!retry.error) return;
+      throw new Error(`Session update failed: ${retry.error.message}`);
+    }
+    throw new Error(`Session update failed: ${error.message}`);
   },
   generateSummary,
   log,
