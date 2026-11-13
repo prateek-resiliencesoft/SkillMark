@@ -56,8 +56,49 @@ export const ENDPOINTING_CONFIG = {
   preSpeechPadMs: 300,
   minSpeechMs: 120,
 
+  // ── Barge-in (candidate talking over the AI) ─────────────────────
+  /** Silero probability a frame needs to count toward a barge-in. */
   bargeInSpeechThreshold: 0.85,
-  bargeInMinFrames: 10,
+  /** Legacy frame count (32ms frames); kept for reference — bargeInMinSpeechMs rules. */
+  bargeInMinFrames: 13,
+  /**
+   * Sustained confident speech needed before the AI's voice is cut. Short
+   * blips, breaths, coughs and speaker echo stay below this, so they no
+   * longer chop the AI mid-sentence.
+   */
+  bargeInMinSpeechMs: 400,
+  /** Low-probability frames tolerated inside a barge-in streak (natural dips). */
+  bargeInMaxDipFrames: 2,
+  /** Mic level (float32 RMS) the latest chunk must reach — echo after echo-cancellation is quieter. */
+  bargeInMinRms: 0.012,
+
+  // ── Stuck-turn guard ─────────────────────────────────────────────
+  /**
+   * Hard cap on one candidate turn. A turn left open longer than this (Silero
+   * never reported speech end — background noise, a missed misfire) is closed
+   * so the AI can reply. The candidate can keep talking; a new turn opens.
+   */
+  maxTurnMs: 90_000,
+  /** Open turn with no voice-level mic energy for this long → close it. */
+  turnNoVoiceForceEndMs: 8_000,
+
+  // ── Silent-candidate check ("Hello, are you there?") ─────────────
+  /** Silence after the AI finishes a question before the first check. */
+  silenceCheckAfterMs: 10_000,
+  /** Silence after a check before the next one. */
+  silenceCheckRepeatMs: 10_000,
+  /** Spoken checks before showing the on-screen microphone prompt. */
+  silenceCheckSpokenMax: 2,
+  /**
+   * If the relay/AI never speaks a check, start counting again after this long
+   * so the sequence can't stall.
+   */
+  silenceCheckAiGraceMs: 6_000,
+  /**
+   * After a check-in / reply-watchdog / reconnect cue, hold silence checks for
+   * this long so two prompts never fire together.
+   */
+  silenceCheckSuppressMs: 8_000,
 
   baseAssetPath: "/vad/",
   onnxWASMBasePath: "/vad/",

@@ -10,9 +10,13 @@ import {
 } from "@/lib/voice/relay-routing";
 import {
   JITTER_BUFFER_MAX_WAIT_MS,
+  JITTER_BUFFER_TARGET_MS,
   PLAYBACK_SAMPLE_RATE,
+  nextJitterTargetMs,
   shouldFlushPlaybackQueue,
 } from "@/lib/voice/playback-jitter-buffer";
+import { BargeInDetector, SilenceCheck, stuckTurnReason } from "@/lib/voice/turn-guard";
+import { VAD_FAILSAFE_CONFIG } from "@/lib/voice/vad-failsafe";
 import { decideEndpoint } from "@/lib/voice/endpointing";
 import { ENDPOINTING_CONFIG } from "@/lib/voice/endpointing-config";
 import {
@@ -22,12 +26,36 @@ import {
 } from "@/lib/voice/silero-vad-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { reportSessionError } from "@/lib/session-error-report-client";
+import { VadFailsafe, type FailsafeReason } from "@/lib/voice/vad-failsafe";
+import { compareUserLines, normalizeForCompare } from "@/lib/transcript/dedupe";
 
 const PLAYBACK_START_LEAD_S = 0.18;
 // Short fade-in when playback (re)starts from silence, to avoid a click.
 const PLAYBACK_FADE_IN_SAMPLES = 96; // 4ms at 24kHz
 
 const log = createLogger("voice");
+
+/** ~3s of 256ms mic chunks kept so a VAD fallback doesn't lose the words that triggered it. */
+const PRE_ROLL_CHUNKS = 12;
+/** Max audio held while the relay reconnects the AI with its own speech detection (~10s). */
+const FALLBACK_QUEUE_MAX_CHUNKS = 40;
+/** Speaker-echo guard after AI audio ends (the old hold was 500ms and swallowed quick answers). */
+const AI_ECHO_GUARD_MS = 150;
+/** Stop holding audio for the fallback reconnect after this long, even without confirmation. */
+const FALLBACK_QUEUE_TIMEOUT_MS = 8_000;
+
+function float32ToPcmHex(inputData: Float32Array): string {
+  const pcm = new Int16Array(inputData.length);
+  for (let i = 0; i < inputData.length; i++) {
+    pcm[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+  }
+  const bytes = new Uint8Array(pcm.buffer);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
 
 export interface InterviewContext {
   title: string;
@@ -78,6 +106,8 @@ interface VoiceState {
   audioLevel: number;
   currentQuestionIndex: number;
   totalQuestions: number;
+  /** Candidate stayed silent through the spoken checks — show "we can't hear you". */
+  micCheckPrompt: boolean;
 }
 
 interface TrackedMessage {
@@ -128,6 +158,7 @@ export function useVoice({
     audioLevel: 0,
     currentQuestionIndex: interviewContext.startQuestionIndex ?? 0,
     totalQuestions: interviewContext.questions.length,
+    micCheckPrompt: false,
   });
 
   const relayConnectorRef = useRef<RelayConnector<Record<string, unknown>> | null>(null);
@@ -149,7 +180,41 @@ export function useVoice({
   /** Serialize progress saves so earlier questions never insert after later ones. */
   const saveChainRef = useRef(Promise.resolve());
   const micHoldUntilRef = useRef(0);
+  /** When AI audio actually stops playing (micHoldUntil adds a 500ms echo tail on top). */
+  const aiAudioEndsAtRef = useRef(0);
   const bargeInFramesRef = useRef(0);
+  /** Consecutive confident Silero frames after the AI finished (turn opener when onSpeechStart was swallowed). */
+  const postAiSpeechFramesRef = useRef(0);
+  /** Sustained-speech detector for cutting the AI's voice (barge-in). */
+  const bargeInDetectorRef = useRef(new BargeInDetector());
+  /** Latest mic chunk level (float32 RMS), for barge-in and silence checks. */
+  const lastMicRmsRef = useRef(0);
+  /** Last time the mic carried voice-level energy (outside AI playback). */
+  const lastVoiceAtRef = useRef(0);
+  /** When the current candidate turn was opened. */
+  const turnOpenedAtRef = useRef(0);
+  /** Candidate just finished; the AI's reply is on its way (don't let a blip cut it). */
+  const awaitingAiReplyUntilRef = useRef(0);
+  /** "Hello, are you there?" state machine. */
+  const silenceCheckRef = useRef(new SilenceCheck());
+  const relayReconnectingRef = useRef(false);
+  const interviewCompleteRef = useRef(false);
+  const isSpeakingRef = useRef(false);
+  /** Adaptive playback pre-roll (grows after gaps in the AI's voice). */
+  const jitterTargetMsRef = useRef<number>(JITTER_BUFFER_TARGET_MS);
+  /** True between the first chunk of an AI reply and its end (for gap counting). */
+  const aiReplyPlayingRef = useRef(false);
+  const underrunsThisReplyRef = useRef(0);
+  const playbackReportsRef = useRef(0);
+  const bargeInReportsRef = useRef(0);
+
+  // VAD failsafe: falls back to the AI's own speech detection if Silero misses the candidate.
+  const vadFailsafeRef = useRef(new VadFailsafe());
+  /** Recent mic chunks (hex PCM) not sent while client VAD gated them. */
+  const preRollRef = useRef<string[]>([]);
+  /** Audio held while the relay reconnects after a VAD fallback. */
+  const fallbackQueueRef = useRef<string[] | null>(null);
+  const fallbackQueueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Client Silero VAD + smart endpointing
   const clientVadEnabledRef = useRef(false);
@@ -170,7 +235,7 @@ export function useVoice({
 
   const onInterruptRef = useRef(onInterrupt);
   useEffect(() => { onInterruptRef.current = onInterrupt; }, [onInterrupt]);
-  const lastFinalUserTranscriptRef = useRef<{ text: string; at: number } | null>(null);
+  const lastFinalUserTranscriptRef = useRef<{ text: string; at: number; questionIndex: number } | null>(null);
 
   // Buffers for accumulating streaming chunks
   const asrBufferRef = useRef<string>("");
@@ -245,10 +310,21 @@ export function useVoice({
     audioSourcesRef.current = [];
     playTimeRef.current = 0;
     micHoldUntilRef.current = performance.now() + 250;
+    aiAudioEndsAtRef.current = performance.now();
     bargeInFramesRef.current = 0;
+    bargeInDetectorRef.current.reset();
+    aiReplyPlayingRef.current = false;
+    isSpeakingRef.current = false;
     setState((s) => ({ ...s, isSpeaking: false }));
     onInterruptRef.current?.();
   }, [clearQueuedAudio]);
+
+  /** AI audio playing (plus a short echo tail), or its reply is on the way. */
+  const isAiBusy = useCallback(
+    (now: number) =>
+      now < aiAudioEndsAtRef.current + AI_ECHO_GUARD_MS || now < awaitingAiReplyUntilRef.current,
+    [],
+  );
 
   const scheduleQueuedAudioFlush = useCallback(
     (flushQueuedAudio: (force?: boolean) => void) => {
@@ -270,6 +346,10 @@ export function useVoice({
     const ctx = audioContextRef.current;
     if (!ctx) return;
     if (queuedAudioSamplesRef.current === 0) return;
+    // A suspended/interrupted context never plays (or plays in bursts) — wake it.
+    if (ctx.state !== "running") {
+      void ctx.resume().catch(() => {});
+    }
 
     const now = ctx.currentTime;
     const bufferedAheadMs = Math.max(0, (playTimeRef.current - now) * 1000);
@@ -281,6 +361,7 @@ export function useVoice({
         firstChunkQueuedAtMs: firstQueuedAudioAtRef.current,
         nowMs: performance.now(),
         sampleRate: PLAYBACK_SAMPLE_RATE,
+        targetMs: jitterTargetMsRef.current,
       })
     ) {
       scheduleQueuedAudioFlush(flushQueuedAudio);
@@ -301,6 +382,15 @@ export function useVoice({
     firstQueuedAudioAtRef.current = null;
 
     const coldStart = playTimeRef.current <= now;
+    if (coldStart && aiReplyPlayingRef.current) {
+      // Ran dry in the middle of an AI reply → audible gap. Build a bigger
+      // cushion from now on so the voice doesn't break up again.
+      underrunsThisReplyRef.current += 1;
+      jitterTargetMsRef.current = nextJitterTargetMs(jitterTargetMsRef.current);
+      log.warn(`AI audio underrun (gap) — pre-roll now ${jitterTargetMsRef.current}ms`);
+    }
+    aiReplyPlayingRef.current = true;
+    silenceCheckRef.current.aiStarted();
     if (coldStart) {
       const n = Math.min(PLAYBACK_FADE_IN_SAMPLES, float32.length);
       for (let i = 0; i < n; i++) float32[i] *= i / n;
@@ -319,11 +409,14 @@ export function useVoice({
     const startAt = playTimeRef.current > now ? playTimeRef.current : now + PLAYBACK_START_LEAD_S;
     source.start(startAt);
     playTimeRef.current = startAt + audioBuffer.duration;
-    micHoldUntilRef.current =
-      performance.now() + Math.max(0, (playTimeRef.current - now) * 1000) + 500;
+    aiAudioEndsAtRef.current =
+      performance.now() + Math.max(0, (playTimeRef.current - now) * 1000);
+    micHoldUntilRef.current = aiAudioEndsAtRef.current + 500;
     bargeInFramesRef.current = 0;
 
     audioSourcesRef.current.push(source);
+    awaitingAiReplyUntilRef.current = 0;
+    isSpeakingRef.current = true;
     setState((s) => ({
       ...s,
       isSpeaking: true,
@@ -338,6 +431,8 @@ export function useVoice({
         audioSourcesRef.current.length === 0 &&
         queuedAudioSamplesRef.current === 0
       ) {
+        isSpeakingRef.current = false;
+        silenceCheckRef.current.aiFinished(performance.now());
         setState((s) => ({ ...s, isSpeaking: false }));
       }
     };
@@ -357,7 +452,10 @@ export function useVoice({
       }
       queuedAudioChunksRef.current.push(float32);
       queuedAudioSamplesRef.current += float32.length;
-      flushQueuedAudio();
+      // Background tabs throttle timers to ~1s, which turned the jitter-buffer
+      // wait into long gaps. Schedule straight away when hidden.
+      const hidden = typeof document !== "undefined" && document.hidden;
+      flushQueuedAudio(hidden);
     },
     [flushQueuedAudio]
   );
@@ -406,8 +504,19 @@ export function useVoice({
       // Prefer client Silero VAD; fall back to Gemini automatic VAD if assets fail.
       const vadAssetsOk = await preloadVadAssets();
       clientVadEnabledRef.current = vadAssetsOk;
+      vadFailsafeRef.current = new VadFailsafe();
+      preRollRef.current = [];
+      fallbackQueueRef.current = null;
       if (!vadAssetsOk) {
         log.warn("Silero VAD assets unavailable — using Gemini automatic VAD");
+        reportSessionError(sessionId, {
+          category: "voice",
+          severity: "info",
+          message: "Browser speech detection unavailable (assets did not load) — using the AI's own speech detection",
+          context: { stage: "client_vad_off", reason: "assets_unavailable" },
+        });
+      } else {
+        log.info("Client VAD on (Silero)");
       }
 
       // Reset tracked messages
@@ -574,6 +683,98 @@ export function useVoice({
     [sessionId, trackMessage],
   );
 
+  /** Send audio held during a VAD-fallback reconnect, then resume live streaming. */
+  const flushFallbackQueue = useCallback(() => {
+    if (fallbackQueueTimerRef.current) {
+      clearTimeout(fallbackQueueTimerRef.current);
+      fallbackQueueTimerRef.current = null;
+    }
+    const queued = fallbackQueueRef.current;
+    fallbackQueueRef.current = null;
+    const connector = relayConnectorRef.current;
+    if (!queued?.length || !connector?.isReady) return;
+    for (const hex of queued) connector.sendJson({ type: "audio", data: hex });
+    log.info(`VAD fallback: sent ${queued.length} held mic chunks`);
+  }, []);
+
+  /**
+   * Give up on browser (Silero) turn detection for the rest of this session.
+   * The relay reconnects the AI with its own speech detection and the mic is
+   * streamed continuously (with the usual echo guard while the AI talks).
+   */
+  const switchToServerVad = useCallback(
+    (reason: FailsafeReason, extra?: Record<string, unknown>) => {
+      if (!clientVadEnabledRef.current) return;
+      const connector = relayConnectorRef.current;
+      const snapshot = vadFailsafeRef.current.snapshot();
+      vadFailsafeRef.current.trip(reason);
+
+      // Close any half-open client turn so the AI doesn't wait on it.
+      if (endpointTimerRef.current) {
+        clearInterval(endpointTimerRef.current);
+        endpointTimerRef.current = null;
+      }
+      if (turnActiveRef.current && connector?.isReady) {
+        connector.sendJson({ type: "activity_end" });
+      }
+      turnActiveRef.current = false;
+      silenceStartedAtRef.current = null;
+      clientVadEnabledRef.current = false;
+
+      // Hold the words that triggered this (pre-roll) plus whatever is said
+      // while the relay reconnects, then send them once it's back.
+      fallbackQueueRef.current = [...preRollRef.current];
+      preRollRef.current = [];
+      if (fallbackQueueTimerRef.current) clearTimeout(fallbackQueueTimerRef.current);
+      fallbackQueueTimerRef.current = setTimeout(() => {
+        fallbackQueueTimerRef.current = null;
+        flushFallbackQueue();
+      }, FALLBACK_QUEUE_TIMEOUT_MS);
+
+      connector?.sendJson({ type: "client_vad", enabled: false, reason });
+
+      const vad = vadRef.current;
+      vadRef.current = null;
+      if (vad) {
+        void vad.pause().catch(() => {});
+        void vad.destroy().catch(() => {});
+      }
+
+      log.warn(`Client VAD off (fallback: ${reason})`, snapshot);
+      reportSessionError(sessionId, {
+        category: "voice",
+        severity: "warning",
+        message: `Browser speech detection missed the candidate (${reason}) — switched to the AI's own speech detection`,
+        context: {
+          stage: "client_vad_fallback",
+          reason,
+          questionIndex: currentQuestionIndexRef.current,
+          ...snapshot,
+          ...extra,
+        },
+      });
+    },
+    [flushFallbackQueue, sessionId],
+  );
+
+  /**
+   * Save whatever the AI has said so far as an interviewer line. Called before
+   * the text buffer is cleared (barge-in, button transitions, question change)
+   * so interviewer lines aren't silently dropped from the transcript.
+   */
+  const commitAssistantBuffer = useCallback(() => {
+    const text = chatBufferRef.current.trim();
+    chatBufferRef.current = "";
+    if (!text) return "";
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized !== lastOnAIResponseRef.current.replace(/\s+/g, " ").trim()) {
+      lastOnAIResponseRef.current = text;
+      onAIResponse?.(text);
+      trackMessage({ role: "assistant", content: text });
+    }
+    return text;
+  }, [onAIResponse, trackMessage]);
+
   /** Handle JSON messages from relay */
   const handleRelayMessage = useCallback(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -584,13 +785,34 @@ export function useVoice({
           setState((s) => ({ ...s, isConnected: true }));
           break;
 
+        case "turn_force_ended":
+          // The server closed a candidate turn that was left open (no speech end).
+          if (endpointTimerRef.current) {
+            clearInterval(endpointTimerRef.current);
+            endpointTimerRef.current = null;
+          }
+          if (turnActiveRef.current) {
+            turnActiveRef.current = false;
+            lastTurnEndedAtRef.current = performance.now();
+            silenceStartedAtRef.current = null;
+            lastSpeechSegmentStartRef.current = null;
+            speechStartedAtRef.current = null;
+            setState((s) => ({ ...s, isProcessing: true }));
+          }
+          log.warn(`Server closed a stuck candidate turn (${String(msg.reason)})`);
+          break;
+
+        case "silence_check_ignored":
+          // Relay was busy (reply pending, AI talking) — try again later.
+          silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
+          break;
+
         case "interrupt":
           interruptPlayback();
           setState((s) => ({ ...s, isProcessing: false }));
           if (chatBufferRef.current.trim()) {
-            const text = chatBufferRef.current.trim();
+            const text = commitAssistantBuffer();
             setState((s) => ({ ...s, aiTranscript: text }));
-            chatBufferRef.current = "";
           }
           break;
 
@@ -601,6 +823,9 @@ export function useVoice({
           if (results.length > 0) {
             const text = (results[0].text as string) || "";
             if (text.trim()) {
+              if (text.trim().length > asrBufferRef.current.length) {
+                vadFailsafeRef.current.transcript(text.trim().length - asrBufferRef.current.length);
+              }
               asrBufferRef.current = text.trim();
               liveTranscriptRef.current = text.trim();
               setState((s) => ({ ...s, userTranscript: text }));
@@ -614,19 +839,37 @@ export function useVoice({
           const finalText =
             (typeof msg.text === "string" && msg.text.trim()) || asrBufferRef.current;
           if (finalText) {
-            const normalized = finalText.replace(/\s+/g, " ").trim().toLowerCase();
+            vadFailsafeRef.current.transcript(finalText.length);
+            const normalized = normalizeForCompare(finalText);
             const lastFinal = lastFinalUserTranscriptRef.current;
-            const isDuplicateFinal =
-              !!lastFinal &&
-              lastFinal.text === normalized &&
-              Date.now() - lastFinal.at < 15_000;
+            const qIdx = currentQuestionIndexRef.current;
+            // Same question, same (or nearly the same) words as the last line → a
+            // repeat, whatever the time gap (re-sent buffer, or the candidate
+            // repeating because the AI went quiet).
+            const kind =
+              lastFinal && lastFinal.questionIndex === qIdx
+                ? compareUserLines(lastFinal.text, finalText)
+                : null;
+            const prevWords = lastFinal ? lastFinal.text.split(" ").length : 0;
+            const newWords = normalized.split(" ").length;
+            const skip =
+              kind === "same" ||
+              kind === "contained" ||
+              (kind === "similar" && newWords <= prevWords * 1.25);
 
-            if (isDuplicateFinal) {
-              log.debug(`Skipping duplicate USER final: "${normalized.slice(0, 60)}..."`);
+            if (skip) {
+              log.debug(`Skipping repeated USER final (${kind}): "${normalized.slice(0, 60)}..."`);
             } else {
-              lastFinalUserTranscriptRef.current = { text: normalized, at: Date.now() };
+              lastFinalUserTranscriptRef.current = { text: normalized, at: Date.now(), questionIndex: qIdx };
               onTranscript?.(finalText, true);
-              trackMessage({ role: "user", content: finalText });
+              // Grown version of the line still waiting to be saved → replace it.
+              const pending = trackedMessagesRef.current;
+              const lastPending = pending[pending.length - 1];
+              if ((kind === "extends" || kind === "similar") && lastPending?.role === "user") {
+                lastPending.content = finalText;
+              } else {
+                trackMessage({ role: "user", content: finalText });
+              }
               log.debug(
                 `Tracked USER: "${finalText.slice(0, 60)}..."`
               );
@@ -677,6 +920,26 @@ export function useVoice({
 
         case "chat_ended":
         case "tts_ended": {
+          if (msg.type === "tts_ended") {
+            aiReplyPlayingRef.current = false;
+            const gaps = underrunsThisReplyRef.current;
+            underrunsThisReplyRef.current = 0;
+            if (gaps > 0 && playbackReportsRef.current < 8) {
+              playbackReportsRef.current += 1;
+              reportSessionError(sessionId, {
+                category: "voice",
+                severity: gaps >= 3 ? "warning" : "info",
+                message: `AI voice had ${gaps} gap${gaps === 1 ? "" : "s"} in one reply (audio arrived slower than it played)`,
+                context: {
+                  stage: "playback_underrun",
+                  gaps,
+                  preRollMs: jitterTargetMsRef.current,
+                  hidden: typeof document !== "undefined" ? document.hidden : undefined,
+                  questionIndex: currentQuestionIndexRef.current,
+                },
+              });
+            }
+          }
           const fullResponse = chatBufferRef.current.trim();
           chatBufferRef.current = "";
           // Keep last transcript visible until next AI speech (replaced by tts_text/chat)
@@ -707,6 +970,8 @@ export function useVoice({
         }
 
         case "session_reconnecting":
+          relayReconnectingRef.current = true;
+          silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           interruptPlayback();
           if (chatBufferRef.current.trim()) {
             const text = chatBufferRef.current.trim();
@@ -720,7 +985,10 @@ export function useVoice({
           break;
 
         case "session_reconnected":
+          relayReconnectingRef.current = false;
+          silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           setState((s) => ({ ...s, isProcessing: false }));
+          if (fallbackQueueRef.current) flushFallbackQueue();
           break;
 
         case "question_change": {
@@ -732,8 +1000,9 @@ export function useVoice({
           if (!msg.auto) {
             interruptPlayback();
           }
-          // Discard transition greeting text before saving progress
-          chatBufferRef.current = "";
+          // Keep what the AI already said for the previous question (it used to be
+          // discarded here, which dropped interviewer lines from the transcript).
+          commitAssistantBuffer();
           lastOnAIResponseRef.current = "";
           const idx = msg.questionIndex as number;
           const total = msg.totalQuestions as number;
@@ -741,8 +1010,33 @@ export function useVoice({
           // Persist messages from the previous question (fire-and-forget)
           saveProgress(idx);
 
+          // Safety net: the mic carried voice during that question but nothing
+          // was transcribed — the AI probably never heard the answer.
+          {
+            const prevIdx = currentQuestionForCheckInRef.current;
+            const q = vadFailsafeRef.current.endQuestion();
+            if (idx !== prevIdx && vadFailsafeRef.current.questionMissed(q)) {
+              reportSessionError(sessionId, {
+                category: "voice",
+                severity: "warning",
+                message: `Question ${prevIdx + 1}: the mic picked up ~${Math.round(q.voicedMs / 1000)}s of speech but no answer was transcribed`,
+                context: {
+                  stage: "question_without_transcript",
+                  questionIndex: prevIdx,
+                  voicedMs: Math.round(q.voicedMs),
+                  vadTurnsOpened: q.turnsOpened,
+                  clientVad: clientVadEnabledRef.current,
+                },
+              });
+              if (clientVadEnabledRef.current) {
+                switchToServerVad("question_without_transcript", { voicedMs: Math.round(q.voicedMs) });
+              }
+            }
+          }
+
           checkInSentForQuestionRef.current = false;
           currentQuestionForCheckInRef.current = idx;
+          silenceCheckRef.current.reset();
           liveTranscriptRef.current = "";
           setState((s) => ({
             ...s,
@@ -762,7 +1056,7 @@ export function useVoice({
           const dir = (msg.direction as "next" | "previous") ?? "next";
           if (!msg.auto) {
             interruptPlayback();
-            chatBufferRef.current = "";
+            commitAssistantBuffer();
             setState((s) => ({
               ...s,
               isTransitioning: true,
@@ -783,6 +1077,8 @@ export function useVoice({
 
         case "interview_complete":
           log.info("Interview complete, wrapping up");
+          interviewCompleteRef.current = true;
+          silenceCheckRef.current.reset();
           setState((s) => ({ ...s, isInterviewComplete: true }));
           break;
 
@@ -819,7 +1115,7 @@ export function useVoice({
           break;
       }
     },
-    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId, trackMessage]
+    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId, trackMessage, flushFallbackQueue, switchToServerVad, commitAssistantBuffer]
   );
 
   const clearEndpointTimer = useCallback(() => {
@@ -854,8 +1150,12 @@ export function useVoice({
       // Close the audio turn first so Gemini finalizes what they said, then
       // optionally cue a once-per-question gentle check-in for hesitant answers.
       sendActivity("activity_end");
+      // The AI's reply is on its way: a breath or noise right now must not
+      // reopen the turn and cut that reply (needs sustained speech instead).
+      awaitingAiReplyUntilRef.current = performance.now() + ENDPOINTING_CONFIG.continuationWindowMs;
       if (action === "check_in" && !checkInSentForQuestionRef.current) {
         checkInSentForQuestionRef.current = true;
+        silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
         relayConnectorRef.current?.sendJson({
           type: "answer_check_in",
           transcript: liveTranscriptRef.current,
@@ -888,6 +1188,11 @@ export function useVoice({
       now - lastTurnEndedAtRef.current < ENDPOINTING_CONFIG.continuationWindowMs;
 
     turnActiveRef.current = true;
+    turnOpenedAtRef.current = now;
+    lastVoiceAtRef.current = now;
+    awaitingAiReplyUntilRef.current = 0;
+    silenceCheckRef.current.candidateActivity();
+    setState((s) => (s.micCheckPrompt ? { ...s, micCheckPrompt: false } : s));
     if (continuing) {
       // Candidate kept talking after a premature end — barge in and reopen.
       interruptPlayback();
@@ -899,11 +1204,34 @@ export function useVoice({
     }
     lastSpeechSegmentStartRef.current = now;
     // Barge-in: stop local AI playback when the candidate really starts talking.
-    if (now < micHoldUntilRef.current) {
+    if (now < aiAudioEndsAtRef.current + AI_ECHO_GUARD_MS) {
+      const remainingMs = Math.round(aiAudioEndsAtRef.current - now);
       interruptPlayback();
+      if (remainingMs > 300 && bargeInReportsRef.current < 10) {
+        bargeInReportsRef.current += 1;
+        reportSessionError(sessionId, {
+          category: "voice",
+          severity: "info",
+          message: "AI voice stopped because the candidate started talking (barge-in)",
+          context: {
+            stage: "barge_in",
+            cutMs: remainingMs,
+            micRms: Number(lastMicRmsRef.current.toFixed(4)),
+            questionIndex: currentQuestionIndexRef.current,
+          },
+        });
+      }
     }
+    vadFailsafeRef.current.turnOpened();
     sendActivity("activity_start");
-  }, [clearEndpointTimer, interruptPlayback, sendActivity]);
+    // Silero fires a little after the first syllable — send the last mic chunk
+    // (held back by the gate) so the start of the answer isn't clipped.
+    const lastChunk = preRollRef.current[preRollRef.current.length - 1];
+    preRollRef.current = [];
+    if (lastChunk && clientVadEnabledRef.current) {
+      relayConnectorRef.current?.sendJson({ type: "audio", data: lastChunk });
+    }
+  }, [clearEndpointTimer, interruptPlayback, sendActivity, sessionId]);
 
   const scheduleEndpointCheck = useCallback(() => {
     clearEndpointTimer();
@@ -958,10 +1286,12 @@ export function useVoice({
         const vad = await createInterviewVad({
           getStream: async () => mediaStreamRef.current ?? stream,
           onSpeechStart: () => {
-            bargeInFramesRef.current = 0;
-            // During AI playback, ignore normal-threshold starts — barge-in
-            // requires a sustained high-confidence streak in onSpeechProb.
-            if (performance.now() < micHoldUntilRef.current && !turnActiveRef.current) {
+            // While the AI is talking (or its reply is on the way), ignore
+            // normal-threshold starts — cutting the AI needs sustained,
+            // confident speech (BargeInDetector in onSpeechProb).
+            // Speech that starts after the AI stopped (past a short echo guard)
+            // is the candidate answering quickly, so it opens the turn.
+            if (isAiBusy(performance.now()) && !turnActiveRef.current) {
               return;
             }
             beginUserTurn();
@@ -970,32 +1300,61 @@ export function useVoice({
             if (!turnActiveRef.current) return;
             scheduleEndpointCheck();
           },
-          onSpeechProb: (probability) => {
-            // While the AI is talking, only barge in on sustained high-confidence speech.
-            const aiSpeaking = performance.now() < micHoldUntilRef.current;
-            if (!aiSpeaking || turnActiveRef.current) {
-              bargeInFramesRef.current = 0;
-              return;
+          onMisfire: () => {
+            // Silero dropped a too-short segment without onSpeechEnd. If that
+            // segment had (re)opened our turn, start the end-of-turn countdown
+            // anyway — otherwise the turn stays open forever.
+            if (turnActiveRef.current && silenceStartedAtRef.current == null) {
+              scheduleEndpointCheck();
             }
-            if (probability >= ENDPOINTING_CONFIG.bargeInSpeechThreshold) {
-              bargeInFramesRef.current += 1;
-              if (bargeInFramesRef.current >= ENDPOINTING_CONFIG.bargeInMinFrames) {
-                bargeInFramesRef.current = 0;
-                beginUserTurn();
+          },
+          onSpeechProb: (probability) => {
+            const now = performance.now();
+            vadFailsafeRef.current.vadFrame(now);
+            const aiBusy = isAiBusy(now);
+            // Candidate kept talking from inside the AI's audio into silence:
+            // Silero's onSpeechStart was swallowed above and won't fire again
+            // for this segment, so open the turn from the frame stream.
+            if (!turnActiveRef.current && !aiBusy) {
+              if (probability >= ENDPOINTING_CONFIG.positiveSpeechThreshold) {
+                postAiSpeechFramesRef.current += 1;
+                if (postAiSpeechFramesRef.current >= 3) {
+                  postAiSpeechFramesRef.current = 0;
+                  beginUserTurn();
+                }
+              } else {
+                postAiSpeechFramesRef.current = 0;
               }
             } else {
-              bargeInFramesRef.current = 0;
+              postAiSpeechFramesRef.current = 0;
+            }
+            // While the AI is talking (or about to), only barge in on
+            // sustained (~400ms), confident, loud-enough speech — echo,
+            // breaths and short noises no longer cut the AI's voice.
+            if (!aiBusy || turnActiveRef.current) {
+              bargeInDetectorRef.current.reset();
+              return;
+            }
+            if (bargeInDetectorRef.current.feed(probability, lastMicRmsRef.current)) {
+              beginUserTurn();
             }
           },
         });
         if (vad) {
           vadRef.current = vad;
           await vad.start();
+          vadFailsafeRef.current.vadStarted(performance.now());
           log.info("Silero VAD started (client endpointing)");
         } else {
           clientVadEnabledRef.current = false;
-          relayConnectorRef.current?.sendJson({ type: "client_vad", enabled: false });
+          relayConnectorRef.current?.sendJson({ type: "client_vad", enabled: false, reason: "vad_start_failed" });
           log.warn("Silero VAD failed to start — falling back to automatic VAD");
+          reportSessionError(sessionId, {
+            category: "voice",
+            severity: "info",
+            message: "Browser speech detection failed to start — using the AI's own speech detection",
+            context: { stage: "client_vad_off", reason: "vad_start_failed" },
+          });
         }
       }
 
@@ -1013,29 +1372,91 @@ export function useVoice({
         const level = Math.min(1, rms * 5);
         setState((s) => ({ ...s, audioLevel: level }));
 
-        const aiSpeaking = performance.now() < micHoldUntilRef.current;
+        const now = performance.now();
+        const aiSpeaking = now < micHoldUntilRef.current;
+        lastMicRmsRef.current = rms;
+
+        // Voice-level energy (relative to the room's noise floor). Outside AI
+        // playback it means the candidate is talking → no "are you there?".
+        const floor = vadFailsafeRef.current.noiseFloorRms;
+        const voiceRms = Math.max(
+          VAD_FAILSAFE_CONFIG.absoluteMinRms * 2,
+          floor != null ? floor * VAD_FAILSAFE_CONFIG.noiseFloorRatio : 0,
+        );
+        if (!aiSpeaking && rms >= voiceRms) {
+          lastVoiceAtRef.current = now;
+          if (silenceCheckRef.current.isWaiting || silenceCheckRef.current.attemptCount > 0) {
+            silenceCheckRef.current.candidateActivity();
+            setState((s) => (s.micCheckPrompt ? { ...s, micCheckPrompt: false } : s));
+          }
+        }
+
+        // Stuck-turn guard: a turn opened but never closed (missed speech end)
+        // leaves the AI waiting forever. Close it so the AI replies.
+        if (clientVadEnabledRef.current && turnActiveRef.current) {
+          const stuck = stuckTurnReason({
+            now,
+            turnOpenedAt: turnOpenedAtRef.current,
+            lastVoiceAt: lastVoiceAtRef.current,
+            endpointPending: endpointTimerRef.current != null,
+          });
+          if (stuck) {
+            log.warn(`Closing stuck candidate turn (${stuck})`);
+            reportSessionError(sessionId, {
+              category: "voice",
+              severity: "warning",
+              message: `Candidate turn was left open (${stuck === "no_voice" ? "no speech for a while" : "very long turn"}) — closed so the AI can reply`,
+              context: {
+                stage: "stuck_turn_client",
+                reason: stuck,
+                openMs: Math.round(now - turnOpenedAtRef.current),
+                questionIndex: currentQuestionIndexRef.current,
+              },
+            });
+            finishUserTurn("end_turn");
+          }
+        }
+
+        // Failsafe: voice on the mic but Silero never opens a turn → switch the
+        // session to the AI's own speech detection (see vad-failsafe.ts).
+        const trigger = vadFailsafeRef.current.micChunk(
+          {
+            now,
+            rms,
+            durationMs: (inputData.length / event.inputBuffer.sampleRate) * 1000,
+            aiSpeaking,
+            turnActive: turnActiveRef.current,
+          },
+          clientVadEnabledRef.current,
+        );
+        if (trigger) switchToServerVad(trigger, { rms: Number(rms.toFixed(4)) });
+
         if (clientVadEnabledRef.current) {
           // With client VAD: only stream mic audio while a user turn is open
           // (activityStart..activityEnd). Echo during AI speech is dropped
           // unless Silero confirmed a barge-in (turnActive).
-          if (!turnActiveRef.current) return;
+          if (!turnActiveRef.current) {
+            if (!aiSpeaking) {
+              preRollRef.current.push(float32ToPcmHex(inputData));
+              if (preRollRef.current.length > PRE_ROLL_CHUNKS) preRollRef.current.shift();
+            } else if (preRollRef.current.length) {
+              preRollRef.current = [];
+            }
+            return;
+          }
         } else if (aiSpeaking) {
           // Automatic-VAD fallback: classic half-duplex echo guard.
           bargeInFramesRef.current = 0;
           return;
         }
 
-        // Convert float32 to int16 PCM
-        const pcm = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          pcm[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
-        }
-
-        // Send as hex-encoded string
-        const bytes = new Uint8Array(pcm.buffer);
-        let hex = "";
-        for (let i = 0; i < bytes.length; i++) {
-          hex += bytes[i].toString(16).padStart(2, "0");
+        const hex = float32ToPcmHex(inputData);
+        const queue = fallbackQueueRef.current;
+        if (queue) {
+          // Relay is reconnecting the AI after a VAD fallback — hold, don't drop.
+          queue.push(hex);
+          if (queue.length > FALLBACK_QUEUE_MAX_CHUNKS) queue.shift();
+          return;
         }
 
         connector.sendJson({ type: "audio", data: hex });
@@ -1052,15 +1473,31 @@ export function useVoice({
     }
   }, [
     beginUserTurn,
+    finishUserTurn,
+    isAiBusy,
     onError,
     scheduleEndpointCheck,
     sessionId,
+    switchToServerVad,
   ]);
 
   /** Stop capturing microphone */
   const stopListening = useCallback(() => {
+    // Close an open candidate turn first. Before, muting the mic mid-turn
+    // dropped it silently and the next activity_start reopened on top of it
+    // (the AI never got a turn end and never replied).
+    if (turnActiveRef.current && clientVadEnabledRef.current && relayConnectorRef.current?.isReady) {
+      relayConnectorRef.current.sendJson({ type: "activity_end" });
+      lastTurnEndedAtRef.current = performance.now();
+    }
     isListeningRef.current = false;
     clearEndpointTimer();
+    preRollRef.current = [];
+    fallbackQueueRef.current = null;
+    if (fallbackQueueTimerRef.current) {
+      clearTimeout(fallbackQueueTimerRef.current);
+      fallbackQueueTimerRef.current = null;
+    }
     turnActiveRef.current = false;
     silenceStartedAtRef.current = null;
     speechStartedAtRef.current = null;
@@ -1109,6 +1546,9 @@ export function useVoice({
       if (!connector?.isReady) return;
 
       trackMessage({ role: "user", content: trimmed, source: "chat" });
+      silenceCheckRef.current.candidateActivity();
+      setState((s) => (s.micCheckPrompt ? { ...s, micCheckPrompt: false } : s));
+      vadFailsafeRef.current.transcript(trimmed.length);
       connector.sendJson({ type: "text_input", content: trimmed });
     },
     [trackMessage],
@@ -1172,6 +1612,61 @@ export function useVoice({
     }
   }, [sessionId, trackMessage]);
 
+  // ── Silent-candidate check + stuck "AI speaking" guard (every 500ms) ──
+  useEffect(() => {
+    if (!state.isConnected) return;
+    const timer = setInterval(() => {
+      const now = performance.now();
+
+      // isSpeaking can't stay stuck if a source's onended never fires
+      // (suspended context, tab throttling) — it would hide the mic UI.
+      if (isSpeakingRef.current && now > aiAudioEndsAtRef.current + 1_500 && queuedAudioSamplesRef.current === 0) {
+        isSpeakingRef.current = false;
+        audioSourcesRef.current = [];
+        silenceCheckRef.current.aiFinished(now);
+        setState((s) => ({ ...s, isSpeaking: false }));
+      }
+
+      if (interviewCompleteRef.current || !isListeningRef.current) return;
+      const connector = relayConnectorRef.current;
+      if (!connector?.isReady) return;
+      const action = silenceCheckRef.current.tick(now, {
+        turnActive: turnActiveRef.current,
+        aiBusy: isAiBusy(now) || relayReconnectingRef.current || queuedAudioSamplesRef.current > 0,
+        voiceOnMic: now - lastVoiceAtRef.current < 1_500,
+      });
+      if (!action) return;
+      if (action.type === "ask") {
+        log.info(`Candidate silent — silence check #${action.attempt}`);
+        connector.sendJson({
+          type: "silence_check",
+          attempt: action.attempt,
+          questionIndex: currentQuestionIndexRef.current,
+        });
+      } else {
+        log.warn("Candidate still silent after spoken checks — showing microphone prompt");
+        setState((s) => ({ ...s, micCheckPrompt: true }));
+        reportSessionError(sessionId, {
+          category: "voice",
+          severity: "warning",
+          message: "Candidate stayed silent after two \"are you there?\" checks — asked them on screen to check their microphone",
+          context: {
+            stage: "silence_check_prompt",
+            questionIndex: currentQuestionIndexRef.current,
+            micRms: Number(lastMicRmsRef.current.toFixed(4)),
+          },
+        });
+      }
+    }, 500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.isConnected, sessionId]);
+
+  const dismissMicCheckPrompt = useCallback(() => {
+    silenceCheckRef.current.candidateActivity();
+    setState((s) => ({ ...s, micCheckPrompt: false }));
+  }, []);
+
   /** Disconnect, save messages, and clean up everything */
   const disconnect = useCallback(async () => {
     setState((s) => ({ ...s, isSaving: true }));
@@ -1195,6 +1690,7 @@ export function useVoice({
     sendCodeUpdate,
     sendWhiteboardUpdate,
     interruptPlayback,
+    dismissMicCheckPrompt,
     mediaStreamRef,
   };
 }
