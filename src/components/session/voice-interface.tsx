@@ -33,6 +33,7 @@ import {
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVoice, type InterviewContext } from "@/hooks/use-voice";
 import {
@@ -1209,7 +1210,9 @@ export function VoiceInterface({
       try {
         // Stop + save audio (and screenshots when video mode) BEFORE session completes
         if (recording.isRecording || recordingStartedRef.current) {
-          const result = await withTimeout(recording.stop(), 15_000, "stop recording");
+          // Audio is uploaded in parts during the interview, so this is normally
+          // quick. If it still times out, the server links the upload itself.
+          const result = await withTimeout(recording.stop(), 30_000, "stop recording");
           if (result.audioUrl || result.screenshots.length > 0) {
             await withTimeout(
               fetch("/api/trpc/session.saveRecording", {
@@ -1231,6 +1234,12 @@ export function VoiceInterface({
         }
       } catch (err) {
         console.error("[voice] Failed to save recording:", err);
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "warning",
+          message: `Saving the recording at the end did not finish: ${err instanceof Error ? err.message : String(err)}`,
+          context: { stage: "recording_stop" },
+        });
       }
 
       await withTimeout(voice.disconnect(), 8000, "voice disconnect");
@@ -1512,6 +1521,50 @@ export function VoiceInterface({
   // ── Render ──────────────────────────────────────────────────────
   return shouldShowCompletionScreen ? completionScreen : (
     <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
+      {voice.isReconnecting && !locallyCompleted && (
+        <div
+          role="status"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        >
+          Connection lost. Reconnecting…
+        </div>
+      )}
+      {voice.micCheckPrompt && voice.isConnected && !locallyCompleted && (
+        <div
+          role="alert"
+          className="fixed bottom-24 left-1/2 z-50 w-[min(92vw,26rem)] -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900 shadow-lg dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <div className="flex items-start gap-3">
+            <MicOff className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">We can&apos;t hear you.</p>
+              <p className="mt-1 text-xs">
+                Check that your microphone is on, not muted, and selected in your browser. Then answer out loud.
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <Mic className="h-3.5 w-3.5 shrink-0" />
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900" aria-label="Microphone level">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width] duration-100"
+                    style={{ width: `${Math.round(Math.min(1, voice.audioLevel) * 100)}%` }}
+                  />
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] opacity-80">
+                {voice.isListening ? "The bar should move when you speak." : "Your microphone is off — turn it on with the mic button."}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-amber-100 dark:hover:bg-amber-900"
+              aria-label="Dismiss"
+              onClick={() => voice.dismissMicCheckPrompt()}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {/* Saving overlay */}
       {isSaving && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">

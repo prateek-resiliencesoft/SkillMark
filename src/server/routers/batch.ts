@@ -144,7 +144,7 @@ export const batchRouter = router({
     const { data: candidates, error } = await ctx.supabase
       .from("candidates")
       .select(
-        "*, session:sessions!candidates_sessionId_fkey(id, status, startedAt, completedAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
+        "*, session:sessions!candidates_sessionId_fkey(id, status, startedAt, completedAt, createdAt, interviewBeganAt, lastHeartbeatAt, lastActivityAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
       )
       .eq("batchId", input.id)
       .order("createdAt", { ascending: true });
@@ -172,6 +172,16 @@ export const batchRouter = router({
       lastSendError: (c.lastSendError as string | null) ?? null,
       status: candidateStatus(c),
       sessionId: (c.session?.id as string | undefined) ?? null,
+      session: c.session
+        ? {
+            status: (c.session.status as string | undefined) ?? "NOT_STARTED",
+            startedAt: (c.session.startedAt as string | undefined) ?? null,
+            createdAt: (c.session.createdAt as string | undefined) ?? null,
+            interviewBeganAt: (c.session.interviewBeganAt as string | undefined) ?? null,
+            lastHeartbeatAt: (c.session.lastHeartbeatAt as string | undefined) ?? null,
+            lastActivityAt: (c.session.lastActivityAt as string | undefined) ?? null,
+          }
+        : null,
       startedAt: (c.session?.startedAt as string | undefined) ?? null,
       completedAt: (c.session?.completedAt as string | undefined) ?? null,
       durationSeconds: (c.session?.totalDurationSeconds as number | undefined) ?? null,

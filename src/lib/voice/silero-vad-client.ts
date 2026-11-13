@@ -58,54 +58,118 @@ export async function preloadVadAssets(
   }
 }
 
+/** Absolute URL for a VAD asset folder (worklets resolve relative URLs oddly in some browsers). */
+export function absoluteAssetBase(path: string, origin?: string): string {
+  const base = path.replace(/\/?$/, "/");
+  const o = origin ?? (typeof window !== "undefined" ? window.location.origin : "");
+  if (/^https?:\/\//i.test(base) || !o) return base;
+  return new URL(base, o).href;
+}
+
+export type VadProcessorType = "AudioWorklet" | "ScriptProcessor";
+
+/** Order to try audio processors in: worklet first (when supported), then the old ScriptProcessor. */
+export function vadProcessorOrder(workletSupported: boolean): VadProcessorType[] {
+  return workletSupported ? ["AudioWorklet", "ScriptProcessor"] : ["ScriptProcessor"];
+}
+
+/** Last reason Silero could not start (for error reports). */
+export let lastVadStartError: string | null = null;
+/** Which audio processor the running Silero instance uses. */
+export let activeVadProcessor: VadProcessorType | null = null;
+
+async function buildMicVad(
+  options: CreateInterviewVadOptions,
+  processorType: VadProcessorType,
+): Promise<InterviewVad> {
+  const { MicVAD } = await import("@ricky0123/vad-web");
+  const vad = await Promise.race([
+    MicVAD.new({
+      startOnLoad: false,
+      model: ENDPOINTING_CONFIG.model,
+      baseAssetPath: absoluteAssetBase(ENDPOINTING_CONFIG.baseAssetPath),
+      onnxWASMBasePath: absoluteAssetBase(ENDPOINTING_CONFIG.onnxWASMBasePath),
+      positiveSpeechThreshold: ENDPOINTING_CONFIG.positiveSpeechThreshold,
+      negativeSpeechThreshold: ENDPOINTING_CONFIG.negativeSpeechThreshold,
+      redemptionMs: ENDPOINTING_CONFIG.redemptionMs,
+      preSpeechPadMs: ENDPOINTING_CONFIG.preSpeechPadMs,
+      minSpeechMs: ENDPOINTING_CONFIG.minSpeechMs,
+      processorType,
+      audioContext: options.audioContext,
+      getStream: options.getStream,
+      // We own the MediaStream — never stop tracks when MicVAD pauses/destroys.
+      pauseStream: async () => {},
+      resumeStream: async (stream) => stream,
+      onSpeechStart: () => options.onSpeechStart(),
+      onSpeechEnd: () => options.onSpeechEnd(),
+      onVADMisfire: () => options.onMisfire?.(),
+      onSpeechRealStart: () => {},
+      onFrameProcessed: (probs) => {
+        options.onSpeechProb?.(probs.isSpeech);
+      },
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Silero VAD load timed out")),
+        ENDPOINTING_CONFIG.loadTimeoutMs,
+      ),
+    ),
+  ]);
+  return vad;
+}
+
 /**
- * Create a MicVAD instance that reuses our mic stream and never stops its tracks.
- * Returns null when the model / wasm fails to load (caller falls back to automatic VAD).
+ * Create AND start Silero on our mic stream. Never throws.
+ * Tries the AudioWorklet processor first (twice — a flaky network can make
+ * `audioWorklet.addModule` fail with "Unable to load a worklet's module"),
+ * then falls back to the ScriptProcessor processor, which needs no worklet
+ * file at all. Returns null only when every option failed; the caller then
+ * uses the AI's own speech detection, and mic capture keeps working.
+ */
+export async function startInterviewVad(
+  options: CreateInterviewVadOptions,
+): Promise<InterviewVad | null> {
+  lastVadStartError = null;
+  activeVadProcessor = null;
+  const workletSupported =
+    typeof window !== "undefined" &&
+    typeof AudioWorkletNode === "function" &&
+    typeof AudioContext !== "undefined" &&
+    "audioWorklet" in AudioContext.prototype;
+  const plan: VadProcessorType[] = [];
+  for (const t of vadProcessorOrder(workletSupported)) {
+    plan.push(t);
+    if (t === "AudioWorklet") plan.push(t); // one retry for a transient load failure
+  }
+  for (const processorType of plan) {
+    let vad: InterviewVad | null = null;
+    try {
+      vad = await buildMicVad(options, processorType);
+      await vad.start();
+      activeVadProcessor = processorType;
+      return vad;
+    } catch (err) {
+      lastVadStartError = `${processorType}: ${err instanceof Error ? err.message : String(err)}`;
+      if (vad) await vad.destroy().catch(() => {});
+    }
+  }
+  return null;
+}
+
+/**
+ * Create a MicVAD instance (not started). Kept for the onboarding mic test.
+ * Returns null when the model / wasm fails to load.
  */
 export async function createInterviewVad(
   options: CreateInterviewVadOptions,
 ): Promise<InterviewVad | null> {
-  const started = Date.now();
   try {
-    const { MicVAD } = await import("@ricky0123/vad-web");
-    const vad = await Promise.race([
-      MicVAD.new({
-        startOnLoad: false,
-        model: ENDPOINTING_CONFIG.model,
-        baseAssetPath: ENDPOINTING_CONFIG.baseAssetPath,
-        onnxWASMBasePath: ENDPOINTING_CONFIG.onnxWASMBasePath,
-        positiveSpeechThreshold: ENDPOINTING_CONFIG.positiveSpeechThreshold,
-        negativeSpeechThreshold: ENDPOINTING_CONFIG.negativeSpeechThreshold,
-        redemptionMs: ENDPOINTING_CONFIG.redemptionMs,
-        preSpeechPadMs: ENDPOINTING_CONFIG.preSpeechPadMs,
-        minSpeechMs: ENDPOINTING_CONFIG.minSpeechMs,
-        processorType: "auto",
-        audioContext: options.audioContext,
-        getStream: options.getStream,
-        // We own the MediaStream — never stop tracks when MicVAD pauses/destroys.
-        pauseStream: async () => {},
-        resumeStream: async (stream) => stream,
-        onSpeechStart: () => options.onSpeechStart(),
-        onSpeechEnd: () => options.onSpeechEnd(),
-        onVADMisfire: () => options.onMisfire?.(),
-        onSpeechRealStart: () => {},
-        onFrameProcessed: (probs) => {
-          options.onSpeechProb?.(probs.isSpeech);
-        },
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("Silero VAD load timed out")),
-          ENDPOINTING_CONFIG.loadTimeoutMs,
-        ),
-      ),
-    ]);
-    if (Date.now() - started > ENDPOINTING_CONFIG.loadTimeoutMs) {
-      await vad.destroy().catch(() => {});
+    return await buildMicVad(options, "AudioWorklet");
+  } catch {
+    try {
+      return await buildMicVad(options, "ScriptProcessor");
+    } catch {
       return null;
     }
-    return vad;
-  } catch {
-    return null;
   }
 }

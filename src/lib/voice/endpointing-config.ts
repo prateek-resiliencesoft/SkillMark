@@ -45,8 +45,17 @@ export const ENDPOINTING_CONFIG = {
   checkInOncePerQuestion: true,
 
   // ── Silero MicVAD frame-processor knobs ──────────────────────────
-  positiveSpeechThreshold: 0.6,
-  negativeSpeechThreshold: 0.35,
+  // Tuned for noisy rooms per the Silero author
+  // (github.com/snakers4/silero-vad/discussions/141): the v5 model's
+  // confidence sits around 0–0.2 (non-speech) or 0.9+ (speech); 0.5 is fine
+  // for clean audio, but noise (wind, fans, mic hiss) can score high, so use a
+  // higher start threshold and require a minimum speech length to suppress
+  // short spurious activations. Window: v5 at 16 kHz uses 512-sample (32 ms)
+  // frames — @ricky0123/vad-web resamples to that automatically.
+  /** Probability a frame needs to count as speech (start). */
+  positiveSpeechThreshold: 0.8,
+  /** Probability below which a frame counts as silence (end). Hysteresis gap = 0.8 → 0.6. */
+  negativeSpeechThreshold: 0.6,
   /**
    * Silence grace before MicVAD fires onSpeechEnd. Higher = brief breaths /
    * comma pauses inside a long answer stay “in speech” and do not start the
@@ -54,10 +63,59 @@ export const ENDPOINTING_CONFIG = {
    */
   redemptionMs: 900,
   preSpeechPadMs: 300,
-  minSpeechMs: 120,
+  /** Segments shorter than this are dropped as noise (cough, click, gust). */
+  minSpeechMs: 250,
+  /** Confident 32 ms frames in a row needed to open a turn from the frame stream (~256 ms). */
+  minSpeechFrames: 8,
+  /**
+   * Silero's "speech" must coincide with voice-level mic energy (above the
+   * adaptive room noise floor) within this window, or it is treated as noise.
+   */
+  voiceEnergyWindowMs: 700,
 
+  // ── Barge-in (candidate talking over the AI) ─────────────────────
+  /** Silero probability a frame needs to count toward a barge-in. */
   bargeInSpeechThreshold: 0.85,
-  bargeInMinFrames: 10,
+  /** Legacy frame count (32ms frames); kept for reference — bargeInMinSpeechMs rules. */
+  bargeInMinFrames: 13,
+  /**
+   * Sustained confident speech needed before the AI's voice is cut. Short
+   * blips, breaths, coughs and speaker echo stay below this, so they no
+   * longer chop the AI mid-sentence.
+   */
+  bargeInMinSpeechMs: 400,
+  /** Low-probability frames tolerated inside a barge-in streak (natural dips). */
+  bargeInMaxDipFrames: 2,
+  /** Mic level (float32 RMS) the latest chunk must reach — echo after echo-cancellation is quieter. */
+  bargeInMinRms: 0.012,
+
+  // ── Stuck-turn guard ─────────────────────────────────────────────
+  /**
+   * Hard cap on one candidate turn. A turn left open longer than this (Silero
+   * never reported speech end — background noise, a missed misfire) is closed
+   * so the AI can reply. The candidate can keep talking; a new turn opens.
+   */
+  maxTurnMs: 90_000,
+  /** Open turn with no voice-level mic energy for this long → close it. */
+  turnNoVoiceForceEndMs: 8_000,
+
+  // ── Silent-candidate check ("Are you there?" → next question) ─────
+  /** Silence after the AI finishes a question before it asks "Are you there?". */
+  silenceCheckAfterMs: 3_000,
+  /** Silence after the AI finishes the "Are you there?" line before moving to the next question. */
+  silenceSkipAfterMs: 4_000,
+  /**
+   * If the relay/AI never speaks the check, start counting again after this long
+   * so the sequence can't stall.
+   */
+  silenceCheckAiGraceMs: 3_000,
+  /**
+   * After a check-in / reply-watchdog / reconnect cue, hold silence checks for
+   * this long so two prompts never fire together.
+   */
+  silenceCheckSuppressMs: 5_000,
+  /** Mic RMS below this for the whole wait = "no signal at all" → show the on-screen mic box. */
+  noMicSignalRms: 0.002,
 
   baseAssetPath: "/vad/",
   onnxWASMBasePath: "/vad/",

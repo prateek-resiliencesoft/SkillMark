@@ -1,6 +1,7 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { clientIp } from "@/server/integrations/applications";
+import { recordPreflightEvent } from "@/lib/preflight-server";
 import { NextResponse } from "next/server";
 
 /**
@@ -20,7 +21,7 @@ export async function POST(req: Request) {
 
     const { data: session, error } = await supabaseAdmin
       .from("sessions")
-      .select("id, status, interviewBeganAt")
+      .select("id, status, interviewBeganAt, candidateId")
       .eq("id", sessionId)
       .maybeSingle();
     if (error) {
@@ -38,9 +39,26 @@ export async function POST(req: Request) {
     const now = new Date().toISOString();
     await supabaseAdmin
       .from("sessions")
-      .update({ interviewBeganAt: now, lastHeartbeatAt: now })
+      .update({ interviewBeganAt: now, lastHeartbeatAt: now, lastActivityAt: now, preflightStep: "interview_started" })
       .eq("id", sessionId)
       .eq("status", "IN_PROGRESS");
+
+    let inviteToken: string | null = null;
+    if (session.candidateId) {
+      const { data: candidate } = await supabaseAdmin
+        .from("candidates")
+        .select("inviteToken")
+        .eq("id", session.candidateId)
+        .maybeSingle();
+      inviteToken = (candidate?.inviteToken as string | null) ?? null;
+    }
+    void recordPreflightEvent({
+      candidateId: (session.candidateId as string | null) ?? null,
+      sessionId,
+      inviteToken,
+      type: "interview_started",
+      status: "done",
+    });
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Internal error" }, { status: 500 });

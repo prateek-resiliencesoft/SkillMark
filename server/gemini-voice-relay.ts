@@ -19,6 +19,10 @@ import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log
 import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
+import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
+import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silenceCheckCue, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
+import { stuckTurnReason } from "../src/lib/voice/turn-guard";
+import { ENDPOINTING_CONFIG } from "../src/lib/voice/endpointing-config";
 
 const log = createLogger("gemini-relay");
 
@@ -422,6 +426,9 @@ When transitioning to a CODING or WHITEBOARD question:
 - TURN-TAKING: Ask ONE question (or one follow-up), then STOP talking and wait silently for the participant to answer. Never answer your own question, never guess what they would say, and never keep talking after a question.
 - Only respond after the participant has finished speaking. If they pause briefly mid-answer, keep waiting. Base your reply on what they actually said.
 - CHECK-IN CUES: ONLY when you receive a message that starts with [ANSWER_CHECK_IN], ask ONE short warm question such as whether they would like to add anything or if you should move on. Do NOT advance the question in that same turn. If they say no / move on / that's all, continue normally. If they keep answering, listen. NEVER ask “would you like to add anything” (or similar) on your own — only when you see [ANSWER_CHECK_IN].
+- SILENCE CHECKS: ONLY when you receive a message that starts with [SILENCE_CHECK], say ONE very short line exactly in that spirit (for example "Are you there?"), then stop and wait. It is not an answer from the participant: do NOT call signal_question_change, do NOT repeat or change the question, and do NOT comment on their answer.
+- NO ANSWER: when you receive a message that starts with [NO_ANSWER], the system has already moved to the next question because the participant did not answer. Do NOT call signal_question_change; say one short transition line and ask the question you are given, then wait.
+- If your previous sentence was cut off (you will be told with [SYSTEM]), repeat your last question briefly in one sentence, then stop and wait.
 - You MUST use the signal_question_change function to transition between questions. NEVER verbally say "let's move on" without also calling the function — the UI only updates when the function is called.
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
@@ -678,6 +685,8 @@ async function handleInterview(
   clientVad = false,
 ) {
   let clientVadEnabled = clientVad;
+  /** clientVad value the current Gemini socket was set up with. */
+  let gemClientVad = clientVad;
   const apiKeys = await resolveGeminiKeys(sessionId);
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
@@ -704,6 +713,25 @@ async function handleInterview(
   let pendingComplete = false;
   let completeTimer: ReturnType<typeof setTimeout> | null = null;
   const history: Array<{ role: "user" | "assistant"; text: string }> = [];
+  /** Last time any realtimeInput reached Gemini (it closes idle sessions with 1008). */
+  let lastRealtimeAt = Date.now();
+  /** Browser says the candidate is mid-answer (client VAD activity_start..activity_end). */
+  let clientTurnOpen = false;
+  /** activityStart sent on the CURRENT Gemini socket without a matching activityEnd. */
+  let gemActivityOpen = false;
+  /** Browser audio/activity messages that arrive while we reconnect (replayed after). */
+  let reconnectQueue: GeminiMsg[] = [];
+  const RECONNECT_QUEUE_MAX = 120; // ~30s of 256ms chunks
+  /** Candidate words arrived since the AI last spoke. */
+  let userTextSinceModel = false;
+  let responseWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let watchdogNudges = 0;
+  /** When the current client turn was opened, and the last browser audio with voice in it. */
+  let clientTurnOpenedAt = 0;
+  let lastVoicedAudioAt = 0;
+  /** The AI's speech was cut (barge-in / reconnect) and it hasn't spoken again yet. */
+  let aiCutPending = false;
+  let aiCutTimer: ReturnType<typeof setTimeout> | null = null;
 
   const send = (m: Record<string, unknown>) => {
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(m));
@@ -712,8 +740,134 @@ async function handleInterview(
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(b, { binary: true });
   };
   const gemSend = (m: GeminiMsg) => {
-    if (gem && gem.readyState === WebSocket.OPEN) gem.send(JSON.stringify(m));
+    if (gem && gem.readyState === WebSocket.OPEN) {
+      gem.send(JSON.stringify(m));
+      if (m.realtimeInput) {
+        lastRealtimeAt = Date.now();
+        if (m.realtimeInput.activityStart) gemActivityOpen = true;
+        if (m.realtimeInput.activityEnd) gemActivityOpen = false;
+      }
+    }
   };
+
+  // Keep Gemini fed. With browser speech detection, mic audio is only sent
+  // while the candidate is talking, so a long pause (or an undetected voice)
+  // left Gemini with no input and it closed the session ("1008 client inactivity").
+  const keepaliveTimer = setInterval(() => {
+    if (browserWs.readyState === WebSocket.CLOSED || browserWs.readyState === WebSocket.CLOSING) {
+      clearInterval(keepaliveTimer);
+      clearResponseWatchdog();
+      return;
+    }
+    if (browserClosed || reconnecting || !gem || gem.readyState !== WebSocket.OPEN) return;
+    checkStuckClientTurn();
+    const idle = Date.now() - lastRealtimeAt;
+    if (idle < KEEPALIVE_IDLE_MS) return;
+    // Don't feed silence while the AI is talking unless the socket is very idle.
+    if (Date.now() < playbackEndsAt && idle < KEEPALIVE_IDLE_MS * 2) return;
+    gemSend({ realtimeInput: { audio: { data: silentPcmBase64(), mimeType: "audio/pcm;rate=16000" } } });
+  }, 2_000);
+
+  /**
+   * Backstop for a candidate turn the browser opened but never closed
+   * (Ankit's session: 9 activity_start, no activity_end for 9 minutes, so the
+   * AI never replied). Close it so the AI can answer.
+   */
+  function checkStuckClientTurn() {
+    if (!clientVadEnabled || !gemClientVad || !clientTurnOpen) return;
+    const reason = stuckTurnReason(
+      { now: Date.now(), turnOpenedAt: clientTurnOpenedAt, lastVoiceAt: lastVoicedAudioAt, endpointPending: false },
+      { maxTurnMs: ENDPOINTING_CONFIG.maxTurnMs + 5_000, turnNoVoiceForceEndMs: RELAY_TURN_NO_VOICE_MS },
+    );
+    if (!reason) return;
+    forceEndClientTurn(reason);
+  }
+
+  function forceEndClientTurn(reason: string) {
+    const openMs = Date.now() - clientTurnOpenedAt;
+    clientTurnOpen = false;
+    if (gemActivityOpen) gemSend({ realtimeInput: { activityEnd: {} } });
+    send({ type: "turn_force_ended", reason });
+    log.warn(`Candidate turn force-closed (${reason}) after ${Math.round(openMs / 1000)}s`);
+    logSessionError(sessionId, new Error(`Candidate turn was left open (${reason}) — closed by the server so the AI can reply`), "warning", {
+      stage: "stuck_turn",
+      reason,
+      openMs,
+      questionIndex: currentQuestionIndex,
+    });
+    armResponseWatchdog(`forced_turn_end:${reason}`);
+  }
+
+  /** The AI's voice was cut; if the candidate doesn't speak, have it repeat its last question. */
+  function scheduleAiCutResume(why: string) {
+    aiCutPending = true;
+    if (aiCutTimer) clearTimeout(aiCutTimer);
+    aiCutTimer = setTimeout(() => {
+      aiCutTimer = null;
+      resumeAfterCut(why);
+    }, AI_CUT_RESUME_MS);
+  }
+
+  function resumeAfterCut(why: string) {
+    if (!aiCutPending || interviewDone || browserClosed || reconnecting) return;
+    if (clientTurnOpen) return; // candidate is talking — the reply watchdog covers it after
+    if (Date.now() < playbackEndsAt) return; // AI is already talking again
+    if (userTextSinceModel || userBuf.trim()) return; // candidate said something — reply watchdog's job
+    aiCutPending = false;
+    log.warn(`AI speech was cut (${why}) and nobody spoke — asking it to repeat`);
+    logSessionError(sessionId, new Error(`AI voice was cut off (${why}) and the candidate said nothing — asked the AI to repeat its question`), "warning", {
+      stage: "ai_cut_resume",
+      why,
+      questionIndex: currentQuestionIndex,
+    });
+    const q = sortedQuestions[currentQuestionIndex];
+    sayText(`[SYSTEM] Your last sentence was cut off and the participant did not hear it or did not say anything. We are on question ${currentQuestionIndex + 1}: "${q?.text ?? ""}". Repeat your last question briefly now, then wait.`);
+    armResponseWatchdog("after_cut_resume");
+  }
+
+  function clearResponseWatchdog() {
+    if (responseWatchdog) { clearTimeout(responseWatchdog); responseWatchdog = null; }
+  }
+
+  /**
+   * The candidate finished an answer: if the AI hasn't started replying within
+   * a few seconds, nudge it; if it still says nothing, reconnect fresh with a
+   * recap. Stops the "AI went quiet, candidate repeats the answer" loop.
+   */
+  function armResponseWatchdog(reason: string) {
+    if (interviewDone || browserClosed) return;
+    clearResponseWatchdog();
+    responseWatchdog = setTimeout(() => {
+      responseWatchdog = null;
+      if (interviewDone || browserClosed || reconnecting) return;
+      if (Date.now() < playbackEndsAt) return; // AI is talking
+      if (!userTextSinceModel && !userBuf.trim()) {
+        // Nothing was said. If the AI's voice had been cut, make it continue.
+        if (aiCutPending && !clientTurnOpen) resumeAfterCut(`watchdog:${reason}`);
+        return;
+      }
+      if (userBuf.trim()) flushUser();
+      watchdogNudges += 1;
+      const q = sortedQuestions[currentQuestionIndex];
+      const last = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
+      log.warn(`No AI reply ${RESPONSE_WATCHDOG_MS}ms after candidate turn (${reason}) — nudge #${watchdogNudges}`);
+      logSessionError(sessionId, new Error(`AI did not reply to the candidate's answer (nudge ${watchdogNudges})`), "warning", {
+        stage: "response_watchdog",
+        questionIndex: currentQuestionIndex,
+        nudge: watchdogNudges,
+      });
+      if (watchdogNudges >= 2) {
+        watchdogNudges = 0;
+        void reconnect("no_response", { fresh: true });
+        return;
+      }
+      sayText(
+        `[SYSTEM] The participant has finished answering${last ? ` (they said: "${last.slice(0, 300)}")` : ""}. `
+        + `We are on question ${currentQuestionIndex + 1}: "${q?.text ?? ""}". Respond to them now out loud: briefly acknowledge the answer, then either ask one short follow-up or move on with signal_question_change.`,
+      );
+      armResponseWatchdog("after_nudge");
+    }, RESPONSE_WATCHDOG_MS);
+  }
   const sayText = (text: string) => gemSend({ realtimeInput: { text } });
   const addContext = (text: string) =>
     gemSend({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
@@ -836,6 +990,16 @@ async function handleInterview(
   }
 
   function handleToolCall(calls: Array<{ id: string; name: string; args?: Record<string, unknown> }>) {
+    // The tool call can arrive before the answer's transcription is flushed;
+    // count those words as the answer so a valid move isn't rejected.
+    if (userBuf.trim()) {
+      const t = userBuf.trim();
+      userBuf = "";
+      send({ type: "asr_ended", text: t });
+      pushHistory("user", t);
+      userSpokeThisQuestion = true;
+      log.info(`User: ${JSON.stringify(t)}`);
+    }
     const responses: GeminiMsg[] = [];
     for (const c of calls) {
       let result: string;
@@ -851,7 +1015,7 @@ async function handleInterview(
           result = `You are already on question ${newIdx + 1}. Continue naturally.`;
         } else if (newIdx < sortedQuestions.length && newIdx > currentQuestionIndex && !userRequested
                    && (!userSpokeThisQuestion || dwell < MIN_QUESTION_DWELL_MS)) {
-          result = `Rejected: the participant has not given a substantive answer yet. Keep discussing question ${currentQuestionIndex + 1}. Do NOT say you are moving on.`;
+          result = `Rejected: the participant has not given a substantive answer yet. Stay on question ${currentQuestionIndex + 1} and reply to the participant out loud now (ask them to answer or to say a bit more). Do NOT say you are moving on.`;
           log.warn("Rejected premature question change");
         } else if (newIdx >= sortedQuestions.length) {
           beginEnding();
@@ -881,24 +1045,29 @@ async function handleInterview(
       return;
     }
     if (m.toolCall?.functionCalls) {
+      clearResponseWatchdog();
       handleToolCall(m.toolCall.functionCalls);
     }
     const sc = m.serverContent;
     if (!sc) return;
 
     if (sc.inputTranscription?.text) {
-      userBuf += sc.inputTranscription.text;
+      userBuf = joinTranscriptChunk(userBuf, sc.inputTranscription.text);
+      userTextSinceModel = true;
       lastUserSpeech = Date.now();
       send({ type: "asr", data: { results: [{ text: userBuf.trim() }] } });
     }
     if (sc.interrupted) {
       log.info("Gemini: interrupted (barge-in)");
+      // Send the text spoken so far BEFORE "interrupt" so the browser saves it.
+      flushModelText(true);
       send({ type: "interrupt" });
       playbackEndsAt = 0;
-      flushModelText(true);
       if (modelBuf.trim()) pushHistory("assistant", modelBuf.trim());
-      if (modelBuf.trim() || modelAudioBytes) send({ type: "tts_ended" });
+      const wasSpeaking = !!(modelBuf.trim() || modelAudioBytes);
+      if (wasSpeaking) send({ type: "tts_ended" });
       modelBuf = ""; modelAudioBytes = 0;
+      if (wasSpeaking) scheduleAiCutResume("barge_in");
     }
     const parts = sc.modelTurn?.parts as Array<GeminiMsg> | undefined;
     if (parts) {
@@ -906,6 +1075,11 @@ async function handleInterview(
         const inline = p.inlineData;
         if (inline?.data && String(inline.mimeType || "").startsWith("audio/")) {
           if (userBuf.trim()) flushUser();
+          clearResponseWatchdog();
+          userTextSinceModel = false;
+          watchdogNudges = 0;
+          aiCutPending = false;
+          if (aiCutTimer) { clearTimeout(aiCutTimer); aiCutTimer = null; }
           const int16 = Buffer.from(inline.data, "base64");
           const rate = Number(/rate=(\d+)/.exec(inline.mimeType)?.[1] || 24000);
           modelAudioBytes += int16.length;
@@ -923,7 +1097,11 @@ async function handleInterview(
     }
     if (sc.generationComplete || sc.turnComplete) {
       if (modelBuf.trim() || modelAudioBytes > 0) endModelTurn();
-      else if (sc.turnComplete && userBuf.trim()) flushUser();
+      else if (sc.turnComplete && userBuf.trim()) {
+        // Gemini closed the turn without saying anything back.
+        flushUser();
+        armResponseWatchdog("empty_turn");
+      }
     }
   }
 
@@ -935,7 +1113,7 @@ async function handleInterview(
       if (!intentionalClose && !browserClosed && code !== 1000) {
         logSessionError(sessionId, new Error(`Gemini Live session dropped: ${code} ${reason.toString()}`), "warning", { stage: "session", closeCode: code });
       }
-      if (!intentionalClose && !browserClosed) void reconnect(`close ${code}`);
+      if (!intentionalClose && !browserClosed) void reconnect(`close ${code}`, { fresh: !shouldResumeAfterClose(code, reason.toString()) });
     });
     ws.on("error", (err) => {
       log.error("Gemini WS error:", err.message);
@@ -943,34 +1121,64 @@ async function handleInterview(
     });
   }
 
-  async function reconnect(why: string) {
+  async function reconnect(why: string, opts: { fresh?: boolean } = {}) {
     if (reconnecting || browserClosed) return;
     reconnecting = true;
+    clearResponseWatchdog();
     const old = gem;
-    send({ type: "session_reconnecting" });
+    // The browser cuts AI playback on reconnect; remember if it was mid-sentence.
+    const aiWasSpeaking = modelAudioBytes > 0 || Date.now() < playbackEndsAt;
+    // Save what the AI said so far, then tell the browser (it saves its buffer on this).
     flushModelText(true);
+    if (modelBuf.trim() || modelAudioBytes > 0) send({ type: "tts_ended" });
+    send({ type: "session_reconnecting" });
     if (modelBuf.trim()) pushHistory("assistant", modelBuf.trim());
     modelBuf = ""; modelAudioBytes = 0;
+    // Finish the candidate's pending words now so they aren't glued to the next turn.
+    if (userBuf.trim()) flushUser();
+    const pendingUserAnswer = userTextSinceModel;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const handle = attempt === 1 ? resumeHandle : null;
+        const handle = attempt === 1 && !opts.fresh ? resumeHandle : null;
+        const vadForThisSocket = clientVadEnabled;
         const ws = await connectGemini({
           apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
-          clientVad: clientVadEnabled,
+          clientVad: vadForThisSocket,
           gender: ctx.aiGender,
           systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
         });
         gem = ws;
+        gemClientVad = vadForThisSocket;
+        gemActivityOpen = false;
+        lastRealtimeAt = Date.now();
         try { old?.removeAllListeners("close"); old?.close(); } catch { /* ignore */ }
         attach(ws);
         if (!handle) {
           const recap = history.slice(-12).map((h) => `${h.role === "user" ? "Participant" : "You"}: ${h.text}`).join("\n");
           addContext(`[SYSTEM] The connection was restored. Conversation so far:\n${recap}`);
-          sayText(`[SYSTEM] Connection restored. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly continue the interview from where it left off.`);
+          if (!clientTurnOpen) {
+            sayText(pendingUserAnswer
+              ? `[SYSTEM] Connection restored. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". The participant's last answer (above) has not been replied to yet — respond to it now out loud.`
+              : `[SYSTEM] Connection restored. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly continue the interview from where it left off.`);
+          }
+        } else if (pendingUserAnswer && !clientTurnOpen) {
+          armResponseWatchdog("after_resume");
+        } else if (aiWasSpeaking) {
+          // Resumed mid-sentence: the browser stopped the AI's audio, so make
+          // sure it repeats instead of going quiet.
+          scheduleAiCutResume(`reconnect:${why}`);
         }
-        log.info(`Gemini session reconnected (${why}, ${handle ? "resumed" : "fresh"})`);
+        // Candidate was mid-answer: reopen the turn on the new socket, then replay
+        // the audio that arrived while we were reconnecting.
+        if (vadForThisSocket && clientTurnOpen) gemSend({ realtimeInput: { activityStart: {} } });
+        const queued = reconnectQueue;
+        reconnectQueue = [];
+        for (const qm of queued) forwardBrowserRealtime(qm);
+        log.info(`Gemini session reconnected (${why}, ${handle ? "resumed" : "fresh"}, clientVad=${gemClientVad})`);
         send({ type: "session_reconnected" });
         reconnecting = false;
+        // The browser switched VAD mode while we were reconnecting — apply it now.
+        if (gemClientVad !== clientVadEnabled) void reconnect("client_vad_toggle");
         return;
       } catch (err) {
         log.warn(`Reconnect attempt ${attempt} failed: ${err instanceof Error ? err.message : err}`);
@@ -978,8 +1186,52 @@ async function handleInterview(
       }
     }
     reconnecting = false;
+    reconnectQueue = [];
     logSessionError(sessionId, new Error(`Voice relay could not reconnect to Gemini after 3 attempts (${why})`), "critical", { stage: "reconnect" });
     send({ type: "disconnected" });
+  }
+
+  /** Send a browser activity/audio message to the current Gemini socket. */
+  function forwardBrowserRealtime(msg: GeminiMsg) {
+    if (msg.type === "activity_start") {
+      if (!clientVadEnabled || !gemClientVad) return;
+      log.info("client activity_start");
+      if (gemActivityOpen && msg.__reopen) {
+        // A new turn while the previous one was never closed: close it first so
+        // Gemini finalises what was said instead of listening forever.
+        log.warn("activity_start while a turn was still open — closing the previous turn first");
+        gemSend({ realtimeInput: { activityEnd: {} } });
+      }
+      if (!gemActivityOpen) gemSend({ realtimeInput: { activityStart: {} } });
+      lastUserSpeech = Date.now();
+      return;
+    }
+    if (msg.type === "activity_end") {
+      if (!clientVadEnabled || !gemClientVad) return;
+      log.info("client activity_end");
+      if (gemActivityOpen) gemSend({ realtimeInput: { activityEnd: {} } });
+      lastUserSpeech = Date.now();
+      armResponseWatchdog("activity_end");
+      return;
+    }
+    if (msg.type === "audio" && msg.data) {
+      const pcm = Buffer.from(msg.data as string, "hex");
+      if (pcm16Rms(pcm) >= RELAY_VOICE_RMS) lastVoicedAudioAt = Date.now();
+      // Half-duplex echo guard when Gemini automatic VAD is in charge.
+      // With client VAD the browser already gates echo / barge-in, so we
+      // forward whatever it sends (including silence inside an open turn).
+      if (!clientVadEnabled || !gemClientVad) {
+        const speaking = Date.now() < playbackEndsAt + ECHO_TAIL_MS;
+        if (speaking) return;
+      } else if (!gemActivityOpen) {
+        // Audio from an open browser turn but no activity on this socket
+        // (e.g. right after a reconnect): open it so Gemini listens. Stray
+        // audio after the server force-closed a turn must not reopen it.
+        if (!clientTurnOpen) return;
+        gemSend({ realtimeInput: { activityStart: {} } });
+      }
+      gemSend({ realtimeInput: { audio: { data: pcm.toString("base64"), mimeType: "audio/pcm;rate=16000" } } });
+    }
   }
 
   // ── Initial connection ──
@@ -1016,27 +1268,95 @@ async function handleInterview(
         if (currentQuestionIndex > 0) requestTransition(currentQuestionIndex - 1, "Previous Question", "button");
         return;
       }
-      if (reconnecting) return;
+      // Handled before the reconnecting guard so a fallback that arrives
+      // mid-reconnect is not lost (reconnect() re-applies it when done).
       if (msg.type === "client_vad") {
         const next = !!msg.enabled;
         if (next === clientVadEnabled) return;
         clientVadEnabled = next;
-        log.info(`Client VAD ${clientVadEnabled ? "enabled" : "disabled (fallback)"} — reconnecting Gemini`);
-        void reconnect("client_vad_toggle");
+        const reason = typeof msg.reason === "string" ? msg.reason.slice(0, 64) : "unspecified";
+        log.info(`Client VAD ${clientVadEnabled ? "enabled" : `disabled (fallback: ${reason})`} — reconnecting Gemini`);
+        if (!clientVadEnabled) {
+          logSessionError(sessionId, new Error(`Switched to Gemini automatic speech detection (client VAD fallback: ${reason})`), "info", {
+            stage: "client_vad_fallback",
+            reason,
+            questionIndex: currentQuestionIndex,
+          });
+        }
+        if (!reconnecting) void reconnect("client_vad_toggle");
         return;
       }
-      if (msg.type === "activity_start") {
-        if (!clientVadEnabled) return;
-        log.info("client activity_start");
-        gemSend({ realtimeInput: { activityStart: {} } });
-        lastUserSpeech = Date.now();
+      if (msg.type === "activity_start" || msg.type === "activity_end" || (msg.type === "audio" && msg.data)) {
+        if (msg.type === "activity_start" && clientVadEnabled) {
+          if (clientTurnOpen) {
+            msg.__reopen = true;
+            logSessionError(sessionId, new Error("Browser opened a new candidate turn without closing the previous one"), "warning", {
+              stage: "turn_reopen",
+              openMs: Date.now() - clientTurnOpenedAt,
+              questionIndex: currentQuestionIndex,
+            });
+          }
+          clientTurnOpen = true;
+          clientTurnOpenedAt = Date.now();
+          lastVoicedAudioAt = Date.now();
+          clearResponseWatchdog();
+        }
+        if (msg.type === "activity_end" && clientVadEnabled) clientTurnOpen = false;
+        if (reconnecting) {
+          // Hold (don't drop) what the candidate says while Gemini reconnects.
+          reconnectQueue.push(msg);
+          if (reconnectQueue.length > RECONNECT_QUEUE_MAX) reconnectQueue.shift();
+          return;
+        }
+        forwardBrowserRealtime(msg);
         return;
       }
-      if (msg.type === "activity_end") {
-        if (!clientVadEnabled) return;
-        log.info("client activity_end");
-        gemSend({ realtimeInput: { activityEnd: {} } });
-        lastUserSpeech = Date.now();
+      if (reconnecting) return;
+      if (msg.type === "silence_check") {
+        const attempt = Math.max(1, Math.min(3, Number(msg.attempt) || 1));
+        // Don't double up with a candidate turn, AI speech, a pending reply
+        // (reply watchdog's job) or the end of the interview.
+        const busy = clientTurnOpen || Date.now() < playbackEndsAt || !!responseWatchdog
+          || userTextSinceModel || !!userBuf.trim() || interviewDone || pendingComplete;
+        if (busy) {
+          log.info(`silence_check #${attempt} ignored (busy)`);
+          send({ type: "silence_check_ignored", attempt });
+          return;
+        }
+        log.info(`silence_check #${attempt} — candidate silent after the question`);
+        logSessionError(sessionId, new Error(`Candidate silent after the question — AI asked if they can hear (check ${attempt})`), "info", {
+          stage: "silence_check",
+          attempt,
+          questionIndex: currentQuestionIndex,
+        });
+        sayText(silenceCheckCue(attempt));
+        return;
+      }
+      if (msg.type === "no_answer_skip") {
+        // Candidate stayed silent after the question AND after "Are you there?".
+        // Move on explicitly (the AI's own signal_question_change would be
+        // rejected as premature because nobody answered). Not an answer.
+        const busy = clientTurnOpen || Date.now() < playbackEndsAt || !!responseWatchdog
+          || userTextSinceModel || !!userBuf.trim() || interviewDone || pendingComplete;
+        if (busy || userSpokeThisQuestion) {
+          log.info(`no_answer_skip ignored (${userSpokeThisQuestion ? "candidate answered" : "busy"})`);
+          send({ type: "no_answer_skip_ignored" });
+          return;
+        }
+        const fromIdx = currentQuestionIndex;
+        log.info(`no_answer_skip — Q${fromIdx + 1} left unanswered, moving on`);
+        logSessionError(sessionId, new Error(`Candidate did not answer question ${fromIdx + 1} (silent after "Are you there?") — moved to the next question`), "warning", {
+          stage: "no_answer_skip",
+          questionIndex: fromIdx,
+        });
+        send({ type: "question_unanswered", questionIndex: fromIdx });
+        if (fromIdx + 1 >= sortedQuestions.length) {
+          beginEnding();
+          sayText(noAnswerAdvanceCue(0, null));
+        } else {
+          moveTo(fromIdx + 1, true);
+          sayText(noAnswerAdvanceCue(currentQuestionIndex + 1, sortedQuestions[currentQuestionIndex]?.text ?? ""));
+        }
         return;
       }
       if (msg.type === "answer_check_in") {
@@ -1056,17 +1376,7 @@ async function handleInterview(
         );
         return;
       }
-      if (msg.type === "audio" && msg.data) {
-        const pcm = Buffer.from(msg.data as string, "hex");
-        // Half-duplex echo guard when Gemini automatic VAD is in charge.
-        // With client VAD the browser already gates echo / barge-in, so we
-        // forward whatever it sends (including silence inside an open turn).
-        if (!clientVadEnabled) {
-          const speaking = Date.now() < playbackEndsAt + ECHO_TAIL_MS;
-          if (speaking) return;
-        }
-        gemSend({ realtimeInput: { audio: { data: pcm.toString("base64"), mimeType: "audio/pcm;rate=16000" } } });
-      } else if (msg.type === "text_input" && msg.content) {
+      if (msg.type === "text_input" && msg.content) {
         const text = String(msg.content).trim();
         if (!text) return;
         pushHistory("user", text);
@@ -1076,6 +1386,8 @@ async function handleInterview(
         playbackEndsAt = 0;
         tryUserNavigation(text);
         sayText(text);
+        userTextSinceModel = true;
+        armResponseWatchdog("text_input");
       } else if (msg.type === "text" && msg.content) {
         sayText(`[SYSTEM] Please say the following aloud: ${msg.content}`);
       } else if (msg.type === "code_update" && msg.content) {
@@ -1098,6 +1410,9 @@ async function handleInterview(
     browserClosed = true;
     intentionalClose = true;
     if (completeTimer) clearTimeout(completeTimer);
+    clearInterval(keepaliveTimer);
+    clearResponseWatchdog();
+    if (aiCutTimer) { clearTimeout(aiCutTimer); aiCutTimer = null; }
     gem?.close();
   });
   browserWs.on("error", (err) => {
