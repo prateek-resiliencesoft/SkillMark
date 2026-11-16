@@ -25,6 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 import type { CompletionNotifyMember } from "@/lib/completion-notify";
 import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import { resolveInterviewLanguage } from "@/lib/interview-language";
 import {
   INTERVIEWER_GENDER_OPTIONS,
   getInterviewerPersona,
@@ -49,28 +50,7 @@ import { useCallback, useState } from "react";
 import { useEditInterview } from "../edit-context";
 
 function normalizeInterviewLanguage(language?: string | null): string {
-  const normalized = language?.trim().toLowerCase();
-  switch (normalized) {
-    case "zh":
-    case "zh-cn":
-    case "zh_hans":
-    case "chinese":
-    case "chinese (中文)":
-    case "中文":
-      return "zh";
-    case "es":
-    case "spanish":
-    case "español":
-      return "es";
-    case "fr":
-    case "french":
-    case "français":
-      return "fr";
-    case "en":
-    case "english":
-    default:
-      return "en";
-  }
+  return resolveInterviewLanguage(language);
 }
 
 export default function SettingsTab() {

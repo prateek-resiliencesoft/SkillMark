@@ -1,6 +1,12 @@
 // ── Core types & helpers ────────────────────────────────────────────
 
-type LangKey = "en" | "zh";
+import {
+  getInterviewSpeechLocale,
+  resolveInterviewLanguage,
+} from "@/lib/interview-language";
+
+/** Languages with localized mic-check / onboarding copy. Others fall back to en. */
+type LangKey = "en" | "zh" | "hi";
 
 const DEFAULT_LANG: LangKey = "en";
 
@@ -11,9 +17,9 @@ export function bt(isZh: boolean, text: BiText): string {
 }
 
 export function getLanguageKey(language?: string): LangKey {
-  if (!language) return DEFAULT_LANG;
-  const key = language.toLowerCase().slice(0, 2);
+  const key = resolveInterviewLanguage(language);
   if (key === "zh") return "zh";
+  if (key === "hi") return "hi";
   return DEFAULT_LANG;
 }
 
@@ -22,22 +28,26 @@ export function getLanguageKey(language?: string): LangKey {
 export const MIC_TEST_MESSAGES: Record<LangKey, string> = {
   en: "Please say this line: My microphone is working, so we can verify your microphone.",
   zh: "请说这句话：我的麦克风工作正常，以便我们验证您的麦克风。",
+  hi: "Please bolen yeh sentence: Mera microphone kaam kar raha hai, taaki hum aapke microphone ki check kar sakein.",
 };
 
 /** Phrase the candidate should speak during the mic check. */
 export const MIC_TEST_SAMPLE_PHRASES: Record<LangKey, string> = {
   en: "My microphone is working, so we can verify your microphone.",
   zh: "我的麦克风工作正常，以便我们验证您的麦克风。",
+  hi: "Mera microphone kaam kar raha hai, taaki hum aapke microphone ki check kar sakein.",
 };
 
 export const POSITIVE_WORDS: Record<LangKey, string[]> = {
   en: ["yes", "yeah", "yep", "confirm", "hear", "ok", "okay", "sure", "can", "clear", "good", "fine", "right"],
   zh: ["是", "好", "确认", "听到", "可以", "没问题", "对", "嗯", "行", "能听到", "听得到", "好的"],
+  hi: ["हाँ", "हां", "जी", "ठीक", "सुन", "सुनता", "सुन रही", "ठीक है", "अच्छा", "बिल्कुल", "yes", "ok", "okay"],
 };
 
 export const SPEECH_SYNTHESIS_LOCALE: Record<LangKey, string> = {
   en: "en-US",
   zh: "zh-CN",
+  hi: "hi-IN",
 };
 
 export function getMicTestMessage(language?: string): string {
@@ -55,7 +65,7 @@ export function getPositiveWords(language?: string): string[] {
 }
 
 export function getSpeechSynthesisLocale(language?: string): string {
-  return SPEECH_SYNTHESIS_LOCALE[getLanguageKey(language)];
+  return getInterviewSpeechLocale(language) || SPEECH_SYNTHESIS_LOCALE[getLanguageKey(language)];
 }
 
 // ── Voice relay (server-side) ───────────────────────────────────────
@@ -105,4 +115,5 @@ export const INTERVIEW_MESSAGES = {
 export const LANGUAGE_DISPLAY_NAME: Record<LangKey, string> = {
   zh: "简体中文 (Simplified Chinese)",
   en: "English",
+  hi: "Hinglish (Hindi-English mix)",
 };

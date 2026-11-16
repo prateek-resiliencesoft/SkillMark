@@ -145,7 +145,7 @@ export const creatingInterviewsArticles: DocArticle[] = [
 
         <h3>Language</h3>
         <p>
-          The AI conducts the session and evaluates responses in the selected language. Currently supported: <strong>English</strong> and <strong>Chinese (中文)</strong>.
+          The AI conducts the session and evaluates responses in the selected language. Currently supported: <strong>English</strong>, <strong>Chinese (中文)</strong>, <strong>Hinglish (Hindi-English)</strong>, <strong>Spanish</strong>, and <strong>French</strong>.
         </p>
       </>
     ),
