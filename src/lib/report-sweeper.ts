@@ -9,13 +9,20 @@ export function startReportSweeper(): void {
   if (g.__reportSweeperStarted) return;
   g.__reportSweeperStarted = true;
   let running = false;
+  let first = true;
   const run = async () => {
     if (running) return;
     running = true;
     try {
       const { sweepPendingReports } = await import("@/lib/session-report-server");
-      const n = await sweepPendingReports();
-      if (n > 0) log.info(`Report sweep started ${n} report(s)`);
+      const r = await sweepPendingReports();
+      const total = r.reports + r.completed + r.abandoned + r.neverStarted + r.expired;
+      if (total > 0 || first) {
+        log.info(
+          `Sweep: ${r.neverStarted} never started → abandoned, ${r.abandoned} idle → abandoned, ${r.completed} idle → completed, ${r.expired} heartbeat expired, ${r.reports} report(s) started`,
+        );
+      }
+      first = false;
     } catch (err) {
       log.error("Report sweep failed:", err);
     } finally {
