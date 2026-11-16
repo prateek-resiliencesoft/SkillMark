@@ -1,5 +1,6 @@
 "use client";
 
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import {
     CodeEditorCanvas,
@@ -18,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -33,12 +33,12 @@ import {
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVoice, type InterviewContext } from "@/hooks/use-voice";
 import {
     AlertCircle,
     Check,
-    CheckCircle2,
     ChevronLeft,
     ChevronRight,
     ChevronDown,
@@ -372,6 +372,8 @@ interface VoiceInterfaceProps {
   initialDrawings?: Array<{ id: string; label: string; snapshotData: string }>;
   chatEnabled?: boolean;
   onComplete?: () => void;
+  /** Fires as soon as the interview starts ending (before saving finishes). */
+  onEnding?: () => void;
   videoMode?: boolean;
   /** Render in static preview mode — shows full layout without connecting */
   preview?: boolean;
@@ -393,6 +395,7 @@ export function VoiceInterface({
   initialDrawings,
   chatEnabled = false,
   onComplete,
+  onEnding,
   videoMode = false,
   preview = false,
 }: VoiceInterfaceProps) {
@@ -1192,9 +1195,39 @@ export function VoiceInterface({
 
   // ── Common save-and-end logic ───────────────────────────────────
   const endingRef = useRef(false);
+  const onEndingRef = useRef(onEnding);
+  onEndingRef.current = onEnding;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // Interview finished (AI said goodbye): treat it as ending even before the
+  // auto-close timer, so the tab-close beacon can't mark it Abandoned.
+  useEffect(() => {
+    if (voice.isInterviewComplete) onEndingRef.current?.();
+  }, [voice.isInterviewComplete]);
+
+  // Tab closing: save unsent transcript lines; complete the session when the
+  // interview was finished or already ending.
+  useEffect(() => {
+    if (preview) return;
+    const onPageHide = () => {
+      const v = voiceRef.current;
+      const finishing = endingRef.current || v.isInterviewComplete;
+      if (finishing) onEndingRef.current?.();
+      v.beaconFlush(finishing);
+      if (finishing && sessionId && navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+        navigator.sendBeacon("/api/session/complete", blob);
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [preview, sessionId]);
+
   const handleEndInterview = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
+    onEndingRef.current?.();
     setLocallyCompleted(true);
     setIsSaving(true);
 
@@ -1206,10 +1239,21 @@ export function VoiceInterface({
         withTimeout(saveAllCodeSnippets(), 5000, "save code snippets"),
       ]);
 
+      // Mark the session COMPLETED first. The recording upload below can take
+      // up to ~40s; if the candidate closes the tab on the thank-you screen
+      // meanwhile, the session must already be complete (not Abandoned).
+      try {
+        await withTimeout(voice.completeSession(), 10_000, "complete session");
+      } catch (err) {
+        console.error("[voice] Early completion save failed (retried on disconnect):", err);
+      }
+
       try {
         // Stop + save audio (and screenshots when video mode) BEFORE session completes
         if (recording.isRecording || recordingStartedRef.current) {
-          const result = await withTimeout(recording.stop(), 15_000, "stop recording");
+          // Audio is uploaded in parts during the interview, so this is normally
+          // quick. If it still times out, the server links the upload itself.
+          const result = await withTimeout(recording.stop(), 30_000, "stop recording");
           if (result.audioUrl || result.screenshots.length > 0) {
             await withTimeout(
               fetch("/api/trpc/session.saveRecording", {
@@ -1231,6 +1275,12 @@ export function VoiceInterface({
         }
       } catch (err) {
         console.error("[voice] Failed to save recording:", err);
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "warning",
+          message: `Saving the recording at the end did not finish: ${err instanceof Error ? err.message : String(err)}`,
+          context: { stage: "recording_stop" },
+        });
       }
 
       await withTimeout(voice.disconnect(), 8000, "voice disconnect");
@@ -1320,20 +1370,8 @@ export function VoiceInterface({
     }, 8000);
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
-  const completionScreen = (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent className="py-12 text-center">
-          <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-          <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-          <p className="mt-2 text-muted-foreground">
-            Your interview has been completed successfully. We appreciate your
-            time and thoughtful responses.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  // Same thank-you screen as the session page uses after completion / on reload.
+  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];
@@ -1512,6 +1550,50 @@ export function VoiceInterface({
   // ── Render ──────────────────────────────────────────────────────
   return shouldShowCompletionScreen ? completionScreen : (
     <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
+      {voice.isReconnecting && !locallyCompleted && (
+        <div
+          role="status"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        >
+          Connection lost. Reconnecting…
+        </div>
+      )}
+      {voice.micCheckPrompt && voice.isConnected && !locallyCompleted && (
+        <div
+          role="alert"
+          className="fixed bottom-24 left-1/2 z-50 w-[min(92vw,26rem)] -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900 shadow-lg dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <div className="flex items-start gap-3">
+            <MicOff className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">We can&apos;t hear you.</p>
+              <p className="mt-1 text-xs">
+                Check that your microphone is on, not muted, and selected in your browser. Then answer out loud.
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <Mic className="h-3.5 w-3.5 shrink-0" />
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900" aria-label="Microphone level">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width] duration-100"
+                    style={{ width: `${Math.round(Math.min(1, voice.audioLevel) * 100)}%` }}
+                  />
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] opacity-80">
+                {voice.isListening ? "The bar should move when you speak." : "Your microphone is off — turn it on with the mic button."}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-amber-100 dark:hover:bg-amber-900"
+              aria-label="Dismiss"
+              onClick={() => voice.dismissMicCheckPrompt()}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {/* Saving overlay */}
       {isSaving && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">

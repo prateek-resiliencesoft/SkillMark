@@ -1,6 +1,8 @@
 "use client";
 
 import { ConfirmAction } from "@/components/admin/confirm-action";
+import { OrgActivity } from "@/components/admin/org-activity";
+import { formatWhen } from "@/components/admin/admin-ui";
 import { adminActionLabel } from "@/lib/admin-actions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +49,10 @@ export default function AdminOrganizationDetailPage() {
   const { toast } = useToast();
   const utils = trpc.useUtils();
 
+  const activity = trpc.platformOps.memberActivity.useQuery(
+    { orgId: id },
+    { staleTime: 30_000 },
+  );
   const org = trpc.platform.getOrganization.useQuery(
     { id },
     { staleTime: 5_000 },
@@ -258,7 +264,7 @@ export default function AdminOrganizationDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-heading text-2xl font-semibold tracking-tight">
+              <h1 className="font-heading text-3xl font-bold tracking-tight">
                 {data.name}
               </h1>
               <Badge
@@ -328,7 +334,7 @@ export default function AdminOrganizationDetailPage() {
         ].map((s) => (
           <div
             key={s.label}
-            className="rounded-xl border bg-card/60 p-4 backdrop-blur-sm"
+            className="rounded-xl border bg-card p-4"
           >
             <p className="text-xs text-muted-foreground">{s.label}</p>
             <p className="mt-1 font-heading text-2xl font-semibold">{s.value}</p>
@@ -337,7 +343,7 @@ export default function AdminOrganizationDetailPage() {
       </div>
 
       {!removed ? (
-        <section className="space-y-4 rounded-xl border p-5">
+        <section className="space-y-4 rounded-xl border bg-card p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-sm font-medium">User-panel config</h2>
@@ -361,7 +367,7 @@ export default function AdminOrganizationDetailPage() {
       ) : null}
 
       {!removed ? (
-        <section className="space-y-4 rounded-xl border p-5">
+        <section className="space-y-4 rounded-xl border bg-card p-5">
           <div>
             <h2 className="text-sm font-medium">Details</h2>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -395,7 +401,7 @@ export default function AdminOrganizationDetailPage() {
       ) : null}
 
       {!removed ? (
-        <section className="space-y-4 rounded-xl border p-5">
+        <section className="space-y-4 rounded-xl border bg-card p-5">
           <div>
             <h2 className="text-sm font-medium">Features</h2>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -445,7 +451,7 @@ export default function AdminOrganizationDetailPage() {
       ) : null}
 
       {!removed ? (
-        <section className="space-y-4 rounded-xl border p-5">
+        <section className="space-y-4 rounded-xl border bg-card p-5">
           <div>
             <h2 className="text-sm font-medium">Usage limits</h2>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -494,8 +500,10 @@ export default function AdminOrganizationDetailPage() {
         </section>
       ) : null}
 
+      <OrgActivity orgId={id} />
+
       <section className="space-y-3">
-        <h2 className="text-sm font-medium">Members</h2>
+        <h2 className="text-sm font-medium">Interviewers (members)</h2>
         <div className="overflow-hidden rounded-xl border">
           {data.members.length === 0 ? (
             <p className="p-6 text-center text-sm text-muted-foreground">
@@ -515,6 +523,13 @@ export default function AdminOrganizationDetailPage() {
                     <p className="truncate text-xs text-muted-foreground">
                       {m.email}
                       {m.platformRole === "ADMIN" ? " · Platform admin" : ""}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {activity.data?.[m.userId]
+                        ? `${activity.data[m.userId].interviews} interviews · ${activity.data[m.userId].sessions} sessions (${activity.data[m.userId].completed} completed) · last session ${formatWhen(activity.data[m.userId].lastSessionAt)}`
+                        : activity.isLoading
+                          ? "Loading activity…"
+                          : "No interviews created"}
                     </p>
                   </div>
                   {!removed ? (
@@ -569,7 +584,7 @@ export default function AdminOrganizationDetailPage() {
         </div>
       </section>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">Billing</h2>
         <dl className="grid gap-3 text-sm sm:grid-cols-3">
           <div>

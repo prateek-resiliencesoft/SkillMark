@@ -3,6 +3,8 @@ const nextConfig = {
   output: "standalone",
   transpilePackages: ["@ricky0123/vad-web", "onnxruntime-web"],
   experimental: {
+    // Starts the background report sweeper (src/instrumentation.ts).
+    instrumentationHook: true,
     serverComponentsExternalPackages: [
       "pdf-parse",
       "mammoth",

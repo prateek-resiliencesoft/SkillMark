@@ -82,7 +82,7 @@ export default function AdminOrgIntegrationsPage() {
             ← {org.data?.name ?? "Organization"}
           </Link>
         </Button>
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">
+        <h1 className="font-heading text-3xl font-bold tracking-tight">
           Integrations
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -92,7 +92,7 @@ export default function AdminOrgIntegrationsPage() {
         </p>
       </div>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">Email — Resend</h2>
         <p className="text-xs text-muted-foreground">
           Current hint: {integ.data?.resend.apiKeyHint || "none"}
@@ -110,7 +110,7 @@ export default function AdminOrgIntegrationsPage() {
         />
       </section>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">Email — Brevo</h2>
         <p className="text-xs text-muted-foreground">
           Current hint: {integ.data?.brevo.apiKeyHint || "none"}
@@ -133,7 +133,7 @@ export default function AdminOrgIntegrationsPage() {
         />
       </section>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">WhatsApp — Resilio</h2>
         <p className="text-xs text-muted-foreground">
           Current hint: {integ.data?.resilio.apiKeyHint || "none"}
@@ -151,7 +151,7 @@ export default function AdminOrgIntegrationsPage() {
         />
       </section>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">Defaults & webhooks</h2>
         <label className="block space-y-1.5 text-xs">
           <span className="text-muted-foreground">Default email provider</span>
@@ -181,7 +181,7 @@ export default function AdminOrgIntegrationsPage() {
         />
       </section>
 
-      <section className="space-y-3 rounded-xl border p-5">
+      <section className="space-y-3 rounded-xl border bg-card p-5">
         <h2 className="text-sm font-medium">Invite email template</h2>
         <Input
           placeholder="Subject"

@@ -6,6 +6,8 @@ import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { getAuthUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { flagCaptureFailureIfNeeded } from "@/lib/session-summary";
+import { setReportStatus } from "@/lib/session-report-server";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/ai/summarize");
@@ -54,6 +56,7 @@ export async function POST(req: Request) {
       whiteboardImageUrl: string | null;
       role: string;
       content: string;
+      transcription?: string | null;
     }[];
 
     const criteria = interview.assessmentCriteria;
@@ -87,7 +90,13 @@ export async function POST(req: Request) {
     reportProvider = provider;
     const textMessages = msgs
       .filter((m) => m.contentType === "TEXT")
-      .map((m) => ({ role: m.role, content: m.content }));
+      // DB roles are USER / ASSISTANT; the prompt expects lowercase.
+      .map((m) => ({ role: String(m.role).toLowerCase(), content: m.content }));
+
+    if (await flagCaptureFailureIfNeeded(sessionId, textMessages, "api/ai/summarize")) {
+      await setReportStatus(sessionId, "READY", { reportError: null });
+      return NextResponse.json({ captureFailure: true });
+    }
     const drawingsInput =
       whiteboardDrawings.length > 0 ? whiteboardDrawings : null;
     const codeInput = codeSnippetsInput.length > 0 ? codeSnippetsInput : null;
@@ -163,6 +172,9 @@ export async function POST(req: Request) {
     if (parsed.toneAnalysis) {
       insightsData.toneAnalysis = parsed.toneAnalysis;
     }
+    if (msgs.some((m) => m.role === "USER" && m.transcription === "recording")) {
+      insightsData.transcriptSource = "recording";
+    }
 
     await supabaseAdmin
       .from("sessions")
@@ -173,6 +185,7 @@ export async function POST(req: Request) {
         insights: insightsData,
       })
       .eq("id", sessionId);
+    await setReportStatus(sessionId, "READY", { reportError: null });
 
     return NextResponse.json(parsed);
   } catch (error) {

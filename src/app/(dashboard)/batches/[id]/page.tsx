@@ -32,8 +32,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { needsFreshInviteLink } from "@/lib/session-link";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
@@ -70,6 +72,11 @@ const STATUS_META: Record<Status, { label: string; className: string }> = {
 };
 
 type Filter = "all" | "pending" | Status;
+
+function isInviteExpired(c: { expiresAt?: string | null; status: Status; completedAt?: string | null }): boolean {
+  if (!c.expiresAt || c.status === "COMPLETED" || c.status === "DISQUALIFIED" || c.completedAt) return false;
+  return new Date(c.expiresAt).getTime() < Date.now();
+}
 
 export default function BatchDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -135,6 +142,41 @@ export default function BatchDetailPage() {
     onError: (e) => toast({ title: "Could not remove", description: e.message, variant: "destructive" }),
   });
 
+  const copyLink = async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    toast({ title: "Link copied" });
+  };
+
+  const sendNewLink = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      void utils.batch.getById.invalidate({ id });
+      const delivery = d.delivery as
+        | { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } }
+        | undefined;
+      const parts: string[] = [];
+      let fail = false;
+      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+        const r = delivery?.[ch];
+        if (!r) continue;
+        if (r.status !== "sent") fail = true;
+        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+      }
+      const sent = parts.join(" · ");
+      toast({
+        title: fail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
+        description: sent || "Copy the link to share it with the candidate.",
+        variant: fail ? "destructive" : undefined,
+        action: (
+          <ToastAction altText="Copy link" onClick={() => void copyLink(d.inviteLink)}>
+            Copy link
+          </ToastAction>
+        ),
+      });
+    },
+    onError: (e) =>
+      toast({ title: "Could not create a new link", description: e.message, variant: "destructive" }),
+  });
+
   const candidates = useMemo(() => batch.data?.candidates ?? [], [batch.data]);
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -168,11 +210,6 @@ export default function BatchDetailPage() {
   const recipients = (sendTo ?? [])
     .map((cid) => candidates.find((c) => c.id === cid))
     .filter((c): c is (typeof candidates)[number] => !!c);
-
-  const copy = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    toast({ title: "Link copied" });
-  };
 
   const exportRows = () =>
     exportToXlsx(
@@ -419,9 +456,10 @@ export default function BatchDetailPage() {
                         </p>
                       )}
                       {c.expiresAt && !c.completedAt && (
-                        <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <p className={cn("flex items-center gap-1 text-[11px]", isInviteExpired(c) ? "font-medium text-destructive" : "text-muted-foreground")}>
                           <Clock className="h-3 w-3" />
-                          Expires {new Date(c.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
+                          {isInviteExpired(c) ? "Expired" : "Expires"}{" "}
+                          {new Date(c.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
                         </p>
                       )}
                     </TableCell>
@@ -444,9 +482,16 @@ export default function BatchDetailPage() {
                       </p>
                     </TableCell>
                     <TableCell className="min-w-[160px]">
-                      <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
-                        {STATUS_META[c.status].label}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
+                          {STATUS_META[c.status].label}
+                        </span>
+                        {isInviteExpired(c) && (
+                          <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950/40 dark:text-red-300">
+                            Expired
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {c.questionCount} questions
                         {c.completedAt && ` · ${new Date(c.completedAt).toLocaleDateString()}`}
@@ -470,13 +515,30 @@ export default function BatchDetailPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {b.canEdit && (
+                          {b.canEdit && needsFreshInviteLink({ session: c.session, expiresAt: c.expiresAt }) ? (
+                            <DropdownMenuItem
+                              disabled={sendNewLink.isLoading}
+                              onClick={() => {
+                                if (
+                                  !confirm(
+                                    "Send a new link? The old link will stop working and the old attempt stays in records.",
+                                  )
+                                ) {
+                                  return;
+                                }
+                                sendNewLink.mutate({ candidateId: c.id });
+                              }}
+                            >
+                              <Send className="mr-2 h-4 w-4" />
+                              Send new link
+                            </DropdownMenuItem>
+                          ) : b.canEdit ? (
                             <DropdownMenuItem onClick={() => setSendTo([c.id])}>
                               <Send className="mr-2 h-4 w-4" />
                               Send link
                             </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onClick={() => void copy(c.inviteLink)}>
+                          ) : null}
+                          <DropdownMenuItem onClick={() => void copyLink(c.inviteLink)}>
                             <Copy className="mr-2 h-4 w-4" />
                             Copy link
                           </DropdownMenuItem>

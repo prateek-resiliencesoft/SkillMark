@@ -10,6 +10,8 @@ import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { NextResponse } from "next/server";
+import { canMarkCompleted, REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
+import { scheduleSessionReport } from "@/lib/session-report-server";
 
 const log = createLogger("api/session/complete");
 
@@ -35,9 +37,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    if (session.status !== "IN_PROGRESS") {
+    if (!canMarkCompleted(session.status as string)) {
       return NextResponse.json({ ok: true, alreadyCompleted: session.status === "COMPLETED" });
     }
+    const wasAbandoned = session.status === "ABANDONED";
 
     const now = new Date();
     const cappedNowMs = effectiveNowForSession(session.lastActivityAt as string | null, now.getTime());
@@ -64,18 +67,30 @@ export async function POST(req: Request) {
       );
     }
 
-    await supabaseAdmin
+    const writeCompletion = (withReason: boolean) =>
+      supabaseAdmin
       .from("sessions")
       .update({
         status: "COMPLETED" as const,
         completedAt: now.toISOString(),
         activitySegments: closed,
         totalDurationSeconds: duration,
+        ...(withReason ? { endReason: "COMPLETED" } : {}),
       })
-      .eq("id", sessionId);
+      .eq("id", sessionId)
+      .in("status", ["IN_PROGRESS", "ABANDONED", "NOT_STARTED"]);
+    let { error: writeErr } = await writeCompletion(true);
+    if (writeErr && /endReason|42703|PGRST204/.test(`${writeErr.code} ${writeErr.message}`)) {
+      ({ error: writeErr } = await writeCompletion(false));
+    }
+    if (writeErr) {
+      log.error(`Session ${sessionId} completion write failed: ${writeErr.message}`);
+      return NextResponse.json({ error: "Could not complete session" }, { status: 500 });
+    }
 
     log.info(`Session ${sessionId} completed via safety-net (${duration}s)`);
     void notifySessionCompleted(supabaseAdmin, sessionId);
+    scheduleSessionReport(sessionId, "completed:safety-net", REPORT_DELAY_AFTER_COMPLETE_MS, { force: wasAbandoned });
 
     return NextResponse.json({ ok: true });
   } catch {

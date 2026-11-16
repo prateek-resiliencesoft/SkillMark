@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { effectiveDurationSeconds } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -44,6 +46,8 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { needsFreshInviteLink } from "@/lib/session-link";
+import { formatSessionStatusLabel } from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -106,6 +110,7 @@ type CandidateRow = {
   workExperience: string | null;
   notes: string | null;
   inviteToken: string | null;
+  expiresAt: string | null;
   session: any;
   createdAt: string;
   hasResume?: boolean;
@@ -271,11 +276,17 @@ function getSessionBadgeVariant(
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "COMPLETED":
+    case "Completed":
       return "default";
     case "IN_PROGRESS":
+    case "In Progress":
+    case "Opened link":
+    case "Setting up":
       return "outline";
     case "ABANDONED":
+    case "Abandoned":
     case "DISQUALIFIED":
+    case "Disqualified":
       return "destructive";
     default:
       return "secondary";
@@ -367,7 +378,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return row.session?.totalDurationSeconds ?? -1;
+      return effectiveDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -536,7 +547,10 @@ export function CandidateManager({
   }, [columnOrder]);
 
   // ── Data ──
-  const candidateList = trpc.candidate.list.useQuery({ interviewId });
+  const candidateList = trpc.candidate.list.useQuery(
+    { interviewId },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
@@ -580,17 +594,22 @@ export function CandidateManager({
       toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
   });
 
+  const describeDelivery = (d: { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } } | undefined) => {
+    const parts: string[] = [];
+    let anyFail = false;
+    for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+      const r = d?.[ch];
+      if (!r) continue;
+      if (r.status !== "sent") anyFail = true;
+      parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+    }
+    return { parts, anyFail };
+  };
+
   const resendInviteMutation = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
       invalidateAll();
-      const parts: string[] = [];
-      let anyFail = false;
-      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-        const r = d[ch];
-        if (!r) continue;
-        if (r.status !== "sent") anyFail = true;
-        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-      }
+      const { parts, anyFail } = describeDelivery(d);
       toast({
         title: anyFail ? "Some messages not sent" : "Invite link sent",
         description: parts.join(" · ") || "Nothing to send",
@@ -598,6 +617,19 @@ export function CandidateManager({
       });
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
+  });
+  const sendNewLinkMutation = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      invalidateAll();
+      const { parts, anyFail } = describeDelivery(d.delivery);
+      const sent = parts.join(" · ");
+      toast({
+        title: anyFail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
+        description: sent || "Copy the link to share it with the candidate.",
+        variant: anyFail ? "destructive" : undefined,
+      });
+    },
+    onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
   });
   const deliveryOptions = trpc.candidate.deliveryOptions.useQuery({ interviewId });
 
@@ -632,6 +664,7 @@ export function CandidateManager({
         workExperience: c.workExperience ?? null,
         notes: c.notes ?? null,
         inviteToken: c.inviteToken,
+        expiresAt: c.expiresAt ?? null,
         session: c.session,
         createdAt: c.createdAt,
         hasResume: !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName),
@@ -863,7 +896,7 @@ export function CandidateManager({
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(session.totalDurationSeconds)
+              ? formatDuration(effectiveDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -879,10 +912,7 @@ export function CandidateManager({
             record[col.label] = getSourceLabel(row);
             break;
           case "status":
-            record[col.label] =
-              status === "Not Started"
-                ? "NOT STARTED"
-                : status.replace("_", " ");
+            record[col.label] = formatSessionStatusLabel(row.session);
             break;
         }
       }
@@ -1191,6 +1221,7 @@ export function CandidateManager({
                 <TableBody>
                   {paginatedRows.map((row) => {
                     const status = getSessionStatus(row);
+                    const statusLabel = formatSessionStatusLabel(row.session);
                     const session = row.session;
                     const hasSession = !!session && status !== "Not Started";
                     const compositeId = `${row.type}-${row.id}`;
@@ -1274,7 +1305,7 @@ export function CandidateManager({
                         );
                       })(),
                       duration: hasSession
-                        ? formatDuration(session.totalDurationSeconds)
+                        ? formatDuration(effectiveDurationSeconds(session))
                         : "-",
                       started: (
                         <span className="whitespace-nowrap">
@@ -1318,12 +1349,10 @@ export function CandidateManager({
                       })(),
                       status: (
                         <Badge
-                          variant={getSessionBadgeVariant(status)}
+                          variant={getSessionBadgeVariant(statusLabel)}
                           className="whitespace-nowrap"
                         >
-                          {status === "Not Started"
-                            ? "NOT STARTED"
-                            : status.replace("_", " ")}
+                          {statusLabel}
                         </Badge>
                       ),
                     };
@@ -1425,7 +1454,7 @@ export function CandidateManager({
                               <FileText className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
-                          {hasSession && status === "COMPLETED" ? (
+                          {hasSession && (status === "COMPLETED" || status === "ABANDONED" || status === "DISQUALIFIED" || (status === "IN_PROGRESS" && !!session.interviewBeganAt)) ? (
                             <Button
                               variant="ghost"
                               size="icon"
@@ -1449,26 +1478,35 @@ export function CandidateManager({
                               <LinkIcon className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           ) : null}
-                          {row.type === "candidate" && row.inviteToken &&
-                            (deliveryOptions.data?.email || deliveryOptions.data?.whatsapp) ? (
+                          {row.type === "candidate" && row.inviteToken ? (
+                            (needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt }) ||
+                              deliveryOptions.data?.email ||
+                              deliveryOptions.data?.whatsapp) ? (
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7"
-                              title="Resend link (WhatsApp / Email)"
-                              disabled={resendInviteMutation.isLoading}
-                              onClick={() =>
-                                resendInviteMutation.mutate({
-                                  candidateId: row.id,
-                                  channels: {
-                                    email: !!deliveryOptions.data?.email,
-                                    whatsapp: !!deliveryOptions.data?.whatsapp,
-                                  },
-                                })
+                              title={
+                                needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt })
+                                  ? "Send new link (fresh token)"
+                                  : "Resend link (WhatsApp / Email)"
                               }
+                              disabled={resendInviteMutation.isLoading || sendNewLinkMutation.isLoading}
+                              onClick={() => {
+                                const channels = {
+                                  email: !!deliveryOptions.data?.email,
+                                  whatsapp: !!deliveryOptions.data?.whatsapp,
+                                };
+                                if (needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt })) {
+                                  sendNewLinkMutation.mutate({ candidateId: row.id, channels });
+                                } else {
+                                  resendInviteMutation.mutate({ candidateId: row.id, channels });
+                                }
+                              }}
                             >
                               <Send className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
+                            ) : null
                           ) : null}
                         </TableCell>
                       </TableRow>

@@ -1,9 +1,14 @@
-import { expireIfStale } from "@/lib/session-link-server";
+import { expireIfStale, expireNestedSession, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
+import { recordPreflightEvent } from "@/lib/preflight-server";
+import { issueNewInviteLink } from "../new-invite-link";
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { listPreflightEventsWithStatus } from "@/lib/preflight-server";
+import { countAnsweredQuestions, effectiveDurationSeconds, lastMessageAt, type ActivityMessage } from "@/lib/session-activity";
+import { resolveSessionSignedUrl } from "./analysis";
 import {
     assertMinRole, filterAccessibleProjectIds,
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
@@ -130,12 +135,19 @@ export const candidateRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions(*), interview:interviews(id, title, timeLimitMinutes)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(id, title, timeLimitMinutes)")
         .eq("id", input.id)
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
       await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
-      return c;
+      const withSession = await expireNestedSession(c);
+      const { events: preflightEvents, available: preflightAvailable } =
+        await listPreflightEventsWithStatus(c.id);
+      const activity = await loadSessionActivity(
+        withSession.session as Record<string, unknown> | null,
+        c.interviewId as string,
+      );
+      return { ...withSession, preflightEvents, preflightAvailable, activity };
     }),
 
   /**
@@ -225,6 +237,25 @@ export const candidateRouter = router({
       return sendCandidateInvite(ctx.supabase, organizationId, c.id, input.channels);
     }),
 
+  /**
+   * Invalidate the current invite token, detach the abandoned/expired session
+   * (kept for audit), and issue a fresh link the candidate can start again.
+   */
+  sendNewLink: protectedProcedure
+    .input(z.object({ candidateId: z.string(), channels: sendViaSchema.optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      const { role, organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+
+      return issueNewInviteLink(ctx.supabase, c, organizationId, input.channels);
+    }),
+
   bulkCreate: protectedProcedure
     .input(
       z.object({
@@ -304,9 +335,11 @@ export const candidateRouter = router({
     .query(async ({ ctx, input }) => {
       await verifyInterviewAccess(ctx.supabase, input.interviewId, ctx.user.id);
 
+      // Hint the sessionId FK — sessions.candidateId (migration 26) adds a second
+      // relationship, and an unhinted session:sessions(*) embed fails with PGRST201.
       const { data: candidates } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions(*)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
         .eq("interviewId", input.interviewId)
         .order("createdAt", { ascending: false });
 
@@ -323,6 +356,7 @@ export const candidateRouter = router({
         .select("*, messages(id)")
         .eq("interviewId", input.interviewId)
         .is("dataArchivedAt", null)
+        .is("candidateId", null)
         .order("createdAt", { ascending: false });
 
       if (linkedSessionIds.length > 0) {
@@ -342,7 +376,9 @@ export const candidateRouter = router({
         }),
       );
 
-      return { candidates: activeCandidates, walkInSessions };
+      const expiredCandidates = await Promise.all(activeCandidates.map((row) => expireNestedSession(row)));
+      const expiredWalkIns = await expireSessionsIfStale(walkInSessions);
+      return { candidates: expiredCandidates, walkInSessions: expiredWalkIns };
     }),
 
   update: protectedProcedure
@@ -393,7 +429,7 @@ export const candidateRouter = router({
         .from("candidates")
         .update({ ...fields, updatedAt: new Date().toISOString() })
         .eq("id", id)
-        .select("*, session:sessions(*)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*)")
         .single();
 
       if (error) {
@@ -561,7 +597,7 @@ export const candidateRouter = router({
       const { data: candidates } = await ctx.supabase
         .from("candidates")
         .select(
-          "*, session:sessions(*), interview:interviews!inner(id, title)",
+          "*, session:sessions!candidates_sessionId_fkey(*), interview:interviews!inner(id, title)",
         )
         .in("interviewId", interviewIds)
         .order("createdAt", { ascending: false })
@@ -597,9 +633,11 @@ export const candidateRouter = router({
         }),
       );
 
+      const expiredCandidates = await Promise.all((candidates ?? []).map((row) => expireNestedSession(row)));
+      const expiredWalkIns = await expireSessionsIfStale(walkInSessions);
       return {
-        candidates: candidates ?? [],
-        walkInSessions,
+        candidates: expiredCandidates,
+        walkInSessions: expiredWalkIns,
         interviewMap,
       };
     }),
@@ -610,12 +648,18 @@ export const candidateRouter = router({
       const { data: candidate } = await ctx.supabase
         .from("candidates")
         .select(
-          "*, session:sessions(*), interview:interviews(*, questions(*))",
+          "*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(*, questions(*))",
         )
         .eq("inviteToken", input.token)
         .single();
 
       if (!candidate) {
+        if (await isRevokedInviteToken(input.token)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This link has expired. Please ask the recruiter for a new link.",
+          });
+        }
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Invalid invite link",
@@ -635,9 +679,70 @@ export const candidateRouter = router({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const linked = (candidate as any).session;
       if (linked && typeof linked === "object" && !Array.isArray(linked)) {
-        return { ...candidate, session: await expireIfStale(linked) };
+        const session = await expireIfStale(linked);
+        if (session.status === "IN_PROGRESS" && !session.interviewBeganAt) {
+          void recordPreflightEvent({
+            candidateId: candidate.id,
+            sessionId: session.id,
+            inviteToken: input.token,
+            type: "link_opened",
+            status: "done",
+          });
+        }
+        return { ...candidate, session };
       }
 
+      void recordPreflightEvent({
+        candidateId: candidate.id,
+        sessionId: candidate.sessionId ?? null,
+        inviteToken: input.token,
+        type: "link_opened",
+        status: "done",
+      });
       return candidate;
     }),
 });
+
+/**
+ * Saved transcript, recording and counts for the candidate panel — for any
+ * session status (in progress, ended early, completed, disqualified).
+ */
+async function loadSessionActivity(session: Record<string, unknown> | null, interviewId: string) {
+  if (!session?.id) return null;
+  const sessionId = session.id as string;
+  const { data: msgs } = await supabaseAdmin
+    .from("messages")
+    .select("id, role, content, contentType, questionId, timestamp, transcription")
+    .eq("sessionId", sessionId)
+    .order("timestamp", { ascending: true });
+  const messages = ((msgs ?? []) as (ActivityMessage & { id: string })[]).filter(
+    (m) => !m.contentType || m.contentType === "TEXT",
+  );
+  let recordingUrl: string | null = null;
+  const stored = session.audioRecordingUrl as string | null;
+  if (stored && !session.mediaClearedAt) {
+    try {
+      const { data: iv } = await supabaseAdmin
+        .from("interviews")
+        .select("project:projects(organizationId)")
+        .eq("id", interviewId)
+        .maybeSingle();
+      const orgId = (iv?.project as { organizationId?: string } | null)?.organizationId;
+      if (orgId) recordingUrl = await resolveSessionSignedUrl("recordings", stored, sessionId, orgId);
+    } catch {
+      recordingUrl = null;
+    }
+  }
+  const last = lastMessageAt(messages);
+  return {
+    messages,
+    messageCount: messages.length,
+    candidateLines: messages.filter((m) => String(m.role).toUpperCase() === "USER").length,
+    questionsAnswered: countAnsweredQuestions(messages),
+    durationSeconds: effectiveDurationSeconds(session as never, last),
+    firstMessageAt: messages[0]?.timestamp ?? null,
+    lastMessageAt: last,
+    recordingUrl,
+    hasRecording: !!stored && !session.mediaClearedAt,
+  };
+}

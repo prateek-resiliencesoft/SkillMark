@@ -136,7 +136,7 @@ export const questionRouter = router({
         if (batchId) {
           const { data: cand } = await ctx.supabase
             .from("candidates")
-            .select("session:sessions(status)")
+            .select("session:sessions!candidates_sessionId_fkey(status)")
             .eq("interviewId", interviewId)
             .maybeSingle();
           const status =

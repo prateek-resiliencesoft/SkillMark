@@ -49,7 +49,7 @@ export default function AdminStoragePage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">Stored files</h1>
+        <h1 className="font-heading text-3xl font-bold tracking-tight">Stored files</h1>
         <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
           Delete recordings and other files kept in Backblaze. Candidate scores and account records stay.
           Choose every organization, specific organizations, or specific projects.

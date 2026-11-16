@@ -6,9 +6,11 @@ import { trpc } from "@/lib/trpc/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Link2Off, Clock } from "lucide-react";
 import { PreparingScreen } from "@/components/session/preparing-screen";
-import { LinkExpiredScreen } from "@/components/session/candidate-end-screens";
+import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
+import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
+import { collectDeviceInfo } from "@/lib/preflight";
 
 export default function InvitePage() {
   const params = useParams();
@@ -25,6 +27,30 @@ export default function InvitePage() {
   );
 
   const sessionPath = `/i/invite/${token}/session`;
+
+  const linkOpened = useRef(false);
+  useEffect(() => {
+    if (!token || !candidate.data || linkOpened.current) return;
+    if (candidate.data.expiresAt && new Date(candidate.data.expiresAt).getTime() < Date.now()) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const session = (candidate.data as any).session;
+    if (session && (session.status === "COMPLETED" || session.status === "ABANDONED" || session.status === "DISQUALIFIED")) {
+      return;
+    }
+    linkOpened.current = true;
+    void fetch("/api/session/preflight", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        sessionId: session?.id,
+        type: "link_opened",
+        status: "done",
+        device: collectDeviceInfo(),
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  }, [token, candidate.data]);
 
   const goToSession = useCallback(() => {
     router.push(sessionPath);
@@ -100,9 +126,13 @@ export default function InvitePage() {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
               <Link2Off className="h-6 w-6 text-muted-foreground" />
             </div>
-            <h2 className="text-xl font-semibold">Invalid Invite Link</h2>
+            <h2 className="text-xl font-semibold">
+              {/expired/i.test(candidate.error?.message ?? "") ? "This link has expired" : "Invalid Invite Link"}
+            </h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This invite link is invalid or the interview is no longer available.
+              {/expired/i.test(candidate.error?.message ?? "")
+                ? EXPIRED_INVITE_MESSAGE
+                : "This invite link is invalid or the interview is no longer available."}
             </p>
           </CardContent>
         </Card>
@@ -126,21 +156,25 @@ export default function InvitePage() {
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
               <Clock className="h-7 w-7" />
             </div>
-            <h2 className="text-xl font-semibold">Interview Link Expired</h2>
+            <h2 className="text-xl font-semibold">This link has expired</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This interview invitation expired on{" "}
+              {EXPIRED_INVITE_MESSAGE}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This invitation expired on{" "}
               <span className="font-medium text-foreground">
                 {formatDateTime(candidate.data.expiresAt)}
               </span>
               .
             </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Please contact the hiring team or organization that invited you to request a new link or extension.
-            </p>
           </CardContent>
         </Card>
       </div>
     );
+  }
+
+  if (session?.status === "COMPLETED") {
+    return <CandidateThankYou />;
   }
 
   // One-time link already used (finished, interrupted, or running in another tab)
