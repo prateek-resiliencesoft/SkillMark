@@ -27,7 +27,7 @@ import {
   reportStatusOf,
   toTranscript,
 } from "../src/server/public-api/service";
-import { buildUrl, listOperations, snippets } from "../src/lib/api-docs";
+import { buildUrl, checkJson, listOperations, openHash, paramExample, parseOpenHash, snippets } from "../src/lib/api-docs";
 import { mcpConfigs, MCP_KEY_PLACEHOLDER } from "../src/components/developers/mcp-config";
 import { fakeDb } from "./fake-db";
 
@@ -263,4 +263,22 @@ test("operationIds are unique across the whole spec", () => {
   const ids: string[] = [];
   for (const item of Object.values<any>(spec.paths)) for (const op of Object.values<any>(item)) if (op?.operationId) ids.push(op.operationId);
   assert.equal(new Set(ids).size, ids.length);
+});
+
+test("docs viewer: examples, responses, hash state and JSON check", () => {
+  const ops = listOperations(buildOpenApiSpec("https://example.test"));
+  const list = ops.find((o) => o.id === "listSessions")!;
+  assert.equal(paramExample(list.params.find((p) => p.name === "status")!), "COMPLETED");
+  assert.deepEqual(
+    list.responses.map((r) => r.status),
+    ["200", "400", "401", "403", "429", "500"].filter((s) => list.responses.some((r) => r.status === s)),
+  );
+  for (const r of list.responses) assert.ok(r.example !== undefined, `example for ${r.status}`);
+  assert.equal(ops.find((o) => o.id === "getTranscript")!.tag, "Transcripts");
+  const invite = ops.find((o) => o.id === "createInvite")!;
+  assert.equal((invite.bodyExample as any).email, "candidate@example.com");
+  assert.deepEqual(parseOpenHash(openHash(["listSessions", "getResult"])), ["listSessions", "getResult"]);
+  assert.deepEqual(parseOpenHash(""), []);
+  assert.equal(checkJson('{"a":1}'), null);
+  assert.ok(checkJson("{a:1}"));
 });

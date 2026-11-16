@@ -33,7 +33,7 @@ export type EndpointDef = {
   id: EndpointId;
   method: "GET" | "POST";
   path: string;
-  tag: "Sessions" | "Results" | "Interviews" | "Candidates" | "Invites";
+  tag: "Sessions" | "Results" | "Transcripts" | "Interviews" | "Candidates" | "Invites";
   summary: string;
   description: string;
   scope: ApiKeyScope;
@@ -43,6 +43,10 @@ export type EndpointDef = {
   response: z.ZodType;
   componentName: string;
   successStatus: 200 | 201;
+  /** Example values for path/query parameters (illustrative). */
+  paramExamples?: Record<string, string | number>;
+  /** Example request body (illustrative). */
+  bodyExample?: unknown;
   /** Illustrative values only (not real data). */
   example: unknown;
   /** MCP tool name, if this endpoint is exposed as an MCP tool. */
@@ -75,6 +79,7 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "listSessions",
     method: "GET",
     path: "/sessions",
+    paramExamples: { status: "COMPLETED", interview_id: IID, candidate_email: "candidate@example.com", from: "2026-11-01", to: "2026-11-30", limit: 20 },
     tag: "Sessions",
     summary: "List sessions",
     description:
@@ -91,6 +96,7 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "getSession",
     method: "GET",
     path: "/sessions/{id}",
+    paramExamples: { id: SID },
     tag: "Sessions",
     summary: "Get a session",
     description: "One session with its status, timing and report state.",
@@ -106,6 +112,7 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "getResult",
     method: "GET",
     path: "/sessions/{id}/result",
+    paramExamples: { id: SID },
     tag: "Results",
     summary: "Get a session result",
     description:
@@ -146,7 +153,8 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "getTranscript",
     method: "GET",
     path: "/sessions/{id}/transcript",
-    tag: "Results",
+    paramExamples: { id: SID },
+    tag: "Transcripts",
     summary: "Get a session transcript",
     description: "The conversation in order, with `interviewer` and `candidate` roles.",
     scope: "transcripts:read",
@@ -169,6 +177,7 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "listInterviews",
     method: "GET",
     path: "/interviews",
+    paramExamples: { active: "true", limit: 20 },
     tag: "Interviews",
     summary: "List interviews",
     description: "Interviews in your organization with session counts, newest first.",
@@ -200,6 +209,7 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "listCandidates",
     method: "GET",
     path: "/candidates",
+    paramExamples: { interview_id: IID, email: "candidate@example.com", limit: 20 },
     tag: "Candidates",
     summary: "List candidates",
     description: "Invited candidates and where they are: invited, in progress, completed, abandoned or disqualified.",
@@ -230,6 +240,13 @@ export const ENDPOINTS: EndpointDef[] = [
     id: "createInvite",
     method: "POST",
     path: "/invites",
+    bodyExample: {
+      interview_id: IID,
+      name: "Example Candidate",
+      email: "candidate@example.com",
+      phone: "+919876543210",
+      send: { email: false, whatsapp: false },
+    },
     tag: "Invites",
     summary: "Invite a candidate",
     description:

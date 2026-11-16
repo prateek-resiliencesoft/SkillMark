@@ -23,9 +23,11 @@ function parameters(e: EndpointDef): Json[] {
       const schema = toSchema(f, "input");
       const description = (schema.description as string | undefined) ?? f.description;
       delete schema.description;
+      const example = e.paramExamples?.[name];
       list.push({
         name,
         in: where,
+        ...(example !== undefined ? { example } : {}),
         required: where === "path" ? true : !f.isOptional(),
         ...(description ? { description } : {}),
         schema,
@@ -52,7 +54,12 @@ export function operationFor(e: EndpointDef): Json {
       ? {
           requestBody: {
             required: true,
-            content: { "application/json": { schema: toSchema(e.body, "input") } },
+            content: {
+              "application/json": {
+                schema: toSchema(e.body, "input"),
+                ...(e.bodyExample !== undefined ? { example: e.bodyExample } : {}),
+              },
+            },
           },
         }
       : {}),
@@ -73,7 +80,8 @@ export function operationFor(e: EndpointDef): Json {
 
 export const RESULTS_API_TAGS = [
   { name: "Sessions", description: "Candidate interview sessions." },
-  { name: "Results", description: "Scores, reports and transcripts of a session." },
+  { name: "Results", description: "Scores, summary and recommendation of a session." },
+  { name: "Transcripts", description: "The conversation of a session." },
   { name: "Interviews", description: "Interview templates and publishing." },
   { name: "Candidates", description: "Invited candidates and invite links." },
   { name: "Invites", description: "Invite a candidate to an interview." },
@@ -97,9 +105,14 @@ export function buildOpenApiSpec(origin?: string): Json {
     ...legacy.tags.filter((t) => !RESULTS_API_TAGS.some((r) => r.name === t.name)),
   ].filter((t, i, arr) => arr.findIndex((x) => x.name === t.name) === i);
 
-  const errorResponse = (description: string) => ({
+  const errorResponse = (description: string, code: string, message: string, details?: unknown) => ({
     description,
-    content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+    content: {
+      "application/json": {
+        schema: { $ref: "#/components/schemas/Error" },
+        example: { error: { code, message, ...(details ? { details } : {}) } },
+      },
+    },
   });
 
   return {
@@ -131,13 +144,15 @@ export function buildOpenApiSpec(origin?: string): Json {
         },
       },
       responses: {
-        BadRequest: errorResponse("The request is not valid. `error.details` lists the fields."),
-        Unauthorized: errorResponse("Missing, wrong, expired or revoked API key."),
-        Forbidden: errorResponse("The key does not have the needed scope."),
-        NotFound: errorResponse("Not found in this key's organization."),
-        RateLimited: errorResponse("Too many requests. Wait for `Retry-After` seconds."),
-        InternalError: errorResponse("Unexpected server error."),
         ...(legacy.components.responses ?? {}),
+        BadRequest: errorResponse("The request is not valid. `error.details` lists the fields.", "BAD_REQUEST", "Invalid query parameters", {
+          limit: "Too big: expected number to be <=100",
+        }),
+        Unauthorized: errorResponse("Missing, wrong, expired or revoked API key.", "UNAUTHORIZED", "Invalid or revoked API key."),
+        Forbidden: errorResponse("The key does not have the needed scope.", "FORBIDDEN", 'This API key lacks the "results:read" permission.'),
+        NotFound: errorResponse("Not found in this key's organization.", "NOT_FOUND", "Session not found"),
+        RateLimited: errorResponse("Too many requests. Wait for `Retry-After` seconds.", "RATE_LIMITED", "Too many requests. Retry after 42s."),
+        InternalError: errorResponse("Unexpected server error.", "INTERNAL_ERROR", "Unexpected server error"),
       },
     },
   };
