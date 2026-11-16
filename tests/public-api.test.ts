@@ -27,9 +27,11 @@ import {
   reportStatusOf,
   toTranscript,
 } from "../src/server/public-api/service";
-import { buildUrl, checkJson, listOperations, openHash, paramExample, parseOpenHash, snippets } from "../src/lib/api-docs";
+import { buildUrl, checkJson, idSource, listOperations, tryDefaults, openHash, paramExample, parseOpenHash, snippets } from "../src/lib/api-docs";
 import { mcpConfigs, MCP_KEY_PLACEHOLDER } from "../src/components/developers/mcp-config";
 import { fakeDb } from "./fake-db";
+import { deleteOrgApiKey } from "../src/server/api-key-admin";
+import { publicOrigin } from "../src/server/public-api/origin";
 
 /* ---------------- keys ---------------- */
 
@@ -281,4 +283,51 @@ test("docs viewer: examples, responses, hash state and JSON check", () => {
   assert.deepEqual(parseOpenHash(""), []);
   assert.equal(checkJson('{"a":1}'), null);
   assert.ok(checkJson("{a:1}"));
+});
+
+test("key delete: only removes keys of the given organization, logs are kept", async () => {
+  const ORG_A = "00000000-0000-4000-8000-00000000000a";
+  const ORG_B = "00000000-0000-4000-8000-00000000000b";
+  const tables: Record<string, any[]> = {
+    api_keys: [
+      { id: "k-a", organizationId: ORG_A, name: "A", keyPrefix: "rsi_live_aaa" },
+      { id: "k-b", organizationId: ORG_B, name: "B", keyPrefix: "rsi_live_bbb" },
+    ],
+    api_usage_logs: [{ id: "l1", apiKeyId: "k-b" }],
+    audit_logs: [],
+  };
+  const db = fakeDb(tables);
+  // Org A cannot delete org B's key.
+  assert.equal(await deleteOrgApiKey(db, { organizationId: ORG_A, id: "k-b", actorId: "u1" }), null);
+  assert.deepEqual(tables.api_keys.map((k) => k.id).sort(), ["k-a", "k-b"]);
+  assert.equal(tables.audit_logs.length, 0);
+  // Org B can.
+  const gone = await deleteOrgApiKey(db, { organizationId: ORG_B, id: "k-b", actorId: "u2" });
+  assert.equal(gone?.keyPrefix, "rsi_live_bbb");
+  assert.deepEqual(tables.api_keys.map((k) => k.id), ["k-a"]);
+  assert.equal(tables.api_usage_logs.length, 1);
+  assert.equal(tables.audit_logs[0].action, "api_key.delete");
+  assert.equal(tables.audit_logs[0].metadata.organizationId, ORG_B);
+});
+
+test("public origin ignores the container address behind the proxy", () => {
+  const behindProxy = new Request("https://0.0.0.0:3000/api/v1/openapi.json", {
+    headers: { host: "dev.example.test", "x-forwarded-proto": "https" },
+  });
+  assert.equal(publicOrigin(behindProxy), "https://dev.example.test");
+  assert.equal(publicOrigin(new Request("http://localhost:3100/x", { headers: { host: "localhost:3100" } })), "http://localhost:3100");
+  const spec = buildOpenApiSpec(publicOrigin(behindProxy)) as any;
+  assert.equal(spec.servers[0].url, "https://dev.example.test/api/v1");
+});
+
+test("try-it starts without made-up ids and offers real-id pickers", () => {
+  const ops = listOperations(buildOpenApiSpec("https://example.test"));
+  const getRes = ops.find((o) => o.id === "getResult")!;
+  assert.equal(tryDefaults(getRes).id, "");
+  const list = ops.find((o) => o.id === "listSessions")!;
+  assert.ok(Object.values(tryDefaults(list)).every((v) => v === ""));
+  assert.equal(idSource("/sessions/{id}/result", "id", "path"), "/sessions");
+  assert.equal(idSource("/interviews/{id}", "id", "path"), "/interviews");
+  assert.equal(idSource("/candidates", "interview_id", "query"), "/interviews");
+  assert.equal(idSource("/sessions", "status", "query"), null);
 });

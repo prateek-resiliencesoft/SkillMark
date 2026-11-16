@@ -4,6 +4,7 @@ import type { Context } from "../context";
 import { API_KEY_SCOPES, generateApiKey } from "@/lib/api-keys";
 import type { MemberRole } from "../trpc";
 import { TRPCError } from "@trpc/server";
+import { deleteOrgApiKey } from "../api-key-admin";
 
 
 /** Org API keys are managed by org admins and owners only. */
@@ -215,6 +216,21 @@ export const apiKeyRouter = router({
         .select("id")
         .maybeSingle();
       if (error || !data) throw new TRPCError({ code: "NOT_FOUND", message: "Key not found" });
+      return { success: true };
+    }),
+
+  /** Permanently remove a key (active keys stop working at once). Usage logs are kept. */
+  orgDelete: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(), id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      let deleted;
+      try {
+        deleted = await deleteOrgApiKey(ctx.supabase, { organizationId: input.organizationId, id: input.id, actorId: ctx.user.id });
+      } catch (e) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: e instanceof Error ? e.message : "Could not delete key" });
+      }
+      if (!deleted) throw new TRPCError({ code: "NOT_FOUND", message: "Key not found" });
       return { success: true };
     }),
 
