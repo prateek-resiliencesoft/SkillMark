@@ -142,67 +142,206 @@ export async function queryGrafanaLinuxLogs(input: {
     direction: "backward",
   });
 
-  const endpoint = `${url}/api/datasources/proxy/uid/${encodeURIComponent(lokiUid)}/loki/api/v1/query_range?${qs}`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
+  };
+  const attempts: string[] = [];
 
-  try {
-    const res = await fetch(endpoint, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(25_000),
-      cache: "no-store",
-    });
-
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 400);
-      return {
-        configured: true,
-        entries: [],
-        query: logql,
-        grafanaExploreUrl: explore,
-        error: `Grafana Loki ${res.status}: ${body || res.statusText}`,
-      };
+  // 1) Classic datasource proxy (fast, raw Loki JSON).
+  // 2) If that fails (Grafana Cloud returns 503 DatasourceError when the proxy
+  //    cannot reach the managed Loki), use the unified /api/ds/query API.
+  // 3) If the configured UID is wrong, look up the Loki datasource by type.
+  const uids = [lokiUid];
+  for (let i = 0; i < uids.length; i++) {
+    const uid = uids[i];
+    try {
+      const res = await fetch(
+        `${url}/api/datasources/proxy/uid/${encodeURIComponent(uid)}/loki/api/v1/query_range?${qs}`,
+        { headers, signal: AbortSignal.timeout(20_000), cache: "no-store" },
+      );
+      if (res.ok) {
+        const json = (await res.json()) as LokiProxyResponse;
+        return {
+          configured: true,
+          entries: finishEntries(parseLokiProxy(json), limit),
+          query: logql,
+          grafanaExploreUrl: explore,
+        };
+      }
+      attempts.push(`proxy ${uid}: ${res.status} ${(await res.text()).slice(0, 160)}`);
+    } catch (err) {
+      attempts.push(`proxy ${uid}: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const json = (await res.json()) as {
-      data?: {
-        result?: { stream?: Record<string, string>; values?: [string, string][] }[];
-      };
-    };
+    try {
+      const res = await fetch(`${url}/api/ds/query`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queries: [
+            {
+              refId: "A",
+              datasource: { uid, type: "loki" },
+              expr: logql,
+              queryType: "range",
+              maxLines: limit,
+              direction: "backward",
+            },
+          ],
+          from: String(start),
+          to: String(end),
+        }),
+        signal: AbortSignal.timeout(20_000),
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const json = (await res.json()) as DsQueryResponse;
+        const frameError = json.results?.A?.error;
+        if (!frameError) {
+          return {
+            configured: true,
+            entries: finishEntries(parseDsQueryFrames(json), limit),
+            query: logql,
+            grafanaExploreUrl: explore,
+          };
+        }
+        attempts.push(`ds/query ${uid}: ${String(frameError).slice(0, 160)}`);
+      } else {
+        attempts.push(`ds/query ${uid}: ${res.status} ${(await res.text()).slice(0, 160)}`);
+      }
+    } catch (err) {
+      attempts.push(`ds/query ${uid}: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-    const entries: GrafanaLogEntry[] = [];
-    for (const stream of json.data?.result ?? []) {
-      const labels = stream.stream ?? {};
-      for (const [ts, line] of stream.values ?? []) {
+    if (i === 0) {
+      const found = await discoverLokiUids(url, headers);
+      for (const f of found) if (!uids.includes(f)) uids.push(f);
+    }
+  }
+
+  return {
+    configured: true,
+    entries: [],
+    query: logql,
+    grafanaExploreUrl: explore,
+    error: lokiErrorMessage(attempts, lokiUid),
+  };
+}
+
+type LokiProxyResponse = {
+  data?: {
+    result?: { stream?: Record<string, string>; values?: [string, string][] }[];
+  };
+};
+
+type DsQueryField = {
+  name?: string;
+  type?: string;
+  labels?: Record<string, string>;
+};
+type DsQueryFrame = {
+  schema?: { fields?: DsQueryField[] };
+  data?: { values?: unknown[][] };
+};
+export type DsQueryResponse = {
+  results?: Record<string, { error?: string; frames?: DsQueryFrame[] }>;
+};
+
+function finishEntries(entries: GrafanaLogEntry[], limit: number) {
+  entries.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  return entries.slice(0, limit);
+}
+
+export function parseLokiProxy(json: LokiProxyResponse): GrafanaLogEntry[] {
+  const entries: GrafanaLogEntry[] = [];
+  for (const stream of json.data?.result ?? []) {
+    const labels = stream.stream ?? {};
+    for (const [ts, line] of stream.values ?? []) {
+      entries.push({
+        timestamp: nsToIso(ts),
+        line,
+        filename: labels.filename ?? null,
+        instance: labels.instance ?? null,
+        job: labels.job ?? null,
+        level: detectLevel(line),
+      });
+    }
+  }
+  return entries;
+}
+
+/** Parse Loki data frames returned by Grafana's /api/ds/query. */
+export function parseDsQueryFrames(json: DsQueryResponse): GrafanaLogEntry[] {
+  const entries: GrafanaLogEntry[] = [];
+  for (const result of Object.values(json.results ?? {})) {
+    for (const frame of result.frames ?? []) {
+      const fields = frame.schema?.fields ?? [];
+      const values = frame.data?.values ?? [];
+      const idx = (pred: (f: DsQueryField) => boolean) => fields.findIndex(pred);
+      const lineIdx = idx((f) => /^(line|body)$/i.test(f.name ?? ""));
+      const lineAlt = lineIdx >= 0 ? lineIdx : idx((f) => f.type === "string" && !/^(id|labels|tsNs)$/i.test(f.name ?? ""));
+      const timeIdx = idx((f) => f.type === "time" || /^(time|timestamp)$/i.test(f.name ?? ""));
+      const nsIdx = idx((f) => f.name === "tsNs");
+      const labelsIdx = idx((f) => f.name === "labels");
+      if (lineAlt < 0) continue;
+      const lines = (values[lineAlt] ?? []) as unknown[];
+      const fieldLabels = fields[lineAlt]?.labels ?? {};
+      for (let r = 0; r < lines.length; r++) {
+        const line = String(lines[r] ?? "");
+        let ts: string;
+        const ns = nsIdx >= 0 ? values[nsIdx]?.[r] : undefined;
+        const t = timeIdx >= 0 ? values[timeIdx]?.[r] : undefined;
+        if (typeof ns === "string" && /^\d+$/.test(ns)) ts = nsToIso(ns);
+        else if (typeof t === "number") ts = new Date(t).toISOString();
+        else ts = new Date().toISOString();
+        const rowLabels =
+          labelsIdx >= 0 && values[labelsIdx]?.[r] && typeof values[labelsIdx][r] === "object"
+            ? (values[labelsIdx][r] as Record<string, string>)
+            : fieldLabels;
         entries.push({
-          timestamp: nsToIso(ts),
+          timestamp: ts,
           line,
-          filename: labels.filename ?? null,
-          instance: labels.instance ?? null,
-          job: labels.job ?? null,
+          filename: rowLabels.filename ?? null,
+          instance: rowLabels.instance ?? null,
+          job: rowLabels.job ?? null,
           level: detectLevel(line),
         });
       }
     }
-
-    entries.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
-
-    return {
-      configured: true,
-      entries: entries.slice(0, limit),
-      query: logql,
-      grafanaExploreUrl: explore,
-    };
-  } catch (err) {
-    return {
-      configured: true,
-      entries: [],
-      query: logql,
-      grafanaExploreUrl: explore,
-      error: err instanceof Error ? err.message : String(err),
-    };
   }
+  return entries;
+}
+
+async function discoverLokiUids(url: string, headers: Record<string, string>): Promise<string[]> {
+  try {
+    const res = await fetch(`${url}/api/datasources`, {
+      headers,
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const list = (await res.json()) as { uid?: string; type?: string }[];
+    return (Array.isArray(list) ? list : [])
+      .filter((d) => d.type === "loki" && d.uid)
+      .map((d) => d.uid as string);
+  } catch {
+    return [];
+  }
+}
+
+/** Plain explanation of why logs could not be read. Never includes the token. */
+export function lokiErrorMessage(attempts: string[], configuredUid: string): string {
+  const joined = attempts.join(" | ");
+  let hint = "";
+  if (/\b401\b|\b403\b|permission|unauthori[sz]ed/i.test(joined)) {
+    hint = "The Grafana service account token is missing permission to query logs (needs Viewer or datasources:query on the Loki datasource).";
+  } else if (/\b404\b|not found/i.test(joined)) {
+    hint = `No Loki datasource with uid "${configuredUid}". Set GRAFANA_LOKI_DATASOURCE_UID to the uid shown in Grafana > Connections > Data sources.`;
+  } else if (/DatasourceError|\b50[234]\b|communicating/i.test(joined)) {
+    hint = "Grafana could not reach its Loki datasource. Usually the datasource's own credentials (Grafana Cloud logs API key) expired or were rotated, or Loki is down. Open the datasource in Grafana and press Save & test.";
+  }
+  return `Could not read logs from Grafana Loki. ${hint} Details: ${joined}`.trim();
 }
 
 /* ------------------------------------------------------------------ */

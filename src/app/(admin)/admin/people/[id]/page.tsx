@@ -32,6 +32,8 @@ export default function AdminPersonDetailPage() {
   const router = useRouter();
   const [pauseOpen, setPauseOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [tempPassword, setTempPassword] = useState<string | null>(null);
   const [pendingRole, setPendingRole] = useState<
     (typeof PLATFORM_ROLES)[number]["value"] | null
   >(null);
@@ -68,6 +70,20 @@ export default function AdminPersonDetailPage() {
     onError: (err) =>
       toast({
         title: "Could not update account",
+        description: err.message,
+        variant: "destructive",
+      }),
+  });
+
+  const resetPassword = trpc.platformOps.resetPassword.useMutation({
+    onSuccess: (res) => {
+      setResetOpen(false);
+      setTempPassword(res.temporaryPassword);
+      utils.platform.recentAudit.invalidate();
+    },
+    onError: (err) =>
+      toast({
+        title: "Could not reset password",
         description: err.message,
         variant: "destructive",
       }),
@@ -124,7 +140,7 @@ export default function AdminPersonDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-heading text-2xl font-semibold tracking-tight">
+              <h1 className="font-heading text-3xl font-bold tracking-tight">
                 {data.name || data.email}
               </h1>
               <Badge
@@ -175,19 +191,31 @@ export default function AdminPersonDetailPage() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-medium">Account</h2>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
           <p className="max-w-md text-xs text-muted-foreground">
             Pausing blocks sign-in and ends active sessions; resume restores
             access. Deleting removes the login, password and profile but keeps
             organization data and an archived record.
           </p>
-          <div className="flex gap-2">
+          {tempPassword ? (
+            <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+              <p className="font-medium">Temporary password (shown once)</p>
+              <p className="mt-1 select-all font-mono">{tempPassword}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Pass this to the person privately and ask them to change it after signing in.
+              </p>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="outline"
               onClick={() => setPauseOpen(true)}
             >
               {data.paused ? "Resume account" : "Pause account"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setResetOpen(true)}>
+              Reset password
             </Button>
             <Button
               size="sm"
@@ -262,6 +290,16 @@ export default function AdminPersonDetailPage() {
         confirmLabel={data.paused ? "Resume account" : "Pause account"}
         pending={setStatus.isPending}
         onConfirm={() => setStatus.mutate({ userId: id, paused: !data.paused })}
+      />
+
+      <ConfirmAction
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        title="Reset this person's password?"
+        description={`Their current password stops working. You get a one-time temporary password to give to ${data.name || data.email}.`}
+        confirmLabel="Reset password"
+        pending={resetPassword.isLoading}
+        onConfirm={() => resetPassword.mutate({ userId: id })}
       />
 
       <ConfirmAction

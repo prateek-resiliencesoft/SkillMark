@@ -12,6 +12,7 @@ import { motion } from "motion/react";
 import {
   Activity,
   BarChart3,
+  Gauge,
   Building2,
   ChevronDown,
   HardDrive,
@@ -53,6 +54,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "Server",
     items: [
+      { href: "/admin/server-health", label: "Server health", icon: Gauge },
       { href: "/admin/status", label: "Status", icon: HeartPulse },
       { href: "/admin/server-logs", label: "Server Logs", icon: ScrollText },
       { href: "/admin/server-activity", label: "Server Activity", icon: BarChart3 },
@@ -81,15 +83,6 @@ export function AdminShell({
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-0 -z-10 opacity-[0.55] dark:opacity-40"
-        style={{
-          background:
-            "radial-gradient(900px 420px at 12% -10%, hsl(var(--primary) / 0.12), transparent 60%), radial-gradient(700px 360px at 90% 0%, hsl(var(--primary) / 0.06), transparent 55%)",
-        }}
-      />
-
       <aside
         className={cn(
           "sticky top-0 flex h-screen shrink-0 flex-col border-r bg-background transition-all duration-200 dark:bg-surface-sidebar",
@@ -141,19 +134,19 @@ export function AdminShell({
                             "relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                             collapsed && "justify-center px-0",
                             active
-                              ? "text-foreground"
-                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                              ? "font-semibold text-primary dark:text-white"
+                              : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
                           )}
                         >
                           {active ? (
                             <motion.span
                               layoutId="admin-sidebar-active"
-                              className="absolute inset-0 -z-10 rounded-lg bg-muted"
-                              transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                              className="pointer-events-none absolute inset-0 rounded-lg border-l-2 border-primary bg-primary/10 dark:bg-primary/20"
+                              transition={{ type: "spring", stiffness: 450, damping: 35 }}
                             />
                           ) : null}
-                          <Icon className="h-4 w-4 shrink-0" />
-                          {!collapsed ? <span>{item.label}</span> : null}
+                          <Icon className="relative z-10 h-4 w-4 shrink-0" />
+                          {!collapsed ? <span className="relative z-10">{item.label}</span> : null}
                         </Link>
                       );
                     })}
@@ -206,7 +199,7 @@ export function AdminShell({
                 className={cn(
                   "shrink-0 rounded-md px-3 py-1.5 text-sm",
                   active
-                    ? "bg-muted text-foreground"
+                    ? "bg-primary/10 font-medium text-primary"
                     : "text-muted-foreground",
                 )}
               >

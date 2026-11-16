@@ -20,6 +20,10 @@ const LABELS: Record<string, string> = {
   "config.plan_limits": "Updated plan limits",
   "config.plan_catalog": "Updated plan catalog",
   "config.feature_flags": "Updated default features",
+  "session.close": "Closed an interview session",
+  "session.regenerate_report": "Regenerated a report",
+  "candidate.new_link": "Sent a new interview link",
+  "user.reset_password": "Reset a password",
 };
 
 export function adminActionLabel(action: string): string {
