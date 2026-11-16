@@ -38,7 +38,7 @@ export async function resolveSessionMediaTarget(sessionId: string): Promise<Sess
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, status, mediaStoragePrefix, audioRecordingUrl, mediaClearedAt,
+      `id, status, mediaStoragePrefix, audioRecordingUrl, mediaClearedAt, participantName,
        interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
     )
     .eq("id", sessionId)
@@ -47,17 +47,28 @@ export async function resolveSessionMediaTarget(sessionId: string): Promise<Sess
   const interview = session.interview as unknown as { projectId: string; project: { organizationId: string } };
   const { data: candidate } = await supabaseAdmin
     .from("candidates")
-    .select("id")
+    .select("id, name")
     .eq("sessionId", sessionId)
     .maybeSingle();
+  const candidateName =
+    (candidate?.name as string | undefined) ||
+    (session.participantName as string | undefined);
   const subjectId = (candidate?.id as string | undefined) || `session-${sessionId}`;
   const orgId = interview.project.organizationId;
+  const prefix =
+    (session.mediaStoragePrefix as string | null) ||
+    candidateMediaPrefix({
+      orgId,
+      projectId: interview.projectId,
+      candidateId: subjectId,
+      candidateName,
+    });
   return {
     sessionId,
     status: session.status as string,
     orgId,
     projectId: interview.projectId,
-    prefix: candidateMediaPrefix({ orgId, projectId: interview.projectId, candidateId: subjectId }),
+    prefix,
     audioRecordingUrl: (session.audioRecordingUrl as string | null) ?? null,
     mediaClearedAt: (session.mediaClearedAt as string | null) ?? null,
     mediaStoragePrefix: (session.mediaStoragePrefix as string | null) ?? null,
