@@ -21,6 +21,7 @@ const MODEL = process.env.GEMINI_TTS_MODEL || "gemini-2.5-flash-preview-tts";
 const texts = {
   // English clip is user-supplied at public/audio/mic-test-en.{mp3,wav} — do not overwrite.
   zh: "请说这句话：我的麦克风工作正常，以便我们验证您的麦克风。",
+  hi: "Please bolen yeh sentence: Mera microphone kaam kar raha hai, taaki hum aapke microphone ki check kar sakein.",
 };
 
 function pcmToWav(pcm, sampleRate = 24000) {

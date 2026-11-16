@@ -1,3 +1,7 @@
+import {
+  interviewLanguageContentInstruction,
+  resolveInterviewLanguage,
+} from "@/lib/interview-language";
 import type { LLMMessage } from "../types";
 
 export interface PremadeQuestionInput {
@@ -10,6 +14,12 @@ export interface PremadeQuestionInput {
   skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
 }
 
+function generatorLanguageBlock(language?: string): string {
+  if (!language || resolveInterviewLanguage(language) === "en") return "";
+  const content = interviewLanguageContentInstruction(language);
+  return `\nLANGUAGE: ${content} Applies to title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n`;
+}
+
 export function buildGeneratorPrompt(
   description: string,
   durationMinutes?: number,
@@ -18,9 +28,7 @@ export function buildGeneratorPrompt(
   resumeText?: string,
   premadeQuestions?: PremadeQuestionInput[],
 ): LLMMessage[] {
-  const languageInstruction = language && language !== "en"
-    ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n`
-    : "";
+  const languageInstruction = generatorLanguageBlock(language);
 
   const contextInstruction = (jobDescription || resumeText)
     ? `\nCONTEXT DOCUMENTS:
@@ -150,7 +158,7 @@ export function buildImprovePrompt(
     {
       role: "system",
       content: `You are an expert interview designer. Improve an existing interview based on user feedback.
-${language && language !== "en" ? `\nLANGUAGE: All generated content (title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts) MUST be written in ${language}. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n` : ""}
+${generatorLanguageBlock(language)}
 recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.
 QUESTION TYPES:
 - "OPEN_ENDED": Free-form text or verbal response. Set "options" to null.

@@ -25,7 +25,9 @@ export default async function DashboardLayout({
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect("/login");
+    // Middleware only verifies the JWT; layout confirms the user still exists in DB.
+    // Route clears the orphan cookie so login↔dashboard does not loop.
+    redirect("/api/auth/session-expired?next=/dashboard");
   }
 
   const pathname = headers().get("x-pathname") ?? "";

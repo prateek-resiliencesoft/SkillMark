@@ -1,3 +1,5 @@
+import { resolveInterviewLanguage } from "@/lib/interview-language";
+
 /**
  * Pass/fail rules for the pre-interview speaker + microphone check.
  * Kept pure so unit tests can cover quiet / short / clipping cases.
@@ -98,7 +100,8 @@ export function evaluateMicTest(stats: MicTestStats): MicTestVerdict {
  * Prefer 48 kHz MP3 (simple HTMLAudioElement decode); WAV also available at 48 kHz.
  */
 export function micTestAudioSrc(language?: string, format: "mp3" | "wav" = "mp3"): string {
-  const zh = (language || "").toLowerCase().startsWith("zh");
-  const base = zh ? "mic-test-zh" : "mic-test-en";
+  const key = resolveInterviewLanguage(language);
+  const base =
+    key === "zh" ? "mic-test-zh" : key === "hi" ? "mic-test-hi" : "mic-test-en";
   return `/audio/${base}.${format}`;
 }

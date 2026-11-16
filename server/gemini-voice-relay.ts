@@ -18,6 +18,11 @@ import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log";
 import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
+import {
+  getGeminiInterviewLanguageCode,
+  interviewLanguageRequirement,
+  isChineseInterviewLanguage,
+} from "../src/lib/interview-language";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
 import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, SILENCE_PROMPTS, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
@@ -249,7 +254,7 @@ interface InterviewContext {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isChineseInterview(ctx: InterviewContext): boolean {
-  return ctx.language === "zh" || ctx.language.toLowerCase().includes("chinese");
+  return isChineseInterviewLanguage(ctx.language);
 }
 
 /**
@@ -415,7 +420,7 @@ When transitioning to a CODING or WHITEBOARD question:
   5. Discussion naturally CONCLUDED → Brief acknowledgement, then call signal_question_change
 
 ## Language Requirements
-- YOU MUST ALWAYS RESPOND IN ENGLISH. You must conduct this interview entirely in English. Do not switch to any other language under any circumstance.
+- ${interviewLanguageRequirement(ctx.language)}
 
 ## Code and Whiteboard Visibility
 - You CAN see the participant's code and whiteboard! The system sends you real-time updates via [CODE_UPDATE] and [WHITEBOARD_UPDATE] messages containing their editor code and whiteboard images.
@@ -472,10 +477,7 @@ const GEMINI_TOOLS = [{
 }];
 
 function languageCode(ctx: InterviewContext | null, lang?: string): string {
-  const l = (ctx?.language || lang || "en").toLowerCase();
-  if (l === "zh" || l.includes("chinese")) return "cmn-CN";
-  if (l === "hi" || l.includes("hindi")) return "hi-IN";
-  return "en-US";
+  return getGeminiInterviewLanguageCode(ctx?.language || lang);
 }
 
 function pcmRms(buf: Buffer): number {
