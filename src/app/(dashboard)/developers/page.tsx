@@ -1,6 +1,6 @@
 "use client";
 
-import { CodeBlock, CopyButton } from "@/components/developers/api-reference";
+import { ApiReference, CodeBlock, CopyButton } from "@/components/developers/api-reference";
 import { mcpConfigs } from "@/components/developers/mcp-config";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { API_KEY_SCOPE_LABELS, type ApiKeyScope } from "@/lib/api-scopes";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
-import { BookOpen, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -43,7 +43,8 @@ function when(v: string | null) {
     : "Never";
 }
 
-type Tab = "keys" | "mcp" | "usage";
+type Tab = "reference" | "keys" | "mcp" | "usage";
+const TABS: Tab[] = ["reference", "keys", "mcp", "usage"];
 
 export default function DevelopersPage() {
   const { currentOrg } = useOrg();
@@ -51,9 +52,18 @@ export default function DevelopersPage() {
   const isAdmin = currentOrg?.role === "OWNER" || currentOrg?.role === "ADMIN";
   const { toast } = useToast();
   const utils = trpc.useUtils();
-  const [tab, setTab] = useState<Tab>("keys");
+  const [tab, setTabState] = useState<Tab>("reference");
   const [origin, setOrigin] = useState("");
-  useEffect(() => setOrigin(window.location.origin), []);
+  useEffect(() => {
+    setOrigin(window.location.origin);
+    const t = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+    if (t && TABS.includes(t)) setTabState(t);
+  }, []);
+  function setTab(t: Tab) {
+    setTabState(t);
+    const qs = t === "reference" ? "" : `?tab=${t}`;
+    window.history.replaceState(null, "", `${window.location.pathname}${qs}`);
+  }
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
@@ -114,26 +124,18 @@ export default function DevelopersPage() {
             Let your website or backend read interview sessions and results, and invite candidates.
           </p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/developers/docs">
-            <BookOpen className="mr-2 h-4 w-4" />
-            API reference and try it
+        <Button asChild variant="ghost" size="sm">
+          <Link href="/developers/docs" target="_blank">
+            <ExternalLink className="mr-2 h-4 w-4" />
+            Open reference in new tab
           </Link>
         </Button>
       </div>
 
-      {!isAdmin ? (
-        <Card className="border-border/60">
-          <CardContent className="py-8 text-sm text-muted-foreground">
-            Only organization owners and admins can manage API keys. You can still read the{" "}
-            <Link href="/developers/docs" className="text-primary underline">API reference</Link>.
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          <div className="flex gap-1 border-b">
+          <div className="flex gap-1 overflow-x-auto border-b">
             {(
               [
+                ["reference", "API reference"],
                 ["keys", "API keys"],
                 ["mcp", "Connect via MCP"],
                 ["usage", "Requests"],
@@ -153,6 +155,18 @@ export default function DevelopersPage() {
             ))}
           </div>
 
+      {tab === "reference" ? <ApiReference /> : null}
+
+      {tab !== "reference" && !isAdmin ? (
+        <Card className="border-border/60">
+          <CardContent className="py-8 text-sm text-muted-foreground">
+            Only organization owners and admins can manage API keys and MCP access. You can still browse the API reference.
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {isAdmin ? (
+        <>
           {tab === "keys" ? (
             <Card className="border-border/60">
               <CardHeader className="flex flex-row items-start justify-between space-y-0">
@@ -310,7 +324,7 @@ export default function DevelopersPage() {
             </Card>
           ) : null}
         </>
-      )}
+      ) : null}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-lg">

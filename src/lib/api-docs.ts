@@ -10,10 +10,15 @@ export type DocParam = {
   required: boolean;
   description?: string;
   schema: any;
+  example?: unknown;
 };
+
+export type DocResponse = { status: string; description: string; example: unknown };
 
 export type DocOperation = {
   key: string;
+  /** Stable id for links (#open=…): operationId, or METHOD-path. */
+  id: string;
   method: string;
   path: string;
   tag: string;
@@ -23,6 +28,8 @@ export type DocOperation = {
   mcpTool: string | null;
   params: DocParam[];
   body: any | null;
+  bodyExample: unknown;
+  responses: DocResponse[];
   successStatus: string;
   example: unknown;
   responseSchema: any;
@@ -54,13 +61,27 @@ export function listOperations(spec: any): DocOperation[] {
           required: !!p.required || p.in === "path",
           description: p.description,
           schema: resolveRef(spec, p.schema) ?? {},
+          example: p.example ?? resolveRef(spec, p.schema)?.example,
         }));
       const successStatus = Object.keys(op.responses ?? {}).find((s) => /^2\d\d$/.test(s)) ?? "200";
       const success = resolveRef(spec, op.responses?.[successStatus]);
       const json = success?.content?.["application/json"];
-      const body = resolveRef(spec, op.requestBody)?.content?.["application/json"]?.schema;
+      const bodyContent = resolveRef(spec, op.requestBody)?.content?.["application/json"];
+      const body = bodyContent?.schema;
+      const responses: DocResponse[] = Object.entries<any>(op.responses ?? {})
+        .map(([status, r]) => {
+          const res = resolveRef(spec, r) ?? {};
+          const c = res.content?.["application/json"];
+          return {
+            status,
+            description: res.description ?? "",
+            example: c?.example ?? (c?.examples ? Object.values<any>(c.examples)[0]?.value : undefined),
+          };
+        })
+        .sort((a, b) => a.status.localeCompare(b.status));
       ops.push({
         key: `${m.toUpperCase()} ${path}`,
+        id: op.operationId ?? `${m.toUpperCase()}-${path}`,
         method: m.toUpperCase(),
         path,
         tag: op.tags?.[0] ?? "Other",
@@ -70,6 +91,8 @@ export function listOperations(spec: any): DocOperation[] {
         mcpTool: op["x-mcp-tool"] ?? null,
         params,
         body: body ? resolveRef(spec, body) : null,
+        bodyExample: bodyContent?.example ?? (body ? sampleFromSchema(resolveRef(spec, body)) : undefined),
+        responses,
         successStatus,
         example: json?.example ?? (json?.examples ? Object.values<any>(json.examples)[0]?.value : undefined),
         responseSchema: json?.schema ? resolveRef(spec, json.schema) : null,
@@ -182,4 +205,31 @@ export function typeLabel(schema: any): string {
   const t = Array.isArray(schema.type) ? schema.type.join(" | ") : schema.type ?? "any";
   if (t === "array") return `${typeLabel(schema.items)}[]`;
   return schema.format ? `${t} (${schema.format})` : t;
+}
+
+/** Open operations in the URL hash: #open=listSessions,getResult */
+export function parseOpenHash(hash: string): string[] {
+  const m = /(?:^#|&)open=([^&]*)/.exec(hash);
+  return m ? m[1].split(",").map(decodeURIComponent).filter(Boolean) : [];
+}
+
+export function openHash(ids: string[]): string {
+  return ids.length ? `#open=${ids.map(encodeURIComponent).join(",")}` : "";
+}
+
+/** Example value shown in the parameters table / prefilled in "Try it out". */
+export function paramExample(p: DocParam): string {
+  const v = p.example ?? p.schema?.example ?? p.schema?.default ?? (Array.isArray(p.schema?.enum) ? p.schema.enum[0] : undefined);
+  return v === undefined || v === null ? "" : String(v);
+}
+
+/** Check a JSON body typed by the user; returns an error message, or null when valid. */
+export function checkJson(text: string): string | null {
+  if (!text.trim()) return "Body is empty.";
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : "Invalid JSON";
+  }
 }
