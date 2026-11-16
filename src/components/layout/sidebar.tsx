@@ -51,6 +51,7 @@ import {
   FileText as LucideFileText,
   HeartPulse as LucideHeartPulse,
   Plug as LucidePlug,
+  Code2 as LucideCode,
 } from "lucide-react";
 import { useThemeTransition } from "@/components/ui/theme-transition";
 import { motion } from "motion/react";
@@ -381,6 +382,7 @@ export function Sidebar({
               {[
                 { name: "Interview Form Integration", href: "/integrations/forms", icon: LucideFileText },
                 { name: "Integrations", href: "/integrations", icon: LucidePlug },
+                { name: "API", href: "/developers", icon: LucideCode },
               ].map((item) => (
                 <SidebarLink
                   key={item.href}

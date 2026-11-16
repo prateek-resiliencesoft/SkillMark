@@ -79,13 +79,13 @@ describe("validateApiKey (early validation)", () => {
     assert.equal(result.status, 401);
   });
 
-  it("returns 401 when Bearer token does not use the dlv_ prefix", async () => {
+  it("returns 401 when Bearer token does not use the rsi_ (or legacy dlv_) prefix", async () => {
     const result = await validateApiKey(
       req({ authorization: "Bearer sk_live_abc" }),
     );
     assert.ok(result instanceof Response);
     assert.equal(result.status, 401);
     const body = (await result.json()) as { error: { message: string } };
-    assert.ok(body.error.message.includes("dlv_"));
+    assert.ok(body.error.message.includes("rsi_"));
   });
 });

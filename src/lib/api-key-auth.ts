@@ -1,5 +1,5 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
-import { hashApiKey, keyHasScope, type ApiKeyScope } from "@/lib/api-keys";
+import { effectiveScopes, hashApiKey, keyHasScope, parseBearerKey, type ApiKeyScope } from "@/lib/api-keys";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { filterAccessibleProjectIds } from "@/server/trpc";
 
@@ -25,28 +25,23 @@ export async function validateApiKey(
   request: Request,
   requiredScope?: ApiKeyScope,
 ): Promise<ApiKeyAuth | Response> {
-  const auth = request.headers.get("authorization");
-  if (!auth?.startsWith("Bearer dlv_")) {
+  const key = parseBearerKey(request.headers.get("authorization"));
+  if (!key) {
     return apiError(
       "UNAUTHORIZED",
-      "Missing or invalid API key. Use: Authorization: Bearer dlv_xxx",
+      "Missing or invalid API key. Use: Authorization: Bearer rsi_live_xxx",
       401,
     );
-  }
-
-  const key = auth.slice(7).trim();
-  if (key.length > 200) {
-    return apiError("UNAUTHORIZED", "Invalid or revoked API key.", 401);
   }
   const keyHash = hashApiKey(key);
 
   const { data: apiKey } = await supabaseAdmin
     .from("api_keys")
-    .select("id, userId, isActive, expiresAt, environment, scopes, organizationId")
+    .select("id, userId, isActive, expiresAt, revokedAt, environment, scopes, keyPrefix, organizationId")
     .eq("keyHash", keyHash)
     .maybeSingle();
 
-  if (!apiKey || !apiKey.isActive) {
+  if (!apiKey || !apiKey.isActive || apiKey.revokedAt) {
     return apiError("UNAUTHORIZED", "Invalid or revoked API key.", 401);
   }
 
@@ -57,7 +52,8 @@ export async function validateApiKey(
   const rateLimited = checkRateLimit(`key:${apiKey.id}`);
   if (rateLimited) return rateLimited;
 
-  if (requiredScope && !keyHasScope(apiKey.scopes as string[], requiredScope)) {
+  const scopes = effectiveScopes(apiKey.scopes as string[], apiKey.keyPrefix as string | null);
+  if (requiredScope && !keyHasScope(scopes, requiredScope)) {
     return apiError("FORBIDDEN", `This API key lacks the "${requiredScope}" permission.`, 403);
   }
 
@@ -111,7 +107,7 @@ export async function validateApiKey(
     projectIds,
     apiKeyId: apiKey.id as string,
     environment: ((apiKey.environment as string) === "test" ? "test" : "live"),
-    scopes: (apiKey.scopes as string[]) ?? ["*"],
+    scopes,
   };
 }
 
@@ -122,23 +118,37 @@ export function isAuthError(
 }
 
 /** Fire-and-forget API usage log (shown on Interview Form Integration → Connect). */
+let usageDurationColumn = true;
+
 export function logApiUsage(
   request: Request,
   status: number,
   auth?: Partial<ApiKeyAuth> | null,
+  durationMs?: number,
 ) {
   try {
     const url = new URL(request.url);
+    const row = {
+      organizationId: auth?.organizationId ?? null,
+      apiKeyId: auth?.apiKeyId ?? null,
+      method: request.method,
+      endpoint: url.pathname.slice(0, 300),
+      status,
+    };
+    const withDuration =
+      usageDurationColumn && typeof durationMs === "number"
+        ? { ...row, durationMs: Math.round(durationMs) }
+        : row;
     supabaseAdmin
       .from("api_usage_logs")
-      .insert({
-        organizationId: auth?.organizationId ?? null,
-        apiKeyId: auth?.apiKeyId ?? null,
-        method: request.method,
-        endpoint: url.pathname.slice(0, 300),
-        status,
-      })
-      .then();
+      .insert(withDuration)
+      .then(({ error }) => {
+        // Migration 29 adds durationMs; until then log without it.
+        if (error && "durationMs" in withDuration) {
+          usageDurationColumn = false;
+          supabaseAdmin.from("api_usage_logs").insert(row).then();
+        }
+      });
   } catch {
     /* ignore */
   }
@@ -150,9 +160,10 @@ export async function withApiKey(
   scope: ApiKeyScope | undefined,
   handler: (auth: ApiKeyAuth) => Promise<Response>,
 ): Promise<Response> {
+  const started = Date.now();
   const auth = await validateApiKey(request, scope);
   if (isAuthError(auth)) {
-    logApiUsage(request, auth.status, null);
+    logApiUsage(request, auth.status, null, Date.now() - started);
     return auth;
   }
   let res: Response;
@@ -162,6 +173,6 @@ export async function withApiKey(
     console.error("[api/v1] unhandled error", err);
     res = apiError("INTERNAL_ERROR", "Unexpected server error", 500);
   }
-  logApiUsage(request, res.status, auth);
+  logApiUsage(request, res.status, auth, Date.now() - started);
   return res;
 }

@@ -18,7 +18,7 @@ export const integrationsArticles: DocArticle[] = [
         <h3>Available Integration Channels</h3>
         <ul>
           <li>
-            <strong>API Keys</strong> — Authenticate REST requests using <code>Bearer dlv_...</code> tokens to ingest candidates and trigger interview sessions.
+            <strong>API Keys</strong> — Authenticate REST requests using <code>Bearer rsi_...</code> tokens to ingest candidates and trigger interview sessions.
           </li>
           <li>
             <strong>Interview Forms</strong> — Generate shareable applicant application forms connected directly to specific interview pipelines.

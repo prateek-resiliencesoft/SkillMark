@@ -41,16 +41,20 @@ export async function abandonSession(
     finished = false;
   }
 
-  const { data: updated, error } = await supabaseAdmin
-    .from("sessions")
-    .update(
-      finished
-        ? { status: "COMPLETED", completedAt: leftAt, endReason: "COMPLETED", activitySegments: segments }
-        : { status: "ABANDONED", endReason: reason, activitySegments: segments },
-    )
-    .eq("id", sessionId)
-    .eq("status", "IN_PROGRESS")
-    .select("id");
+  const write = (withReason: boolean) =>
+    supabaseAdmin
+      .from("sessions")
+      .update(
+        finished
+          ? { status: "COMPLETED", completedAt: leftAt, ...(withReason ? { endReason: "COMPLETED" } : {}), activitySegments: segments }
+          : { status: "ABANDONED", ...(withReason ? { endReason: reason } : {}), activitySegments: segments },
+      )
+      .eq("id", sessionId)
+      .eq("status", "IN_PROGRESS")
+      .select("id");
+  let { data: updated, error } = await write(true);
+  // Older DB without migration 18's endReason column: write the core fields.
+  if (error && /endReason|42703|PGRST204/.test(`${error.code} ${error.message}`)) ({ data: updated, error } = await write(false));
   const ended = !error && Array.isArray(updated) && updated.length > 0;
   if (ended && finished) {
     void import("@/lib/session-report-server")

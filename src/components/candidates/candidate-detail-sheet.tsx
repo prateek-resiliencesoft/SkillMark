@@ -18,7 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { needsFreshInviteLink } from "@/lib/session-link";
-import { formatSessionStatusLabel } from "@/lib/preflight";
+import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { trpc } from "@/lib/trpc/client";
@@ -298,6 +298,9 @@ export function CandidateDetailSheet({
                     <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
                       {sessionLabel}
                     </span>
+                    {neverReachedFirstQuestion(c?.session ?? null) ? (
+                      <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
+                    ) : null}
                     {score != null && <Badge variant="outline" className="text-[11px]">Score {Math.round(score)}</Badge>}
                     <SendPill label="WhatsApp" status={c.whatsappStatus} at={c.whatsappSentAt} />
                     <SendPill label="Email" status={c.emailStatus} at={c.emailSentAt} />

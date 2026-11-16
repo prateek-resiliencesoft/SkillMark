@@ -79,7 +79,7 @@ test("cURL generated from actual fields", () => {
 
 test("api keys: prefix, hash, scopes", () => {
   const k = generateApiKey("test");
-  assert.match(k.key, /^dlv_test_[a-z0-9]{32}$/);
+  assert.match(k.key, /^rsi_test_[a-z0-9]{32}$/);
   assert.equal(k.hash, hashApiKey(k.key));
   assert.equal(k.hash.length, 64);
   assert.ok(keyHasScope(["*"], "applications:write"));
