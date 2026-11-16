@@ -190,3 +190,52 @@ describe("voice save completion response", () => {
     assert.equal(r.body.completed, true);
   });
 });
+
+import { EMPTY_SESSION_IDLE_MS, IDLE_SESSION_MS, idleCloseDecision } from "@/lib/session-report-policy";
+import { neverReachedFirstQuestion } from "@/lib/preflight";
+
+describe("idleCloseDecision (stuck IN_PROGRESS sessions)", () => {
+  const MIN = 60_000;
+  it("opened link, no heartbeat, 0 messages: abandons after 15 min from startedAt", () => {
+    const base = { nowMs: NOW, messageCount: 0, hasHeartbeat: false, finished: false };
+    assert.equal(idleCloseDecision({ ...base, times: [null, null, ago(10 * MIN), ago(10 * MIN)] }).action, "wait");
+    const d = idleCloseDecision({ ...base, times: [null, undefined, ago(16 * MIN), ago(16 * MIN)] });
+    assert.equal(d.action, "abandon_empty");
+    assert.equal(EMPTY_SESSION_IDLE_MS, 15 * MIN);
+  });
+  it("idle is measured from the latest activity, not startedAt", () => {
+    const d = idleCloseDecision({ nowMs: NOW, messageCount: 0, hasHeartbeat: false, finished: false, times: [ago(5 * MIN), ago(3 * 60 * MIN)] });
+    assert.equal(d.action, "wait");
+  });
+  it("no messages but heartbeat seen: uses the 30 min rule, then abandons with no report", () => {
+    const base = { nowMs: NOW, messageCount: 0, hasHeartbeat: true, finished: false };
+    assert.equal(idleCloseDecision({ ...base, times: [ago(20 * MIN)] }).action, "wait");
+    assert.equal(idleCloseDecision({ ...base, times: [ago(31 * MIN)] }).action, "abandon_empty");
+  });
+  it("sessions with messages wait 30 min, then close as COMPLETED or ABANDONED", () => {
+    const base = { nowMs: NOW, messageCount: 4, hasHeartbeat: false };
+    assert.equal(idleCloseDecision({ ...base, finished: false, times: [ago(20 * MIN)] }).action, "wait");
+    const a = idleCloseDecision({ ...base, finished: false, times: [ago(IDLE_SESSION_MS + MIN)] });
+    assert.deepEqual(a.action === "close" && a.status, "ABANDONED");
+    const c = idleCloseDecision({ ...base, finished: true, times: [ago(IDLE_SESSION_MS + MIN)] });
+    assert.deepEqual(c.action === "close" && c.status, "COMPLETED");
+  });
+  it("very old stuck sessions are closed too (no look-back limit)", () => {
+    const d = idleCloseDecision({ nowMs: NOW, messageCount: 0, hasHeartbeat: false, finished: false, times: [ago(40 * 24 * 60 * MIN)] });
+    assert.equal(d.action, "abandon_empty");
+  });
+  it("end time is the last activity, not now", () => {
+    const d = idleCloseDecision({ nowMs: NOW, messageCount: 0, hasHeartbeat: false, finished: false, times: [ago(60 * MIN), ago(20 * MIN)] });
+    assert.equal(d.action !== "wait" && d.endIso, ago(20 * MIN));
+  });
+});
+
+describe("neverReachedFirstQuestion", () => {
+  it("flags sweep-closed and setup-abandoned sessions only", () => {
+    assert.equal(neverReachedFirstQuestion({ status: "ABANDONED", endReason: "NEVER_STARTED", interviewBeganAt: "2026-01-01T00:00:00Z" }), true);
+    assert.equal(neverReachedFirstQuestion({ status: "ABANDONED", interviewBeganAt: null }), true);
+    assert.equal(neverReachedFirstQuestion({ status: "ABANDONED", endReason: "DISCONNECTED", interviewBeganAt: "2026-01-01T00:00:00Z" }), false);
+    assert.equal(neverReachedFirstQuestion({ status: "ABANDONED" }), false); // older DB without the column
+    assert.equal(neverReachedFirstQuestion({ status: "IN_PROGRESS", interviewBeganAt: null }), false);
+  });
+});
