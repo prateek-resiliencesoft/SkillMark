@@ -9,6 +9,7 @@ import type { z } from "zod";
 import { endpointById, type EndpointDef, type EndpointId } from "./endpoints";
 import * as service from "./service";
 import { ApiProblem, type ApiCtx } from "./service";
+import { publicOrigin } from "./origin";
 
 type Input = { params?: Record<string, string>; query?: unknown; body?: unknown };
 
@@ -49,7 +50,7 @@ export function ctxFor(auth: ApiKeyAuth, request: Request): ApiCtx {
   return {
     db: supabaseAdmin,
     auth: { organizationId: auth.organizationId, projectIds: auth.projectIds, scopes: auth.scopes, apiKeyId: auth.apiKeyId },
-    origin: new URL(request.url).origin,
+    origin: publicOrigin(request),
   };
 }
 

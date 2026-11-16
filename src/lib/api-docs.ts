@@ -233,3 +233,26 @@ export function checkJson(text: string): string | null {
     return err instanceof Error ? err.message : "Invalid JSON";
   }
 }
+
+/**
+ * Starting values for "Try it out". Path ids and optional filters start empty:
+ * the documented examples are made-up ids, so sending them gives 404 or an empty list.
+ */
+export function tryDefaults(op: Pick<DocOperation, "params">): Record<string, string> {
+  return Object.fromEntries(op.params.map((p) => [p.name, p.in === "query" && p.required ? paramExample(p) : ""]));
+}
+
+/** List endpoint that can supply real values for an id parameter, if any. */
+export function idSource(path: string, paramName: string, paramIn: string): "/sessions" | "/interviews" | null {
+  if (paramIn === "path" && /^\/sessions\/\{[^}]+\}/.test(path)) return "/sessions";
+  if (paramIn === "path" && /^\/interviews\/\{[^}]+\}/.test(path)) return "/interviews";
+  if (paramName === "interview_id") return "/interviews";
+  return null;
+}
+
+/** Short label for a row from /sessions or /interviews in an id picker. */
+export function pickLabel(row: any): string {
+  const who = row.candidate_name || row.candidate_email || row.title || row.name || row.id;
+  const extra = [row.interview_title, row.status].filter(Boolean).join(" · ");
+  return extra ? `${who} — ${extra}` : String(who);
+}

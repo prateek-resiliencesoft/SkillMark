@@ -10,11 +10,14 @@ import {
   buildUrl,
   checkJson,
   groupByTag,
+  idSource,
   listOperations,
   openHash,
   paramExample,
   parseOpenHash,
+  pickLabel,
   snippets,
+  tryDefaults,
   typeLabel,
   type DocOperation,
 } from "@/lib/api-docs";
@@ -173,7 +176,8 @@ function Operation({
   const examples = useMemo(() => Object.fromEntries(op.params.map((p) => [p.name, paramExample(p)])), [op]);
   const exampleBody = op.body ? pretty(op.bodyExample ?? {}) : "";
   const [trying, setTrying] = useState(false);
-  const [values, setValues] = useState<Record<string, string>>(examples);
+  const defaults = useMemo(() => tryDefaults(op), [op]);
+  const [values, setValues] = useState<Record<string, string>>(defaults);
   const [body, setBody] = useState(exampleBody);
   const [lang, setLang] = useState<Lang>("curl");
   const [result, setResult] = useState<Result | null>(null);
@@ -188,7 +192,7 @@ function Operation({
   function clear() {
     setResult(null);
     setNote(null);
-    setValues(examples);
+    setValues(defaults);
     setBody(exampleBody);
   }
 
@@ -348,13 +352,21 @@ function Operation({
                                     [p.name]: e.target.value,
                                   }))
                                 }
-                                placeholder={p.name}
+                                placeholder={examples[p.name] ? `e.g. ${examples[p.name]}` : p.name}
                                 className="h-8 font-mono text-xs"
                               />
                             )
                           ) : (
                             <code className="break-all text-xs text-muted-foreground">{examples[p.name] || "—"}</code>
                           )}
+                          {trying && idSource(op.path, p.name, p.in) ? (
+                            <IdPicker
+                              source={idSource(op.path, p.name, p.in)!}
+                              base={base}
+                              apiKey={apiKey}
+                              onPick={(id) => setValues((v) => ({ ...v, [p.name]: id }))}
+                            />
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -378,6 +390,15 @@ function Operation({
                     spellCheck={false}
                     className={cn("font-mono text-xs", bodyError && "border-destructive")}
                   />
+                  {/"interview_id"/.test(body) ? (
+                    <IdPicker
+                      source="/interviews"
+                      base={base}
+                      apiKey={apiKey}
+                      label="Fill interview_id from your interviews…"
+                      onPick={(id) => setBody((b) => b.replace(/("interview_id"\s*:\s*)"[^"]*"/, `$1"${id}"`))}
+                    />
+                  ) : null}
                   {bodyError ? (
                     <p className="text-xs text-destructive">Invalid JSON: {bodyError}</p>
                   ) : (
@@ -450,6 +471,11 @@ function Operation({
                         </span>
                         <span className="text-muted-foreground">{result.ms} ms</span>
                       </div>
+                      {result.status === 404 && (Object.entries(examples).some(([k, v]) => v && values[k] === v) || /6f1c2a3b|0b9e8d7c|a1b2c3d4/.test(result.url + body)) ? (
+                        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+                          The request used an example id from the docs, which does not exist in your data. Pick a real one from the list above.
+                        </p>
+                      ) : null}
                       <div>
                         <p className="mb-1 text-xs font-medium">Response body</p>
                         <CodeBlock code={result.body || "(empty)"} />
@@ -491,6 +517,69 @@ function Operation({
         </div>
       ) : null}
     </div>
+  );
+}
+
+const pickCache = new Map<string, Promise<{ id: string; label: string }[]>>();
+
+function loadPicks(base: string, source: string, apiKey: string) {
+  const cacheKey = `${base}${source}|${apiKey.slice(0, 16)}`;
+  let p = pickCache.get(cacheKey);
+  if (!p) {
+    p = fetch(`${base}${source}?limit=50`, { headers: { Authorization: `Bearer ${apiKey.trim()}` } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => (Array.isArray(j?.data) ? j.data : []).filter((row: any) => row?.id).map((row: any) => ({ id: String(row.id), label: pickLabel(row) })));
+    p.catch(() => pickCache.delete(cacheKey));
+    pickCache.set(cacheKey, p);
+  }
+  return p;
+}
+
+/** Dropdown of real ids (recent sessions or interviews) so "Try it out" does not send made-up ids. */
+function IdPicker({
+  source,
+  base,
+  apiKey,
+  onPick,
+  label,
+}: {
+  source: "/sessions" | "/interviews";
+  base: string;
+  apiKey: string;
+  onPick: (id: string) => void;
+  label?: string;
+}) {
+  const [rows, setRows] = useState<{ id: string; label: string }[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!apiKey.trim()) return;
+    let live = true;
+    setErr(null);
+    loadPicks(base, source, apiKey)
+      .then((r) => live && setRows(r))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [base, source, apiKey]);
+
+  if (!apiKey.trim()) return <p className="mt-1 text-[11px] text-muted-foreground">Authorize to pick a real {source === "/sessions" ? "session" : "interview"}.</p>;
+  if (err) return <p className="mt-1 text-[11px] text-muted-foreground">Could not load {source.slice(1)} ({err}).</p>;
+  if (!rows) return <p className="mt-1 text-[11px] text-muted-foreground">Loading {source.slice(1)}…</p>;
+  if (!rows.length) return <p className="mt-1 text-[11px] text-muted-foreground">No {source.slice(1)} yet.</p>;
+  return (
+    <select
+      value=""
+      onChange={(e) => e.target.value && onPick(e.target.value)}
+      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs text-muted-foreground"
+    >
+      <option value="">{label ?? `Pick from your ${source.slice(1)}…`}</option>
+      {rows.map((r) => (
+        <option key={r.id} value={r.id}>
+          {r.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

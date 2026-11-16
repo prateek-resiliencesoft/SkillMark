@@ -14,8 +14,11 @@ export function fakeDb(tables: Record<string, Row[]>) {
       const filters: string[] = [];
       calls.push({ table, filters });
       let single: "one" | "maybe" | null = null;
+      let mode: "read" | "delete" = "read";
       const b: any = {
         select: () => b,
+        delete: () => ((mode = "delete"), b),
+        insert: (row: Row | Row[]) => ((tables[table] = [...(tables[table] ?? []), ...(Array.isArray(row) ? row : [row])]), b),
         eq: (c: string, v: any) => ((rows = rows.filter((r) => r[c] === v)), filters.push(`eq:${c}`), b),
         in: (c: string, v: any[]) => ((rows = rows.filter((r) => v.includes(r[c]))), filters.push(`in:${c}`), b),
         gte: (c: string, v: any) => ((rows = rows.filter((r) => r[c] >= v)), b),
@@ -35,6 +38,10 @@ export function fakeDb(tables: Record<string, Row[]>) {
         maybeSingle: () => ((single = "maybe"), b),
         single: () => ((single = "one"), b),
         then: (res: (v: any) => any, rej?: (e: any) => any) => {
+          if (mode === "delete") {
+            tables[table] = (tables[table] ?? []).filter((r) => !rows.includes(r));
+            return Promise.resolve({ data: null, error: null }).then(res, rej);
+          }
           const data = single ? (rows[0] ?? null) : rows;
           const error = single === "one" && !rows[0] ? { message: "not found" } : null;
           return Promise.resolve({ data, error }).then(res, rej);

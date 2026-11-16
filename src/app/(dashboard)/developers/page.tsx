@@ -71,6 +71,8 @@ export default function DevelopersPage() {
   const [scopes, setScopes] = useState<ApiKeyScope[]>(DEFAULT_SCOPES);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [revokeId, setRevokeId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [hideInactive, setHideInactive] = useState(false);
 
   const keys = trpc.apiKey.orgList.useQuery({ organizationId: orgId }, { enabled: !!orgId && isAdmin });
   const usage = trpc.apiKey.orgUsage.useQuery(
@@ -104,6 +106,17 @@ export default function DevelopersPage() {
     onError: onErr,
   });
 
+  const remove = trpc.apiKey.orgDelete.useMutation({
+    onSuccess: () => {
+      setDeleteId(null);
+      toast({ title: "Key deleted" });
+      void utils.apiKey.orgList.invalidate();
+    },
+    onError: onErr,
+  });
+
+  const deleting = keys.data?.find((k) => k.id === deleteId);
+  const inactiveCount = keys.data?.filter((k) => !k.active).length ?? 0;
   const keyName = (id: string | null) => keys.data?.find((k) => k.id === id)?.name ?? "—";
   const toggle = (s: ApiKeyScope) =>
     setScopes((cur) => {
@@ -176,7 +189,15 @@ export default function DevelopersPage() {
                     A key only sees this organization&apos;s data. The full key is shown once; we keep only a hash.
                   </CardDescription>
                 </div>
-                <Button size="sm" onClick={() => setCreateOpen(true)}>Create key</Button>
+                <div className="flex items-center gap-3">
+                  {inactiveCount ? (
+                    <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                      <Checkbox checked={hideInactive} onCheckedChange={(v) => setHideInactive(v === true)} />
+                      Hide revoked ({inactiveCount})
+                    </label>
+                  ) : null}
+                  <Button size="sm" onClick={() => setCreateOpen(true)}>Create key</Button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 {keys.isLoading ? (
@@ -200,7 +221,7 @@ export default function DevelopersPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {keys.data.map((k) => (
+                        {keys.data.filter((k) => !hideInactive || k.active).map((k) => (
                           <tr key={k.id} className={cn(!k.active && "opacity-60")}>
                             <td className="px-4 py-2.5">
                               <p className="font-medium">{k.name}</p>
@@ -223,16 +244,21 @@ export default function DevelopersPage() {
                             <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground">{when(k.lastUsedAt)}</td>
                             <td className="whitespace-nowrap px-4 py-2.5 text-xs text-muted-foreground">{when(k.createdAt)}</td>
                             <td className="px-4 py-2.5 text-right">
-                              {k.active ? (
-                                <div className="flex justify-end gap-1">
-                                  <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={rotate.isLoading} onClick={() => rotate.mutate({ organizationId: orgId, id: k.id })}>
-                                    Rotate
-                                  </Button>
-                                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => setRevokeId(k.id)}>
-                                    Revoke
-                                  </Button>
-                                </div>
-                              ) : null}
+                              <div className="flex justify-end gap-1">
+                                {k.active ? (
+                                  <>
+                                    <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={rotate.isLoading} onClick={() => rotate.mutate({ organizationId: orgId, id: k.id })}>
+                                      Rotate
+                                    </Button>
+                                    <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => setRevokeId(k.id)}>
+                                      Revoke
+                                    </Button>
+                                  </>
+                                ) : null}
+                                <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => setDeleteId(k.id)}>
+                                  Delete
+                                </Button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -417,6 +443,25 @@ export default function DevelopersPage() {
             <Button variant="outline" onClick={() => setRevokeId(null)}>Cancel</Button>
             <Button variant="destructive" disabled={revoke.isLoading} onClick={() => revokeId && revoke.mutate({ organizationId: orgId, id: revokeId })}>
               Revoke key
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete this key?</DialogTitle>
+            <DialogDescription>
+              &ldquo;{deleting?.name ?? "—"}&rdquo; (<code>{deleting?.prefix ? `${deleting.prefix}…` : "—"}</code>) will be removed from the list.
+              {deleting?.active ? " It is still active, so anything using it stops working right away." : ""} Past request logs are kept. This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={remove.isLoading} onClick={() => deleteId && remove.mutate({ organizationId: orgId, id: deleteId })}>
+              {remove.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Delete key
             </Button>
           </DialogFooter>
         </DialogContent>
