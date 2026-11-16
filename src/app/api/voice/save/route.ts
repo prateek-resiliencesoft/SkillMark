@@ -1,5 +1,7 @@
 import { createLogger } from "@/lib/logger";
 import { generateSessionSummary } from "@/lib/session-summary";
+import { scheduleSessionReport } from "@/lib/session-report-server";
+import { REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { finalizeRecordingParts } from "@/lib/recording-parts-server";
@@ -8,6 +10,10 @@ import { handleVoiceSave, type CompletionSession, type ProgressSession, type Voi
 
 const log = createLogger("api/voice/save");
 const voiceSaveOps: VoiceSaveOps = {
+  scheduleReport(sessionId, { force }) {
+    // Short delay so the final transcript batch (disconnect flush) lands first.
+    scheduleSessionReport(sessionId, "completed", REPORT_DELAY_AFTER_COMPLETE_MS, { force });
+  },
   onCompleted(sessionId) {
     void notifySessionCompleted(supabaseAdmin, sessionId);
     // Fallback: if the browser never linked a recording (closed tab, slow final
@@ -38,7 +44,7 @@ const voiceSaveOps: VoiceSaveOps = {
     );
   },
   async loadSessionForCompletion(sessionId) {
-    const { data } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from("sessions")
       .select(
         `*, interview:interviews!inner(title, objective, language, userId, projectId, assessmentCriteria, questions(text, order, type), project:projects(organizationId))`,
@@ -48,9 +54,29 @@ const voiceSaveOps: VoiceSaveOps = {
         referencedTable: "interviews.questions",
         ascending: true,
       })
-      .single();
-
-    return (data as CompletionSession | null) ?? null;
+      .maybeSingle();
+    if (data) return data as CompletionSession;
+    if (error) log.error(`Completion load (with interview) failed for ${sessionId}: ${error.message}`);
+    // Fallback: the status write must never depend on the interview join.
+    const { data: bare } = await supabaseAdmin
+      .from("sessions")
+      .select("status, startedAt")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (!bare) return null;
+    return {
+      status: bare.status as string,
+      startedAt: bare.startedAt as string,
+      interview: {
+        title: "",
+        objective: null,
+        language: "en",
+        userId: "",
+        projectId: "",
+        assessmentCriteria: null,
+        questions: [],
+      },
+    };
   },
   async loadLastMessage(sessionId) {
     const { data } = await supabaseAdmin
@@ -87,7 +113,17 @@ const voiceSaveOps: VoiceSaveOps = {
     return (data as ProgressSession | null) ?? null;
   },
   async updateSession(sessionId, payload) {
-    await supabaseAdmin.from("sessions").update(payload).eq("id", sessionId);
+    const { error } = await supabaseAdmin.from("sessions").update(payload).eq("id", sessionId);
+    if (!error) return;
+    // Optional columns (endReason) missing on an older DB: retry the core write.
+    if ("endReason" in payload && /endReason|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+      const { endReason: _drop, ...rest } = payload;
+      void _drop;
+      const retry = await supabaseAdmin.from("sessions").update(rest).eq("id", sessionId);
+      if (!retry.error) return;
+      throw new Error(`Session update failed: ${retry.error.message}`);
+    }
+    throw new Error(`Session update failed: ${error.message}`);
   },
   generateSummary,
   log,
@@ -100,7 +136,8 @@ const voiceSaveOps: VoiceSaveOps = {
  * and fire-and-forget an AI summary/analysis so the interviewee isn't blocked.
  */
 export async function POST(req: Request) {
-  const payload = (await req.json()) as VoiceSavePayload;
+  // Also receives sendBeacon posts on tab close; parse leniently.
+  const payload = ((await req.json().catch(() => null)) ?? {}) as VoiceSavePayload;
   const result = await handleVoiceSave(payload, voiceSaveOps);
   return NextResponse.json(result.body, { status: result.status });
 }

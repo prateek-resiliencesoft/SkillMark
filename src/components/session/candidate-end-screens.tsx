@@ -1,9 +1,7 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CheckCircle2, Clock, WifiOff } from "lucide-react";
-import { useState } from "react";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 export const PRODUCT_SITE_URL = "https://resiliencesoftinterview.com";
@@ -19,15 +17,14 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 /** Shown right after a candidate finishes. */
-export function CandidateThankYou({ timeLimitReached = false }: { timeLimitReached?: boolean }) {
-  const [closeBlocked, setCloseBlocked] = useState(false);
-
-  const closeTab = () => {
-    window.close();
-    // Browsers only allow script-closing of script-opened tabs; tell the user otherwise.
-    setTimeout(() => setCloseBlocked(true), 300);
-  };
-
+export function CandidateThankYou({
+  timeLimitReached = false,
+  saving = false,
+}: {
+  timeLimitReached?: boolean;
+  /** Final save still running: ask the candidate to keep the tab open briefly. */
+  saving?: boolean;
+}) {
   return (
     <Shell>
       <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
@@ -40,19 +37,11 @@ export function CandidateThankYou({ timeLimitReached = false }: { timeLimitReach
       <p className="mt-2 text-muted-foreground">
         Your interview is complete. Our team will review your interview and contact you.
       </p>
-      <div className="mt-8 space-y-3">
-        <Button type="button" className="w-full" onClick={closeTab}>
-          Close this tab
-        </Button>
-        {closeBlocked && (
-          <p className="text-xs text-muted-foreground">
-            Your browser blocked this. You can safely close the tab yourself.
-          </p>
-        )}
-        <Button asChild variant="outline" className="w-full">
-          <a href={PRODUCT_SITE_URL}>Take me to Resiliencesoft Interview AI</a>
-        </Button>
-      </div>
+      <p className="mt-6 text-sm text-muted-foreground">
+        {saving
+          ? "Saving your interview… please keep this tab open for a few seconds."
+          : "You can now close this tab."}
+      </p>
     </Shell>
   );
 }

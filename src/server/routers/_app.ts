@@ -19,6 +19,7 @@ import { integrationRouter } from "./integration";
 import { interviewFormRouter } from "./interviewForm";
 import { aiSettingsRouter } from "./aiSettings";
 import { platformRouter } from "./platform";
+import { platformOpsRouter } from "./platform-ops";
 import { billingRouter } from "./billing";
 import { statusRouter } from "./status";
 
@@ -43,6 +44,7 @@ export const appRouter = router({
   interviewForm: interviewFormRouter,
   aiSettings: aiSettingsRouter,
   platform: platformRouter,
+  platformOps: platformOpsRouter,
   billing: billingRouter,
   status: statusRouter,
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import {
     CodeEditorCanvas,
@@ -18,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -39,7 +39,6 @@ import { useVoice, type InterviewContext } from "@/hooks/use-voice";
 import {
     AlertCircle,
     Check,
-    CheckCircle2,
     ChevronLeft,
     ChevronRight,
     ChevronDown,
@@ -373,6 +372,8 @@ interface VoiceInterfaceProps {
   initialDrawings?: Array<{ id: string; label: string; snapshotData: string }>;
   chatEnabled?: boolean;
   onComplete?: () => void;
+  /** Fires as soon as the interview starts ending (before saving finishes). */
+  onEnding?: () => void;
   videoMode?: boolean;
   /** Render in static preview mode — shows full layout without connecting */
   preview?: boolean;
@@ -394,6 +395,7 @@ export function VoiceInterface({
   initialDrawings,
   chatEnabled = false,
   onComplete,
+  onEnding,
   videoMode = false,
   preview = false,
 }: VoiceInterfaceProps) {
@@ -1193,9 +1195,39 @@ export function VoiceInterface({
 
   // ── Common save-and-end logic ───────────────────────────────────
   const endingRef = useRef(false);
+  const onEndingRef = useRef(onEnding);
+  onEndingRef.current = onEnding;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // Interview finished (AI said goodbye): treat it as ending even before the
+  // auto-close timer, so the tab-close beacon can't mark it Abandoned.
+  useEffect(() => {
+    if (voice.isInterviewComplete) onEndingRef.current?.();
+  }, [voice.isInterviewComplete]);
+
+  // Tab closing: save unsent transcript lines; complete the session when the
+  // interview was finished or already ending.
+  useEffect(() => {
+    if (preview) return;
+    const onPageHide = () => {
+      const v = voiceRef.current;
+      const finishing = endingRef.current || v.isInterviewComplete;
+      if (finishing) onEndingRef.current?.();
+      v.beaconFlush(finishing);
+      if (finishing && sessionId && navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+        navigator.sendBeacon("/api/session/complete", blob);
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [preview, sessionId]);
+
   const handleEndInterview = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
+    onEndingRef.current?.();
     setLocallyCompleted(true);
     setIsSaving(true);
 
@@ -1206,6 +1238,15 @@ export function VoiceInterface({
         withTimeout(saveAllDrawings(), 5000, "save drawings"),
         withTimeout(saveAllCodeSnippets(), 5000, "save code snippets"),
       ]);
+
+      // Mark the session COMPLETED first. The recording upload below can take
+      // up to ~40s; if the candidate closes the tab on the thank-you screen
+      // meanwhile, the session must already be complete (not Abandoned).
+      try {
+        await withTimeout(voice.completeSession(), 10_000, "complete session");
+      } catch (err) {
+        console.error("[voice] Early completion save failed (retried on disconnect):", err);
+      }
 
       try {
         // Stop + save audio (and screenshots when video mode) BEFORE session completes
@@ -1329,20 +1370,8 @@ export function VoiceInterface({
     }, 8000);
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
-  const completionScreen = (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent className="py-12 text-center">
-          <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-          <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-          <p className="mt-2 text-muted-foreground">
-            Your interview has been completed successfully. We appreciate your
-            time and thoughtful responses.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  // Same thank-you screen as the session page uses after completion / on reload.
+  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];

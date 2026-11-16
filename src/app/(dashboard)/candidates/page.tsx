@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { latestTimestamp, timeRangeCutoff } from "@/lib/time-range";
+import { effectiveDurationSeconds } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useProject } from "@/components/project-provider";
 import {
@@ -121,7 +124,9 @@ type SortKey =
   | "finished"
   | "source"
   | "status"
-  | "created";
+  | "created"
+  /** Default: newest activity first (session start, else when the row was created). */
+  | "recent";
 
 type SortDir = "asc" | "desc";
 
@@ -217,17 +222,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 
 function getTimeRangeCutoff(value: string): Date | null {
-  const now = Date.now();
-  const ms: Record<string, number> = {
-    "1d": 24 * 60 * 60 * 1000,
-    "3d": 3 * 24 * 60 * 60 * 1000,
-    "7d": 7 * 24 * 60 * 60 * 1000,
-    "14d": 14 * 24 * 60 * 60 * 1000,
-    "30d": 30 * 24 * 60 * 60 * 1000,
-    "90d": 90 * 24 * 60 * 60 * 1000,
-  };
-  if (!ms[value]) return null;
-  return new Date(now - ms[value]);
+  return timeRangeCutoff(value);
 }
 
 /* ------------------------------------------------------------------ */
@@ -335,10 +330,12 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return (c?.notes ?? "").toLowerCase();
     case "created":
       return c?.createdAt ? new Date(c.createdAt).getTime() : -1;
+    case "recent":
+      return latestTimestamp(row.session?.interviewBeganAt, getStartDate(row), c?.createdAt, row.session?.createdAt);
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return row.session?.totalDurationSeconds ?? -1;
+      return effectiveDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -425,6 +422,7 @@ export default function CandidatesPage() {
   };
   const timeRangeOptions = [
     { value: "ALL", label: isZh ? "全部时间" : "All Time" },
+    { value: "today", label: isZh ? "今天" : "Today" },
     { value: "1d", label: isZh ? "过去 1 天" : "Past 1 day" },
     { value: "3d", label: isZh ? "过去 3 天" : "Past 3 days" },
     { value: "7d", label: isZh ? "过去 7 天" : "Past 7 days" },
@@ -467,7 +465,7 @@ export default function CandidatesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [timeRange, setTimeRange] = useState("ALL");
-  const [sortKey, setSortKey] = useState<SortKey | null>("created");
+  const [sortKey, setSortKey] = useState<SortKey | null>("recent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
@@ -559,7 +557,7 @@ export default function CandidatesPage() {
   // ── Data ──
   const candidateList = trpc.candidate.listAll.useQuery(
     { limit: 200, projectId: projectId ?? undefined },
-    { enabled: !!projectId },
+    { enabled: !!projectId, refetchInterval: (data) => livePollInterval(data) },
   );
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
@@ -652,7 +650,8 @@ export default function CandidatesPage() {
     const cutoff = getTimeRangeCutoff(timeRange);
     if (cutoff) {
       result = result.filter((row) => {
-        const started = getStartDate(row);
+        // "Today" also counts invites created today that haven't started yet.
+        const started = getStartDate(row) ?? (timeRange === "today" ? getCandidateField(row)?.createdAt ?? null : null);
         if (!started) return false;
         return new Date(started) >= cutoff;
       });
@@ -844,7 +843,7 @@ export default function CandidatesPage() {
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(session.totalDurationSeconds)
+              ? formatDuration(effectiveDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -963,7 +962,7 @@ export default function CandidatesPage() {
       case "duration":
         return (
           <span>
-            {hasSession ? formatDuration(session.totalDurationSeconds) : "-"}
+            {hasSession ? formatDuration(effectiveDurationSeconds(session)) : "-"}
           </span>
         );
       case "started":

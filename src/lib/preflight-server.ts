@@ -190,3 +190,23 @@ export async function listPreflightEvents(candidateId: string): Promise<unknown[
     return [];
   }
 }
+
+/**
+ * Like listPreflightEvents, but says whether the events table exists
+ * (migration 27). `available: false` → the panel shows a note, not "Not yet".
+ */
+export async function listPreflightEventsWithStatus(
+  candidateId: string,
+): Promise<{ events: unknown[]; available: boolean }> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabaseAdmin.from(eventsTable) as any)
+      .select("id, candidateId, sessionId, inviteToken, type, status, detail, createdAt")
+      .eq("candidateId", candidateId)
+      .order("createdAt", { ascending: true });
+    if (error) return { events: [], available: false };
+    return { events: data ?? [], available: true };
+  } catch {
+    return { events: [], available: false };
+  }
+}

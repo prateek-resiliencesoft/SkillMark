@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { sessionStatusNote } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
@@ -171,10 +173,10 @@ export function InterviewResults({
   );
   const utils = trpc.useUtils();
 
-  const sessions = trpc.session.listByInterview.useQuery({
-    interviewId,
-    limit: 100,
-  });
+  const sessions = trpc.session.listByInterview.useQuery(
+    { interviewId, limit: 100 },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   if (selectedSessionId) {
@@ -289,6 +291,8 @@ function SessionDetail({
   const summary = trpc.analysis.getSessionSummary.useQuery({ sessionId });
   const completeSession = trpc.session.complete.useMutation();
   const [generating, setGenerating] = useState(false);
+  const [autoWaitUntil, setAutoWaitUntil] = useState(0);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [retranscribing, setRetranscribing] = useState(false);
   const [showRetranscribeConfirm, setShowRetranscribeConfirm] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -332,23 +336,51 @@ function SessionDetail({
   }, [sessionId, summary, currentOrg?.id, toast]);
 
   const handleRequestReport = useCallback(() => {
-    if (summary.data?.status === "IN_PROGRESS") {
+    // Ask to end first only when the candidate's tab is really still live.
+    const hb = summary.data?.lastHeartbeatAt ? new Date(summary.data.lastHeartbeatAt).getTime() : 0;
+    const live = summary.data?.status === "IN_PROGRESS" && Date.now() - hb < 60_000;
+    if (live) {
       setShowEndConfirm(true);
     } else {
       handleGenerateSummary();
     }
-  }, [summary.data?.status, handleGenerateSummary]);
+  }, [summary.data?.status, summary.data?.lastHeartbeatAt, handleGenerateSummary]);
 
   const handleConfirmEndAndGenerate = useCallback(async () => {
     try {
       await completeSession.mutateAsync({ id: sessionId });
+      // The server builds the report itself now; just wait for it.
+      setAutoWaitUntil(Date.now() + 3 * 60_000);
       await summary.refetch();
     } catch {
       toast({ title: "Failed to end interview", variant: "destructive" });
       return;
     }
-    handleGenerateSummary();
-  }, [sessionId, completeSession, summary, handleGenerateSummary, toast]);
+  }, [sessionId, completeSession, summary, toast]);
+
+  // Automatic report in progress (server-side): show progress and poll.
+  const reportStatus = summary.data?.reportStatus ?? null;
+  const hasCaptureFailure = !!(
+    summary.data?.insights &&
+    typeof summary.data.insights === "object" &&
+    (summary.data.insights as { captureFailure?: unknown }).captureFailure
+  );
+  const reportPending =
+    !!summary.data &&
+    !summary.data.summary &&
+    !hasCaptureFailure &&
+    (summary.data.status === "COMPLETED" || summary.data.status === "ABANDONED") &&
+    (reportStatus === "PENDING" || reportStatus === "GENERATING" || autoWaitUntil > nowTick);
+  const reportFailed = reportStatus === "FAILED" && !reportPending;
+  useEffect(() => {
+    if (!reportPending) return;
+    const t = setInterval(() => {
+      setNowTick(Date.now());
+      void summary.refetch();
+    }, 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportPending]);
 
   const handleRetranscribe = useCallback(async () => {
     setRetranscribing(true);
@@ -553,8 +585,8 @@ function SessionDetail({
     : (insightsData?.captureFailure ?? null);
   const transcriptFromRecording =
     !Array.isArray(insightsData) && insightsData?.transcriptSource === "recording";
-  const canRetranscribe =
-    !!summary.data?.audioRecordingUrl && summary.data?.status === "COMPLETED";
+  const canRetranscribe = !!summary.data?.audioRecordingUrl;
+  const statusNote = sessionStatusNote(summary.data?.status);
 
   const sentimentData = summary.data?.sentiment as {
     overall?: string;
@@ -616,6 +648,11 @@ function SessionDetail({
 
   return (
     <div className="space-y-6">
+      {statusNote && (
+        <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+          {statusNote}
+        </p>
+      )}
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <Button variant="outline" onClick={onBack}>
@@ -719,23 +756,24 @@ function SessionDetail({
             {!summary.data?.summary && !captureFailure && (
               <Card className="border-dashed">
                 <CardContent className="flex flex-col items-center justify-center py-12">
-                  {generating ? (
+                  {generating || reportPending ? (
                     <>
                       <Loader2 className="mb-3 h-8 w-8 animate-spin text-primary" />
-                      <p className="mb-1 font-medium">Generating Report...</p>
+                      <p className="mb-1 font-medium">Generating report…</p>
                       <p className="text-sm text-muted-foreground">
-                        Analyzing the interview result. This may take a moment.
+                        Analyzing the interview. This usually takes under a minute.
                       </p>
                     </>
                   ) : (
                     <>
                       <Sparkles className="mb-3 h-8 w-8 text-muted-foreground" />
                       <p className="mb-1 font-medium">
-                        No report generated yet
+                        {reportFailed ? "The report didn't finish" : "No report generated yet"}
                       </p>
                       <p className="mb-4 text-sm text-muted-foreground">
-                        Generate an AI-powered analysis of this interview
-                        session.
+                        {reportFailed
+                          ? "Automatic generation failed. Try again."
+                          : "Generate an analysis of this interview session."}
                       </p>
                       <Button
                         onClick={handleRequestReport}

@@ -828,9 +828,15 @@ export function useVoice({
           log.warn(`Server closed a stuck candidate turn (${String(msg.reason)})`);
           break;
 
+        case "silence_prompt_ignored":
         case "silence_check_ignored":
-          // Relay was busy (reply pending, AI talking) — try again later.
-          silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
+          // Relay was busy (reply pending, AI talking) — retry the same reminder later.
+          silenceCheckRef.current.promptRejected(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
+          break;
+
+        case "no_answer_skip_ignored":
+          // Relay was busy (candidate turn / reply in flight) — try again later.
+          silenceCheckRef.current.skipRejected(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           break;
 
         case "interrupt":
@@ -854,6 +860,8 @@ export function useVoice({
               }
               asrBufferRef.current = text.trim();
               liveTranscriptRef.current = text.trim();
+              // Transcribed words = genuine speech (also covers server-VAD fallback).
+              if (/[\p{L}\p{N}]{2,}/u.test(text)) silenceCheckRef.current.candidateActivity();
               setState((s) => ({ ...s, userTranscript: text }));
               onTranscript?.(text, false);
             }
@@ -902,6 +910,8 @@ export function useVoice({
             }
           }
           asrBufferRef.current = "";
+          // Their words are final; if the AI never replies, reminders still run.
+          if (finalText && !turnActiveRef.current) silenceCheckRef.current.candidateFinished(performance.now());
           setState((s) => ({
             ...s,
             userTranscript: "",
@@ -1176,6 +1186,8 @@ export function useVoice({
       // Close the audio turn first so Gemini finalizes what they said, then
       // optionally cue a once-per-question gentle check-in for hesitant answers.
       sendActivity("activity_end");
+      // If the AI then never replies, the silence reminders still run.
+      silenceCheckRef.current.candidateFinished(performance.now());
       // The AI's reply is on its way: a breath or noise right now must not
       // reopen the turn and cut that reply (needs sustained speech instead).
       awaitingAiReplyUntilRef.current = performance.now() + ENDPOINTING_CONFIG.continuationWindowMs;
@@ -1429,12 +1441,10 @@ export function useVoice({
           VAD_FAILSAFE_CONFIG.absoluteMinRms * 2,
           floor != null ? floor * VAD_FAILSAFE_CONFIG.noiseFloorRatio : 0,
         );
+        // Energy alone is NOT speech (fan, keyboard, traffic): it never resets the
+        // silence reminders. Only a gated VAD turn or transcribed words do.
         if (!aiSpeaking && rms >= voiceRms) {
           lastVoiceAtRef.current = now;
-          if (silenceCheckRef.current.isWaiting || silenceCheckRef.current.attemptCount > 0) {
-            silenceCheckRef.current.candidateActivity();
-            setState((s) => (s.micCheckPrompt ? { ...s, micCheckPrompt: false } : s));
-          }
         }
 
         // Stuck-turn guard: a turn opened but never closed (missed speech end)
@@ -1613,10 +1623,12 @@ export function useVoice({
   }, []);
 
   /** Save remaining tracked messages and complete the session */
-  const saveAndComplete = useCallback(async () => {
-    // Wait for any in-flight question progress saves first
+  const completedOnServerRef = useRef(false);
+  const saveAndComplete = useCallback(async (): Promise<boolean> => {
+    // Wait for in-flight question progress saves first (bounded: a hung save
+    // must never block the completion write).
     try {
-      await saveChainRef.current;
+      await Promise.race([saveChainRef.current, new Promise((r) => setTimeout(r, 4_000))]);
     } catch {
       /* already logged in saveProgress */
     }
@@ -1635,28 +1647,99 @@ export function useVoice({
 
     const messages = [...trackedMessagesRef.current];
     trackedMessagesRef.current = [];
-    if (messages.length === 0 && !sessionId) return;
+    if (!sessionId) return false;
+    if (completedOnServerRef.current && messages.length === 0) return true;
 
     log.info(
       `Saving ${messages.length} remaining messages and completing session`,
     );
 
+    // Retry with backoff; the server treats a repeat completion as a no-op.
+    const delays = [0, 1_000, 3_000, 6_000];
+    let lastErr: unknown = null;
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise((r) => setTimeout(r, delays[i]));
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10_000);
+      try {
+        const res = await fetch("/api/voice/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, messages, complete: true }),
+          keepalive: JSON.stringify(messages).length < 60_000,
+          signal: ctrl.signal,
+        });
+        const body = (await res.json().catch(() => ({}))) as { completed?: boolean; error?: string };
+        if (!res.ok || body.completed === false) {
+          throw new Error(`HTTP ${res.status}${body.error ? `: ${body.error}` : ""}`);
+        }
+        completedOnServerRef.current = true;
+        return true;
+      } catch (err) {
+        lastErr = err;
+        log.warn(`Completion save attempt ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Last resort: the status-only safety net (also via beacon if fetch is dead).
+    trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
+    log.error("Failed to save voice data:", lastErr);
+    reportSessionError(sessionId, {
+      category: "client",
+      severity: "error",
+      message: `Completion save failed: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+      context: { stage: "voice_complete" },
+    });
     try {
-      const res = await fetch("/api/voice/save", {
+      const res = await fetch("/api/session/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          messages,
-          complete: true,
-        }),
+        body: JSON.stringify({ sessionId }),
+        keepalive: true,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
-      log.error("Failed to save voice data:", err);
+      if (res.ok) {
+        completedOnServerRef.current = true;
+        return true;
+      }
+    } catch {
+      /* fall through to beacon */
     }
+    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+      const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+      navigator.sendBeacon("/api/session/complete", blob);
+    }
+    return false;
   }, [sessionId, trackMessage]);
+
+  /**
+   * Tab is closing: hand the unsaved transcript to the server with sendBeacon
+   * (fetch would be cancelled). With `complete`, the server also marks the
+   * session COMPLETED so a finished interview is never left as Abandoned.
+   */
+  const beaconFlush = useCallback(
+    (complete: boolean): boolean => {
+      if (!sessionId || typeof navigator === "undefined" || !navigator.sendBeacon) return false;
+      const pendingAsrText = asrBufferRef.current.trim();
+      if (pendingAsrText) {
+        trackMessage({ role: "user", content: pendingAsrText });
+        asrBufferRef.current = "";
+      }
+      const pendingChatText = chatBufferRef.current.trim();
+      if (pendingChatText) {
+        trackMessage({ role: "assistant", content: pendingChatText });
+        chatBufferRef.current = "";
+      }
+      const messages = [...trackedMessagesRef.current];
+      if (!complete && messages.length === 0) return true;
+      const blob = new Blob([JSON.stringify({ sessionId, messages, complete })], { type: "application/json" });
+      const sent = navigator.sendBeacon("/api/voice/save", blob);
+      if (sent) trackedMessagesRef.current = [];
+      return sent;
+    },
+    [sessionId, trackMessage],
+  );
 
   // ── Silent-candidate check + stuck "AI speaking" guard (every 500ms) ──
   useEffect(() => {
@@ -1676,25 +1759,35 @@ export function useVoice({
       if (interviewCompleteRef.current || !isListeningRef.current) return;
       const connector = relayConnectorRef.current;
       if (!connector?.isReady) return;
+      // Genuine speech in progress. Client VAD: an open turn / gated speech
+      // segment. Server-VAD fallback (no client turns): voice-level energy above
+      // the adaptive noise floor only PAUSES the count (never resets it), so a
+      // candidate who is talking is never skipped; the relay also refuses while
+      // it hears them.
+      const speechInProgress = clientVadEnabledRef.current
+        ? lastSpeechSegmentStartRef.current != null
+        : now - lastVoiceAtRef.current < 1_500;
       const action = silenceCheckRef.current.tick(now, {
         turnActive: turnActiveRef.current,
-        aiBusy: isAiBusy(now) || relayReconnectingRef.current || queuedAudioSamplesRef.current > 0,
-        voiceOnMic: now - lastVoiceAtRef.current < 1_500,
+        aiBusy: isSpeakingRef.current || isAiBusy(now) || relayReconnectingRef.current || queuedAudioSamplesRef.current > 0,
+        speechInProgress,
       });
       if (!action) return;
-      if (action.type === "ask") {
-        log.info("Candidate silent ~3s after the question — asking \"Are you there?\"");
-        micPeakSinceCheckRef.current = 0;
+      if (action.type === "prompt") {
+        log.info(`Candidate silent — reminder ${action.stage}: "${action.text}"`);
+        if (action.stage === 1) micPeakSinceCheckRef.current = 0;
         connector.sendJson({
-          type: "silence_check",
-          attempt: action.attempt,
+          type: "silence_prompt",
+          stage: action.stage,
+          text: action.text,
           questionIndex: currentQuestionIndexRef.current,
         });
       } else {
         const noSignal = micPeakSinceCheckRef.current < ENDPOINTING_CONFIG.noMicSignalRms;
-        log.warn(`Candidate still silent after "Are you there?" — moving to the next question${noSignal ? " (mic shows no signal)" : ""}`);
+        log.warn(`Candidate still silent after all reminders — moving to the next question${noSignal ? " (mic shows no signal)" : ""}`);
         connector.sendJson({
           type: "no_answer_skip",
+          policy: action.policy,
           questionIndex: currentQuestionIndexRef.current,
         });
         if (noSignal) setState((s) => ({ ...s, micCheckPrompt: true }));
@@ -1703,7 +1796,7 @@ export function useVoice({
           severity: "warning",
           message: noSignal
             ? "Candidate did not answer and the microphone showed no signal — moved on and asked them on screen to check the mic"
-            : "Candidate did not answer after \"Are you there?\" — moved to the next question (left unanswered)",
+            : "Candidate did not answer after three reminders — moved to the next question",
           context: {
             stage: "no_answer_skip",
             questionIndex: currentQuestionIndexRef.current,
@@ -1746,5 +1839,8 @@ export function useVoice({
     interruptPlayback,
     dismissMicCheckPrompt,
     mediaStreamRef,
+    /** Save the transcript and mark the session COMPLETED (safe to call twice). */
+    completeSession: saveAndComplete,
+    beaconFlush,
   };
 }

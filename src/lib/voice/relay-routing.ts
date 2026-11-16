@@ -1,3 +1,5 @@
+import { isChineseInterviewLanguage } from "@/lib/interview-language";
+
 export type RelayKind = "voice" | "openai";
 export type RelayPrimaryPreference = "auto" | RelayKind;
 
@@ -78,14 +80,7 @@ const DEFAULT_OPENAI_RELAY_PATH = "/ws/openai-voice";
 const READY_STATE_OPEN = 1;
 
 export function isChineseVoiceLanguage(language?: string): boolean {
-  if (!language) return false;
-  const normalized = language.trim().toLowerCase();
-  return (
-    normalized === "zh" ||
-    normalized.startsWith("zh-") ||
-    normalized.includes("chinese") ||
-    normalized.includes("中文")
-  );
+  return isChineseInterviewLanguage(language);
 }
 
 function deriveUrlFromBrowser(

@@ -48,9 +48,28 @@ export function pcm16Rms(pcm: Buffer): number {
   return Math.sqrt(sum / n);
 }
 
-/** What the AI is told to say when the candidate has been silent after a question. */
-export function silenceCheckCue(_attempt: number): string {
-  return "[SILENCE_CHECK] The participant has been silent for a few seconds after your question. Say only: \"Are you there?\" (nothing else), then wait. Do not repeat the question and do not call any function.";
+/** The exact lines the interviewer says, in order, when the candidate stays silent. */
+export const SILENCE_PROMPTS = [
+  "Are you there? Can you hear me?",
+  "I can't hear your response. Are you still connected?",
+  "It seems you've gone silent. I'll wait a little longer.",
+] as const;
+
+/** Clamp any client-sent stage to 1..3. */
+export function silencePromptStage(raw: unknown): 1 | 2 | 3 {
+  const n = Math.round(Number(raw));
+  return (n >= 3 ? 3 : n === 2 ? 2 : 1) as 1 | 2 | 3;
+}
+
+/** What the AI is told to say when the candidate has been silent (stage 1–3). Text is fixed server-side. */
+export function silencePromptCue(stage: number): string {
+  const line = SILENCE_PROMPTS[silencePromptStage(stage) - 1];
+  return `[SILENCE_PROMPT] The participant has been silent after your question. Say exactly this sentence, word for word, and nothing else: "${line}" Then stop and wait. This is not a new question: do not repeat or change the question, do not comment, and do not call any function.`;
+}
+
+/** @deprecated kept for older callers — stage 1 reminder. */
+export function silenceCheckCue(attempt: number): string {
+  return silencePromptCue(attempt);
 }
 
 /** What the AI is told when the candidate never answered and we move on. */

@@ -1,12 +1,25 @@
 "use client";
 
 import { usePollInterval } from "@/components/admin/poll-interval-control";
-import { Button } from "@/components/ui/button";
+import {
+  PageHeader,
+  Panel,
+  StatCard,
+  TacticalButton,
+} from "@/components/admin/admin-ui";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc/client";
 import type { MetricPoint, ServerMetricKey } from "@/lib/grafana/client";
 import { cn } from "@/lib/utils";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import {
+  Activity,
+  Cpu,
+  ExternalLink,
+  HardDrive,
+  Radio,
+  RefreshCw,
+  Zap,
+} from "lucide-react";
 import { useMemo } from "react";
 import {
   Area,
@@ -18,7 +31,6 @@ import {
   YAxis,
 } from "recharts";
 
-/** Fixed look-back window; the polling control decides how fresh it is. */
 const WINDOW_MINUTES = 60;
 
 const pct = (v: number) => `${v.toFixed(1)}%`;
@@ -48,17 +60,6 @@ function timeLabel(t: number, minutes: number) {
     : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="rounded-xl border p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 font-heading text-2xl font-semibold tabular-nums">{value}</p>
-      {hint ? <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p> : null}
-    </div>
-  );
-}
-
-/** One measure per chart (never dual-axis). */
 function MetricChart({
   title,
   points,
@@ -77,38 +78,41 @@ function MetricChart({
   const latest = last(points);
   const max = peak(points);
   const id = `grad-${title.replace(/\W/g, "")}`;
+
   return (
-    <section className="rounded-xl border p-4" aria-label={title}>
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-sm font-medium">{title}</h2>
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {latest != null ? `now ${format(latest)}` : "—"}
-          {max != null ? ` · peak ${format(max)}` : ""}
-        </p>
-      </div>
-      <div className="mt-3 h-44">
+    <Panel
+      kicker="Time Series"
+      title={title}
+      description={
+        latest != null
+          ? `Current: ${format(latest)}${max != null ? ` · Peak: ${format(max)}` : ""}`
+          : "Sampling stream…"
+      }
+    >
+      <div className="h-44 w-full pt-1">
         {loading ? (
-          <Skeleton className="h-full w-full" />
+          <Skeleton className="h-full w-full rounded-lg" />
         ) : !points || points.length === 0 ? (
-          <p className="flex h-full items-center justify-center text-xs text-muted-foreground">
-            No data for this range.
-          </p>
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+            No telemetry recorded in this time range.
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+            <AreaChart data={points} margin={{ top: 6, right: 6, bottom: 0, left: -20 }}>
               <defs>
                 <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
-                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                  <stop offset="0%" stopColor="#5941F2" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="#5941F2" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid vertical={false} stroke="hsl(var(--border))" strokeOpacity={0.6} />
+              <CartesianGrid vertical={false} strokeDasharray="3 3" className="stroke-border/40 dark:stroke-white/[0.05]" />
               <XAxis
                 dataKey="t"
                 type="number"
                 domain={["dataMin", "dataMax"]}
                 tickFormatter={(t) => timeLabel(t as number, minutes)}
-                tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                tick={{ fontSize: 10, fill: "currentColor" }}
+                className="text-muted-foreground"
                 axisLine={false}
                 tickLine={false}
                 minTickGap={48}
@@ -116,38 +120,38 @@ function MetricChart({
               <YAxis
                 domain={domain ?? [0, "auto"]}
                 tickFormatter={(v) => format(v as number)}
-                tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                tick={{ fontSize: 10, fill: "currentColor" }}
+                className="text-muted-foreground"
                 axisLine={false}
                 tickLine={false}
-                width={64}
               />
               <Tooltip
-                cursor={{ stroke: "hsl(var(--muted-foreground))", strokeOpacity: 0.4 }}
+                cursor={{ stroke: "rgba(255, 255, 255, 0.2)", strokeDasharray: "2 2" }}
                 contentStyle={{
-                  background: "hsl(var(--popover))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: 8,
-                  fontSize: 12,
+                  backgroundColor: "rgba(10, 10, 12, 0.95)",
+                  borderColor: "rgba(255, 255, 255, 0.12)",
+                  borderRadius: "10px",
+                  fontSize: "12px",
+                  color: "#fff",
                 }}
-                labelStyle={{ color: "hsl(var(--muted-foreground))" }}
                 labelFormatter={(t) => new Date(t as number).toLocaleString()}
                 formatter={(v) => [format(Number(v)), title]}
               />
               <Area
                 type="monotone"
                 dataKey="v"
-                stroke="hsl(var(--primary))"
+                stroke="#5941F2"
                 strokeWidth={2}
                 fill={`url(#${id})`}
                 dot={false}
-                activeDot={{ r: 4, strokeWidth: 2, stroke: "hsl(var(--background))" }}
+                activeDot={{ r: 4, strokeWidth: 2, stroke: "#5941F2" }}
                 isAnimationActive={false}
               />
             </AreaChart>
           </ResponsiveContainer>
         )}
       </div>
-    </section>
+    </Panel>
   );
 }
 
@@ -174,70 +178,95 @@ export default function AdminServerActivityPage() {
     const cpu = last(s.cpu);
     const mem = last(s.memory);
     if (live < 1 || cpu == null || mem == null) return null;
-    // Rough: scale current load linearly to an 80% ceiling. Includes OS/base load, so it is conservative.
     const byCpu = Math.floor((live * 80) / Math.max(cpu, 1));
     const byMem = Math.floor((live * 80) / Math.max(mem, 1));
     return { estimate: Math.min(byCpu, byMem), limit: byCpu <= byMem ? "CPU" : "memory" };
   }, [data, s.cpu, s.memory]);
 
-  const charts: { key: ServerMetricKey; title: string; format: (v: number) => string; domain?: [number, number | "auto"] }[] = [
-    { key: "cpu", title: "CPU usage", format: pct, domain: [0, 100] },
-    { key: "memory", title: "Memory usage", format: pct, domain: [0, 100] },
-    { key: "netIn", title: "Bandwidth in", format: rate },
-    { key: "netOut", title: "Bandwidth out", format: rate },
-    { key: "disk", title: "Disk usage", format: pct, domain: [0, 100] },
-    { key: "load", title: "Load average (1m)", format: (v) => v.toFixed(2) },
+  const charts: {
+    key: ServerMetricKey;
+    title: string;
+    format: (v: number) => string;
+    domain?: [number, number | "auto"];
+  }[] = [
+    { key: "cpu", title: "CPU Utilization", format: pct, domain: [0, 100] },
+    { key: "memory", title: "Resident Memory Usage", format: pct, domain: [0, 100] },
+    { key: "netIn", title: "Ingress Network Bandwidth", format: rate },
+    { key: "netOut", title: "Egress Network Bandwidth", format: rate },
+    { key: "disk", title: "Filesystem Disk Usage", format: pct, domain: [0, 100] },
+    { key: "load", title: "1-Minute System Load", format: (v) => v.toFixed(2) },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">Server activity</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            CPU, memory, disk and bandwidth from Grafana — use it to see how many interviews the server can run at once.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {pollControl}
-          <Button size="sm" variant="outline" onClick={() => q.refetch()} disabled={q.isFetching}>
-            <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", q.isFetching && "animate-spin")} />
-            Refresh
-          </Button>
-          {data?.grafanaUrl ? (
-            <Button asChild size="sm" variant="ghost">
-              <a href={data.grafanaUrl} target="_blank" rel="noreferrer">
-                Grafana <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
-              </a>
-            </Button>
-          ) : null}
-        </div>
-      </div>
+    <div className="space-y-8">
+      {/* Header */}
+      <PageHeader
+        kicker="Grafana Timeseries"
+        title="Server Telemetry & Capacity"
+        description="Hardware metrics aggregated from Prometheus & Grafana agent. Use this telemetry to evaluate concurrent candidate headroom."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {pollControl}
+            <TacticalButton
+              size="sm"
+              variant="outline"
+              onClick={() => q.refetch()}
+              disabled={q.isFetching}
+              className="h-8 text-xs gap-1.5"
+            >
+              <RefreshCw className={cn("h-3 w-3", q.isFetching && "animate-spin")} />
+              <span>Refresh</span>
+            </TacticalButton>
+            {data?.grafanaUrl ? (
+              <TacticalButton asChild size="sm" variant="outline" className="h-8 text-xs gap-1.5">
+                <a href={data.grafanaUrl} target="_blank" rel="noreferrer">
+                  <span>Open Grafana</span>
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </TacticalButton>
+            ) : null}
+          </div>
+        }
+      />
 
       {data?.error ? (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
-          {data.error}
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs font-medium text-amber-600 dark:text-amber-400">
+          Grafana Cloud connection notice: {data.error}
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <Stat
-          label="Live interviews"
+      {/* KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <StatCard
+          title="Live Interviews"
           value={loading ? "…" : String(data?.liveInterviews ?? 0)}
-          hint="Started, candidate tab connected"
+          subtitle="Candidate WebRTC sockets connected"
+          icon={Radio}
+          accentColor="#10b981"
+          loading={loading}
         />
-        <Stat label="CPU" value={last(s.cpu) != null ? pct(last(s.cpu)!) : "—"} hint={data?.cpuCores ? `${data.cpuCores} cores` : undefined} />
-        <Stat
-          label="Memory"
+        <StatCard
+          title="CPU Core Utilization"
+          value={last(s.cpu) != null ? pct(last(s.cpu)!) : "—"}
+          subtitle={data?.cpuCores ? `${data.cpuCores} physical cores available` : "Host processor"}
+          icon={Cpu}
+          accentColor="#5941F2"
+          loading={loading}
+        />
+        <StatCard
+          title="System Memory"
           value={last(s.memory) != null ? pct(last(s.memory)!) : "—"}
-          hint={
+          subtitle={
             last(s.memoryUsedBytes) != null && data?.memoryTotalBytes
               ? `${bytes(last(s.memoryUsedBytes)!)} of ${bytes(data.memoryTotalBytes)}`
-              : undefined
+              : "RAM consumption"
           }
+          icon={Zap}
+          accentColor="#296CF2"
+          loading={loading}
         />
-        <Stat
-          label="Storage"
+        <StatCard
+          title="Disk Capacity"
           value={
             data?.diskTotalBytes && data.diskFreeBytes != null
               ? pct(((data.diskTotalBytes - data.diskFreeBytes) / data.diskTotalBytes) * 100)
@@ -245,20 +274,27 @@ export default function AdminServerActivityPage() {
                 ? pct(last(s.disk)!)
                 : "—"
           }
-          hint={
+          subtitle={
             data?.diskTotalBytes && data.diskFreeBytes != null
-              ? `${bytes(data.diskTotalBytes - data.diskFreeBytes)} used · ${bytes(data.diskFreeBytes)} free of ${bytes(data.diskTotalBytes)}`
-              : "Root disk"
+              ? `${bytes(data.diskFreeBytes)} free space remaining`
+              : "Root mount"
           }
+          icon={HardDrive}
+          accentColor="#8B5CF6"
+          loading={loading}
         />
-        <Stat
-          label="Est. concurrent capacity"
+        <StatCard
+          title="Est. Concurrent Limit"
           value={capacity ? `~${capacity.estimate}` : "—"}
-          hint={capacity ? `Limited by ${capacity.limit} · rough, at 80% load` : "Needs ≥1 live interview"}
+          subtitle={capacity ? `Bottleneck: ${capacity.limit} at 80% ceiling` : "Requires ≥1 live session"}
+          icon={Activity}
+          accentColor="#06B6D4"
+          loading={loading}
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* Charts Grid */}
+      <div className="grid gap-5 lg:grid-cols-2">
         {charts.map((c) => (
           <MetricChart
             key={c.key}

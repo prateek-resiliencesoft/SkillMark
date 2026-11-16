@@ -17,6 +17,7 @@ next-env.d.ts
 # env / secrets
 .env
 .env.*
+.dev.env
 .env.dev
 .env.local
 .env.*.local

@@ -1,4 +1,4 @@
-import { getLanguageKey, LANGUAGE_DISPLAY_NAME } from "@/lib/i18n";
+import { interviewLanguageContentInstruction } from "@/lib/interview-language";
 import type { LLMContentPart, LLMMessage } from "../types";
 
 export interface WhiteboardDrawingInput {
@@ -22,8 +22,9 @@ export function buildSummaryPrompt(
   whiteboardDrawings?: WhiteboardDrawingInput[] | null,
   codeSnippets?: CodeSnippetInput[] | null
 ): LLMMessage[] {
+  // Role labels are explicit so the model never credits interviewer text to the candidate.
   const transcript = messages
-    .map((m) => `${m.role === "user" ? "Participant" : "Interviewer"}: ${m.content}`)
+    .map((m) => `${String(m.role).toLowerCase() === "user" ? "Candidate" : "Interviewer"}: ${m.content}`)
     .join("\n\n");
 
   const objectiveSection = objective
@@ -112,9 +113,9 @@ export function buildSummaryPrompt(
       : "";
 
   // ── Language instruction ───────────────────────────────────────
-  const langKey = getLanguageKey(language ?? undefined);
-  const languageInstruction = language
-    ? `\n\nIMPORTANT: Write the ENTIRE report (all text fields including summary, evaluations, insights, themes) in ${LANGUAGE_DISPLAY_NAME[langKey]}. Do NOT mix languages.`
+  const contentLang = language ? interviewLanguageContentInstruction(language) : "";
+  const languageInstruction = contentLang
+    ? `\n\nIMPORTANT: ${contentLang} Apply this to the ENTIRE report (all text fields including summary, evaluations, insights, themes).`
     : "";
 
   const whiteboardInstruction = hasDrawings
@@ -126,6 +127,11 @@ export function buildSummaryPrompt(
     : "";
 
   const systemPrompt = `You are an expert interview analyst. Evaluate and summarize the following interview transcript. Focus on the participant's responses — their depth, relevance, and quality.
+
+Speaker rules for the transcript:
+- Lines starting with "Interviewer:" are the interviewer's questions and prompts. Never treat them as the participant's answers and never give credit for anything said in them.
+- Score and quote only lines starting with "Candidate:" (the participant).
+- A question with no Candidate: line after it, or only filler such as "hmm", is unanswered.
 
 Interview: "${interviewTitle}"${objectiveSection}${criteriaSection}${questionsSection}${whiteboardSection}${codeSection}
 

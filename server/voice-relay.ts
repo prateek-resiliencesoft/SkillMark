@@ -35,6 +35,7 @@ import {
   responseInvitesUserReply,
 } from "./voice-relay-helpers";
 import { bt } from "../src/lib/i18n";
+import { isChineseInterviewLanguage } from "../src/lib/interview-language";
 import { interviewerPromptIdentity } from "../src/lib/interviewer-persona";
 import { createLogger } from "../src/lib/logger";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
@@ -340,9 +341,7 @@ function isUserPrevRequest(text: string): boolean {
 // ── Build prompts from interview context ─────────────────────────────
 
 function isChineseInterview(ctx: InterviewContext): boolean {
-  return (
-    ctx.language === "zh" || ctx.language.toLowerCase().includes("chinese")
-  );
+  return isChineseInterviewLanguage(ctx.language);
 }
 
 function buildSystemText(ctx: InterviewContext): string {
