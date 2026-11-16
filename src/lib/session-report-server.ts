@@ -15,7 +15,10 @@ import {
   MAX_REPORT_ATTEMPTS,
   REPORT_LOCK_STALE_MS,
   REPORT_SWEEP_LOOKBACK_MS,
+  EMPTY_SESSION_IDLE_MS,
+  NEVER_STARTED_END_REASON,
   contentStats,
+  idleCloseDecision,
   decideReport,
   hasReport,
   retryDelayMs,
@@ -233,7 +236,10 @@ async function markPending(sessionId: string): Promise<void> {
  * no report and are not locked / given up. Also expires stale live sessions so
  * a closed tab still gets its report without anyone opening the dashboard.
  */
-export async function sweepPendingReports(limit = 10): Promise<number> {
+export type SweepSummary = { reports: number; completed: number; abandoned: number; neverStarted: number; expired: number };
+
+export async function sweepPendingReports(limit = 10): Promise<SweepSummary> {
+  const summary: SweepSummary = { reports: 0, completed: 0, abandoned: 0, neverStarted: 0, expired: 0 };
   const nowMs = Date.now();
   const since = new Date(nowMs - REPORT_SWEEP_LOOKBACK_MS).toISOString();
 
@@ -247,7 +253,10 @@ export async function sweepPendingReports(limit = 10): Promise<number> {
       .not("interviewBeganAt", "is", null)
       .gte("startedAt", since)
       .limit(50);
-    for (const s of live ?? []) await expireIfStale(s as Parameters<typeof expireIfStale>[0]);
+    for (const s of live ?? []) {
+      const after = await expireIfStale(s as Parameters<typeof expireIfStale>[0]);
+      if (after.status !== "IN_PROGRESS") summary.expired++;
+    }
   } catch (err) {
     log.error("Stale-session sweep failed:", err);
   }
@@ -257,7 +266,10 @@ export async function sweepPendingReports(limit = 10): Promise<number> {
   // from their saved activity so the panel and report don't wait for a manual
   // UPDATE. Reached the interviewer's goodbye → COMPLETED, else ABANDONED.
   try {
-    await closeIdleSessions(nowMs, since);
+    const closed = await closeIdleSessions(nowMs);
+    summary.completed = closed.completed;
+    summary.abandoned = closed.abandoned;
+    summary.neverStarted = closed.neverStarted;
   } catch (err) {
     log.error("Idle-session sweep failed:", err);
   }
@@ -274,7 +286,7 @@ export async function sweepPendingReports(limit = 10): Promise<number> {
   if (error) {
     if (isMissingColumn(error)) reportColumnsMissing = true;
     else log.error("Report sweep query failed:", error.message);
-    return 0;
+    return summary;
   }
   let started = 0;
   for (const row of (data ?? []) as unknown as Row[]) {
@@ -294,27 +306,102 @@ export async function sweepPendingReports(limit = 10): Promise<number> {
       log.error(`Sweep report for ${row.id} failed:`, err),
     );
   }
-  return started;
+  summary.reports = started;
+  return summary;
 }
 
-/** No saved activity / heartbeat for this long → the session is over. */
-export const IDLE_SESSION_MS = 30 * 60 * 1000;
+export { IDLE_SESSION_MS, EMPTY_SESSION_IDLE_MS } from "@/lib/session-report-policy";
 
-async function closeIdleSessions(nowMs: number, sinceIso: string): Promise<void> {
-  const { data: rows } = await supabaseAdmin
-    .from("sessions")
-    .select("id, status, startedAt, interviewBeganAt, lastActivityAt, lastHeartbeatAt, activitySegments")
-    .eq("status", "IN_PROGRESS")
-    .gte("startedAt", sinceIso)
-    .limit(50);
-  for (const s of (rows ?? []) as {
-    id: string;
-    startedAt?: string | null;
-    interviewBeganAt?: string | null;
-    lastActivityAt?: string | null;
-    lastHeartbeatAt?: string | null;
-    activitySegments?: { enteredAt: string; leftAt: string | null }[] | null;
-  }[]) {
+type IdleRow = {
+  id: string;
+  startedAt?: string | null;
+  createdAt?: string | null;
+  interviewBeganAt?: string | null;
+  lastActivityAt?: string | null;
+  lastHeartbeatAt?: string | null;
+  activitySegments?: { enteredAt: string; leftAt: string | null }[] | null;
+};
+
+/** Columns from migration 18 (heartbeat); older databases only have the 01-schema ones. */
+let heartbeatColumnsMissing = false;
+let preflightTableMissing = false;
+
+const missingCol = (e: { code?: string; message?: string } | null | undefined) =>
+  !!e && (e.code === "42703" || e.code === "PGRST204" || e.code === "42P01" || e.code === "PGRST205" || /does not exist|Could not find/i.test(e.message ?? ""));
+
+/** Update a session; on a missing optional column, retry without the optional fields. */
+async function updateLiveSession(id: string, core: Record<string, unknown>, optional: Record<string, unknown>) {
+  const run = (payload: Record<string, unknown>) =>
+    supabaseAdmin.from("sessions").update(payload).eq("id", id).eq("status", "IN_PROGRESS").select("id");
+  let extra = { ...optional };
+  let res = await run({ ...core, ...extra });
+  // Drop the optional column the database doesn't have (named in the error), else all of them.
+  for (let i = 0; i < 2 && res.error && missingCol(res.error) && Object.keys(extra).length; i++) {
+    const named = Object.keys(extra).find((k) => (res.error?.message ?? "").includes(k));
+    if (named) {
+      const { [named]: _drop, ...rest } = extra;
+      void _drop;
+      extra = rest;
+    } else extra = {};
+    res = await run({ ...core, ...extra });
+  }
+  return !res.error && Array.isArray(res.data) && res.data.length > 0;
+}
+
+async function latestPreflightEvents(ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (preflightTableMissing || !ids.length) return out;
+  const { data, error } = await supabaseAdmin
+    .from("session_preflight_events")
+    .select('"sessionId", "createdAt"')
+    .in("sessionId", ids)
+    .order("createdAt", { ascending: false })
+    .limit(1000);
+  if (error) {
+    if (missingCol(error)) preflightTableMissing = true;
+    return out;
+  }
+  for (const r of (data ?? []) as { sessionId: string; createdAt: string }[]) if (!out.has(r.sessionId)) out.set(r.sessionId, r.createdAt);
+  return out;
+}
+
+/**
+ * Quiet IN_PROGRESS sessions (any age): close them from their saved activity so
+ * the panel shows the right status and "Send new link" without a manual UPDATE.
+ *  - Never reached the first question (no messages, no heartbeat) → ABANDONED
+ *    after 15 min, endReason NEVER_STARTED, report SKIPPED (nothing to report).
+ *  - With messages → after 30 min: COMPLETED if the interviewer said goodbye,
+ *    else ABANDONED; the report is scheduled.
+ * The conditional update (status still IN_PROGRESS) makes this safe to run from
+ * several processes or after a restart: only one writer wins per session.
+ */
+async function closeIdleSessions(nowMs: number): Promise<{ completed: number; abandoned: number; neverStarted: number }> {
+  const counts = { completed: 0, abandoned: 0, neverStarted: 0 };
+  const cutoff = new Date(nowMs - EMPTY_SESSION_IDLE_MS).toISOString();
+  const base = "id, status, startedAt, createdAt, lastActivityAt, activitySegments";
+  const fetchIdle = async (cols: string): Promise<{ data: unknown[] | null; error: { code?: string; message: string } | null }> => {
+    const r = await supabaseAdmin
+      .from("sessions")
+      .select(cols)
+      .eq("status", "IN_PROGRESS")
+      .lt("lastActivityAt", cutoff)
+      .order("createdAt", { ascending: true })
+      .limit(50);
+    return { data: (r.data as unknown[] | null) ?? null, error: r.error };
+  };
+  let q = await fetchIdle(heartbeatColumnsMissing ? base : `${base}, interviewBeganAt, lastHeartbeatAt`);
+  if (q.error && !heartbeatColumnsMissing && missingCol(q.error)) {
+    heartbeatColumnsMissing = true;
+    q = await fetchIdle(base);
+  }
+  if (q.error) {
+    log.error("Idle-session query failed:", q.error.message);
+    return counts;
+  }
+  const rows = (q.data ?? []) as unknown as IdleRow[];
+  const preflight = await latestPreflightEvents(rows.map((r) => r.id));
+
+  for (const s of rows) {
     const { data: msgs } = await supabaseAdmin
       .from("messages")
       .select("role, content, contentType, timestamp")
@@ -322,36 +409,41 @@ async function closeIdleSessions(nowMs: number, sinceIso: string): Promise<void>
       .order("timestamp", { ascending: true });
     const messages = (msgs ?? []) as { role: string; content: string; contentType?: string; timestamp?: string }[];
     const lastAt = lastMessageAt(messages);
-    const candidates = [lastAt, s.lastActivityAt, s.lastHeartbeatAt, s.interviewBeganAt]
-      .map((t) => (t ? new Date(t).getTime() : NaN))
-      .filter((v) => !Number.isNaN(v));
-    if (candidates.length === 0) continue; // never started: leave to the preflight expiry
-    const lastSeen = Math.max(...candidates);
-    if (nowMs - lastSeen < IDLE_SESSION_MS) continue;
-    if (messages.length === 0) continue; // nothing attempted: the link-expiry logic handles it
+    const d = idleCloseDecision({
+      nowMs,
+      messageCount: messages.length,
+      hasHeartbeat: !!s.lastHeartbeatAt,
+      finished: messages.length > 0 && reachedClosing(messages),
+      times: [s.lastHeartbeatAt, lastAt, s.lastActivityAt, preflight.get(s.id), s.interviewBeganAt, s.startedAt, s.createdAt],
+    });
+    if (d.action === "wait") continue;
 
-    const endIso = new Date(lastSeen).toISOString();
-    const finished = reachedClosing(messages);
+    const segments = (s.activitySegments ?? []).map((g) => (g.leftAt === null ? { ...g, leftAt: d.endIso } : g));
+    if (d.action === "abandon_empty") {
+      const ok = await updateLiveSession(
+        s.id,
+        { status: "ABANDONED", activitySegments: segments },
+        { endReason: NEVER_STARTED_END_REASON, ...(reportColumnsMissing ? {} : { reportStatus: "SKIPPED" }) },
+      );
+      if (ok) counts.neverStarted++;
+      continue;
+    }
+
     const duration = effectiveDurationSeconds({ ...s, completedAt: null }, lastAt);
-    const segments = (s.activitySegments ?? []).map((g) => (g.leftAt === null ? { ...g, leftAt: endIso } : g));
-    const base = finished
-      ? { status: "COMPLETED", completedAt: endIso, ...(duration ? { totalDurationSeconds: duration } : {}) }
-      : { status: "ABANDONED", ...(duration ? { totalDurationSeconds: duration } : {}) };
-    const write = (withExtras: boolean) =>
-      supabaseAdmin
-        .from("sessions")
-        .update({
-          ...base,
-          activitySegments: segments,
-          ...(withExtras ? { endReason: finished ? "COMPLETED" : "DISCONNECTED" } : {}),
-        })
-        .eq("id", s.id)
-        .eq("status", "IN_PROGRESS")
-        .select("id");
-    let res = await write(true);
-    if (res.error && /endReason|42703|PGRST204/.test(`${res.error.code} ${res.error.message}`)) res = await write(false);
-    if (res.error || !res.data?.length) continue;
-    log.info(`Idle session ${s.id} closed as ${base.status} (last activity ${endIso})`);
-    scheduleSessionReport(s.id, `idle:${base.status.toLowerCase()}`, 0);
+    const finished = d.status === "COMPLETED";
+    const ok = await updateLiveSession(
+      s.id,
+      finished
+        ? { status: "COMPLETED", completedAt: d.endIso, activitySegments: segments, ...(duration ? { totalDurationSeconds: duration } : {}) }
+        : { status: "ABANDONED", activitySegments: segments, ...(duration ? { totalDurationSeconds: duration } : {}) },
+      { endReason: finished ? "COMPLETED" : "DISCONNECTED" },
+    );
+    if (!ok) continue;
+    if (finished) counts.completed++;
+    else counts.abandoned++;
+    // Old sessions (outside the report look-back) are closed without a new report run.
+    if (nowMs - d.lastSeenMs < REPORT_SWEEP_LOOKBACK_MS) scheduleSessionReport(s.id, `idle:${d.status.toLowerCase()}`, 0);
   }
+  return counts;
 }
+

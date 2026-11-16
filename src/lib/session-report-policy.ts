@@ -117,3 +117,43 @@ export function canMarkCompleted(status: string | null | undefined): boolean {
   // finished (e.g. the tab-close beacon raced the final save).
   return status === "IN_PROGRESS" || status === "ABANDONED" || status === "NOT_STARTED";
 }
+
+/** No saved activity / heartbeat for this long → a session with content is over. */
+export const IDLE_SESSION_MS = 30 * 60 * 1000;
+/** Opened the link, no heartbeat and no messages: over sooner. */
+export const EMPTY_SESSION_IDLE_MS = 15 * 60 * 1000;
+/** Set on sessions closed before the first question; the panel shows a note for it. */
+export const NEVER_STARTED_END_REASON = "NEVER_STARTED";
+
+export type IdleCloseInput = {
+  nowMs: number;
+  messageCount: number;
+  hasHeartbeat: boolean;
+  /** Reached the interviewer's goodbye (only meaningful with messages). */
+  finished: boolean;
+  /** Any activity times: heartbeat, last message, last activity, preflight events, startedAt, createdAt. */
+  times: (string | null | undefined)[];
+};
+
+export type IdleCloseDecision =
+  | { action: "wait" }
+  | { action: "abandon_empty"; endIso: string; lastSeenMs: number }
+  | { action: "close"; status: "COMPLETED" | "ABANDONED"; endIso: string; lastSeenMs: number };
+
+/**
+ * What to do with a quiet IN_PROGRESS session. Idle is measured from the latest
+ * of all activity times (COALESCE of heartbeat, last message, activity,
+ * startedAt, createdAt). Empty sessions (no messages, no heartbeat) end after
+ * 15 min as ABANDONED with no report; sessions with content after 30 min.
+ */
+export function idleCloseDecision(i: IdleCloseInput): IdleCloseDecision {
+  const seen = i.times.map((t) => (t ? new Date(t).getTime() : NaN)).filter((v) => Number.isFinite(v));
+  if (!seen.length) return { action: "wait" };
+  const lastSeenMs = Math.max(...seen);
+  const empty = i.messageCount === 0 && !i.hasHeartbeat;
+  const limit = empty ? EMPTY_SESSION_IDLE_MS : IDLE_SESSION_MS;
+  if (i.nowMs - lastSeenMs < limit) return { action: "wait" };
+  const endIso = new Date(lastSeenMs).toISOString();
+  if (i.messageCount === 0) return { action: "abandon_empty", endIso, lastSeenMs };
+  return { action: "close", status: i.finished ? "COMPLETED" : "ABANDONED", endIso, lastSeenMs };
+}

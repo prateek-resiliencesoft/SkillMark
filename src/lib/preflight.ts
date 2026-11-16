@@ -90,6 +90,7 @@ export type PreflightSessionFields = {
   startedAt?: string | null;
   createdAt?: string | null;
   preflightStep?: string | null;
+  endReason?: string | null;
 };
 
 /** Last time we heard from the candidate during onboarding (before the interview begins). */
@@ -295,3 +296,14 @@ export function mediaErrorCode(err: unknown): "permission_denied" | "device_not_
   if (name === "NotReadableError") return "device_in_use";
   return "unknown";
 }
+
+/**
+ * Abandoned before the interview's first question: closed by the idle sweep
+ * (endReason NEVER_STARTED) or ended during setup (interview never began).
+ */
+export function neverReachedFirstQuestion(session: PreflightSessionFields | null | undefined): boolean {
+  if (!session || session.status !== "ABANDONED") return false;
+  return session.endReason === "NEVER_STARTED" || session.interviewBeganAt === null;
+}
+
+export const NEVER_REACHED_FIRST_QUESTION = "Never reached the first question";

@@ -47,7 +47,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { needsFreshInviteLink } from "@/lib/session-link";
-import { formatSessionStatusLabel } from "@/lib/preflight";
+import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -1348,12 +1348,17 @@ export function CandidateManager({
                         );
                       })(),
                       status: (
-                        <Badge
-                          variant={getSessionBadgeVariant(statusLabel)}
-                          className="whitespace-nowrap"
-                        >
-                          {statusLabel}
-                        </Badge>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <Badge
+                            variant={getSessionBadgeVariant(statusLabel)}
+                            className="whitespace-nowrap"
+                          >
+                            {statusLabel}
+                          </Badge>
+                          {neverReachedFirstQuestion(row.session) ? (
+                            <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
+                          ) : null}
+                        </div>
                       ),
                     };
 
