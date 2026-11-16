@@ -37,8 +37,9 @@ export default function SettingsLayout({
     },
     {
       name: isZh ? "API 密钥" : "API Keys",
-      href: "/settings/api-keys",
+      href: "/developers",
       icon: KeyRound,
+      external: true,
     },
     {
       name: isZh ? "AI" : "AI",

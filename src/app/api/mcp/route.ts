@@ -19,9 +19,9 @@ function withCors(res: Response): Response {
 }
 
 /**
- * Accepts `Authorization: Bearer dlv_…`. As a fallback for clients that cannot
+ * Accepts `Authorization: Bearer rsi_…` (older dlv_ keys too). As a fallback for clients that cannot
  * send headers (e.g. ChatGPT "No authentication" connectors) the key may be
- * passed as `?key=dlv_…` — this puts the secret in URLs/logs, so use a
+ * passed as `?key=rsi_…` — this puts the secret in URLs/logs, so use a
  * dedicated, minimally-scoped key and rotate it if the URL leaks.
  */
 function authRequest(req: Request): Request {

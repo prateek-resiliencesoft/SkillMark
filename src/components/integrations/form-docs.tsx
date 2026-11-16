@@ -39,9 +39,9 @@ export function FormDocs({ formId }: { formId: string }) {
           <div><span className="text-muted-foreground">interview_form_id:</span> <code>{f.publicId}</code></div>
           <div className="sm:col-span-2"><span className="text-muted-foreground">Hosted form URL:</span> <a className="text-primary underline ml-1 font-mono text-xs" href={hosted} target="_blank" rel="noreferrer">{hosted}</a></div>
           <div className="sm:col-span-2"><span className="text-muted-foreground">Endpoint:</span> <code>POST {endpoint}</code></div>
-          <div className="sm:col-span-2"><span className="text-muted-foreground">Headers:</span> <code>Authorization: Bearer dlv_live_…</code> (or <code>dlv_test_…</code>) and <code>Content-Type: application/json</code> or <code>multipart/form-data</code></div>
+          <div className="sm:col-span-2"><span className="text-muted-foreground">Headers:</span> <code>Authorization: Bearer rsi_live_…</code> (or <code>rsi_test_…</code>) and <code>Content-Type: application/json</code> or <code>multipart/form-data</code></div>
           <div className="sm:col-span-2 text-xs text-muted-foreground">
-            Authentication: create a key under <Link className="text-primary underline" href="/integrations/api-keys">API Keys</Link>. Keys are secret — call this API only from your backend/CRM, never from browser JavaScript. Test keys (<code>dlv_test_</code>) mark applications as test. Limits: 60 req/min per key, 25 MB per request.
+            Authentication: create a key under <Link className="text-primary underline" href="/integrations/api-keys">API Keys</Link>. Keys are secret — call this API only from your backend/CRM, never from browser JavaScript. Test keys (<code>rsi_test_</code>) mark applications as test. Limits: 60 req/min per key, 25 MB per request.
           </div>
           {f.status !== "published" && <div className="sm:col-span-2 rounded-md bg-amber-50 p-2 text-xs text-amber-800">This form is not published — submissions return 409 FORM_NOT_PUBLISHED.</div>}
         </CardContent>

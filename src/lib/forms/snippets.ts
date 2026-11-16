@@ -8,7 +8,7 @@ export function buildNodeSnippet(base: string, formId: string, fields: FormField
     `// Node 18+ (server-side only — never ship the key to the browser)`,
     `import { readFile } from "node:fs/promises";`,
     ``,
-    `const RSI_API_KEY = process.env.RSI_API_KEY; // dlv_live_… / dlv_test_…`,
+    `const RSI_API_KEY = process.env.RSI_API_KEY; // rsi_live_… / rsi_test_…`,
     `const url = "${base}/api/v1/interview-forms/${formId}/applications";`,
     ``,
     `const form = new FormData();`,

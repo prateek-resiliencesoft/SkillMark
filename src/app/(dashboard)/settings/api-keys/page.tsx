@@ -69,7 +69,7 @@ export default function ApiKeysPage() {
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-1"><Label>Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Careers site backend" /></div>
-            <div className="space-y-1"><Label>Environment</Label><select className={sel} value={env} onChange={(e) => setEnv(e.target.value as "live" | "test")}><option value="test">Test (dlv_test_…)</option><option value="live">Live (dlv_live_…)</option></select></div>
+            <div className="space-y-1"><Label>Environment</Label><select className={sel} value={env} onChange={(e) => setEnv(e.target.value as "live" | "test")}><option value="test">Test (rsi_test_…)</option><option value="live">Live (rsi_live_…)</option></select></div>
             <div className="space-y-1"><Label>Expires (optional)</Label><Input type="datetime-local" value={expiresLocal} onChange={(e) => setExpiresLocal(e.target.value)} /></div>
           </div>
           <div className="space-y-1">

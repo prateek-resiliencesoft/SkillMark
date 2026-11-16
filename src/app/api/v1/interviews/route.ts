@@ -1,3 +1,4 @@
+import { routeHandler } from "@/server/public-api/handler";
 import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import {
   apiError,
@@ -7,7 +8,7 @@ import {
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-export async function GET(request: Request) {
+async function legacyGet(request: Request) {
   const auth = await validateApiKey(request);
   if (isAuthError(auth)) return auth;
 
@@ -169,4 +170,12 @@ export async function POST(request: Request) {
   }
 
   return Response.json({ data: interview });
+}
+
+const listInterviews = routeHandler("listInterviews");
+
+/** Older dlv_ keys keep the original response shape; rsi_ keys get the documented one. */
+export async function GET(request: Request) {
+  if (/^Bearer\s+dlv_/i.test(request.headers.get("authorization") ?? "")) return legacyGet(request);
+  return listInterviews(request);
 }
