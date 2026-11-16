@@ -375,8 +375,11 @@ async function latestPreflightEvents(ids: string[]): Promise<Map<string, string>
  * The conditional update (status still IN_PROGRESS) makes this safe to run from
  * several processes or after a restart: only one writer wins per session.
  */
-async function closeIdleSessions(nowMs: number): Promise<{ completed: number; abandoned: number; neverStarted: number }> {
-  const counts = { completed: 0, abandoned: 0, neverStarted: 0 };
+export async function closeIdleSessions(
+  nowMs: number,
+  opts: { dryRun?: boolean } = {},
+): Promise<{ completed: number; abandoned: number; neverStarted: number; plan: { id: string; action: string }[] }> {
+  const counts = { completed: 0, abandoned: 0, neverStarted: 0, plan: [] as { id: string; action: string }[] };
   const cutoff = new Date(nowMs - EMPTY_SESSION_IDLE_MS).toISOString();
   const base = "id, status, startedAt, createdAt, lastActivityAt, activitySegments";
   const fetchIdle = async (cols: string): Promise<{ data: unknown[] | null; error: { code?: string; message: string } | null }> => {
@@ -417,6 +420,10 @@ async function closeIdleSessions(nowMs: number): Promise<{ completed: number; ab
       times: [s.lastHeartbeatAt, lastAt, s.lastActivityAt, preflight.get(s.id), s.interviewBeganAt, s.startedAt, s.createdAt],
     });
     if (d.action === "wait") continue;
+    if (opts.dryRun) {
+      counts.plan.push({ id: s.id, action: d.action === "close" ? d.status : "ABANDONED (never started, no report)" });
+      continue;
+    }
 
     const segments = (s.activitySegments ?? []).map((g) => (g.leftAt === null ? { ...g, leftAt: d.endIso } : g));
     if (d.action === "abandon_empty") {
