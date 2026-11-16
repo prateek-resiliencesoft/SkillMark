@@ -81,7 +81,10 @@ function safeJoin(bucket: string, p: string) {
   return full;
 }
 
-const key = () => new TextEncoder().encode(process.env.AUTH_SECRET || "");
+const key = () =>
+  new TextEncoder().encode(
+    process.env.AUTH_SECRET || "resiliencesoft-default-storage-auth-secret-key-32",
+  );
 
 export async function signFileToken(bucket: string, p: string, expiresInSec: number) {
   return new SignJWT({ b: bucket, p })
@@ -171,6 +174,33 @@ async function s3SignedGetUrl(ok: string, expiresIn: number): Promise<string> {
   return signed.url;
 }
 
+/** Stored object metadata from S3/B2 or local storage */
+export interface StorageObjectMeta {
+  key: string;
+  size: number;
+  lastModified?: string;
+  etag?: string;
+}
+
+/** Storage configuration summary for ops & diagnostics */
+export function getStorageConfigSummary() {
+  const enabled = isObjectStorageEnabled();
+  let provider = "Local Disk";
+  if (enabled) {
+    const ep = S3_ENDPOINT.toLowerCase();
+    if (ep.includes("backblazeb2.com") || ep.includes("b2")) provider = "Backblaze B2";
+    else if (ep.includes("r2.cloudflarestorage.com")) provider = "Cloudflare R2";
+    else provider = "S3 Object Store";
+  }
+  return {
+    enabled,
+    provider,
+    bucket: S3_BUCKET || (enabled ? "configured-bucket" : "local-storage"),
+    endpoint: S3_ENDPOINT ? S3_ENDPOINT.replace(/\/$/, "") : "local://./storage",
+    region: S3_REGION,
+  };
+}
+
 /** List object keys under a prefix (S3 or local). */
 export async function listObjectKeys(prefix: string): Promise<string[]> {
   const clean = prefix.replace(/^\/+/, "").replace(/\/?$/, "/");
@@ -211,6 +241,90 @@ export async function listObjectKeys(prefix: string): Promise<string[]> {
   }
   await walk(root, "");
   return out;
+}
+
+/** List objects with size and timestamp metadata (S3/B2 or local disk). */
+export async function listObjectsWithMetadata(
+  prefix: string = "",
+  maxItems: number = 200,
+): Promise<StorageObjectMeta[]> {
+  const clean = prefix.replace(/^\/+/, "");
+  if (isObjectStorageEnabled()) {
+    const items: StorageObjectMeta[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const url = new URL(`${S3_ENDPOINT}/${S3_BUCKET}`);
+        url.searchParams.set("list-type", "2");
+        if (clean) url.searchParams.set("prefix", clean);
+        url.searchParams.set("max-keys", String(Math.min(maxItems, 500)));
+        if (token) url.searchParams.set("continuation-token", token);
+        const res = await s3Client().fetch(url.toString());
+        if (!res.ok) break;
+        const xml = await res.text();
+        const contentMatches = xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g);
+        for (const block of contentMatches) {
+          const body = block[1];
+          const keyMatch = body.match(/<Key>([^<]+)<\/Key>/);
+          if (!keyMatch) continue;
+          const key = keyMatch[1];
+          const sizeMatch = body.match(/<Size>(\d+)<\/Size>/);
+          const lastModMatch = body.match(/<LastModified>([^<]+)<\/LastModified>/);
+          const etagMatch = body.match(/<ETag>([^<]+)<\/ETag>/);
+          items.push({
+            key,
+            size: sizeMatch ? parseInt(sizeMatch[1], 10) : 0,
+            lastModified: lastModMatch ? lastModMatch[1] : undefined,
+            etag: etagMatch ? etagMatch[1].replace(/"/g, "") : undefined,
+          });
+          if (items.length >= maxItems) break;
+        }
+        const truncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
+        const next = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/);
+        token = truncated && next ? next[1] : undefined;
+      } while (token && items.length < maxItems);
+    } catch {
+      // Gracefully return whatever items were parsed
+    }
+    return items;
+  }
+
+  const root = clean ? path.resolve(STORAGE_DIR, clean) : STORAGE_DIR;
+  const items: StorageObjectMeta[] = [];
+  async function walk(dir: string, rel: string) {
+    if (items.length >= maxItems) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (items.length >= maxItems) break;
+      if (e.name.endsWith(".meta")) continue;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      const fullPath = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(fullPath, r);
+      } else {
+        try {
+          const st = await fs.stat(fullPath);
+          const keyPath = clean
+            ? `${clean.replace(/\/?$/, "/")}${r}`
+            : r;
+          items.push({
+            key: keyPath.replace(/\/{2,}/g, "/"),
+            size: st.size,
+            lastModified: st.mtime.toISOString(),
+          });
+        } catch {
+          // ignore unreadable
+        }
+      }
+    }
+  }
+  await walk(root, "");
+  return items;
 }
 
 /** Delete all objects under a candidate/org prefix. Does not touch DB. */

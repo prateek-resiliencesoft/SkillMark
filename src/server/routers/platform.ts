@@ -8,6 +8,7 @@
 import { nanoid } from "@/lib/id";
 import { clearStoredMedia } from "@/lib/media-review";
 import { deleteAccount } from "@/lib/account-deletion";
+import { getStorageConfigSummary, listObjectsWithMetadata, storage } from "@/lib/storage";
 import { authDb } from "@/lib/supabase/admin";
 import { setUserPaused } from "@/lib/users";
 import {
@@ -1545,5 +1546,439 @@ export const platformRouter = router({
       });
 
       return result;
+    }),
+
+  /** Storage telemetry and Backblaze B2 connection status */
+  storageStats: platformProcedure.query(async ({ ctx }) => {
+    const config = getStorageConfigSummary();
+
+    const [{ count: sessionCount }, { count: candidateCount }] = await Promise.all([
+      ctx.supabase
+        .from("sessions")
+        .select("id", { count: "exact", head: true })
+        .not("audioRecordingUrl", "is", null),
+      ctx.supabase
+        .from("candidates")
+        .select("id", { count: "exact", head: true })
+        .not("profile", "is", null),
+    ]);
+
+    return {
+      config,
+      totalRecordingsTracked: sessionCount ?? 0,
+      totalCandidatesTracked: candidateCount ?? 0,
+    };
+  }),
+
+  /** Generate signed URL on demand for any stored asset key */
+  getSignedFileUrl: platformProcedure
+    .input(
+      z.object({
+        key: z.string().min(1),
+        bucket: z.string().default("files"),
+        expiresIn: z.number().int().min(60).max(86400).default(7200),
+      }),
+    )
+    .query(async ({ input }) => {
+      const cleanKey = input.key.replace(/^\/+/, "");
+      if (cleanKey.startsWith("http://") || cleanKey.startsWith("https://")) {
+        return { signedUrl: cleanKey };
+      }
+      const { data, error } = await storage
+        .from(input.bucket)
+        .createSignedUrl(cleanKey, input.expiresIn);
+      if (error || !data?.signedUrl) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: error?.message || "Could not generate signed URL for asset",
+        });
+      }
+      return { signedUrl: data.signedUrl };
+    }),
+
+  /** Browse and inspect stored files across all organizations, projects, and candidates */
+  storedFiles: platformProcedure
+    .input(
+      z.object({
+        category: z
+          .enum(["all", "recordings", "screenshots", "resumes", "raw"])
+          .default("all"),
+        organizationId: z.string().uuid().optional(),
+        projectId: z.string().uuid().optional(),
+        search: z.string().trim().max(100).optional(),
+        limit: z.number().int().min(1).max(200).default(60),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const config = getStorageConfigSummary();
+
+      // Fetch orgs and projects map
+      const [{ data: orgs }, { data: projects }] = await Promise.all([
+        ctx.supabase.from("organizations").select("id, name"),
+        ctx.supabase.from("projects").select("id, name, organizationId"),
+      ]);
+
+      const orgMap = new Map((orgs ?? []).map((o) => [o.id as string, o.name as string]));
+      const projMap = new Map(
+        (projects ?? []).map((p) => [
+          p.id as string,
+          {
+            name: p.name as string,
+            organizationId: p.organizationId as string,
+            orgName: orgMap.get(p.organizationId as string) || "Unknown Org",
+          },
+        ]),
+      );
+
+      // Determine project filter
+      let targetProjectIds: string[] | undefined;
+      if (input.projectId) {
+        targetProjectIds = [input.projectId];
+      } else if (input.organizationId) {
+        targetProjectIds = (projects ?? [])
+          .filter((p) => p.organizationId === input.organizationId)
+          .map((p) => p.id as string);
+      }
+
+      // Fetch interview ids matching projects if filtered
+      const interviewMap = new Map<string, { id: string; title: string; projectId: string }>();
+      let interviewQuery = ctx.supabase.from("interviews").select("id, title, projectId");
+      if (targetProjectIds && targetProjectIds.length > 0) {
+        interviewQuery = interviewQuery.in("projectId", targetProjectIds);
+      }
+      const { data: interviewRows } = await interviewQuery;
+      for (const inv of interviewRows ?? []) {
+        interviewMap.set(inv.id as string, {
+          id: inv.id as string,
+          title: (inv.title as string) || "AI Interview",
+          projectId: inv.projectId as string,
+        });
+      }
+
+      const matchingInterviewIds = targetProjectIds
+        ? Array.from(interviewMap.keys())
+        : undefined;
+
+      const hasInterviews =
+        !targetProjectIds || (matchingInterviewIds && matchingInterviewIds.length > 0);
+
+      type StoredFileItem = {
+        id: string;
+        key: string;
+        name: string;
+        category: "recording" | "screenshot" | "resume" | "raw";
+        contentType?: string;
+        size?: number;
+        createdAt?: string;
+        signedUrl: string;
+        candidateName?: string;
+        candidateEmail?: string;
+        candidateId?: string;
+        sessionId?: string;
+        interviewTitle?: string;
+        interviewId?: string;
+        projectName?: string;
+        projectId?: string;
+        organizationName?: string;
+        organizationId?: string;
+        timestamp?: number;
+      };
+
+      const collected: StoredFileItem[] = [];
+
+      // 1. Collect Sessions (Recordings & Screenshots)
+      if (
+        hasInterviews &&
+        (input.category === "all" ||
+          input.category === "recordings" ||
+          input.category === "screenshots")
+      ) {
+        let sessionQuery = ctx.supabase
+          .from("sessions")
+          .select(
+            "id, interviewId, participantName, participantEmail, audioRecordingUrl, audioRecordings, screenshots, mediaStoragePrefix, createdAt",
+          )
+          .order("createdAt", { ascending: false })
+          .limit(100);
+
+        if (matchingInterviewIds && matchingInterviewIds.length > 0) {
+          sessionQuery = sessionQuery.in("interviewId", matchingInterviewIds);
+        }
+
+        const { data: sessions } = await sessionQuery;
+
+        for (const s of sessions ?? []) {
+          const inv = interviewMap.get(s.interviewId as string);
+          const proj = inv?.projectId ? projMap.get(inv.projectId) : undefined;
+          const orgName = proj ? proj.orgName : undefined;
+          const orgId = proj ? proj.organizationId : undefined;
+
+          // Recording: audioRecordingUrl
+          if (
+            (input.category === "all" || input.category === "recordings") &&
+            s.audioRecordingUrl &&
+            typeof s.audioRecordingUrl === "string"
+          ) {
+            const rawKey = s.audioRecordingUrl.replace(/^\/+/, "");
+            const parts = rawKey.split("/");
+            const fileName = parts[parts.length - 1] || "recording.m4a";
+            collected.push({
+              id: `rec-${s.id}-main`,
+              key: rawKey,
+              name: fileName,
+              category: "recording",
+              contentType: fileName.endsWith(".webm")
+                ? "audio/webm"
+                : fileName.endsWith(".mp4")
+                  ? "video/mp4"
+                  : "audio/m4a",
+              createdAt: s.createdAt as string,
+              signedUrl: "",
+              candidateName: (s.participantName as string) || "Candidate",
+              candidateEmail: (s.participantEmail as string) || undefined,
+              sessionId: s.id as string,
+              interviewTitle: inv?.title || "AI Interview",
+              interviewId: s.interviewId as string,
+              projectName: proj?.name || "Project",
+              projectId: inv?.projectId,
+              organizationName: orgName,
+              organizationId: orgId,
+            });
+          }
+
+          // Recordings: audioRecordings array
+          if (
+            (input.category === "all" || input.category === "recordings") &&
+            Array.isArray(s.audioRecordings)
+          ) {
+            (s.audioRecordings as Array<Record<string, unknown> | string>).forEach(
+              (rec, idx) => {
+                const recPath = typeof rec === "string" ? rec : (rec?.path as string);
+                if (
+                  recPath &&
+                  typeof recPath === "string" &&
+                  recPath !== s.audioRecordingUrl
+                ) {
+                  const rawKey = recPath.replace(/^\/+/, "");
+                  const parts = rawKey.split("/");
+                  const fileName =
+                    parts[parts.length - 1] || `recording-part-${idx + 1}.webm`;
+                  collected.push({
+                    id: `rec-${s.id}-${idx}`,
+                    key: rawKey,
+                    name: fileName,
+                    category: "recording",
+                    contentType: fileName.endsWith(".webm") ? "audio/webm" : "audio/m4a",
+                    createdAt: s.createdAt as string,
+                    signedUrl: "",
+                    candidateName: (s.participantName as string) || "Candidate",
+                    candidateEmail: (s.participantEmail as string) || undefined,
+                    sessionId: s.id as string,
+                    interviewTitle: inv?.title || "AI Interview",
+                    interviewId: s.interviewId as string,
+                    projectName: proj?.name || "Project",
+                    projectId: inv?.projectId,
+                    organizationName: orgName,
+                    organizationId: orgId,
+                  });
+                }
+              },
+            );
+          }
+
+          // Screenshots
+          if (
+            (input.category === "all" || input.category === "screenshots") &&
+            Array.isArray(s.screenshots)
+          ) {
+            (s.screenshots as Array<Record<string, unknown> | string>).forEach(
+              (shot, idx) => {
+                const shotPath =
+                  typeof shot === "string" ? shot : (shot?.path as string);
+                if (shotPath && typeof shotPath === "string") {
+                  const rawKey = shotPath.replace(/^\/+/, "");
+                  const parts = rawKey.split("/");
+                  const fileName = parts[parts.length - 1] || `proctor-${idx + 1}.jpg`;
+                  collected.push({
+                    id: `shot-${s.id}-${idx}`,
+                    key: rawKey,
+                    name: fileName,
+                    category: "screenshot",
+                    contentType: "image/jpeg",
+                    createdAt: s.createdAt as string,
+                    signedUrl: "",
+                    candidateName: (s.participantName as string) || "Candidate",
+                    candidateEmail: (s.participantEmail as string) || undefined,
+                    sessionId: s.id as string,
+                    interviewTitle: inv?.title || "AI Interview",
+                    interviewId: s.interviewId as string,
+                    projectName: proj?.name || "Project",
+                    projectId: inv?.projectId,
+                    organizationName: orgName,
+                    organizationId: orgId,
+                    timestamp:
+                      typeof shot === "object" && typeof shot?.timestamp === "number"
+                        ? shot.timestamp
+                        : undefined,
+                  });
+                }
+              },
+            );
+          }
+        }
+      }
+
+      // 2. Collect Candidates (Resumes & CVs)
+      if (hasInterviews && (input.category === "all" || input.category === "resumes")) {
+        let candQuery = ctx.supabase
+          .from("candidates")
+          .select("id, name, email, interviewId, sessionId, profile, createdAt")
+          .not("profile", "is", null)
+          .order("createdAt", { ascending: false })
+          .limit(100);
+
+        if (matchingInterviewIds && matchingInterviewIds.length > 0) {
+          candQuery = candQuery.in("interviewId", matchingInterviewIds);
+        }
+
+        const { data: candidates } = await candQuery;
+
+        for (const c of candidates ?? []) {
+          const profile = c.profile as Record<string, unknown> | null;
+          if (profile && typeof profile === "object" && profile.cvPath) {
+            const rawKey = String(profile.cvPath).replace(/^\/+/, "");
+            const fileName =
+              (profile.fileName as string) || rawKey.split("/").pop() || "resume.pdf";
+            const inv = interviewMap.get(c.interviewId as string);
+            const proj = inv?.projectId ? projMap.get(inv.projectId) : undefined;
+            collected.push({
+              id: `cv-${c.id}`,
+              key: rawKey,
+              name: fileName,
+              category: "resume",
+              contentType: (profile.cvType as string) || "application/pdf",
+              size: typeof profile.cvSize === "number" ? profile.cvSize : undefined,
+              createdAt: c.createdAt as string,
+              signedUrl: "",
+              candidateName: (c.name as string) || "Candidate",
+              candidateEmail: (c.email as string) || undefined,
+              candidateId: c.id as string,
+              sessionId: (c.sessionId as string) || undefined,
+              interviewTitle: inv?.title || "AI Interview",
+              interviewId: c.interviewId as string,
+              projectName: proj?.name || "Project",
+              projectId: inv?.projectId,
+              organizationName: proj?.orgName,
+              organizationId: proj?.organizationId,
+            });
+          }
+        }
+      }
+
+      // 3. Raw B2/S3 Direct Bucket Objects (if category === "raw" or "all")
+      if (input.category === "raw" || input.category === "all") {
+        try {
+          const rawPrefix = input.organizationId
+            ? `orgs/${input.organizationId}`
+            : "orgs/";
+          const rawObjects = await listObjectsWithMetadata(rawPrefix, 100);
+          const existingKeys = new Set(collected.map((c) => c.key));
+
+          for (const obj of rawObjects) {
+            if (!existingKeys.has(obj.key)) {
+              const parts = obj.key.split("/");
+              const fileName = parts[parts.length - 1] || obj.key;
+              let cat: "recording" | "screenshot" | "resume" | "raw" = "raw";
+              if (/\.(m4a|webm|mp3|wav|mp4)$/i.test(fileName)) cat = "recording";
+              else if (/\.(jpg|jpeg|png|webp)$/i.test(fileName)) cat = "screenshot";
+              else if (/\.(pdf|docx?)$/i.test(fileName)) cat = "resume";
+
+              let matchedOrgId: string | undefined;
+              let matchedProjId: string | undefined;
+              if (parts[0] === "orgs" && parts.length >= 4) {
+                matchedOrgId = parts[1];
+                if (parts[2] === "projects") matchedProjId = parts[3];
+              }
+
+              const proj = matchedProjId ? projMap.get(matchedProjId) : undefined;
+              const orgName =
+                (matchedOrgId ? orgMap.get(matchedOrgId) : undefined) || proj?.orgName;
+
+              if (input.organizationId && matchedOrgId && matchedOrgId !== input.organizationId)
+                continue;
+              if (input.projectId && matchedProjId && matchedProjId !== input.projectId)
+                continue;
+
+              if (input.category === "all" || input.category === cat || input.category === "raw") {
+                collected.push({
+                  id: `raw-${obj.key.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                  key: obj.key,
+                  name: fileName,
+                  category: cat,
+                  size: obj.size,
+                  createdAt: obj.lastModified,
+                  signedUrl: "",
+                  projectName: proj?.name,
+                  projectId: matchedProjId,
+                  organizationName: orgName,
+                  organizationId: matchedOrgId,
+                });
+              }
+            }
+          }
+        } catch {
+          // Continue gracefully
+        }
+      }
+
+      // 4. Apply text search filter if provided
+      let filtered = collected;
+      if (input.search && input.search.trim()) {
+        const query = input.search.toLowerCase();
+        filtered = filtered.filter(
+          (item) =>
+            item.name.toLowerCase().includes(query) ||
+            item.key.toLowerCase().includes(query) ||
+            item.candidateName?.toLowerCase().includes(query) ||
+            item.candidateEmail?.toLowerCase().includes(query) ||
+            item.projectName?.toLowerCase().includes(query) ||
+            item.organizationName?.toLowerCase().includes(query),
+        );
+      }
+
+      // 5. Slice to limit
+      const itemsToSign = filtered.slice(0, input.limit);
+
+      // 6. Generate signed URLs concurrently
+      await Promise.all(
+        itemsToSign.map(async (item) => {
+          if (item.key.startsWith("http://") || item.key.startsWith("https://")) {
+            item.signedUrl = item.key;
+            return;
+          }
+          try {
+            const { data } = await storage.from("files").createSignedUrl(item.key, 7200);
+            item.signedUrl = data?.signedUrl || "";
+          } catch {
+            item.signedUrl = "";
+          }
+        }),
+      );
+
+      // Compute counts by category
+      const counts = {
+        all: collected.length,
+        recordings: collected.filter((c) => c.category === "recording").length,
+        screenshots: collected.filter((c) => c.category === "screenshot").length,
+        resumes: collected.filter((c) => c.category === "resume").length,
+        raw: collected.filter((c) => c.category === "raw").length,
+      };
+
+      return {
+        items: itemsToSign,
+        total: filtered.length,
+        counts,
+        config,
+      };
     }),
 });
