@@ -1,4 +1,9 @@
 import type { Tables } from "@/lib/supabase/types";
+import {
+  getInterviewLanguageDisplayName,
+  getInterviewLanguageStyle,
+  interviewLanguageRequirement,
+} from "@/lib/interview-language";
 import { interviewerPromptIdentity } from "@/lib/interviewer-persona";
 import type { LLMMessage } from "../types";
 
@@ -35,6 +40,8 @@ export function buildInterviewerPrompt(ctx: InterviewContext): LLMMessage[] {
     interview.videoEnabled && "Video",
   ].filter(Boolean).join(", ");
 
+  const interviewLanguageName = getInterviewLanguageDisplayName(interview.language);
+  const interviewLanguageStyle = getInterviewLanguageStyle(interview.language);
   const ident = interviewerPromptIdentity(interview.aiName, (interview as { aiGender?: string }).aiGender, interview.aiTone, "en");
   const systemPrompt = `${ident.line} You are conducting a structured conversation.
 
@@ -42,7 +49,8 @@ INTERVIEW CONTEXT:
 - Title: ${interview.title}
 - Objective: ${interview.objective ?? "Gather insights through conversation"}
 - Tone: ${interview.aiTone}
-- Language: ${interview.language}
+- Language: ${interviewLanguageName}
+- Language style: ${interviewLanguageStyle}
 - Channels: ${channels}
 
 YOUR ROLE:
@@ -54,6 +62,7 @@ YOUR ROLE:
 6. Keep track of what has been discussed to avoid repetition
 7. When asking a SCRIPT question, speak its text VERBATIM — do not paraphrase, soften, or reword the scripted question text
 8. If a script question has a skipIf note and the candidate already covered those topics earlier (e.g. in their intro), SKIP it silently and move to the next script question (still emit [NEXT_QUESTION] when advancing)
+9. ${interviewLanguageRequirement(interview.language)}
 
 FOLLOW-UP STRATEGY (${interview.followUpDepth} depth):
 ${interview.followUpDepth === "LIGHT" ? "- Only ask scripted questions, no follow-ups" : ""}

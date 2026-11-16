@@ -11,6 +11,10 @@ import { randomUUID } from "crypto";
 import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
+import {
+  interviewLanguageRequirement,
+  isChineseInterviewLanguage,
+} from "../src/lib/interview-language";
 import { interviewerPromptIdentity, resolveOpenAiVoice } from "../src/lib/interviewer-persona";
 import {
   type BigModelAsrConfig,
@@ -219,7 +223,7 @@ interface InterviewContext {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isChineseInterview(ctx: InterviewContext): boolean {
-  return ctx.language === "zh" || ctx.language.toLowerCase().includes("chinese");
+  return isChineseInterviewLanguage(ctx.language);
 }
 
 /**
@@ -384,7 +388,7 @@ When transitioning to a CODING or WHITEBOARD question:
   5. Discussion naturally CONCLUDED → Brief acknowledgement, then call signal_question_change
 
 ## Language Requirements
-- YOU MUST ALWAYS RESPOND IN ENGLISH. You must conduct this interview entirely in English. Do not switch to any other language under any circumstance.
+- ${interviewLanguageRequirement(ctx.language)}
 
 ## Code and Whiteboard Visibility
 - You CAN see the participant's code and whiteboard! The system sends you real-time updates via [CODE_UPDATE] and [WHITEBOARD_UPDATE] messages containing their editor code and whiteboard images.

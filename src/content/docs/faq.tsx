@@ -19,7 +19,7 @@ export const faqArticles: DocArticle[] = [
 
         <h3>What languages are supported?</h3>
         <p>
-          You can configure the interview language when creating a template. The AI conducts the session and evaluates responses in the selected language. Supported languages include English, Chinese, Spanish, French, German, and others.
+          You can configure the interview language when creating a template. The AI conducts the session and evaluates responses in the selected language. Supported languages include English, Chinese, Hinglish (Hindi-English mix), Spanish, and French.
         </p>
 
         <h3>What is the maximum interview duration?</h3>
