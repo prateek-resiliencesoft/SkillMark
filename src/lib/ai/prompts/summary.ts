@@ -1,4 +1,4 @@
-import { getLanguageKey, LANGUAGE_DISPLAY_NAME } from "@/lib/i18n";
+import { interviewLanguageContentInstruction } from "@/lib/interview-language";
 import type { LLMContentPart, LLMMessage } from "../types";
 
 export interface WhiteboardDrawingInput {
@@ -112,9 +112,9 @@ export function buildSummaryPrompt(
       : "";
 
   // ── Language instruction ───────────────────────────────────────
-  const langKey = getLanguageKey(language ?? undefined);
-  const languageInstruction = language
-    ? `\n\nIMPORTANT: Write the ENTIRE report (all text fields including summary, evaluations, insights, themes) in ${LANGUAGE_DISPLAY_NAME[langKey]}. Do NOT mix languages.`
+  const contentLang = language ? interviewLanguageContentInstruction(language) : "";
+  const languageInstruction = contentLang
+    ? `\n\nIMPORTANT: ${contentLang} Apply this to the ENTIRE report (all text fields including summary, evaluations, insights, themes).`
     : "";
 
   const whiteboardInstruction = hasDrawings

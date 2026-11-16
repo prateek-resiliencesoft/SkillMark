@@ -758,11 +758,23 @@ function MicCheck({
       });
 
     try {
-      // Prefer 48 kHz MP3; fall back to 48 kHz WAV if MP3 fails to load.
+      // Prefer language clip (mp3→wav); fall back to English if locale clip missing.
+      const lang = languageRef.current;
+      const playLang = async (code: string) => {
+        try {
+          await tryPlay(micTestAudioSrc(code, "mp3"));
+        } catch {
+          await tryPlay(micTestAudioSrc(code, "wav"));
+        }
+      };
       try {
-        await tryPlay(micTestAudioSrc(languageRef.current, "mp3"));
+        await playLang(lang || "en");
       } catch {
-        await tryPlay(micTestAudioSrc(languageRef.current, "wav"));
+        if ((lang || "en").toLowerCase().slice(0, 2) !== "en") {
+          await playLang("en");
+        } else {
+          throw new Error("en clip failed");
+        }
       }
       audioRef.current = null;
       setSpeakerOk(true);
