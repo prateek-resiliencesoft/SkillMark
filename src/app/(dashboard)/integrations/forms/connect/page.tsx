@@ -89,7 +89,7 @@ function McpTab({ baseUrl }: { baseUrl: string }) {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <CodeBlock label="MCP server URL (Streamable HTTP)" code={mcpUrl} />
-          <p className="text-xs text-muted-foreground">Auth: <code>Authorization: Bearer dlv_…</code> (create a key under <Link className="text-primary underline" href="/integrations/api-keys">API keys</Link>; a read-only key — forms:read + applications:read + interviews:read — is safest for assistants). Tools: <code>list_interview_forms</code>, <code>get_interview_form</code>, <code>submit_application</code>, <code>list_applications</code>, <code>get_application</code>, <code>list_interviews</code>, <code>get_interview</code>, <code>create_interview</code>, <code>list_sessions</code>, <code>get_session_results</code>.</p>
+          <p className="text-xs text-muted-foreground">Auth: <code>Authorization: Bearer rsi_…</code> (create a key under <Link className="text-primary underline" href="/integrations/api-keys">API keys</Link>; a read-only key — forms:read + applications:read + interviews:read — is safest for assistants). Tools: <code>list_interview_forms</code>, <code>get_interview_form</code>, <code>submit_application</code>, <code>list_applications</code>, <code>get_application</code>, <code>list_interviews</code>, <code>get_interview</code>, <code>create_interview</code>, <code>list_sessions</code>, <code>get_session_results</code>.</p>
         </CardContent>
       </Card>
       <Card>
@@ -160,7 +160,7 @@ function MyIntegrationsInner() {
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">How to connect your service</CardTitle></CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-3">
-          <Step n={1} title="Create an API key" done={hasKey}>Under <Link className="text-primary underline" href="/integrations/api-keys">Manage API keys</Link>. Start with a <code>dlv_test_</code> key; the secret is shown once. Not needed for the hosted form.</Step>
+          <Step n={1} title="Create an API key" done={hasKey}>Under <Link className="text-primary underline" href="/integrations/api-keys">Manage API keys</Link>. Start with a <code>rsi_test_</code> key; the secret is shown once. Not needed for the hosted form.</Step>
           <Step n={2} title="Build & publish an interview form" done={all.some((f) => f.status === "published")}>Choose candidate fields and configure the interview in <Link className="text-primary underline" href="/integrations/forms">Interview Forms</Link>, then Publish to get a <code>frm_…</code> id.</Step>
           <Step n={3} title="Pick a connection method" done={(logs.data ?? []).length > 0}>REST API from your backend, hosted form / iframe, ready-made code for your CRM, or MCP for AI assistants. Results flow back via <code>GET /applications/&#123;id&#125;</code>.</Step>
         </CardContent>

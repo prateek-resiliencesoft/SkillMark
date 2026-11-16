@@ -1,3 +1,4 @@
+import { routeHandler } from "@/server/public-api/handler";
 import {
     apiError,
     isAuthError,
@@ -12,7 +13,7 @@ type InterviewJoin = {
   projectId: string;
 };
 
-export async function GET(
+async function legacyGet(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
@@ -83,4 +84,12 @@ export async function GET(
       },
     },
   });
+}
+
+const getSession = routeHandler("getSession");
+
+/** Older dlv_ keys keep the original response shape; rsi_ keys get the documented one. */
+export async function GET(request: Request, route: { params: Promise<{ id: string }> }) {
+  if (/^Bearer\s+dlv_/i.test(request.headers.get("authorization") ?? "")) return legacyGet(request, route);
+  return getSession(request, route);
 }

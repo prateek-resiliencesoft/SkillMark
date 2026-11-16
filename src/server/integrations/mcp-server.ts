@@ -18,6 +18,9 @@ import { resolveFormForKey } from "@/server/integrations/form-access";
 import { generateQuestions } from "@/server/integrations/form-interview";
 import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ENDPOINTS } from "@/server/public-api/endpoints";
+import { runEndpoint, zodDetails } from "@/server/public-api/handler";
+import { ApiProblem } from "@/server/public-api/service";
 import { z } from "zod";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -76,7 +79,7 @@ async function interviewInScope(id: string, auth: ApiKeyAuth) {
   return { interview: data };
 }
 
-const INSTRUCTIONS = `ResilienceSoft Interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
+const INSTRUCTIONS = `ResilienceSoft Interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results: list_sessions (filter by status, interview_id, candidate_email, dates) → get_result for scores, summary, recommendation, strengths and weaknesses → get_transcript for the conversation; get_session for status; list_candidates for invited people. get_session_results is the older combined call. All data is scoped to the organization of the API key.`;
 
 /** Build an MCP server bound to one authenticated API key (stateless, per request). */
 export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
@@ -238,18 +241,30 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     return ok({ id: iv.id, title: iv.title, question_count: qs.length, edit_url: `${base}/interviews/${iv.id}/edit` });
   }, { readOnlyHint: false });
 
-  tool("list_sessions", "List candidate sessions (interview attempts) for an interview, newest first.", "interviews:read", {
-    interview_id: z.string().uuid(),
-    status: z.enum(["IN_PROGRESS", "COMPLETED", "ABANDONED", "DISQUALIFIED"]).optional(),
-    limit: z.number().int().min(1).max(100).default(20),
-  }, async ({ interview_id, status, limit }) => {
-    const r = await interviewInScope(interview_id, auth);
-    if (r.error) return r.error;
-    let q = supabaseAdmin.from("sessions").select("id, status, participantName, participantEmail, startedAt, completedAt, totalDurationSeconds").eq("interviewId", interview_id).order("startedAt", { ascending: false }).limit(limit);
-    if (status) q = q.eq("status", status);
-    const { data } = await q;
-    return ok(data ?? []);
-  }, { readOnlyHint: true });
+  // Results API tools: same schemas, scopes and data access as /api/v1.
+  const ctx = { db: supabaseAdmin, auth: { organizationId: auth.organizationId, projectIds: auth.projectIds, scopes: auth.scopes, apiKeyId: auth.apiKeyId }, origin: base };
+  for (const e of ENDPOINTS) {
+    if (!e.mcpTool || e.mcpTool === "list_interviews" || e.method !== "GET") continue;
+    const shape: z.ZodRawShape = {
+      ...(e.params ? { session_id: z.string().uuid().describe("Session id (UUID).") } : {}),
+      ...(e.query ? e.query.shape : {}),
+    };
+    tool(e.mcpTool, `${e.summary}. ${e.description}`, e.scope, shape, async (args: Record<string, unknown>) => {
+      const { session_id, ...rest } = args;
+      let query: unknown;
+      if (e.query) {
+        const parsed = e.query.safeParse(rest);
+        if (!parsed.success) return fail("BAD_REQUEST", "Invalid arguments", zodDetails(parsed.error));
+        query = parsed.data;
+      }
+      try {
+        return ok(await runEndpoint(e, ctx, { params: session_id ? { id: String(session_id) } : undefined, query }));
+      } catch (err) {
+        if (err instanceof ApiProblem) return fail(err.code, err.message, err.details);
+        throw err;
+      }
+    }, { readOnlyHint: true });
+  }
 
   tool("get_session_results", "Get the results of one interview session: status, summary, insights, themes, sentiment, integrity (anti-cheating) events and optionally the transcript.", "interviews:read", {
     session_id: z.string().uuid(),
