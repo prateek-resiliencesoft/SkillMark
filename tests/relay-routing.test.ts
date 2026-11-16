@@ -273,3 +273,45 @@ test("RelayConnector reports permanent failure after all relay targets fail", as
   await assert.rejects(connectPromise);
   assert.ok(permanentFailure);
 });
+
+test("RelayConnector keeps retrying all relays with a delay (shows Reconnecting) before giving up", async () => {
+  const sockets: FakeSocket[] = [];
+  const rounds: number[] = [];
+  let permanentFailure: Error | null = null;
+
+  const connector = new RelayConnector<Record<string, unknown>>({
+    targets: [
+      { kind: "openai", url: "ws://primary:8082" },
+      { kind: "voice", url: "ws://fallback:8766" },
+    ],
+    buildInitMessage: () => ({ type: "init" }),
+    createSocket: (url) => {
+      const socket = new FakeSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    onJsonMessage: () => {},
+    retryDelaysMs: [5, 5],
+    onReconnecting: ({ round }) => rounds.push(round),
+    onPermanentFailure: (error) => {
+      permanentFailure = error;
+    },
+  });
+
+  const connectPromise = connector.connect();
+  // Round 0: both fail
+  sockets[0].emitError();
+  await waitFor(() => sockets.length === 2);
+  sockets[1].emitError();
+  // Round 1: primary is tried again and comes back
+  await waitFor(() => sockets.length === 3);
+  assert.deepEqual(rounds, [1]);
+  assert.equal(sockets[2].url, "ws://primary:8082");
+  sockets[2].emitOpen();
+  await flush();
+  sockets[2].emitJson({ type: "ready" });
+
+  const target = await connectPromise;
+  assert.equal(target.kind, "openai");
+  assert.equal(permanentFailure, null);
+});

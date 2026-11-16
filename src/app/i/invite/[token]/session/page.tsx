@@ -14,7 +14,8 @@ import { Clock } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
   () => import("@/components/session/chat-interface").then((m) => m.ChatInterface),
@@ -31,6 +32,8 @@ export default function InviteSessionPage() {
   const router = useRouter();
 
   const [completed, setCompleted] = useState(false);
+  // Set as soon as the interview starts finishing (before saves complete).
+  const endingRef = useRef(false);
   const [completionReason, setCompletionReason] = useState<string | undefined>();
   const [disqualified, setDisqualified] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
@@ -74,6 +77,7 @@ export default function InviteSessionPage() {
     sessionId: session?.id,
     active: onboardingDone && !completed && !disqualified && !linkExpired,
     onExpired: () => setLinkExpired(true),
+    isEnding: () => endingRef.current,
   });
 
   // Onboarding accepted → mark the interview as begun (link becomes single-use).
@@ -133,16 +137,16 @@ export default function InviteSessionPage() {
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
               <Clock className="h-7 w-7" />
             </div>
-            <h2 className="text-xl font-semibold">Interview Link Expired</h2>
+            <h2 className="text-xl font-semibold">This link has expired</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This interview invitation expired on{" "}
+              {EXPIRED_INVITE_MESSAGE}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This invitation expired on{" "}
               <span className="font-medium text-foreground">
                 {formatDateTime(candidate.data.expiresAt)}
               </span>
               .
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Please contact the hiring team or organization that invited you to request a new link or extension.
             </p>
           </CardContent>
         </Card>
@@ -159,7 +163,8 @@ export default function InviteSessionPage() {
   }
 
   if (session.status === "COMPLETED") {
-    return <LinkExpiredScreen reason="used" />;
+    // Reload after finishing: the same thank-you screen, nothing else.
+    return <CandidateThankYou />;
   }
 
   if (startError) {
@@ -189,6 +194,7 @@ export default function InviteSessionPage() {
     return (
       <IntervieweeOnboarding
         sessionId={session?.id}
+        inviteToken={token}
         interviewTitle={interview.title}
         interviewDescription={interview.description}
         questionCount={interview.questions?.length ?? 0}
@@ -250,6 +256,9 @@ export default function InviteSessionPage() {
           durationMinutes={interview.timeLimitMinutes ?? undefined}
           chatEnabled={!!interview.chatEnabled}
           onComplete={handleComplete}
+          onEnding={() => {
+            endingRef.current = true;
+          }}
           videoMode={!!interview.videoEnabled}
         />
       </>

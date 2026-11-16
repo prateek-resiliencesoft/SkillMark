@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { sessionStatusNote } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
@@ -171,10 +173,10 @@ export function InterviewResults({
   );
   const utils = trpc.useUtils();
 
-  const sessions = trpc.session.listByInterview.useQuery({
-    interviewId,
-    limit: 100,
-  });
+  const sessions = trpc.session.listByInterview.useQuery(
+    { interviewId, limit: 100 },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   if (selectedSessionId) {
@@ -289,6 +291,10 @@ function SessionDetail({
   const summary = trpc.analysis.getSessionSummary.useQuery({ sessionId });
   const completeSession = trpc.session.complete.useMutation();
   const [generating, setGenerating] = useState(false);
+  const [autoWaitUntil, setAutoWaitUntil] = useState(0);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [retranscribing, setRetranscribing] = useState(false);
+  const [showRetranscribeConfirm, setShowRetranscribeConfirm] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -330,23 +336,80 @@ function SessionDetail({
   }, [sessionId, summary, currentOrg?.id, toast]);
 
   const handleRequestReport = useCallback(() => {
-    if (summary.data?.status === "IN_PROGRESS") {
+    // Ask to end first only when the candidate's tab is really still live.
+    const hb = summary.data?.lastHeartbeatAt ? new Date(summary.data.lastHeartbeatAt).getTime() : 0;
+    const live = summary.data?.status === "IN_PROGRESS" && Date.now() - hb < 60_000;
+    if (live) {
       setShowEndConfirm(true);
     } else {
       handleGenerateSummary();
     }
-  }, [summary.data?.status, handleGenerateSummary]);
+  }, [summary.data?.status, summary.data?.lastHeartbeatAt, handleGenerateSummary]);
 
   const handleConfirmEndAndGenerate = useCallback(async () => {
     try {
       await completeSession.mutateAsync({ id: sessionId });
+      // The server builds the report itself now; just wait for it.
+      setAutoWaitUntil(Date.now() + 3 * 60_000);
       await summary.refetch();
     } catch {
       toast({ title: "Failed to end interview", variant: "destructive" });
       return;
     }
-    handleGenerateSummary();
-  }, [sessionId, completeSession, summary, handleGenerateSummary, toast]);
+  }, [sessionId, completeSession, summary, toast]);
+
+  // Automatic report in progress (server-side): show progress and poll.
+  const reportStatus = summary.data?.reportStatus ?? null;
+  const hasCaptureFailure = !!(
+    summary.data?.insights &&
+    typeof summary.data.insights === "object" &&
+    (summary.data.insights as { captureFailure?: unknown }).captureFailure
+  );
+  const reportPending =
+    !!summary.data &&
+    !summary.data.summary &&
+    !hasCaptureFailure &&
+    (summary.data.status === "COMPLETED" || summary.data.status === "ABANDONED") &&
+    (reportStatus === "PENDING" || reportStatus === "GENERATING" || autoWaitUntil > nowTick);
+  const reportFailed = reportStatus === "FAILED" && !reportPending;
+  useEffect(() => {
+    if (!reportPending) return;
+    const t = setInterval(() => {
+      setNowTick(Date.now());
+      void summary.refetch();
+    }, 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportPending]);
+
+  const handleRetranscribe = useCallback(async () => {
+    setRetranscribing(true);
+    try {
+      const res = await fetch("/api/session/retranscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Re-transcribe failed");
+      await summary.refetch();
+      toast({
+        title: "Transcript rebuilt from recording",
+        description:
+          body.summary === "scored"
+            ? `${body.candidateLines} candidate answers added. Report updated.`
+            : `${body.candidateLines} candidate answers added. Generate the report again if it didn't update.`,
+      });
+    } catch (err) {
+      toast({
+        title: "Re-transcribe failed",
+        description: err instanceof Error ? err.message : "Re-transcribe failed",
+        variant: "destructive",
+      });
+    } finally {
+      setRetranscribing(false);
+    }
+  }, [sessionId, summary, toast]);
 
   // Auto-generate report for completed sessions that have no summary yet
   const autoTriggered = useRef(false);
@@ -357,6 +420,7 @@ function SessionDetail({
       summary.data &&
       summary.data.status === "COMPLETED" &&
       !summary.data.summary &&
+      !(summary.data.insights as { captureFailure?: unknown } | null)?.captureFailure &&
       summary.data.messages.length > 0
     ) {
       autoTriggered.current = true;
@@ -418,16 +482,11 @@ function SessionDetail({
       setExportPercent(5);
       await paint();
 
-      const html2canvas = (await import("html2canvas-pro")).default;
       const { jsPDF } = await import("jspdf");
+      const { captureElementForPdf, pageSlicesForCanvas, sliceToJpeg } = await import("@/lib/report-pdf");
 
-      const canvas = await html2canvas(reportRef.current, {
-        scale: 2.0,
-        useCORS: true,
-        backgroundColor: "#ffffff",
-        imageTimeout: 60000,
-        logging: false,
-      });
+      // Size-capped capture (one huge canvas came back solid black on long reports).
+      const canvas = await captureElementForPdf(reportRef.current, 2);
       clearInterval(timer);
 
       setExportProgress("Building PDF...");
@@ -436,25 +495,21 @@ function SessionDetail({
 
       const imgWidth = 190;
       const pageHeight = 277;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
-      const imgData = canvas.toDataURL("image/jpeg", 0.92);
+      const pxPerMm = canvas.width / imgWidth;
+      const slices = pageSlicesForCanvas(reportRef.current, canvas, pageHeight * pxPerMm);
 
       setExportPercent(90);
       await paint();
 
+      // One image slice per page instead of the whole report image on every page.
       const pdf = new jsPDF("p", "mm", "a4");
-      let heightLeft = imgHeight;
-      let position = 10;
-
-      pdf.addImage(imgData, "JPEG", 10, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight + 10;
-        pdf.addPage();
-        pdf.addImage(imgData, "JPEG", 10, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
-      }
+      slices.forEach(([start, end], idx) => {
+        if (idx > 0) pdf.addPage();
+        const { data, height } = sliceToJpeg(canvas, start, end);
+        pdf.addImage(data, "JPEG", 10, 10, imgWidth, height / pxPerMm);
+      });
+      canvas.width = 0;
+      canvas.height = 0;
 
       setExportProgress("Saving...");
       setExportPercent(95);
@@ -470,6 +525,11 @@ function SessionDetail({
       setExportPercent(100);
     } catch (err) {
       console.error("PDF export failed:", err);
+      toast({
+        title: "PDF export failed",
+        description: err instanceof Error ? err.message : "Could not build the PDF",
+        variant: "destructive",
+      });
     } finally {
       clearInterval(timer);
       setPdfCapture(false);
@@ -477,7 +537,7 @@ function SessionDetail({
       setExportProgress("");
       setExportPercent(0);
     }
-  }, [summary.data]);
+  }, [summary.data, toast]);
 
   // Parse insights data
   const insightsData = summary.data?.insights as
@@ -490,6 +550,8 @@ function SessionDetail({
         }[];
         questionEvaluations?: QuestionEvaluation[];
         researchFindings?: ResearchFinding[];
+        captureFailure?: { reason: string; recordingAvailable?: boolean } | null;
+        transcriptSource?: string;
         toneAnalysis?: {
           overall?: string;
           details?: string;
@@ -518,6 +580,13 @@ function SessionDetail({
   const toneAnalysis = Array.isArray(insightsData)
     ? null
     : (insightsData?.toneAnalysis ?? null);
+  const captureFailure = Array.isArray(insightsData)
+    ? null
+    : (insightsData?.captureFailure ?? null);
+  const transcriptFromRecording =
+    !Array.isArray(insightsData) && insightsData?.transcriptSource === "recording";
+  const canRetranscribe = !!summary.data?.audioRecordingUrl;
+  const statusNote = sessionStatusNote(summary.data?.status);
 
   const sentimentData = summary.data?.sentiment as {
     overall?: string;
@@ -579,6 +648,11 @@ function SessionDetail({
 
   return (
     <div className="space-y-6">
+      {statusNote && (
+        <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+          {statusNote}
+        </p>
+      )}
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <Button variant="outline" onClick={onBack}>
@@ -593,6 +667,20 @@ function SessionDetail({
             expiresAt={(summary.data as { mediaExpiresAt?: string | null } | undefined)?.mediaExpiresAt}
             clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}
           />
+          {canRetranscribe && !captureFailure && (
+            <Button
+              variant="outline"
+              onClick={() => setShowRetranscribeConfirm(true)}
+              disabled={retranscribing}
+            >
+              {retranscribing ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Mic className="mr-2 h-4 w-4" />
+              )}
+              {retranscribing ? "Re-transcribing..." : "Re-transcribe from recording"}
+            </Button>
+          )}
           {hasReport && (
             <Button onClick={() => setPdfBuilderOpen(true)}>
               <Settings2 className="mr-2 h-4 w-4" />
@@ -641,27 +729,51 @@ function SessionDetail({
             <ReportHero data={report} />
 
 
+            {captureFailure && (
+              <Card className="border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30 no-print">
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
+                  <p className="text-sm">
+                    Candidate answers weren&apos;t captured, so this interview was not scored.
+                    {canRetranscribe
+                      ? " Re-transcribe from recording."
+                      : " There is no recording to rebuild them from."}
+                  </p>
+                  {canRetranscribe && (
+                    <Button size="sm" onClick={handleRetranscribe} disabled={retranscribing}>
+                      {retranscribing ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Mic className="mr-2 h-4 w-4" />
+                      )}
+                      {retranscribing ? "Re-transcribing..." : "Re-transcribe from recording"}
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Generate report if no summary yet */}
-            {!summary.data?.summary && (
+            {!summary.data?.summary && !captureFailure && (
               <Card className="border-dashed">
                 <CardContent className="flex flex-col items-center justify-center py-12">
-                  {generating ? (
+                  {generating || reportPending ? (
                     <>
                       <Loader2 className="mb-3 h-8 w-8 animate-spin text-primary" />
-                      <p className="mb-1 font-medium">Generating Report...</p>
+                      <p className="mb-1 font-medium">Generating report…</p>
                       <p className="text-sm text-muted-foreground">
-                        Analyzing the interview result. This may take a moment.
+                        Analyzing the interview. This usually takes under a minute.
                       </p>
                     </>
                   ) : (
                     <>
                       <Sparkles className="mb-3 h-8 w-8 text-muted-foreground" />
                       <p className="mb-1 font-medium">
-                        No report generated yet
+                        {reportFailed ? "The report didn't finish" : "No report generated yet"}
                       </p>
                       <p className="mb-4 text-sm text-muted-foreground">
-                        Generate an AI-powered analysis of this interview
-                        session.
+                        {reportFailed
+                          ? "Automatic generation failed. Try again."
+                          : "Generate an analysis of this interview session."}
                       </p>
                       <Button
                         onClick={handleRequestReport}
@@ -1255,6 +1367,11 @@ function SessionDetail({
                     <Badge variant="secondary" className="ml-1 font-normal">
                       {transcriptMessages.length} messages
                     </Badge>
+                    {transcriptFromRecording && (
+                      <span className="text-xs font-normal text-muted-foreground">
+                        Candidate answers rebuilt from recording
+                      </span>
+                    )}
                   </CardTitle>
                   {!pdfCapture &&
                     (transcriptOpen ? (
@@ -1358,6 +1475,23 @@ function SessionDetail({
             <AlertDialogAction onClick={handleConfirmEndAndGenerate}>
               End Interview & Generate
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showRetranscribeConfirm} onOpenChange={setShowRetranscribeConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Re-transcribe from recording?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The candidate&apos;s spoken answers will be rebuilt from the recording and the
+              report will be generated again. Interviewer lines and typed answers stay as they
+              are. This can take a few minutes.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRetranscribe}>Re-transcribe</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

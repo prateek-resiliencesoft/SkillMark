@@ -1,3 +1,6 @@
+import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
+import { canMarkCompleted } from "@/lib/session-report-policy";
+
 export type VoiceSavePayload = {
   sessionId?: string;
   messages?: Array<{
@@ -69,6 +72,8 @@ export function computeMessageBasedDuration(
 }
 
 export type CompletionSession = {
+  /** Current status; COMPLETED / DISQUALIFIED are never re-completed. */
+  status?: string;
   startedAt: string;
   interview: {
     title: string;
@@ -114,14 +119,22 @@ export type VoiceSaveOps = {
     error: (...args: unknown[]) => void;
   };
   now: () => Date;
+  /**
+   * Queue the automatic report (idempotent, retried server-side). When set it
+   * replaces the direct generateSummary call. `force` regenerates after a
+   * session that was marked ABANDONED turns out to have completed.
+   */
+  scheduleReport?: (sessionId: string, opts: { force: boolean }) => void;
   /** Optional hook after status → COMPLETED (e.g. WhatsApp team notify). */
   onCompleted?: (sessionId: string) => void;
+  /** Newest saved message for the session (used to drop repeated candidate lines). */
+  loadLastMessage?: (sessionId: string) => Promise<{ role: string; content: string } | null>;
 };
 
 export async function handleVoiceSave(
   payload: VoiceSavePayload,
   ops: VoiceSaveOps,
-): Promise<{ status: number; body: { ok?: boolean; error?: string } }> {
+): Promise<{ status: number; body: { ok?: boolean; error?: string; completed?: boolean; status?: string } }> {
   const { sessionId, messages, complete, currentQuestionIndex } = payload;
 
   if (!sessionId) {
@@ -130,13 +143,36 @@ export async function handleVoiceSave(
 
   try {
     if (messages && Array.isArray(messages) && messages.length > 0) {
-      await ops.insertMessages(sessionId, messages);
+      let lastSaved: { role: string; content: string } | null = null;
+      if (ops.loadLastMessage) {
+        try {
+          lastSaved = await ops.loadLastMessage(sessionId);
+        } catch {
+          lastSaved = null;
+        }
+      }
+      const { kept, dropped } = dropRepeatedUserLines(lastSaved, messages);
+      if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);
+      if (kept.length > 0) await ops.insertMessages(sessionId, kept);
     }
 
     if (complete) {
       const session = await ops.loadSessionForCompletion(sessionId);
 
-      if (session) {
+      if (!session) {
+        ops.log.error(`Completion for ${sessionId}: session not found`);
+        return { status: 404, body: { error: "Session not found", completed: false } };
+      }
+      if (session.status && !canMarkCompleted(session.status)) {
+        // Repeated completion (end flow + disconnect, beacon) or disqualified:
+        // keep the first completion and don't regenerate the report.
+        ops.log.info(`Session ${sessionId} already ${session.status}; completion ignored`);
+        return {
+          status: 200,
+          body: { ok: true, completed: session.status === "COMPLETED", status: session.status },
+        };
+      } else {
+        const wasAbandoned = session.status === "ABANDONED";
         const firstMessageTimestamp =
           await ops.loadFirstMessageTimestamp(sessionId);
 
@@ -151,14 +187,19 @@ export async function handleVoiceSave(
           completedAt: now.toISOString(),
           startedAt: new Date(actualStart).toISOString(),
           totalDurationSeconds: duration,
+          endReason: "COMPLETED",
         });
 
-        ops.log.info(`Session ${sessionId} marked COMPLETED (${duration}s)`);
+        ops.log.info(
+          `Session ${sessionId} marked COMPLETED (${duration}s)${wasAbandoned ? " — was ABANDONED (late completion)" : ""}`,
+        );
 
         ops.onCompleted?.(sessionId);
 
         const interview = session.interview;
-        ops
+        if (ops.scheduleReport) {
+          ops.scheduleReport(sessionId, { force: wasAbandoned });
+        } else ops
           .generateSummary(
             sessionId,
             interview.title,
@@ -170,6 +211,7 @@ export async function handleVoiceSave(
           .catch((err) => {
             ops.log.error("Background summary generation failed:", err);
           });
+        return { status: 200, body: { ok: true, completed: true, status: "COMPLETED" } };
       }
     } else if (typeof currentQuestionIndex === "number") {
       const session = await ops.loadSessionForProgress(sessionId);

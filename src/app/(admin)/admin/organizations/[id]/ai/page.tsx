@@ -90,7 +90,7 @@ export default function AdminOrgAiPage() {
         <Button asChild variant="ghost" size="sm" className="-ml-2">
           <Link href={`/admin/organizations/${id}`}>← {org.data?.name ?? "Organization"}</Link>
         </Button>
-        <h1 className="font-heading text-2xl font-semibold tracking-tight">
+        <h1 className="font-heading text-3xl font-bold tracking-tight">
           AI settings
         </h1>
         <p className="text-sm text-muted-foreground">
@@ -101,7 +101,7 @@ export default function AdminOrgAiPage() {
 
       <section className="space-y-4">
         {(ai.data?.providers ?? []).map((p) => (
-          <div key={p.id} className="space-y-3 rounded-xl border p-4">
+          <div key={p.id} className="space-y-3 rounded-xl border bg-card p-4">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium capitalize">{p.id}</p>
               <Badge variant="outline" className="text-[10px]">
@@ -177,7 +177,7 @@ export default function AdminOrgAiPage() {
         ))}
       </section>
 
-      <section className="space-y-4 rounded-xl border p-5">
+      <section className="space-y-4 rounded-xl border bg-card p-5">
         <div>
           <h2 className="text-sm font-medium">Task routing</h2>
           <p className="mt-1 text-xs text-muted-foreground">

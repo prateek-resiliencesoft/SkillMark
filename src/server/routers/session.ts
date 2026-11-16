@@ -1,3 +1,5 @@
+import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
+import { recordPreflightEvent } from "@/lib/preflight-server";
 import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
@@ -248,6 +250,12 @@ export const sessionRouter = router({
         .single();
 
       if (!candidate) {
+        if (await isRevokedInviteToken(input.inviteToken)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "This link has expired. Please ask the recruiter for a new link.",
+          });
+        }
         throw new TRPCError({ code: "NOT_FOUND", message: "Invalid invite link" });
       }
 
@@ -282,6 +290,13 @@ export const sessionRouter = router({
           .single();
 
         if (existingSession) {
+          void recordPreflightEvent({
+            candidateId: candidate.id as string,
+            sessionId: existingSession.id,
+            inviteToken: input.inviteToken,
+            type: "link_opened",
+            status: "done",
+          });
           return { sessionId: existingSession.id, interview, isExisting: true };
         }
       }
@@ -331,6 +346,13 @@ export const sessionRouter = router({
         }
       }
 
+      void recordPreflightEvent({
+        candidateId: candidate.id as string,
+        sessionId: session.id,
+        inviteToken: input.inviteToken,
+        type: "link_opened",
+        status: "done",
+      });
       return { sessionId: session.id, interview, isExisting: false };
     }),
 
@@ -372,9 +394,10 @@ export const sessionRouter = router({
           }
         }
       }
-      if (!isMember) return redactSessionForCandidate(session);
+      const current = await expireIfStale(session);
+      if (!isMember) return redactSessionForCandidate(current);
 
-      return session;
+      return current;
     }),
 
   sendMessage: publicProcedure
@@ -654,6 +677,11 @@ export const sessionRouter = router({
         .eq("id", input.id)
         .neq("status", "DISQUALIFIED");
 
+      // Build the report server-side right away (idempotent, retried).
+      void import("@/lib/session-report-server").then(({ scheduleSessionReport }) =>
+        scheduleSessionReport(input.id, "completed:manual-end", 0),
+      );
+
       // Fire-and-forget WhatsApp alert to assigned team members
       void import("../completion-notify").then(({ notifySessionCompleted }) =>
         notifySessionCompleted(ctx.supabase, input.id),
@@ -794,12 +822,13 @@ export const sessionRouter = router({
 
       const { data: raw } = await query;
 
-      const sessions = (raw ?? []).map((s) => ({
+      const mapped = (raw ?? []).map((s) => ({
         ...s,
         _count: {
           messages: (s.messages as { id: string }[])?.length ?? 0,
         },
       }));
+      const sessions = await expireSessionsIfStale(mapped);
 
       return { sessions };
     }),
@@ -860,12 +889,13 @@ export const sessionRouter = router({
       const { data: raw } = await query;
       const rows = raw ?? [];
 
-      const sessions = rows.slice(0, limit).map((s) => ({
+      const mapped = rows.slice(0, limit).map((s) => ({
         ...s,
         _count: {
           messages: (s.messages as { id: string }[])?.length ?? 0,
         },
       }));
+      const sessions = await expireSessionsIfStale(mapped);
 
       let nextCursor: string | undefined;
       if (rows.length > limit) {

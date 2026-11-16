@@ -47,7 +47,7 @@ export async function GET(request: Request, { params }: { params: { formId: stri
     limit = Math.min(limit, 200);
     const { data, error } = await supabaseAdmin
       .from("applications")
-      .select("*, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))")
+      .select("*, candidate:candidates(inviteToken, sessionId, session:sessions!candidates_sessionId_fkey(id, status))")
       .eq("formId", form.id)
       .eq("organizationId", auth.organizationId)
       .order("createdAt", { ascending: false })

@@ -10,9 +10,19 @@ import {
     wasScreenSkipped,
 } from "@/lib/media-stream-store";
 import fixWebmDuration from "fix-webm-duration";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const log = createLogger("recording");
+
+/** Upload recorded audio to the server every ~10s so nothing is lost if the tab closes or the final upload is slow. */
+const PART_UPLOAD_INTERVAL_MS = 10_000;
+/** ~48 kbps keeps a 15-min interview around 5 MB (speech stays clear). */
+const RECORDING_BITRATE = 48_000;
+/** keepalive fetch bodies must stay under ~64 KB. */
+const KEEPALIVE_MAX_BYTES = 60_000;
+
+type PendingPart = { seq: number; blob: Blob; elapsedSec: number; attempts: number };
 
 export interface ScreenshotEntry {
   url: string;
@@ -113,6 +123,16 @@ export function useInterviewRecording({
   const stoppedRef = useRef(false);
   const ttsPlayTimeRef = useRef(0);
   const ttsSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Chunked upload state (see uploadParts)
+  const runIdRef = useRef(0);
+  const partSeqRef = useRef(0);
+  const recordStartedAtRef = useRef(0);
+  const unsentChunksRef = useRef<Blob[]>([]);
+  const partQueueRef = useRef<PendingPart[]>([]);
+  const partUploadingRef = useRef(false);
+  const partTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const partsUploadedRef = useRef(0);
+  const partFailureReportedRef = useRef(false);
 
   // Keep refs in sync with state
   useEffect(() => { cameraStreamRef.current = cameraStream; }, [cameraStream]);
@@ -285,6 +305,109 @@ export function useInterviewRecording({
     }
   }, [captureAndUpload]);
 
+  /** Move recorded-but-unsent slices into the upload queue as one numbered part. */
+  const cutPart = useCallback(() => {
+    if (!unsentChunksRef.current.length) return;
+    const blob = new Blob(unsentChunksRef.current, { type: audioMimeRef.current || "audio/webm" });
+    unsentChunksRef.current = [];
+    partQueueRef.current.push({
+      seq: partSeqRef.current++,
+      blob,
+      elapsedSec: Math.max(0, (Date.now() - recordStartedAtRef.current) / 1000),
+      attempts: 0,
+    });
+  }, []);
+
+  const postPart = useCallback(
+    async (part: PendingPart, keepalive = false): Promise<boolean> => {
+      const form = new FormData();
+      form.append("file", part.blob, `part-${part.seq}`);
+      form.append("sessionId", sessionId);
+      form.append("type", "recording_part");
+      form.append("runId", String(runIdRef.current));
+      form.append("seq", String(part.seq));
+      form.append("elapsedSec", String(Math.round(part.elapsedSec)));
+      try {
+        const res = await fetch("/api/session/upload", { method: "POST", body: form, keepalive });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+    [sessionId],
+  );
+
+  /** Upload queued parts in order; a failed part stays at the head and is retried (never dropped). */
+  const uploadParts = useCallback(async () => {
+    if (partUploadingRef.current) return;
+    partUploadingRef.current = true;
+    try {
+      while (partQueueRef.current.length) {
+        const part = partQueueRef.current[0];
+        const ok = await postPart(part);
+        if (!ok) {
+          part.attempts += 1;
+          if (part.attempts >= 3 && !partFailureReportedRef.current) {
+            partFailureReportedRef.current = true;
+            reportSessionError(sessionId, {
+              category: "client",
+              severity: "warning",
+              message: "Recording upload is failing; retrying in the background",
+              context: { stage: "recording_part_upload", seq: part.seq, attempts: part.attempts },
+            });
+          }
+          // Back off: 1s, 2s, 4s… (max 15s) before the next try.
+          await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** Math.min(part.attempts - 1, 4))));
+          if (part.attempts >= 8) break; // try again on the next tick
+          continue;
+        }
+        partQueueRef.current.shift();
+        partsUploadedRef.current += 1;
+      }
+    } finally {
+      partUploadingRef.current = false;
+    }
+  }, [postPart, sessionId]);
+
+  /** Wait until the queue is empty (or time runs out). */
+  const drainParts = useCallback(
+    async (timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (!partQueueRef.current.length && !partUploadingRef.current) return true;
+        if (!partUploadingRef.current) void uploadParts();
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return !partQueueRef.current.length;
+    },
+    [uploadParts],
+  );
+
+  // Tab hidden / page closing: push what we have now (tab switches don't stop the recorder).
+  useEffect(() => {
+    const onHidden = () => {
+      if (!recorderRef.current || stoppedRef.current) return;
+      try { recorderRef.current.requestData(); } catch { /* inactive */ }
+      // requestData is async; give it a tick, then upload.
+      setTimeout(() => { cutPart(); void uploadParts(); }, 50);
+    };
+    const onVisibility = () => { if (document.visibilityState === "hidden") onHidden(); };
+    const onPageHide = () => {
+      if (!recorderRef.current || stoppedRef.current) return;
+      cutPart();
+      // Last chance: small parts can go out with keepalive while the page unloads.
+      for (const part of partQueueRef.current) {
+        if (part.blob.size <= KEEPALIVE_MAX_BYTES) void postPart(part, true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [cutPart, postPart, uploadParts]);
+
   /** Start recording audio and periodic screenshots. */
   const start = useCallback(
     async (micStream?: MediaStream) => {
@@ -295,6 +418,11 @@ export function useInterviewRecording({
       // Create mixing AudioContext and destination
       const ctx = new AudioContext();
       mixCtxRef.current = ctx;
+      // Created outside a click handler, so it can start suspended (= silent recording).
+      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+      ctx.onstatechange = () => {
+        if (ctx.state === "suspended" && !stoppedRef.current) void ctx.resume().catch(() => {});
+      };
       const dest = ctx.createMediaStreamDestination();
       mixDestRef.current = dest;
 
@@ -309,14 +437,44 @@ export function useInterviewRecording({
         .find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
       audioMimeRef.current = preferredMime;
       log.info("Recording MIME:", preferredMime || "(default)");
-      const recorder = new MediaRecorder(dest.stream, {
-        ...(preferredMime ? { mimeType: preferredMime } : {}),
-      });
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(dest.stream, {
+          ...(preferredMime ? { mimeType: preferredMime } : {}),
+          audioBitsPerSecond: RECORDING_BITRATE,
+        });
+      } catch {
+        recorder = new MediaRecorder(dest.stream, preferredMime ? { mimeType: preferredMime } : undefined);
+      }
       recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data);
+          unsentChunksRef.current.push(e.data);
+        }
       };
+      recorder.onerror = (ev) => {
+        const msg = (ev as unknown as { error?: { message?: string } }).error?.message ?? "unknown";
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "error",
+          message: `Audio recorder error: ${msg}`,
+          context: { stage: "recorder_error" },
+        });
+      };
+      runIdRef.current = Date.now();
+      recordStartedAtRef.current = Date.now();
+      partSeqRef.current = 0;
+      unsentChunksRef.current = [];
+      partQueueRef.current = [];
+      partsUploadedRef.current = 0;
+      partFailureReportedRef.current = false;
       recorder.start(5000); // collect chunks every 5s
       recorderRef.current = recorder;
+      if (partTimerRef.current) clearInterval(partTimerRef.current);
+      partTimerRef.current = setInterval(() => {
+        cutPart();
+        void uploadParts();
+      }, PART_UPLOAD_INTERVAL_MS);
 
       if (captureVideo) {
         // Acquire camera + screen
@@ -361,7 +519,7 @@ export function useInterviewRecording({
       setIsRecording(true);
       log.info("Started", captureVideo ? "(audio+video)" : "(audio only)");
     },
-    [enabled, captureVideo, isRecording, acquireStreams, attachMicStream, takeScreenshots, screenshotIntervalMs],
+    [enabled, captureVideo, isRecording, acquireStreams, attachMicStream, takeScreenshots, screenshotIntervalMs, cutPart, uploadParts, sessionId],
   );
 
   /**
@@ -384,6 +542,11 @@ export function useInterviewRecording({
       screenshotTimerRef.current = null;
     }
 
+    if (partTimerRef.current) {
+      clearInterval(partTimerRef.current);
+      partTimerRef.current = null;
+    }
+
     // Take one final set of screenshots
     takeScreenshots();
 
@@ -401,7 +564,35 @@ export function useInterviewRecording({
       const isWebm = mime.includes("webm");
       const ext = isWebm ? "webm" : "m4a";
       const rawBlob = new Blob(chunksRef.current, { type: mime });
-      if (rawBlob.size > 0) {
+
+      // 1) Normal path: most audio is already on the server in parts — send the
+      //    last part and ask the server to join + link them.
+      cutPart();
+      if (partSeqRef.current > 0) {
+        const drained = await drainParts(8_000);
+        if (drained) {
+          try {
+            const res = await fetch("/api/session/recording/finalize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sessionId }),
+            });
+            const data = (await res.json().catch(() => ({}))) as { audioUrl?: string; audioDuration?: number };
+            if (res.ok && data.audioUrl) {
+              audioUrl = data.audioUrl;
+              audioDuration = data.audioDuration;
+              log.info("Audio saved from parts:", audioUrl);
+            } else {
+              log.warn("Recording finalize did not return a file", res.status);
+            }
+          } catch (err) {
+            log.warn("Recording finalize failed:", err);
+          }
+        }
+      }
+
+      // 2) Fallback: upload the whole file (the server links it to the session itself).
+      if (!audioUrl && rawBlob.size > 0) {
         audioDuration = await resolveBlobDuration(rawBlob);
 
         // Patch WebM container with correct duration so players can display it
@@ -416,6 +607,7 @@ export function useInterviewRecording({
           form.append("sessionId", sessionId);
           form.append("type", "recording");
           form.append("filename", fname);
+          if (audioDuration) form.append("audioDuration", String(audioDuration));
 
           const res = await fetch("/api/session/upload", {
             method: "POST",
@@ -426,10 +618,26 @@ export function useInterviewRecording({
             // Prefer durable object key over short-lived signed URL
             audioUrl = data.path || data.url;
             log.info("Audio uploaded:", audioUrl);
+          } else {
+            throw new Error(`HTTP ${res.status}`);
           }
         } catch (err) {
           log.error("Audio upload failed:", err);
+          reportSessionError(sessionId, {
+            category: "client",
+            severity: "error",
+            message: `Recording upload failed: ${err instanceof Error ? err.message : String(err)}`,
+            context: { stage: "recording_upload", bytes: rawBlob.size, partsUploaded: partsUploadedRef.current },
+          });
         }
+      }
+      if (!audioUrl) {
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "warning",
+          message: "No recording was saved at the end of the interview",
+          context: { stage: "recording_missing", bytes: rawBlob.size, partsUploaded: partsUploadedRef.current, partsQueued: partQueueRef.current.length },
+        });
       }
     }
 
@@ -469,12 +677,13 @@ export function useInterviewRecording({
       audioDuration,
       screenshots: screenshotsRef.current,
     };
-  }, [sessionId, takeScreenshots]);
+  }, [sessionId, takeScreenshots, cutPart, drainParts]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (screenshotTimerRef.current) clearInterval(screenshotTimerRef.current);
+      if (partTimerRef.current) clearInterval(partTimerRef.current);
       try { recorderRef.current?.stop(); } catch { /* noop */ }
       try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
       try { mixCtxRef.current?.close(); } catch { /* noop */ }

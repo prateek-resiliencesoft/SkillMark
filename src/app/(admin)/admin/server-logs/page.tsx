@@ -1,5 +1,6 @@
 "use client";
 
+import { AppErrors } from "@/components/admin/app-errors";
 import { usePollInterval } from "@/components/admin/poll-interval-control";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -183,7 +184,7 @@ export default function AdminServerLogsPage() {
     <div className="flex h-[calc(100dvh-5.5rem)] flex-col gap-3 overflow-hidden lg:h-[calc(100dvh-4rem)]">
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+          <h1 className="font-heading text-3xl font-bold tracking-tight">
             Server Logs
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -390,7 +391,7 @@ export default function AdminServerLogsPage() {
         ) : null}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card/40">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card">
         {logs.isLoading ? (
           <div className="space-y-2 overflow-y-auto p-4">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -398,12 +399,15 @@ export default function AdminServerLogsPage() {
             ))}
           </div>
         ) : logs.data?.error ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-            <ScrollText className="h-8 w-8 text-muted-foreground" />
-            <p className="text-sm font-medium">Could not load server logs</p>
-            <p className="max-w-md text-xs text-muted-foreground">
-              {logs.data.error}
-            </p>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <div className="space-y-1 border-b bg-amber-500/5 px-4 py-3">
+              <p className="text-sm font-medium">Server logs from Grafana are unavailable</p>
+              <p className="break-words text-xs text-muted-foreground">{logs.data.error}</p>
+              <p className="text-xs text-muted-foreground">
+                Showing errors the app saved in its own database instead.
+              </p>
+            </div>
+            <AppErrors minutes={minutes} search={deferredSearch} />
           </div>
         ) : !entries.length ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-16 text-center">

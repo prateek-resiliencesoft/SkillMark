@@ -1,5 +1,6 @@
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -16,6 +17,10 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { needsFreshInviteLink } from "@/lib/session-link";
+import { formatSessionStatusLabel } from "@/lib/preflight";
+import { PreflightProgress } from "@/components/candidates/preflight-progress";
+import { sessionStatusNote } from "@/lib/session-activity";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -67,6 +72,13 @@ const STATUS_STYLE: Record<string, string> = {
   IN_PROGRESS: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
   ABANDONED: "bg-destructive/10 text-destructive border-destructive/20",
   DISQUALIFIED: "bg-destructive/10 text-destructive border-destructive/20",
+  "Opened link": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "Setting up": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "In Progress": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  Completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+  Abandoned: "bg-destructive/10 text-destructive border-destructive/20",
+  Disqualified: "bg-destructive/10 text-destructive border-destructive/20",
+  "Not Started": "bg-muted text-muted-foreground",
 };
 
 function SendPill({ label, status, at }: { label: string; status?: string | null; at?: string | null }) {
@@ -108,7 +120,10 @@ export function CandidateDetailSheet({
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const open = !!candidateId;
-  const q = trpc.candidate.getById.useQuery({ id: candidateId ?? "" }, { enabled: open });
+  const q = trpc.candidate.getById.useQuery(
+    { id: candidateId ?? "" },
+    { enabled: open, refetchInterval: (data) => livePollInterval(data) },
+  );
   const c = q.data as any;
   const delivery = trpc.candidate.deliveryOptions.useQuery(
     { interviewId: c?.interviewId ?? "" },
@@ -154,9 +169,32 @@ export function CandidateDetailSheet({
 
   const errors = validateCandidateForm(form);
   const sessionStatus: string = c?.session?.status ?? "NOT_STARTED";
-  const started = !!c?.session && sessionStatus !== "NOT_STARTED";
+  const sessionLabel = formatSessionStatusLabel(c?.session ?? null);
+  const activity = (c?.activity ?? null) as {
+    messages: { id: string; role: string; content: string; timestamp?: string | null }[];
+    messageCount: number;
+    candidateLines: number;
+    questionsAnswered: number;
+    durationSeconds: number | null;
+    firstMessageAt: string | null;
+    lastMessageAt: string | null;
+    recordingUrl: string | null;
+    hasRecording: boolean;
+  } | null;
+  const [showTranscript, setShowTranscript] = useState(false);
+  const interviewBegun = !!(
+    c?.session?.interviewBeganAt ||
+    sessionStatus === "COMPLETED" ||
+    sessionStatus === "DISQUALIFIED" ||
+    (activity?.messageCount ?? 0) > 0 ||
+    activity?.hasRecording
+  );
+  const statusNote = interviewBegun ? sessionStatusNote(sessionStatus) : null;
+  const fmtDur = (s: number | null | undefined) =>
+    s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
+  const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
   const tailored: { text: string; skill?: string | null }[] = Array.isArray(c?.tailoredQuestions) ? c.tailoredQuestions : [];
 
   const update = trpc.candidate.update.useMutation({
@@ -172,21 +210,41 @@ export function CandidateDetailSheet({
     onError: (err) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
+  const describeDelivery = (d: { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } } | undefined) => {
+    const parts: string[] = [];
+    let fail = false;
+    for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+      const r = d?.[ch];
+      if (!r) continue;
+      if (r.status !== "sent") fail = true;
+      parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+    }
+    return { parts, fail };
+  };
+
   const resend = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
-      const parts: string[] = [];
-      let fail = false;
-      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-        const r = d[ch];
-        if (!r) continue;
-        if (r.status !== "sent") fail = true;
-        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-      }
+      const { parts, fail } = describeDelivery(d);
       toast({ title: fail ? "Some messages not sent" : "Invite link sent", description: parts.join(" · ") || "Nothing to send", variant: fail ? "destructive" : undefined });
       void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
       onSaved();
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
+  });
+
+  const sendNew = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      const { parts, fail } = describeDelivery(d.delivery);
+      const sent = parts.join(" · ");
+      toast({
+        title: fail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
+        description: sent || "Copy the link to share it with the candidate.",
+        variant: fail ? "destructive" : undefined,
+      });
+      void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
+      onSaved();
+    },
+    onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
   });
 
   const save = () => {
@@ -237,8 +295,8 @@ export function CandidateDetailSheet({
                   <SheetTitle className="truncate text-lg">{c.name}</SheetTitle>
                   <SheetDescription className="truncate">{c.interview?.title}</SheetDescription>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
-                      {sessionStatus.replace("_", " ").toLowerCase()}
+                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
+                      {sessionLabel}
                     </span>
                     {score != null && <Badge variant="outline" className="text-[11px]">Score {Math.round(score)}</Badge>}
                     <SendPill label="WhatsApp" status={c.whatsappStatus} at={c.whatsappSentAt} />
@@ -259,7 +317,7 @@ export function CandidateDetailSheet({
             {q.isError && <p className="text-sm text-destructive">{q.error.message}</p>}
             {c && editing && (
               <div className="space-y-3">
-                {started && (
+                {interviewBegun && (
                   <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     This interview is already {sessionStatus === "COMPLETED" ? "completed" : "in progress"}. Changes update the
@@ -290,17 +348,32 @@ export function CandidateDetailSheet({
                       </Button>
                       <Button
                         size="sm"
-                        disabled={resend.isLoading || !(delivery.data?.email || delivery.data?.whatsapp)}
-                        title={delivery.data?.email || delivery.data?.whatsapp ? "Send the link again" : "Configure WhatsApp/Email in Integrations"}
-                        onClick={() =>
-                          resend.mutate({
-                            candidateId: c.id,
-                            channels: { email: !!delivery.data?.email && !!c.email, whatsapp: !!delivery.data?.whatsapp && !!c.phone },
-                          })
+                        disabled={resend.isLoading || sendNew.isLoading || (!needsNewLink && !(delivery.data?.email || delivery.data?.whatsapp))}
+                        title={
+                          needsNewLink
+                            ? "Invalidate this link, start a fresh session, and send the new link"
+                            : delivery.data?.email || delivery.data?.whatsapp
+                              ? "Send the current link again"
+                              : "Configure WhatsApp/Email in Integrations"
                         }
+                        onClick={() => {
+                          const channels = {
+                            email: !!delivery.data?.email && !!c.email,
+                            whatsapp: !!delivery.data?.whatsapp && !!c.phone,
+                          };
+                          if (needsNewLink) {
+                            sendNew.mutate({ candidateId: c.id, channels });
+                          } else {
+                            resend.mutate({ candidateId: c.id, channels });
+                          }
+                        }}
                       >
-                        {resend.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-                        Resend
+                        {resend.isLoading || sendNew.isLoading ? (
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Send className="mr-1.5 h-3.5 w-3.5" />
+                        )}
+                        {needsNewLink ? "Send new link" : "Resend"}
                       </Button>
                     </div>
                   ) : (
@@ -368,9 +441,18 @@ export function CandidateDetailSheet({
                   <Row icon={CalendarClock} label="Created" value={fmt(c.createdAt)} />
                   <Row icon={CalendarClock} label="Scheduled" value={fmt(c.scheduledAt)} />
                   <Row icon={CalendarClock} label="Link expires" value={fmt(c.expiresAt)} />
-                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.startedAt ?? c.session?.createdAt)} />
+                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.interviewBeganAt ?? (interviewBegun ? (c.session?.startedAt ?? c.session?.createdAt) : null))} />
                   <Row icon={CalendarClock} label="Completed" value={fmt(c.session?.completedAt)} />
-                  {started && (
+                  <PreflightProgress
+                    events={c.preflightEvents}
+                    inviteToken={c.inviteToken}
+                    device={c.session?.preflightDevice}
+                    lastActivityAt={c.session?.lastActivityAt}
+                    available={c.preflightAvailable !== false}
+                    session={c.session ?? null}
+                    firstMessageAt={activity?.firstMessageAt ?? null}
+                  />
+                  {interviewBegun && (
                     <a
                       href={`/interviews/${c.interviewId}/edit/sessions?session=${c.session.id}`}
                       target="_blank"
@@ -381,6 +463,51 @@ export function CandidateDetailSheet({
                     </a>
                   )}
                 </section>
+
+                {/* Interview activity — shown for any status once the candidate attempted it */}
+                {c.session && interviewBegun && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-1 text-sm font-semibold">Interview</h4>
+                    {statusNote && <p className="mb-2 text-xs text-muted-foreground">{statusNote}</p>}
+                    <Row icon={CalendarClock} label="Duration" value={fmtDur(activity?.durationSeconds)} />
+                    <Row icon={MessageCircle} label="Questions answered" value={activity ? String(activity.questionsAnswered) : null} />
+                    <Row
+                      icon={MessageCircle}
+                      label="Transcript"
+                      value={activity ? `${activity.messageCount} lines (${activity.candidateLines} from the candidate)` : null}
+                    />
+                    {activity?.recordingUrl ? (
+                      <audio controls preload="none" src={activity.recordingUrl} className="mt-2 w-full" />
+                    ) : activity?.hasRecording ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Recording saved. Open the report to play it.</p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">No recording saved.</p>
+                    )}
+                    {(activity?.messageCount ?? 0) > 0 && (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-primary hover:underline"
+                          onClick={() => setShowTranscript((v) => !v)}
+                        >
+                          {showTranscript ? "Hide transcript" : "Show transcript"}
+                        </button>
+                        {showTranscript && (
+                          <ol className="mt-2 max-h-80 space-y-1.5 overflow-y-auto rounded-md border p-2 text-xs">
+                            {activity!.messages.map((m) => (
+                              <li key={m.id}>
+                                <span className="font-semibold">
+                                  {String(m.role).toUpperCase() === "USER" ? "Candidate" : "Interviewer"}:
+                                </span>{" "}
+                                {m.content}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 {/* Skills & tailoring */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">

@@ -50,7 +50,7 @@ function timeLabel(t: number, minutes: number) {
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="rounded-xl border p-4">
+    <div className="rounded-xl border bg-card p-4">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="mt-1 font-heading text-2xl font-semibold tabular-nums">{value}</p>
       {hint ? <p className="mt-1 text-[11px] text-muted-foreground">{hint}</p> : null}
@@ -78,7 +78,7 @@ function MetricChart({
   const max = peak(points);
   const id = `grad-${title.replace(/\W/g, "")}`;
   return (
-    <section className="rounded-xl border p-4" aria-label={title}>
+    <section className="rounded-xl border bg-card p-4" aria-label={title}>
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-medium">{title}</h2>
         <p className="text-xs text-muted-foreground tabular-nums">
@@ -193,7 +193,7 @@ export default function AdminServerActivityPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="font-heading text-2xl font-semibold tracking-tight">Server activity</h1>
+          <h1 className="font-heading text-3xl font-bold tracking-tight">Server activity</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             CPU, memory, disk and bandwidth from Grafana — use it to see how many interviews the server can run at once.
           </p>
