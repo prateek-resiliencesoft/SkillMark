@@ -1,8 +1,14 @@
 "use client";
 
 import { ConfirmAction } from "@/components/admin/confirm-action";
+import {
+  EmptyState,
+  PageHeader,
+  Panel,
+  StatusPill,
+  TacticalButton,
+} from "@/components/admin/admin-ui";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -14,14 +20,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
+import {
+  AlertTriangle,
+  Building2,
+  ExternalLink,
+  KeyRound,
+  Lock,
+  Pause,
+  Play,
+  Shield,
+  ShieldAlert,
+  Trash2,
+  Users,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
 const PLATFORM_ROLES = [
-  { value: "USER", label: "Standard" },
-  { value: "ADMIN", label: "Platform admin" },
-  { value: "ENTERPRISE", label: "Enterprise" },
+  { value: "USER", label: "Standard User" },
+  { value: "ADMIN", label: "Platform Admin (Superadmin)" },
+  { value: "ENTERPRISE", label: "Enterprise Operator" },
 ] as const;
 
 export default function AdminPersonDetailPage() {
@@ -45,7 +64,7 @@ export default function AdminPersonDetailPage() {
 
   const setRole = trpc.platform.setPlatformRole.useMutation({
     onSuccess: (data) => {
-      toast({ title: `Access set to ${data.roleLabel}` });
+      toast({ title: `Platform role updated to ${data.roleLabel}` });
       setPendingRole(null);
       utils.platform.getPerson.invalidate({ id });
       utils.platform.listPeople.invalidate();
@@ -53,7 +72,7 @@ export default function AdminPersonDetailPage() {
     },
     onError: (err) =>
       toast({
-        title: "Could not change access",
+        title: "Could not change platform role",
         description: err.message,
         variant: "destructive",
       }),
@@ -61,7 +80,7 @@ export default function AdminPersonDetailPage() {
 
   const setStatus = trpc.platform.setPersonStatus.useMutation({
     onSuccess: (res) => {
-      toast({ title: res.paused ? "Account paused" : "Account resumed" });
+      toast({ title: res.paused ? "Account suspended" : "Account reactivated" });
       setPauseOpen(false);
       utils.platform.getPerson.invalidate({ id });
       utils.platform.listPeople.invalidate();
@@ -69,7 +88,7 @@ export default function AdminPersonDetailPage() {
     },
     onError: (err) =>
       toast({
-        title: "Could not update account",
+        title: "Could not update account status",
         description: err.message,
         variant: "destructive",
       }),
@@ -80,6 +99,7 @@ export default function AdminPersonDetailPage() {
       setResetOpen(false);
       setTempPassword(res.temporaryPassword);
       utils.platform.recentAudit.invalidate();
+      toast({ title: "Temporary password generated" });
     },
     onError: (err) =>
       toast({
@@ -91,7 +111,7 @@ export default function AdminPersonDetailPage() {
 
   const deletePerson = trpc.platform.deletePerson.useMutation({
     onSuccess: () => {
-      toast({ title: "Account deleted" });
+      toast({ title: "Account permanently deleted" });
       setDeleteOpen(false);
       utils.platform.listPeople.invalidate();
       utils.platform.recentAudit.invalidate();
@@ -107,9 +127,9 @@ export default function AdminPersonDetailPage() {
 
   if (person.isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
-        <Skeleton className="h-40 w-full rounded-xl" />
+        <Skeleton className="h-44 w-full rounded-xl" />
       </div>
     );
   }
@@ -117,12 +137,14 @@ export default function AdminPersonDetailPage() {
   if (person.error || !person.data) {
     return (
       <div className="space-y-4">
-        <Button asChild variant="ghost" size="sm">
-          <Link href="/admin/people">← People</Link>
-        </Button>
-        <p className="text-sm text-muted-foreground">
-          {person.error?.message ?? "Person not found."}
-        </p>
+        <TacticalButton asChild variant="ghost" size="sm">
+          <Link href="/admin/people">← Back to People</Link>
+        </TacticalButton>
+        <EmptyState
+          icon={Users}
+          title="Account not found"
+          description={person.error?.message ?? "The requested profile does not exist."}
+        />
       </div>
     );
   }
@@ -133,161 +155,196 @@ export default function AdminPersonDetailPage() {
 
   return (
     <div className="space-y-8">
-      <div className="space-y-3">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link href="/admin/people">← People</Link>
-        </Button>
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="font-heading text-3xl font-bold tracking-tight">
-                {data.name || data.email}
-              </h1>
-              <Badge
-                variant={data.isPlatformAdmin ? "default" : "outline"}
-                className="text-[10px] font-normal"
-              >
+      {/* Header & Breadcrumbs */}
+      <PageHeader
+        breadcrumbs={[
+          { label: "People Directory", href: "/admin/people" },
+          { label: data.name || data.email },
+        ]}
+        title={data.name || data.email}
+        description={`Email: ${data.email} · Member since ${new Date(data.createdAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {data.isPlatformAdmin ? (
+              <span className="rounded border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary flex items-center gap-1">
+                <Shield className="h-3 w-3" />
+                Superadmin
+              </span>
+            ) : (
+              <span className="rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-xs font-medium text-muted-foreground">
                 {data.roleLabel}
-              </Badge>
-              {data.paused ? (
-                <Badge
-                  variant="outline"
-                  className="bg-amber-500/10 text-[10px] font-normal text-amber-700 dark:text-amber-300"
-                >
-                  Paused
-                </Badge>
-              ) : null}
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {data.email}
-              {" · Joined "}
-              {new Date(data.createdAt).toLocaleDateString(undefined, {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-              })}
-            </p>
+              </span>
+            )}
+
+            {data.paused ? (
+              <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-500">
+                Suspended
+              </span>
+            ) : null}
+
+            <Select
+              value={data.role}
+              onValueChange={(role) =>
+                setPendingRole(role as (typeof PLATFORM_ROLES)[number]["value"])
+              }
+            >
+              <SelectTrigger className="h-8 w-[160px] text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="text-xs">
+                {PLATFORM_ROLES.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
+        }
+      />
 
-          <Select
-            value={data.role}
-            onValueChange={(role) =>
-              setPendingRole(role as (typeof PLATFORM_ROLES)[number]["value"])
-            }
-          >
-            <SelectTrigger className="h-9 w-[170px] text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PLATFORM_ROLES.map((r) => (
-                <SelectItem key={r.value} value={r.value}>
-                  {r.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium">Account</h2>
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
-          <p className="max-w-md text-xs text-muted-foreground">
-            Pausing blocks sign-in and ends active sessions; resume restores
-            access. Deleting removes the login, password and profile but keeps
-            organization data and an archived record.
+      {/* Security & Access Controls Panel */}
+      <Panel
+        kicker="Account Security"
+        title="Security & Governance Controls"
+        description="Suspend account authentication, rotate credentials, or permanently erase identity records."
+      >
+        <div className="space-y-4">
+          <p className="max-w-2xl text-xs text-muted-foreground leading-relaxed">
+            Suspending terminates active sessions and blocks new sign-ins. Resetting password generates a secure one-time temporary key. Deletion removes authentication profiles while keeping historical interview transcripts for forensic records.
           </p>
+
           {tempPassword ? (
-            <div className="rounded-lg border bg-muted/40 p-3 text-sm">
-              <p className="font-medium">Temporary password (shown once)</p>
-              <p className="mt-1 select-all font-mono">{tempPassword}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Pass this to the person privately and ask them to change it after signing in.
+            <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 text-xs space-y-2">
+              <div className="flex items-center gap-1.5 font-semibold text-primary">
+                <KeyRound className="h-4 w-4" />
+                <span>One-Time Temporary Password</span>
+              </div>
+              <p className="select-all rounded-md border border-primary/20 bg-background/80 p-2.5 font-mono text-sm text-foreground">
+                {tempPassword}
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Copy and transmit this secret securely. The user will be required to change it immediately upon login.
               </p>
             </div>
           ) : null}
-          <div className="flex flex-wrap gap-2">
-            <Button
+
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/40 dark:border-white/[0.04]">
+            <TacticalButton
+              size="sm"
+              variant={data.paused ? "default" : "outline"}
+              onClick={() => setPauseOpen(true)}
+              className="h-8 text-xs gap-1.5"
+            >
+              {data.paused ? (
+                <>
+                  <Play className="h-3 w-3 fill-current" />
+                  <span>Reactivate Account</span>
+                </>
+              ) : (
+                <>
+                  <Pause className="h-3 w-3" />
+                  <span>Suspend Account</span>
+                </>
+              )}
+            </TacticalButton>
+
+            <TacticalButton
               size="sm"
               variant="outline"
-              onClick={() => setPauseOpen(true)}
+              onClick={() => setResetOpen(true)}
+              className="h-8 text-xs gap-1.5"
             >
-              {data.paused ? "Resume account" : "Pause account"}
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setResetOpen(true)}>
-              Reset password
-            </Button>
-            <Button
+              <KeyRound className="h-3.5 w-3.5" />
+              <span>Issue Temporary Password</span>
+            </TacticalButton>
+
+            <TacticalButton
               size="sm"
               variant="destructive"
               onClick={() => setDeleteOpen(true)}
+              className="h-8 text-xs gap-1.5"
             >
-              Delete account
-            </Button>
+              <Trash2 className="h-3.5 w-3.5" />
+              <span>Delete User Account</span>
+            </TacticalButton>
           </div>
         </div>
-      </section>
+      </Panel>
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-medium">Organizations</h2>
-        <div className="overflow-hidden rounded-xl border">
+      {/* Organization Memberships Panel */}
+      <Panel
+        kicker="Tenant Affiliations"
+        title="Organization Memberships"
+        description={`${data.memberships.length} organizations affiliated with this user profile.`}
+      >
+        <div className="overflow-hidden rounded-xl border border-border/70 bg-card dark:border-white/[0.08] dark:bg-zinc-950/60">
           {data.memberships.length === 0 ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">
-              Not a member of any organization.
-            </p>
+            <EmptyState
+              icon={Building2}
+              title="No organization memberships"
+              description="This user is not currently affiliated with any tenant space."
+            />
           ) : (
-            <ul className="divide-y">
+            <ul className="divide-y divide-border/50 dark:divide-white/[0.05]">
               {data.memberships.map((m) => (
                 <li
                   key={m.id}
-                  className="flex flex-wrap items-center gap-3 px-4 py-3"
+                  className="flex flex-col gap-3 p-3.5 transition-colors hover:bg-muted/30 dark:hover:bg-zinc-900/40 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {m.organizationName}
-                    </p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {m.organizationSlug} · {m.roleLabel}
-                    </p>
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted text-xs font-bold text-foreground">
+                      {m.organizationName.slice(0, 2).toUpperCase()}
+                    </div>
+
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <p className="truncate font-heading text-xs font-bold text-foreground">
+                        {m.organizationName}
+                      </p>
+                      <p className="truncate text-[11px] text-muted-foreground font-mono">
+                        {m.organizationSlug} · Role: {m.roleLabel}
+                      </p>
+                    </div>
                   </div>
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "text-[10px] font-normal",
-                      m.organizationStatus === "SUSPENDED" &&
-                        "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-                      m.organizationStatus === "DELETED" &&
-                        "bg-destructive/10 text-destructive",
-                    )}
-                  >
-                    {m.organizationStatus === "SUSPENDED"
-                      ? "Paused"
-                      : m.organizationStatus === "DELETED"
-                        ? "Removed"
-                        : "Active"}
-                  </Badge>
-                  <Button asChild size="sm" variant="ghost">
-                    <Link href={`/admin/organizations/${m.organizationId}`}>
-                      Open
-                    </Link>
-                  </Button>
+
+                  <div className="flex items-center gap-3 self-end sm:self-center">
+                    <StatusPill
+                      status={m.organizationStatus}
+                      label={
+                        m.organizationStatus === "SUSPENDED"
+                          ? "Paused"
+                          : m.organizationStatus === "DELETED"
+                            ? "Removed"
+                            : "Active"
+                      }
+                      pulse={m.organizationStatus === "ACTIVE"}
+                    />
+
+                    <TacticalButton asChild size="sm" variant="ghost" className="h-7 px-2 text-xs gap-1">
+                      <Link href={`/admin/organizations/${m.organizationId}`}>
+                        <span>Inspect Tenant</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </Link>
+                    </TacticalButton>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </div>
-      </section>
+      </Panel>
 
+      {/* Confirmation Modals */}
       <ConfirmAction
         open={pauseOpen}
         onOpenChange={setPauseOpen}
-        title={data.paused ? "Resume this account?" : "Pause this account?"}
+        title={data.paused ? "Reactivate this account?" : "Suspend this account?"}
         description={
           data.paused
-            ? `${data.name || data.email} will be able to sign in again.`
-            : `${data.name || data.email} will be signed out and blocked from signing in until resumed.`
+            ? `${data.name || data.email} will immediately regain sign-in privileges.`
+            : `${data.name || data.email} will be forcibly signed out and rejected on login.`
         }
-        confirmLabel={data.paused ? "Resume account" : "Pause account"}
+        confirmLabel={data.paused ? "Reactivate Account" : "Suspend Account"}
         pending={setStatus.isPending}
         onConfirm={() => setStatus.mutate({ userId: id, paused: !data.paused })}
       />
@@ -295,21 +352,21 @@ export default function AdminPersonDetailPage() {
       <ConfirmAction
         open={resetOpen}
         onOpenChange={setResetOpen}
-        title="Reset this person's password?"
-        description={`Their current password stops working. You get a one-time temporary password to give to ${data.name || data.email}.`}
-        confirmLabel="Reset password"
-        pending={resetPassword.isLoading}
+        title="Generate temporary password?"
+        description={`Current password will be immediately invalidated. You will receive a one-time temporary credential for ${data.name || data.email}.`}
+        confirmLabel="Generate Password"
+        pending={resetPassword.isPending}
         onConfirm={() => resetPassword.mutate({ userId: id })}
       />
 
       <ConfirmAction
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title="Delete this account?"
-        description={`${data.email} will lose their login, password and profile. Organizations they own are taken out of service; data is retained and an archive record is kept. This cannot be undone.`}
-        confirmLabel="Delete account"
+        title="Permanently delete user profile?"
+        description={`${data.email} will lose all authentication records, active sessions, and profile data. Organizations solely owned by them will be taken offline. This action cannot be undone.`}
+        confirmLabel="Delete User Account"
         confirmText={data.email}
-        confirmPlaceholder="Type the email to confirm"
+        confirmPlaceholder="Type the account email to confirm"
         destructive
         pending={deletePerson.isPending}
         onConfirm={() =>
@@ -322,15 +379,15 @@ export default function AdminPersonDetailPage() {
         onOpenChange={(open) => {
           if (!open) setPendingRole(null);
         }}
-        title={`Change access to ${nextRoleLabel}?`}
+        title={`Change platform privilege to ${nextRoleLabel}?`}
         description={
           pendingRole === "ADMIN"
-            ? `${data.name || data.email} will be able to open the control center and manage every organization.`
+            ? `${data.name || data.email} will receive full Superadmin authority over all organizations, server telemetry, and billing configurations.`
             : data.role === "ADMIN"
-              ? `${data.name || data.email} will lose control-center access.`
-              : `Platform role becomes ${nextRoleLabel}.`
+              ? `${data.name || data.email} will lose Superadmin control center access immediately.`
+              : `Platform role will transition to ${nextRoleLabel}.`
         }
-        confirmLabel="Change access"
+        confirmLabel="Update Platform Role"
         destructive={data.role === "ADMIN" && pendingRole !== "ADMIN"}
         pending={setRole.isPending}
         onConfirm={() => {

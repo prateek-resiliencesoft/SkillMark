@@ -1,6 +1,10 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
+import {
+  PageHeader,
+  Panel,
+  TacticalButton,
+} from "@/components/admin/admin-ui";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -12,6 +16,13 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
+import {
+  Mail,
+  MessageSquare,
+  Save,
+  Send,
+  Webhook,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -50,7 +61,7 @@ export default function AdminOrgIntegrationsPage() {
 
   const save = trpc.integration.save.useMutation({
     onSuccess: () => {
-      toast({ title: "Integrations saved" });
+      toast({ title: "Integration settings saved successfully" });
       setResendApiKey("");
       setBrevoApiKey("");
       setResilioApiKey("");
@@ -67,7 +78,7 @@ export default function AdminOrgIntegrationsPage() {
 
   if (org.isLoading || integ.isLoading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-6">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-64 w-full rounded-xl" />
       </div>
@@ -76,149 +87,218 @@ export default function AdminOrgIntegrationsPage() {
 
   return (
     <div className="space-y-8">
-      <div className="space-y-2">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link href={`/admin/organizations/${id}`}>
-            ← {org.data?.name ?? "Organization"}
-          </Link>
-        </Button>
-        <h1 className="font-heading text-3xl font-bold tracking-tight">
-          Integrations
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Messaging providers, webhooks, and invite templates — same surface as
-          the user Integrations page. Leave secret fields blank to keep current
-          values.
-        </p>
+      {/* Header & Breadcrumbs */}
+      <PageHeader
+        breadcrumbs={[
+          { label: "Organizations", href: "/admin/organizations" },
+          { label: org.data?.name ?? "Organization", href: `/admin/organizations/${id}` },
+          { label: "Integrations & Webhooks" },
+        ]}
+        title="Delivery Channels & Webhooks"
+        description="Configure outbound email SMTP/API delivery, WhatsApp notification channels, and webhook event listeners for this organization."
+      />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Email - Resend Panel */}
+        <Panel
+          kicker="Email Service"
+          title="Resend Integration"
+          description={`Current Secret Hint: ${integ.data?.resend.apiKeyHint || "No key registered"}`}
+        >
+          <div className="space-y-3">
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">API Key (Leave empty to keep current)</span>
+              <Input
+                type="password"
+                placeholder="re_..."
+                value={resendApiKey}
+                onChange={(e) => setResendApiKey(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">Sender From Address</span>
+              <Input
+                placeholder="interviews@yourcompany.com"
+                value={resendFrom}
+                onChange={(e) => setResendFrom(e.target.value)}
+                className="h-8 text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+          </div>
+        </Panel>
+
+        {/* Email - Brevo Panel */}
+        <Panel
+          kicker="Email Service"
+          title="Brevo (Sendinblue) Integration"
+          description={`Current Secret Hint: ${integ.data?.brevo.apiKeyHint || "No key registered"}`}
+        >
+          <div className="space-y-3">
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">API Key (Leave empty to keep current)</span>
+              <Input
+                type="password"
+                placeholder="xkeysib-..."
+                value={brevoApiKey}
+                onChange={(e) => setBrevoApiKey(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="space-y-1 text-xs">
+                <span className="font-medium text-foreground">Sender Email</span>
+                <Input
+                  placeholder="notifications@company.com"
+                  value={brevoFromEmail}
+                  onChange={(e) => setBrevoFromEmail(e.target.value)}
+                  className="h-8 text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+                />
+              </label>
+              <label className="space-y-1 text-xs">
+                <span className="font-medium text-foreground">Sender Name</span>
+                <Input
+                  placeholder="Talent Acquisition"
+                  value={brevoFromName}
+                  onChange={(e) => setBrevoFromName(e.target.value)}
+                  className="h-8 text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+                />
+              </label>
+            </div>
+          </div>
+        </Panel>
+
+        {/* WhatsApp - Resilio Panel */}
+        <Panel
+          kicker="Messaging Gateway"
+          title="WhatsApp via Resilio"
+          description={`Current Secret Hint: ${integ.data?.resilio.apiKeyHint || "No key registered"}`}
+        >
+          <div className="space-y-3">
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">Resilio API Key</span>
+              <Input
+                type="password"
+                placeholder="Optional new key"
+                value={resilioApiKey}
+                onChange={(e) => setResilioApiKey(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">Resilio Base URL</span>
+              <Input
+                placeholder="https://api.resilio.com"
+                value={resilioBaseUrl}
+                onChange={(e) => setResilioBaseUrl(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+          </div>
+        </Panel>
+
+        {/* Routing & Webhook Panel */}
+        <Panel
+          kicker="Event Pipeline"
+          title="Default Routing & Outbound Webhooks"
+          description="Outgoing event payload dispatch when interviews complete."
+        >
+          <div className="space-y-3">
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">Primary Email Gateway</span>
+              <Select
+                value={defaultEmail}
+                onValueChange={(v) => setDefaultEmail(v as "resend" | "brevo")}
+              >
+                <SelectTrigger className="h-8 text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="text-xs">
+                  <SelectItem value="resend">Resend API</SelectItem>
+                  <SelectItem value="brevo">Brevo API</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">Outbound Webhook URL</span>
+              <Input
+                placeholder="https://your-ats.com/api/webhooks/interview-completed"
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+            <label className="block space-y-1 text-xs">
+              <span className="font-medium text-foreground">
+                Signing Secret ({integ.data?.outboundWebhook.secretHint ? `Active hint: ${integ.data.outboundWebhook.secretHint}` : "None"})
+              </span>
+              <Input
+                type="password"
+                placeholder="whsec_..."
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+                className="h-8 text-xs font-mono border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+              />
+            </label>
+          </div>
+        </Panel>
       </div>
 
-      <section className="space-y-3 rounded-xl border bg-card p-5">
-        <h2 className="text-sm font-medium">Email — Resend</h2>
-        <p className="text-xs text-muted-foreground">
-          Current hint: {integ.data?.resend.apiKeyHint || "none"}
-        </p>
-        <Input
-          type="password"
-          placeholder="New API key (optional)"
-          value={resendApiKey}
-          onChange={(e) => setResendApiKey(e.target.value)}
-        />
-        <Input
-          placeholder="From address"
-          value={resendFrom}
-          onChange={(e) => setResendFrom(e.target.value)}
-        />
-      </section>
-
-      <section className="space-y-3 rounded-xl border bg-card p-5">
-        <h2 className="text-sm font-medium">Email — Brevo</h2>
-        <p className="text-xs text-muted-foreground">
-          Current hint: {integ.data?.brevo.apiKeyHint || "none"}
-        </p>
-        <Input
-          type="password"
-          placeholder="New API key (optional)"
-          value={brevoApiKey}
-          onChange={(e) => setBrevoApiKey(e.target.value)}
-        />
-        <Input
-          placeholder="From email"
-          value={brevoFromEmail}
-          onChange={(e) => setBrevoFromEmail(e.target.value)}
-        />
-        <Input
-          placeholder="From name"
-          value={brevoFromName}
-          onChange={(e) => setBrevoFromName(e.target.value)}
-        />
-      </section>
-
-      <section className="space-y-3 rounded-xl border bg-card p-5">
-        <h2 className="text-sm font-medium">WhatsApp — Resilio</h2>
-        <p className="text-xs text-muted-foreground">
-          Current hint: {integ.data?.resilio.apiKeyHint || "none"}
-        </p>
-        <Input
-          type="password"
-          placeholder="New API key (optional)"
-          value={resilioApiKey}
-          onChange={(e) => setResilioApiKey(e.target.value)}
-        />
-        <Input
-          placeholder="Base URL"
-          value={resilioBaseUrl}
-          onChange={(e) => setResilioBaseUrl(e.target.value)}
-        />
-      </section>
-
-      <section className="space-y-3 rounded-xl border bg-card p-5">
-        <h2 className="text-sm font-medium">Defaults & webhooks</h2>
-        <label className="block space-y-1.5 text-xs">
-          <span className="text-muted-foreground">Default email provider</span>
-          <Select
-            value={defaultEmail}
-            onValueChange={(v) => setDefaultEmail(v as "resend" | "brevo")}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="resend">Resend</SelectItem>
-              <SelectItem value="brevo">Brevo</SelectItem>
-            </SelectContent>
-          </Select>
-        </label>
-        <Input
-          placeholder="Outbound webhook URL"
-          value={webhookUrl}
-          onChange={(e) => setWebhookUrl(e.target.value)}
-        />
-        <Input
-          type="password"
-          placeholder={`Webhook secret (${integ.data?.outboundWebhook.secretHint || "none"})`}
-          value={webhookSecret}
-          onChange={(e) => setWebhookSecret(e.target.value)}
-        />
-      </section>
-
-      <section className="space-y-3 rounded-xl border bg-card p-5">
-        <h2 className="text-sm font-medium">Invite email template</h2>
-        <Input
-          placeholder="Subject"
-          value={emailSubject}
-          onChange={(e) => setEmailSubject(e.target.value)}
-        />
-        <textarea
-          className="min-h-32 w-full rounded-md border bg-background px-3 py-2 text-sm"
-          value={emailBody}
-          onChange={(e) => setEmailBody(e.target.value)}
-        />
-      </section>
-
-      <Button
-        disabled={save.isPending}
-        onClick={() =>
-          save.mutate({
-            organizationId: id,
-            resendApiKey: resendApiKey || undefined,
-            resendFrom,
-            brevoApiKey: brevoApiKey || undefined,
-            brevoFromEmail,
-            brevoFromName,
-            resilioApiKey: resilioApiKey || undefined,
-            resilioBaseUrl,
-            defaultEmailProvider: defaultEmail,
-            outboundWebhookUrl: webhookUrl,
-            outboundWebhookSecret: webhookSecret || undefined,
-            templates: {
-              emailSubject,
-              emailBody,
-            },
-          })
-        }
+      {/* Invite Email Template */}
+      <Panel
+        kicker="Custom Communications"
+        title="Candidate Invitation Email Template"
+        description="Default copy dispatched when candidates are invited to an automated assessment."
       >
-        Save integrations
-      </Button>
+        <div className="space-y-3 max-w-3xl">
+          <label className="block space-y-1 text-xs">
+            <span className="font-medium text-foreground">Subject Line</span>
+            <Input
+              placeholder="Your Invitation to Interview at {{company}}"
+              value={emailSubject}
+              onChange={(e) => setEmailSubject(e.target.value)}
+              className="h-8 text-xs border-border/70 dark:border-white/[0.08] dark:bg-zinc-900"
+            />
+          </label>
+          <label className="block space-y-1 text-xs">
+            <span className="font-medium text-foreground">Email Body Template (Markdown / Plain Text)</span>
+            <textarea
+              className="min-h-32 w-full rounded-lg border border-border/70 bg-background p-3 text-xs font-mono leading-relaxed focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-white/[0.08] dark:bg-zinc-900"
+              value={emailBody}
+              onChange={(e) => setEmailBody(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="mt-4 pt-3 border-t border-border/50 dark:border-white/[0.06] flex justify-end">
+          <TacticalButton
+            loading={save.isPending}
+            onClick={() =>
+              save.mutate({
+                organizationId: id,
+                resendApiKey: resendApiKey || undefined,
+                resendFrom,
+                brevoApiKey: brevoApiKey || undefined,
+                brevoFromEmail,
+                brevoFromName,
+                resilioApiKey: resilioApiKey || undefined,
+                resilioBaseUrl,
+                defaultEmailProvider: defaultEmail,
+                outboundWebhookUrl: webhookUrl,
+                outboundWebhookSecret: webhookSecret || undefined,
+                templates: {
+                  emailSubject,
+                  emailBody,
+                },
+              })
+            }
+            className="gap-1.5 text-xs h-9"
+          >
+            <Save className="h-3.5 w-3.5" />
+            <span>Save All Integration Configurations</span>
+          </TacticalButton>
+        </div>
+      </Panel>
     </div>
   );
 }
