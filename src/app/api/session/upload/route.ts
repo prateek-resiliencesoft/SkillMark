@@ -60,11 +60,16 @@ export async function POST(req: Request) {
 
     const { data: candidate } = await supabaseAdmin
       .from("candidates")
-      .select("id")
+      .select("id, name")
       .eq("sessionId", sessionId)
       .maybeSingle();
 
     // Fallback folder when no candidate row linked yet
+    const candidateName =
+      (candidate?.name as string | undefined) ||
+      ((session as unknown as { participantName?: string }).participantName as
+        | string
+        | undefined);
     const subjectId = candidate?.id || `session-${sessionId}`;
     const orgId = interview.project.organizationId;
     const projectId = interview.projectId;
@@ -93,6 +98,7 @@ export async function POST(req: Request) {
         orgId,
         projectId,
         candidateId: subjectId,
+        candidateName,
         kind: "recordings",
         fileName: recordingPartFileName({ sessionId, runId, seq, elapsedSec, ext: recordingExtForMime(file.type) }),
       });
@@ -109,13 +115,20 @@ export async function POST(req: Request) {
       if (!session.mediaStoragePrefix) {
         await supabaseAdmin
           .from("sessions")
-          .update({ mediaStoragePrefix: candidateMediaPrefix({ orgId, projectId, candidateId: subjectId }) })
+          .update({
+            mediaStoragePrefix: candidateMediaPrefix({
+              orgId,
+              projectId,
+              candidateId: subjectId,
+              candidateName,
+            }),
+          })
           .eq("id", sessionId);
       }
       return NextResponse.json({ ok: true, path: partKey });
     }
 
-    const kind = type === "recording" ? "recordings" : "screenshots";
+    const kind = type === "recording" ? "recordings" : "images";
     const defaultExt =
       type === "recording"
         ? file.type?.includes("mp4") || file.type?.includes("m4a")
@@ -130,10 +143,16 @@ export async function POST(req: Request) {
       orgId,
       projectId,
       candidateId: subjectId,
+      candidateName,
       kind,
       fileName: cleanFilename,
     });
-    const prefix = candidateMediaPrefix({ orgId, projectId, candidateId: subjectId });
+    const prefix = candidateMediaPrefix({
+      orgId,
+      projectId,
+      candidateId: subjectId,
+      candidateName,
+    });
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const defaultContentType =

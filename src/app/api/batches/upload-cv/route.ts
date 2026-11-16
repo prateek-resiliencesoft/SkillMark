@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   const { data: candidate } = await supabaseAdmin
     .from("candidates")
     .select(
-      "id, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
+      "id, name, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
     )
     .eq("id", candidateId)
     .maybeSingle();
@@ -48,7 +48,8 @@ export async function POST(req: Request) {
     orgId,
     projectId: interview.projectId,
     candidateId,
-    kind: "cv",
+    candidateName: candidate.name,
+    kind: "CV",
     fileName: `0-${file.name}`,
   });
 
