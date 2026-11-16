@@ -338,6 +338,7 @@ export const sessionRouter = router({
             orgId: project.organizationId,
             projectId,
             candidateId: candidate.id as string,
+            candidateName: (candidate as unknown as { name?: string }).name,
           });
           await ctx.supabase
             .from("sessions")

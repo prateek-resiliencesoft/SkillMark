@@ -12,6 +12,7 @@ import {
   type UploadedFileInfo,
 } from "@/lib/forms/schema";
 import { storage } from "@/lib/storage";
+import { candidateFolderSlug } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
@@ -259,11 +260,15 @@ export async function createApplication(opts: {
   for (const [key, list] of Object.entries(input.files)) {
     const field = fields.find((f) => f.key === key);
     if (!field || !isFileField(field.type)) continue;
-    const kind = field.type === "resume" || key === "resume" ? "cv" : "other";
+    const kind = field.type === "resume" || key === "resume" ? "CV" : "other";
+    const candFolder = candidateFolderSlug({
+      candidateId: candidate.id,
+      candidateName: name,
+    });
     storedFiles[key] = [];
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
-      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candidate.id}/${kind}/${i}-${safeName(f.name)}`;
+      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candFolder}/${kind}/${i}-${safeName(f.name)}`;
       const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type || "application/octet-stream" });
       if (error) {
         throw new SubmissionError(

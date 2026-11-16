@@ -137,3 +137,58 @@ describe("objectPathFromSignedUrl", () => {
     );
   });
 });
+
+import {
+  candidateFolderSlug,
+  candidateMediaPrefix,
+  mediaObjectKey,
+} from "@/lib/storage-paths";
+
+describe("folderized candidate storage paths", () => {
+  it("structures folders as candidateName/recordings, /images, /CV", () => {
+    const slug = candidateFolderSlug({
+      candidateId: "12345678-abcd-1111-2222-333333333333",
+      candidateName: "John Doe",
+    });
+    assert.equal(slug, "John_Doe_12345678");
+
+    const recKey = mediaObjectKey({
+      orgId: "org-1",
+      projectId: "proj-1",
+      candidateId: "12345678-abcd-1111-2222-333333333333",
+      candidateName: "John Doe",
+      kind: "recordings",
+      fileName: "interview.m4a",
+    });
+    assert.equal(
+      recKey,
+      "orgs/org-1/projects/proj-1/candidates/John_Doe_12345678/recordings/interview.m4a",
+    );
+
+    const imgKey = mediaObjectKey({
+      orgId: "org-1",
+      projectId: "proj-1",
+      candidateId: "12345678-abcd-1111-2222-333333333333",
+      candidateName: "John Doe",
+      kind: "screenshots",
+      fileName: "capture-1.jpg",
+    });
+    assert.equal(
+      imgKey,
+      "orgs/org-1/projects/proj-1/candidates/John_Doe_12345678/images/capture-1.jpg",
+    );
+
+    const cvKey = mediaObjectKey({
+      orgId: "org-1",
+      projectId: "proj-1",
+      candidateId: "12345678-abcd-1111-2222-333333333333",
+      candidateName: "John Doe",
+      kind: "cv",
+      fileName: "resume.pdf",
+    });
+    assert.equal(
+      cvKey,
+      "orgs/org-1/projects/proj-1/candidates/John_Doe_12345678/CV/resume.pdf",
+    );
+  });
+});
