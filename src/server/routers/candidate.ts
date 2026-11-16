@@ -1,7 +1,6 @@
 import { expireIfStale, expireNestedSession, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
 import { recordPreflightEvent } from "@/lib/preflight-server";
-import { needsFreshInviteLink } from "@/lib/session-link";
-import { inviteLink } from "../batch-access";
+import { issueNewInviteLink } from "../new-invite-link";
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
@@ -15,7 +14,7 @@ import {
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
-import { loadDeliveryConfig, resolveInviteSchedule, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
+import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
@@ -254,85 +253,7 @@ export const candidateRouter = router({
       const { role, organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
       assertMinRole(role, "MEMBER");
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let session = (c as { session?: any }).session ?? null;
-      if (session && typeof session === "object" && !Array.isArray(session)) {
-        session = await expireIfStale(session);
-      } else {
-        session = null;
-      }
-
-      const status = session?.status as string | undefined;
-      if (status === "COMPLETED" || status === "DISQUALIFIED") {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This interview is already finished. A new link cannot be issued.",
-        });
-      }
-      if (
-        !needsFreshInviteLink({
-          session,
-          expiresAt: (c.expiresAt as string | null) ?? null,
-        })
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "This link is still valid. Use Resend to send it again, or wait until the session expires.",
-        });
-      }
-
-      const oldToken = (c.inviteToken as string | null) ?? null;
-      const inviteToken = nanoid(12);
-      const { expiresAt } = resolveInviteSchedule({ inviteSchedule: "immediate" });
-      const revoked = Array.isArray(c.revokedInviteTokens)
-        ? [...(c.revokedInviteTokens as string[])]
-        : [];
-      if (oldToken && !revoked.includes(oldToken)) revoked.push(oldToken);
-
-      if (session?.id) {
-        const now = new Date().toISOString();
-        await ctx.supabase
-          .from("sessions")
-          .update({
-            candidateId: c.id,
-            supersededAt: now,
-            ...(session.status === "IN_PROGRESS" ? { status: "ABANDONED", endReason: "DISCONNECTED" } : {}),
-          })
-          .eq("id", session.id);
-      }
-
-      const { data: updated, error } = await ctx.supabase
-        .from("candidates")
-        .update({
-          inviteToken,
-          expiresAt,
-          scheduledAt: null,
-          sessionId: null,
-          revokedInviteTokens: revoked,
-          updatedAt: new Date().toISOString(),
-        })
-        .eq("id", c.id)
-        .select("id, inviteToken, expiresAt")
-        .single();
-      if (error || !updated) {
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: error?.message ?? "Could not issue a new invite link",
-        });
-      }
-
-      const channels = input.channels ?? {
-        email: !!c.email,
-        whatsapp: !!c.phone,
-      };
-      const delivery = await sendCandidateInvite(ctx.supabase, organizationId, c.id, channels);
-
-      return {
-        inviteToken: updated.inviteToken as string,
-        inviteLink: inviteLink(updated.inviteToken as string),
-        expiresAt: updated.expiresAt as string | null,
-        delivery,
-      };
+      return issueNewInviteLink(ctx.supabase, c, organizationId, input.channels);
     }),
 
   bulkCreate: protectedProcedure
