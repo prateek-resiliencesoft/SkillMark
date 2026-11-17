@@ -28,6 +28,7 @@ import {
   Settings2,
   ShieldCheck,
   Users,
+  Wallpaper,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -57,6 +58,12 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { href: "/admin/config", label: "Config", icon: Settings2 },
       { href: "/admin/activity", label: "Audit Activity", icon: Activity },
+    ],
+  },
+  {
+    title: "Landing Page",
+    items: [
+      { href: "/admin/landing", label: "Landing Page Controls", icon: Wallpaper },
     ],
   },
   {

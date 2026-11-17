@@ -20,6 +20,7 @@
     ],
     "paths": {
       "@/*": ["./src/*"],
+      "@landing/*": ["./landingpage_connection/*"],
       "@bklitui/ui/charts": ["./src/components/ui/charts"],
       "@bklitui/ui/charts/*": ["./src/components/ui/charts/*"]
     }
