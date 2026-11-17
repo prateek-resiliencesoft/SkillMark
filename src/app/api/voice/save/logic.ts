@@ -4,6 +4,8 @@ import { canMarkCompleted } from "@/lib/session-report-policy";
 export type VoiceSavePayload = {
   sessionId?: string;
   messages?: Array<{
+    /** Client-made uuid; a resent line with the same id is stored only once. */
+    id?: string;
     role: string;
     content: string;
     questionId?: string;
@@ -16,6 +18,13 @@ export type VoiceSavePayload = {
   complete?: boolean;
   currentQuestionIndex?: number;
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Row id for a saved line: the client's uuid when valid (makes resends idempotent), else a fresh one. */
+export function messageRowId(clientId: unknown, makeId: () => string): string {
+  return typeof clientId === "string" && UUID_RE.test(clientId) ? clientId.toLowerCase() : makeId();
+}
 
 export type ActivitySegment = { enteredAt: string; leftAt: string | null };
 
@@ -141,6 +150,7 @@ export async function handleVoiceSave(
     return { status: 400, body: { error: "Missing sessionId" } };
   }
 
+  let insertError: unknown = null;
   try {
     if (messages && Array.isArray(messages) && messages.length > 0) {
       let lastSaved: { role: string; content: string } | null = null;
@@ -153,7 +163,18 @@ export async function handleVoiceSave(
       }
       const { kept, dropped } = dropRepeatedUserLines(lastSaved, messages);
       if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);
-      if (kept.length > 0) await ops.insertMessages(sessionId, kept);
+      if (kept.length > 0) {
+        try {
+          await ops.insertMessages(sessionId, kept);
+        } catch (err) {
+          // Without completion, fail now so the client keeps the lines and retries.
+          if (!complete) throw err;
+          // A tab-close beacon can't retry: still mark the session complete,
+          // then answer 500 so a client that is still open resends the lines.
+          insertError = err;
+          ops.log.error(`Message insert failed for ${sessionId} during completion:`, err);
+        }
+      }
     }
 
     if (complete) {
@@ -167,9 +188,11 @@ export async function handleVoiceSave(
         // Repeated completion (end flow + disconnect, beacon) or disqualified:
         // keep the first completion and don't regenerate the report.
         ops.log.info(`Session ${sessionId} already ${session.status}; completion ignored`);
+        const completed = session.status === "COMPLETED";
+        if (insertError) return { status: 500, body: { error: "Failed to save voice data", completed, status: session.status } };
         return {
           status: 200,
-          body: { ok: true, completed: session.status === "COMPLETED", status: session.status },
+          body: { ok: true, completed, status: session.status },
         };
       } else {
         const wasAbandoned = session.status === "ABANDONED";
@@ -211,6 +234,7 @@ export async function handleVoiceSave(
           .catch((err) => {
             ops.log.error("Background summary generation failed:", err);
           });
+        if (insertError) return { status: 500, body: { error: "Failed to save voice data", completed: true, status: "COMPLETED" } };
         return { status: 200, body: { ok: true, completed: true, status: "COMPLETED" } };
       }
     } else if (typeof currentQuestionIndex === "number") {

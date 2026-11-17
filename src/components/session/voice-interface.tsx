@@ -412,7 +412,6 @@ export function VoiceInterface({
       })) ?? [],
   );
   const [error, setError] = useState<string>("");
-  const [isSaving, setIsSaving] = useState(false);
   const [locallyCompleted, setLocallyCompleted] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [isStartingInterview, setIsStartingInterview] = useState(false);
@@ -1206,8 +1205,9 @@ export function VoiceInterface({
     if (voice.isInterviewComplete) onEndingRef.current?.();
   }, [voice.isInterviewComplete]);
 
-  // Tab closing: save unsent transcript lines; complete the session when the
-  // interview was finished or already ending.
+  // Tab closing or hidden (mobile app switch, tab switch): save unsent
+  // transcript lines; complete the session when the interview was finished or
+  // already ending. Safe to repeat: lines carry ids, completion is idempotent.
   useEffect(() => {
     if (preview) return;
     const onPageHide = () => {
@@ -1220,16 +1220,24 @@ export function VoiceInterface({
         navigator.sendBeacon("/api/session/complete", blob);
       }
     };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onPageHide();
+    };
     window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [preview, sessionId]);
 
   const handleEndInterview = useCallback(async () => {
     if (endingRef.current) return;
     endingRef.current = true;
     onEndingRef.current?.();
+    // Thank-you screen shows right away; saving below runs in the background
+    // and does not need the tab (keepalive fetch + tab-close beacons).
     setLocallyCompleted(true);
-    setIsSaving(true);
 
     voice.stopListening();
 
@@ -1371,7 +1379,7 @@ export function VoiceInterface({
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
   // Same thank-you screen as the session page uses after completion / on reload.
-  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} sessionId={preview ? null : sessionId} />;
+  const completionScreen = <CandidateThankYou timeLimitReached={timerExpiredRef.current} sessionId={preview ? null : sessionId} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];
@@ -1594,17 +1602,6 @@ export function VoiceInterface({
           </div>
         </div>
       )}
-      {/* Saving overlay */}
-      {isSaving && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
-          <Loader2 className="h-10 w-10 animate-spin text-primary" />
-          <p className="mt-4 text-lg font-medium">Saving interview data...</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            This will only take a moment.
-          </p>
-        </div>
-      )}
-
       {/* Header */}
       <div className="shrink-0 border-b bg-card px-3 pb-1.5 pt-[max(0.375rem,env(safe-area-inset-top))] md:px-6 md:py-3">
         <div className="flex items-center justify-between">
