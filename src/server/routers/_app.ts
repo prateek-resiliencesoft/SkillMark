@@ -22,6 +22,7 @@ import { platformRouter } from "./platform";
 import { platformOpsRouter } from "./platform-ops";
 import { billingRouter } from "./billing";
 import { statusRouter } from "./status";
+import { landingRouter } from "@landing/server/router";
 
 export const appRouter = router({
   auth: authRouter,
@@ -47,6 +48,7 @@ export const appRouter = router({
   platformOps: platformOpsRouter,
   billing: billingRouter,
   status: statusRouter,
+  landing: landingRouter,
 });
 
 export type AppRouter = typeof appRouter;
