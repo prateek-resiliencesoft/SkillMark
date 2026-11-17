@@ -22,6 +22,7 @@ import {
   saveDraft,
 } from './repository'
 import { removeLandingMedia } from './media'
+import { buildPreviewApiUrl, buildPreviewTabUrl } from '@landing/shared/preview'
 import { signPreviewToken } from './preview-token'
 import { pollRebuildStatus, readRebuildConfig, scheduleRebuild } from './rebuild'
 
@@ -171,18 +172,36 @@ export const landingRouter = router({
       return { ok: true }
     }),
 
-  /** Signed token for opening the draft in a new tab on the landing origin. */
-  createPreviewToken: platformProcedure.mutation(async ({ ctx }) => {
-    try {
-      const token = await signPreviewToken(ctx.user.id)
-      return { token, expiresInSec: 30 * 60 }
-    } catch (err) {
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: err instanceof Error ? err.message : 'Could not create preview token',
-      })
-    }
-  }),
+  /**
+   * Signed token + URLs for opening the draft in a new tab on the landing origin.
+   * Client must open `tabUrl` (HTML). `apiUrl` is what the landing site fetches.
+   */
+  createPreviewToken: platformProcedure
+    .input(z.object({ slug: z.string().max(200).optional() }).optional())
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const token = await signPreviewToken(ctx.user.id)
+        const expiresInSec = 30 * 60
+        const landingOrigin = (
+          process.env.NEXT_PUBLIC_LANDING_URL || 'https://resiliencesoftinterview.com'
+        ).replace(/\/$/, '')
+        const appUrl = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
+        const apiBase = appUrl
+          ? `${appUrl}/api/public/landing`
+          : 'https://app.resiliencesoftinterview.com/api/public/landing'
+        return {
+          token,
+          expiresInSec,
+          tabUrl: buildPreviewTabUrl({ landingOrigin, token, slug: input?.slug }),
+          apiUrl: buildPreviewApiUrl({ apiBase, token }),
+        }
+      } catch (err) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: err instanceof Error ? err.message : 'Could not create preview token',
+        })
+      }
+    }),
 
   rebuildStatus: platformProcedure.query(async ({ ctx }) => {
     return pollRebuildStatus(ctx.supabase)

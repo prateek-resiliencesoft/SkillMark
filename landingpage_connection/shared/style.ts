@@ -67,7 +67,8 @@ export function isFlatDeclarationList(css: string): boolean {
   if (/expression\s*\(/i.test(raw)) return false
   if (/<\/|\bjavascript:/i.test(raw)) return false
   // Property-ish tokens only: names, values, units, commas, quotes, hashes.
-  return /^[\s\w\-.:#%(),;'"\/\\!+]+$/i.test(raw)
+  // Includes * for calc() multiplication and = for modern comparison funcs.
+  return /^[\s\w\-.:#%(),;'"\/\\!+*=]+$/i.test(raw)
 }
 
 /** @deprecated Prefer isFlatDeclarationList — kept for tests that strip noise. */

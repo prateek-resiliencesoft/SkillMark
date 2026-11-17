@@ -159,9 +159,14 @@ async function runDispatch(db: Context['supabase']) {
 }
 
 /**
- * Schedule a rebuild by writing rebuildAfter = now + debounce.
- * Also arms an opportunistic in-process timer (best-effort) so a live Node
- * process dispatches even if nobody polls. Durable claim remains the lock.
+ * Schedule a rebuild by writing rebuildAfter = now + debounce (durable).
+ *
+ * Dispatch is woken by, in order of reliability:
+ * 1. `/api/cron/landing-rebuild` (GitHub Actions / external cron) — production path
+ * 2. Admin `rebuildStatus` polling (while the editor is open)
+ * 3. Best-effort in-process setTimeout (lost on restart / scale-to-zero)
+ *
+ * The DB row + atomic claim are the source of truth; timers never own the work.
  */
 export async function scheduleRebuild(db: Context['supabase']): Promise<RebuildState> {
   const after = new Date(Date.now() + DEBOUNCE_MS).toISOString()
@@ -170,7 +175,7 @@ export async function scheduleRebuild(db: Context['supabase']): Promise<RebuildS
     detail: `Rebuild scheduled for ${after}`,
     rebuildAfter: after,
   })
-  // Best-effort wake; atomic claim prevents double-dispatch.
+  // Opportunistic local wake only — durable path is cron + poll.
   setTimeout(() => {
     void maybeDispatchDueRebuild(db)
   }, DEBOUNCE_MS + 100)
