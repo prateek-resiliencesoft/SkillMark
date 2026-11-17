@@ -79,6 +79,7 @@ interface ResearchFinding {
 }
 
 interface CodeEvaluation {
+  snippetId?: string;
   snippetLabel?: string;
   language?: string;
   question?: string;
@@ -1214,8 +1215,26 @@ function SessionDetail({
               );
               if (!codeMsgs || codeMsgs.length === 0) return null;
 
+              // Match by stable snippet id first, then label. Never by array index —
+              // summary generation drops empty snippets, so index alignment can attach
+              // an evaluation to the wrong code message.
               const usedEval = new Set<number>();
-              const matchEval = (label: string, index: number): CodeEvaluation | undefined => {
+              const matchEval = (
+                snippetId: string | undefined,
+                label: string,
+              ): CodeEvaluation | undefined => {
+                if (snippetId) {
+                  const byId = codeEvaluations.findIndex(
+                    (e, i) =>
+                      !usedEval.has(i) &&
+                      e.snippetId &&
+                      e.snippetId.trim() === snippetId.trim(),
+                  );
+                  if (byId >= 0) {
+                    usedEval.add(byId);
+                    return codeEvaluations[byId];
+                  }
+                }
                 const byLabel = codeEvaluations.findIndex(
                   (e, i) =>
                     !usedEval.has(i) &&
@@ -1225,10 +1244,6 @@ function SessionDetail({
                 if (byLabel >= 0) {
                   usedEval.add(byLabel);
                   return codeEvaluations[byLabel];
-                }
-                if (!usedEval.has(index) && codeEvaluations[index]) {
-                  usedEval.add(index);
-                  return codeEvaluations[index];
                 }
                 return undefined;
               };
@@ -1251,7 +1266,7 @@ function SessionDetail({
                     )}
                   </CardHeader>
                   <CardContent className="space-y-6">
-                    {codeMsgs.map((msg: any, idx: number) => {
+                    {codeMsgs.map((msg: any) => {
                       const data = msg.whiteboardData as Record<
                         string,
                         unknown
@@ -1260,7 +1275,11 @@ function SessionDetail({
                       const code = (data?.code as string) ?? "";
                       const language =
                         (data?.language as string) ?? "plaintext";
-                      const ev = matchEval(label, idx);
+                      const snippetId =
+                        typeof msg.content === "string" && msg.content.trim()
+                          ? msg.content.trim()
+                          : undefined;
+                      const ev = matchEval(snippetId, label);
                       return (
                         <div
                           key={msg.id}

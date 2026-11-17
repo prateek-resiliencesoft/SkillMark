@@ -180,6 +180,7 @@ export async function generateSessionSummary(
       .map((m) => {
         const data = m.whiteboardData as Record<string, unknown>;
         return {
+          id: typeof m.content === "string" && m.content.trim() ? m.content.trim() : undefined,
           label: (data.label as string) || "Untitled Snippet",
           code: (data.code as string) || "",
           language: (data.language as string) || "plaintext",
