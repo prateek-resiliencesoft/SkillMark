@@ -14,6 +14,11 @@ import {
     getEffectiveProjectRole, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router, type MemberRole
 } from "../trpc";
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
+import { inviteLink } from "../batch-access";
+import {
+  buildInviteMessageViews,
+  inviteVarsFromParts,
+} from "@/lib/messaging/invite-messages";
 import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
 import { feedbackForSession } from "../candidate-feedback";
@@ -140,7 +145,7 @@ export const candidateRouter = router({
         .eq("id", input.id)
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
-      await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      const { organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
       const withSession = await expireNestedSession(c);
       const { events: preflightEvents, available: preflightAvailable } =
         await listPreflightEventsWithStatus(c.id);
@@ -148,7 +153,44 @@ export const candidateRouter = router({
         withSession.session as Record<string, unknown> | null,
         c.interviewId as string,
       );
-      return { ...withSession, preflightEvents, preflightAvailable, activity };
+
+      const cfg = await loadDeliveryConfig(ctx.supabase, organizationId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const iv = withSession.interview as any;
+      const title = ((iv?.title as string | undefined) ?? "Interview").split(" · ")[0];
+      const token = withSession.inviteToken as string | null;
+      const vars = inviteVarsFromParts({
+        name: withSession.name as string,
+        interviewTitle: title,
+        organization: cfg.organizationName,
+        link: token ? inviteLink(token) : "",
+        duration: iv?.timeLimitMinutes ? `${iv.timeLimitMinutes} minutes` : "",
+        batchName: title,
+        scheduledAt: (withSession.scheduledAt as string | null) ?? null,
+        expiresAt: (withSession.expiresAt as string | null) ?? null,
+      });
+      const inviteMessageViews = buildInviteMessageViews({
+        inviteMessages: withSession.inviteMessages,
+        templates: cfg.templates,
+        vars,
+        email: (withSession.email as string | null) ?? null,
+        phone: (withSession.phone as string | null) ?? null,
+        emailStatus: (withSession.emailStatus as string | null) ?? null,
+        emailSentAt: (withSession.emailSentAt as string | null) ?? null,
+        emailProvider: (withSession.emailProvider as string | null) ?? null,
+        whatsappStatus: (withSession.whatsappStatus as string | null) ?? null,
+        whatsappSentAt: (withSession.whatsappSentAt as string | null) ?? null,
+        whatsappProvider: (withSession.whatsappProvider as string | null) ?? null,
+        whatsappTemplateName: cfg.resilio?.templateName ?? null,
+      });
+
+      return {
+        ...withSession,
+        preflightEvents,
+        preflightAvailable,
+        activity,
+        inviteMessageViews,
+      };
     }),
 
   /**

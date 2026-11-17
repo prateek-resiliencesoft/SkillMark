@@ -3,6 +3,7 @@ import { z } from "zod";
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { appBaseUrl, inviteLink } from "@/server/batch-access";
+import { mergeInviteMessages, type InviteMessages } from "@/lib/messaging/invite-messages";
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "@/server/invite-delivery";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
@@ -213,6 +214,7 @@ export async function POST(req: NextRequest) {
       };
 
       const candidateUpdates: Record<string, unknown> = {};
+      const messagePatch: InviteMessages = {};
 
       if (candidate.email) {
         const emailRes = await deliverEmail(
@@ -225,7 +227,17 @@ export async function POST(req: NextRequest) {
         emailStatus = emailRes.status;
         candidateUpdates.emailStatus = emailRes.status;
         candidateUpdates.emailProvider = chosenEmailProvider;
-        if (emailRes.status === "sent") candidateUpdates.emailSentAt = new Date().toISOString();
+        if (emailRes.status === "sent") {
+          const sentAt = new Date().toISOString();
+          candidateUpdates.emailSentAt = sentAt;
+          messagePatch.email = {
+            subject: emailRes.subject,
+            text: emailRes.text,
+            sentAt,
+            provider: emailRes.provider,
+            to: candidate.email,
+          };
+        }
       }
 
       if (candidate.phone && candidate.phone.startsWith("+")) {
@@ -233,7 +245,24 @@ export async function POST(req: NextRequest) {
         whatsappStatus = waRes.status;
         candidateUpdates.whatsappStatus = waRes.status;
         candidateUpdates.whatsappProvider = "resilio";
-        if (waRes.status === "sent") candidateUpdates.whatsappSentAt = new Date().toISOString();
+        if (waRes.status === "sent") {
+          const sentAt = new Date().toISOString();
+          candidateUpdates.whatsappSentAt = sentAt;
+          messagePatch.whatsapp = {
+            text: waRes.text,
+            sentAt,
+            provider: waRes.provider ?? "resilio",
+            to: candidate.phone,
+            templateName: waRes.templateName,
+          };
+        }
+      }
+
+      if (Object.keys(messagePatch).length) {
+        candidateUpdates.inviteMessages = mergeInviteMessages(
+          (candidate as { inviteMessages?: unknown }).inviteMessages,
+          messagePatch,
+        );
       }
 
       if (Object.keys(candidateUpdates).length > 0) {
