@@ -18,6 +18,7 @@ export function redactSessionForCandidate<T extends Record<string, unknown>>(ses
     themes: undefined,
     sentiment: undefined,
     antiCheatingLog: undefined,
+    integritySignals: undefined,
     activitySegments: undefined,
     interview: safeInterview,
   };

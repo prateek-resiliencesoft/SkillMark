@@ -10,6 +10,8 @@ import {
 } from "@/lib/head-movement";
 import type { FaceLandmarker, FaceLandmarkerResult } from "@mediapipe/tasks-vision";
 import { detectionsSuppressed, suppressDetections } from "@/lib/anti-cheating-state";
+import { publishFaceFrame, registerMediaTrack } from "@/lib/integrity/bus";
+import { gazeXFromLandmarks } from "@/lib/integrity/reading-pattern";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const MP_VERSION = "1.2.0";
@@ -72,6 +74,7 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
           audio: false,
         });
         if (cancelled) return;
+        stream.getVideoTracks().forEach(registerMediaTrack);
         const video = document.createElement("video");
         video.muted = true;
         video.playsInline = true;
@@ -89,6 +92,7 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
             runningMode: "VIDEO",
             numFaces: 2,
             outputFacialTransformationMatrixes: true,
+            outputFaceBlendshapes: true,
           });
         const lm = await create("GPU").catch(() => create("CPU"));
         if (cancelled) {
@@ -101,11 +105,6 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
         timer = setInterval(() => {
           if (!landmarker || video.readyState < 2) return;
           if (document.hidden) return; // tab departures are handled by the main anti-cheating guard
-          if (pausedRef.current) return; // warning modal open: no stacking / extra counts
-          if (detectionsSuppressed()) {
-            monitor.reset(Date.now() + 3000);
-            return;
-          }
           const now = performance.now();
           let res: FaceLandmarkerResult;
           try {
@@ -119,6 +118,25 @@ export function useHeadMovementDetection({ enabled, onViolation, paused = false,
             matrices.length > 0
               ? matrices.map((m) => matrixToYawPitch(m.data))
               : Array.from({ length: faceCount }, () => ({ yaw: 0, pitch: 0 }));
+          // Integrity checks (lip-sync, liveness, reading) consume every frame,
+          // including while warnings are open or detections are suppressed.
+          const shapes = res.faceBlendshapes?.[0]?.categories ?? [];
+          const score = (name: string) => shapes.find((c) => c.categoryName === name)?.score ?? null;
+          const smileL = score("mouthSmileLeft");
+          const smileR = score("mouthSmileRight");
+          publishFaceFrame({
+            t: Date.now(),
+            faces: faceCount,
+            yaw: faces.length === 1 ? faces[0].yaw : null,
+            jawOpen: faceCount === 1 ? score("jawOpen") : null,
+            smile: faceCount === 1 && smileL !== null && smileR !== null ? (smileL + smileR) / 2 : null,
+            gazeX: faceCount === 1 && res.faceLandmarks?.[0] ? gazeXFromLandmarks(res.faceLandmarks[0]) : null,
+          });
+          if (pausedRef.current) return; // warning modal open: no stacking / extra counts
+          if (detectionsSuppressed()) {
+            monitor.reset(Date.now() + 3000);
+            return;
+          }
           if (faces.length === 1) faces = [smoother.update(faces[0])];
           else if (faces.length === 0) smoother.reset();
           const kind = monitor.update(classifyFrame(faces), Date.now());

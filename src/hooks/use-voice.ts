@@ -30,6 +30,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import { VadFailsafe, type FailsafeReason } from "@/lib/voice/vad-failsafe";
 import { compareUserLines, normalizeForCompare } from "@/lib/transcript/dedupe";
+import { registerMediaTrack, setAiSpeaking } from "@/lib/integrity/bus";
 
 const PLAYBACK_START_LEAD_S = 0.18;
 // Short fade-in when playback (re)starts from silence, to avoid a click.
@@ -67,6 +68,8 @@ export interface InterviewContext {
   aiTone: string;
   language: string;
   followUpDepth: string;
+  /** Anti-cheat integrity checks on: interviewer adds verification follow-ups. */
+  integrityProbing?: boolean;
   startQuestionIndex?: number;
   candidateFocus?: { skills?: string[] | null; questions?: Array<{ text: string; skill?: string | null }> | null } | null;
   questions: Array<{
@@ -1311,6 +1314,7 @@ export function useVoice({
         },
       });
       mediaStreamRef.current = stream;
+      stream.getAudioTracks().forEach(registerMediaTrack);
 
       const ctx = new AudioContext({ sampleRate: 16000 });
       const source = ctx.createMediaStreamSource(stream);
@@ -1431,6 +1435,7 @@ export function useVoice({
 
         const now = performance.now();
         const aiSpeaking = now < micHoldUntilRef.current;
+        setAiSpeaking(aiSpeaking);
         lastMicRmsRef.current = rms;
         if (rms > micPeakSinceCheckRef.current) micPeakSinceCheckRef.current = rms;
 

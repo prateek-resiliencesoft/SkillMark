@@ -1,6 +1,7 @@
 import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
 import { recordPreflightEvent } from "@/lib/preflight-server";
 import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
+import { INTEGRITY_SIGNAL_TYPES } from "@/lib/integrity/signals";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
@@ -696,7 +697,7 @@ export const sessionRouter = router({
       z.object({
         sessionId: z.string(),
         violation: z.object({
-          type: z.enum(["page_departure", "paste", "multi_screen", "tab_switch", "focus_lost", "copy", "cut", "head_movement"]),
+          type: z.enum(["page_departure", "paste", "multi_screen", "tab_switch", "focus_lost", "copy", "cut", "head_movement", "offscreen_voice", "device_switch"]),
           timestamp: z.number(),
           detail: z.string().max(500).optional(),
           imageUrl: z.string().max(2000).optional(),
@@ -771,6 +772,16 @@ export const sessionRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: "Head movement detection is not enabled for this interview" });
         }
       }
+      if (input.violation.type === "offscreen_voice" || input.violation.type === "device_switch") {
+        const { data: iv } = await ctx.supabase
+          .from("interviews")
+          .select("integrityChecksEnabled")
+          .eq("id", session.interviewId)
+          .single();
+        if (!(antiCheatingOn && iv?.integrityChecksEnabled)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Integrity checks are not enabled for this interview" });
+        }
+      }
 
       const result = applyAntiCheatingViolation(prevLog, input.violation);
       const disqualify = antiCheatingOn && result.disqualify;
@@ -798,6 +809,49 @@ export const sessionRouter = router({
 
       // headViolations kept for older clients; it now carries the shared strike count.
       return { success: true, strikes: result.strikes, headViolations: result.strikes, disqualified: disqualify };
+    }),
+
+  /** Silent integrity signals (reviewer-only, never strikes), batched by the browser. */
+  recordIntegritySignals: publicProcedure
+    .input(
+      z.object({
+        sessionId: z.string().uuid(),
+        signals: z
+          .array(
+            z.object({
+              type: z.enum(INTEGRITY_SIGNAL_TYPES),
+              timestamp: z.number(),
+              value: z.number().finite().optional(),
+              detail: z.string().max(300).optional(),
+            }),
+          )
+          .min(1)
+          .max(50),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select("integritySignals, status, interviewId")
+        .eq("id", input.sessionId)
+        .single();
+      if (!session) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      if (session.status !== "IN_PROGRESS") return { success: true, stored: 0 };
+
+      const { data: iv } = await ctx.supabase
+        .from("interviews")
+        .select("antiCheatingEnabled, integrityChecksEnabled")
+        .eq("id", session.interviewId)
+        .single();
+      if (!(iv?.antiCheatingEnabled && iv?.integrityChecksEnabled)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Integrity checks are not enabled for this interview" });
+      }
+
+      const prev = Array.isArray(session.integritySignals) ? session.integritySignals : [];
+      const MAX_SIGNALS = 2000;
+      const next = [...prev, ...input.signals].slice(-MAX_SIGNALS);
+      await ctx.supabase.from("sessions").update({ integritySignals: next }).eq("id", input.sessionId);
+      return { success: true, stored: input.signals.length };
     }),
 
   listAll: protectedProcedure
