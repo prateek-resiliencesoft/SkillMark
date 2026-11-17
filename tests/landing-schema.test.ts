@@ -149,18 +149,36 @@ test("softParseProps keeps valid list items when one entry is invalid", () => {
       "not-an-object",
       { title: "Also good", n: "bad" },
       null,
+      undefined,
+      [],
+      { title: "Third", n: 3 },
     ],
   });
   assert.deepEqual(out.items, [
     { title: "Good", n: 1 },
     { title: "Also good", n: 0 }, // invalid n → default
+    { title: "Third", n: 3 },
   ]);
 });
 
 test("softParseProps keeps valid stringList entries", () => {
   const fields: Field[] = [{ kind: "stringList", key: "tags", label: "Tags" }];
-  const out = softParseProps(fields, { tags: ["a", 2, "b", null, "c"] });
+  const out = softParseProps(fields, { tags: ["a", 2, "b", null, "c", true, {}] });
   assert.deepEqual(out.tags, ["a", "b", "c"]);
+});
+
+test("softParseProps non-array list becomes empty required list", () => {
+  const fields: Field[] = [
+    {
+      kind: "list",
+      key: "items",
+      label: "Items",
+      itemLabel: "Item",
+      fields: [{ kind: "text", key: "title", label: "Title" }],
+    },
+  ];
+  assert.deepEqual(softParseProps(fields, { items: "nope" }).items, []);
+  assert.deepEqual(softParseProps(fields, {}).items, []);
 });
 
 test("strict mode rejects children on non-container blocks", () => {
@@ -191,15 +209,92 @@ test("strict mode rejects blocks on preset sections", () => {
   assert.throws(() => validateSectionProps(doc, { strict: true }), /cannot contain blocks/i);
 });
 
-test("scopeCss only allows flat declaration lists", () => {
-  assert.equal(scopeCss('[data-lp-section="a"]', "color: red; padding: 1rem"), '[data-lp-section="a"]{color: red; padding: 1rem}');
+test("strict mode rejects nested unsupported children inside containers", () => {
+  const doc = defaultSiteDocument();
+  doc.pages[0]!.sections.push({
+    id: "custom1",
+    type: "custom",
+    hidden: false,
+    props: {},
+    style: {},
+    blocks: [
+      {
+        id: "row1",
+        type: "row",
+        props: { gap: "sm" },
+        style: {},
+        children: [
+          {
+            id: "btn1",
+            type: "button",
+            props: { label: "Go", href: "/x", variant: "primary", size: "md" },
+            style: {},
+            // button is not a container — children must be rejected
+            children: [
+              { id: "ghost", type: "text", props: { text: "x", size: "base", muted: false }, style: {}, children: [] },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  assert.throws(() => validateSectionProps(doc, { strict: true }), /cannot have children/i);
+});
+
+test("soft mode strips unsupported children/blocks instead of throwing", () => {
+  const doc = defaultSiteDocument();
+  const hero = doc.pages[0]!.sections.find((s) => s.type === "hero")!;
+  hero.blocks = [{ id: "b1", type: "text", props: { text: "x", size: "base", muted: false }, style: {}, children: [] }];
+  doc.pages[0]!.sections.push({
+    id: "custom1",
+    type: "custom",
+    hidden: false,
+    props: {},
+    style: {},
+    blocks: [
+      {
+        id: "b1",
+        type: "heading",
+        props: { text: "Hi", level: "h2" },
+        style: {},
+        children: [{ id: "c1", type: "text", props: { text: "nope", size: "base", muted: false }, style: {}, children: [] }],
+      },
+    ],
+  });
+  const soft = validateSectionProps(doc, { strict: false });
+  const softHero = soft.pages[0]!.sections.find((s) => s.type === "hero")!;
+  assert.deepEqual(softHero.blocks, []);
+  const custom = soft.pages[0]!.sections.find((s) => s.id === "custom1")!;
+  assert.equal(custom.blocks[0]!.type, "heading");
+  assert.deepEqual(custom.blocks[0]!.children, []);
+});
+
+test("scopeCss allows flat declarations including var() and calc()", () => {
+  const sel = '[data-lp-section="a"]';
+  assert.equal(scopeCss(sel, "color: red; padding: 1rem"), `${sel}{color: red; padding: 1rem}`);
+  assert.equal(scopeCss(sel, "color: var(--brand)"), `${sel}{color: var(--brand)}`);
+  assert.equal(
+    scopeCss(sel, "width: calc(100% - 2rem); margin: calc(1rem * 2)"),
+    `${sel}{width: calc(100% - 2rem); margin: calc(1rem * 2)}`,
+  );
+  assert.equal(
+    scopeCss(sel, "color: var(--x, var(--y, #fff))"),
+    `${sel}{color: var(--x, var(--y, #fff))}`,
+  );
+});
+
+test("scopeCss rejects blocks, at-rules, and url()", () => {
   assert.equal(scopeCss(".x", "h2{color:red}"), "");
   assert.equal(scopeCss(".x", "} body{color:red"), "");
   assert.equal(scopeCss(".x", "h2{color:red"), "");
   assert.equal(scopeCss(".x", "/* { */ } body{color:red}"), "");
   assert.equal(scopeCss(".x", 'content:"}"; } body{color:red}'), "");
   assert.equal(scopeCss(".x", "@import url(x.css);"), "");
+  assert.equal(scopeCss(".x", "@media (min-width: 600px)"), "");
+  assert.equal(scopeCss(".x", "@keyframes spin"), "");
   assert.equal(scopeCss(".x", "background: url(evil)"), "");
+  assert.equal(scopeCss(".x", "background: URL('https://x.test/a.png')"), "");
+  assert.equal(scopeCss(".x", "width: expression(alert(1))"), "");
 });
 
 test("stripCssNoise removes comments and strings", () => {

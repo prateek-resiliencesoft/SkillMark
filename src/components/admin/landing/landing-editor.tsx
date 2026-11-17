@@ -281,9 +281,22 @@ export function LandingEditor() {
             <TacticalButton
               size="sm"
               variant="outline"
+              disabled={previewToken.isPending}
               onClick={async () => {
-                const { token } = await previewToken.mutateAsync();
-                window.open(`${LANDING_URL}/?lp_preview_token=${encodeURIComponent(token)}`, "_blank");
+                try {
+                  const { tabUrl } = await previewToken.mutateAsync({
+                    slug: page?.slug || undefined,
+                  });
+                  // tabUrl is the marketing-site HTML entry; the site then calls
+                  // /api/public/landing/preview?token=… (never open the API URL here).
+                  window.open(tabUrl, "_blank", "noopener,noreferrer");
+                } catch (err) {
+                  toast({
+                    title: "Preview link failed",
+                    description: err instanceof Error ? err.message : String(err),
+                    variant: "destructive",
+                  });
+                }
               }}
             >
               <Eye className="h-3.5 w-3.5" />
