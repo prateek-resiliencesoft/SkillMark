@@ -3,10 +3,9 @@
 -- for the marketing site (Landing Page Controls in /admin/landing).
 --
 -- Idempotent: safe to re-run on an existing database:
---   docker compose exec -T db psql -U skillmark -d skillmark < db/init/32-landing-content.sql
--- Live deploy does not auto-run migrations — apply this file on the target
--- database. Until then the landing editor stays unavailable and the public
--- site keeps serving its baked-in defaults.
+--   npm run db:migrate
+--   # or: docker compose exec -T db psql -U skillmark -d skillmark < db/init/32-landing-content.sql
+-- Production /dev Deploy workflows run scripts/db-migrate.sh after compose up.
 -- ────────────────────────────────────────────────────────────
 
 -- Single-row draft the admin edits before publishing.
