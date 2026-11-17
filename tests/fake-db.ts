@@ -35,6 +35,7 @@ export function fakeDb(tables: Record<string, Row[]>) {
           return b;
         },
         limit: (n: number) => ((rows = rows.slice(0, n)), b),
+        range: (from: number, to: number) => ((rows = rows.slice(from, to + 1)), b),
         maybeSingle: () => ((single = "maybe"), b),
         single: () => ((single = "one"), b),
         then: (res: (v: any) => any, rej?: (e: any) => any) => {

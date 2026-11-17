@@ -136,3 +136,24 @@ test("summary of no feedback", () => {
   assert.equal(s.average, null);
   assert.equal(s.distribution.length, 5);
 });
+
+test("admin list: summary totals scan every page, not a hard row cap", async () => {
+  const { db, tables } = world();
+  for (let i = 0; i < 5; i++) {
+    tables.candidate_feedback.push({
+      id: `fx${i}`,
+      sessionId: S1,
+      candidateId: "c1",
+      organizationId: ORG_A,
+      interviewId: "iv-a",
+      rating: 5,
+      tags: [],
+      comment: null,
+      createdAt: `2026-11-15T1${i}:00:00Z`,
+    });
+  }
+  const list = await listFeedback(db, {}, { pageSize: 2 });
+  assert.equal(list.summary.total, 5);
+  assert.equal(list.summary.average, 5);
+  assert.equal(list.rows.length, 5);
+});
