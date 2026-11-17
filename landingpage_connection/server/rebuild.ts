@@ -1,16 +1,12 @@
 /**
  * Trigger the landing-site GitHub Actions deploy workflow after publish.
- * Debounces rapid publishes so only one workflow runs.
+ * Debounce is durable: we store rebuildAfter in the DB so serverless / multi-
+ * instance deployments still fire exactly once when due.
  */
 import type { Context } from '@/server/context'
 import { getRebuildState, setRebuildState, type RebuildState } from './repository'
 
 const DEBOUNCE_MS = 30_000
-
-type Timer = ReturnType<typeof setTimeout>
-
-let pending: Timer | null = null
-let pendingDb: Context['supabase'] | null = null
 
 export type RebuildConfig = {
   token: string
@@ -49,7 +45,6 @@ async function dispatchWorkflow(cfg: RebuildConfig): Promise<{ runId: string | n
     throw new Error(`GitHub workflow_dispatch failed (${res.status}): ${body.slice(0, 300)}`)
   }
 
-  // workflow_dispatch returns 204 with no run id. Best-effort: look up the newest run.
   const runId = await findLatestRunId(cfg).catch(() => null)
   return { runId, detail: `Dispatched ${cfg.workflow}@${cfg.ref}` }
 }
@@ -70,8 +65,79 @@ async function findLatestRunId(cfg: RebuildConfig): Promise<string | null> {
   return id != null ? String(id) : null
 }
 
-export async function pollRebuildStatus(db: Context['supabase']): Promise<RebuildState> {
+async function runDispatch(db: Context['supabase']) {
+  const cfg = readRebuildConfig()
+  if (!cfg) {
+    await setRebuildState(db, {
+      runId: null,
+      status: 'skipped',
+      startedAt: new Date().toISOString(),
+      detail: 'LANDING_DEPLOY_GITHUB_TOKEN / LANDING_DEPLOY_REPO not set — runtime fetch still works.',
+      rebuildAfter: null,
+    })
+    return
+  }
+
+  try {
+    await setRebuildState(db, {
+      runId: null,
+      status: 'requested',
+      startedAt: new Date().toISOString(),
+      detail: 'Dispatching deploy workflow…',
+      rebuildAfter: null,
+    })
+    const { runId, detail } = await dispatchWorkflow(cfg)
+    await setRebuildState(db, {
+      runId,
+      status: runId ? 'queued' : 'requested',
+      startedAt: new Date().toISOString(),
+      detail,
+      rebuildAfter: null,
+    })
+  } catch (err) {
+    await setRebuildState(db, {
+      runId: null,
+      status: 'error',
+      startedAt: new Date().toISOString(),
+      detail: err instanceof Error ? err.message : String(err),
+      rebuildAfter: null,
+    })
+  }
+}
+
+/**
+ * Schedule a rebuild by writing rebuildAfter = now + debounce.
+ * Any instance that later polls (rebuildStatus / publish) will dispatch when due.
+ */
+export async function scheduleRebuild(db: Context['supabase']): Promise<RebuildState> {
+  const after = new Date(Date.now() + DEBOUNCE_MS).toISOString()
+  return setRebuildState(db, {
+    status: 'scheduled',
+    detail: `Rebuild scheduled for ${after}`,
+    rebuildAfter: after,
+  })
+}
+
+/** If a scheduled rebuild is due, dispatch it. Safe to call on every status poll. */
+export async function maybeDispatchDueRebuild(db: Context['supabase']): Promise<RebuildState> {
   const state = await getRebuildState(db)
+  if (!state.rebuildAfter) return state
+  if (Date.parse(state.rebuildAfter) > Date.now()) return state
+  // Claim the slot so concurrent pollers don't double-dispatch.
+  await setRebuildState(db, {
+    ...state,
+    rebuildAfter: null,
+    status: 'requested',
+    detail: 'Dispatching due rebuild…',
+  })
+  await runDispatch(db)
+  return getRebuildState(db)
+}
+
+export async function pollRebuildStatus(db: Context['supabase']): Promise<RebuildState> {
+  // Fire any due durable rebuild first.
+  let state = await maybeDispatchDueRebuild(db)
+
   const cfg = readRebuildConfig()
   if (!cfg || !state.runId || !['queued', 'in_progress', 'requested'].includes(state.status)) {
     return state
@@ -99,56 +165,8 @@ export async function pollRebuildStatus(db: Context['supabase']): Promise<Rebuil
     status,
     startedAt: state.startedAt,
     detail: state.detail,
+    rebuildAfter: state.rebuildAfter,
   })
 }
 
-async function runDispatch(db: Context['supabase']) {
-  const cfg = readRebuildConfig()
-  if (!cfg) {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'skipped',
-      startedAt: new Date().toISOString(),
-      detail: 'LANDING_DEPLOY_GITHUB_TOKEN / LANDING_DEPLOY_REPO not set — runtime fetch still works.',
-    })
-    return
-  }
-
-  try {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'requested',
-      startedAt: new Date().toISOString(),
-      detail: 'Dispatching deploy workflow…',
-    })
-    const { runId, detail } = await dispatchWorkflow(cfg)
-    await setRebuildState(db, {
-      runId,
-      status: runId ? 'queued' : 'requested',
-      startedAt: new Date().toISOString(),
-      detail,
-    })
-  } catch (err) {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'error',
-      startedAt: new Date().toISOString(),
-      detail: err instanceof Error ? err.message : String(err),
-    })
-  }
-}
-
-/** Schedule a rebuild. Multiple calls within 30s collapse into one dispatch. */
-export function scheduleRebuild(db: Context['supabase']): void {
-  pendingDb = db
-  if (pending) clearTimeout(pending)
-  pending = setTimeout(() => {
-    pending = null
-    const d = pendingDb
-    pendingDb = null
-    if (d) void runDispatch(d)
-  }, DEBOUNCE_MS)
-}
-
-/** Test helper — expose debounce constant. */
 export const REBUILD_DEBOUNCE_MS = DEBOUNCE_MS

@@ -1,9 +1,24 @@
 import { defaultSiteDocument } from './defaults'
 import { SCHEMA_VERSION, siteDocumentSchema, type SiteDocument } from './schema'
+import { validateSectionProps } from './validate-props'
+
+function mergeWithDefaults(raw: Partial<SiteDocument> & { schemaVersion?: number }): SiteDocument {
+  const base = defaultSiteDocument()
+  const merged: SiteDocument = {
+    schemaVersion: SCHEMA_VERSION,
+    settings: { ...base.settings, ...(raw.settings ?? {}) },
+    nav: { ...base.nav, ...(raw.nav ?? {}) },
+    footer: { ...base.footer, ...(raw.footer ?? {}) },
+    pages: Array.isArray(raw.pages) && raw.pages.length > 0 ? raw.pages : base.pages,
+  }
+  merged.settings.socials = { ...base.settings.socials, ...(raw.settings?.socials ?? {}) }
+  merged.settings.seo = { ...base.settings.seo, ...(raw.settings?.seo ?? {}) }
+  return merged
+}
 
 /**
  * Bring a stored document up to the current schema version.
- * Unknown future versions are rejected so the site falls back to defaults/snapshot.
+ * Malformed documents fall back to built-in defaults (never return invalid data).
  */
 export function migrateSiteDocument(raw: unknown): SiteDocument {
   if (!raw || typeof raw !== 'object') return defaultSiteDocument()
@@ -15,37 +30,35 @@ export function migrateSiteDocument(raw: unknown): SiteDocument {
     throw new Error(`Landing document schema ${version} is newer than this build (${SCHEMA_VERSION})`)
   }
 
-  // v0 / missing → wrap with defaults for any missing top-level keys.
-  const base = defaultSiteDocument()
-  const merged: SiteDocument = {
-    schemaVersion: SCHEMA_VERSION,
-    settings: { ...base.settings, ...(doc.settings ?? {}) },
-    nav: { ...base.nav, ...(doc.nav ?? {}) },
-    footer: { ...base.footer, ...(doc.footer ?? {}) },
-    pages: Array.isArray(doc.pages) && doc.pages.length > 0 ? doc.pages : base.pages,
-  }
-
-  // Fill missing nested objects that older drafts may omit.
-  merged.settings.socials = { ...base.settings.socials, ...(doc.settings?.socials ?? {}) }
-  merged.settings.seo = { ...base.settings.seo, ...(doc.settings?.seo ?? {}) }
-
+  const merged = mergeWithDefaults(doc)
   const parsed = siteDocumentSchema.safeParse(merged)
-  if (!parsed.success) {
-    // Soft-fail: return merged defaults rather than blanking the site.
-    // Callers that need strict validation should use siteDocumentSchema.parse.
-    return merged
+  if (!parsed.success) return defaultSiteDocument()
+
+  try {
+    return validateSectionProps(parsed.data, { strict: false })
+  } catch {
+    return defaultSiteDocument()
   }
-  return parsed.data
 }
 
 /** Strict parse used by the admin save/publish path. Throws with a readable path. */
 export function parseSiteDocument(raw: unknown): SiteDocument {
-  const migrated = migrateSiteDocument(raw)
-  const result = siteDocumentSchema.safeParse(migrated)
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('(root): Document is required')
+  }
+
+  const doc = raw as Partial<SiteDocument> & { schemaVersion?: number }
+  const version = typeof doc.schemaVersion === 'number' ? doc.schemaVersion : 0
+  if (version > SCHEMA_VERSION) {
+    throw new Error(`Landing document schema ${version} is newer than this build (${SCHEMA_VERSION})`)
+  }
+
+  const merged = mergeWithDefaults(doc)
+  const result = siteDocumentSchema.safeParse(merged)
   if (!result.success) {
     const issue = result.error.issues[0]
     const path = issue?.path?.join('.') || '(root)'
     throw new Error(`${path}: ${issue?.message ?? 'Invalid document'}`)
   }
-  return result.data
+  return validateSectionProps(result.data, { strict: true })
 }

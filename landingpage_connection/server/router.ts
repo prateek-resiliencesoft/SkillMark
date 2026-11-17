@@ -14,6 +14,7 @@ import {
   getDraft,
   getPublished,
   getRebuildState,
+  LandingDbError,
   listMedia,
   listVersions,
   publish,
@@ -37,11 +38,18 @@ function badRequest(err: unknown): never {
 export const landingRouter = router({
   /** Draft + published meta for the editor shell. */
   getDraft: platformProcedure.query(async ({ ctx }) => {
-    const [draft, published, rebuild] = await Promise.all([
-      getDraft(ctx.supabase),
-      getPublished(ctx.supabase),
-      getRebuildState(ctx.supabase),
-    ])
+    const draft = await getDraft(ctx.supabase)
+    let published = null
+    try {
+      published = await getPublished(ctx.supabase)
+    } catch (err) {
+      if (!(err instanceof LandingDbError)) throw err
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not load published landing content',
+      })
+    }
+    const rebuild = await getRebuildState(ctx.supabase)
     return {
       content: draft.content,
       updatedAt: draft.updatedAt,
@@ -68,7 +76,7 @@ export const landingRouter = router({
 
   discardDraft: platformProcedure.mutation(async ({ ctx }) => {
     const content = await discardDraft(ctx.supabase, ctx.user.id)
-    await writePlatformAudit(ctx.supabase, {
+    void writePlatformAudit(ctx.supabase, {
       actorId: ctx.user.id,
       action: 'landing.discard_draft',
       targetType: 'landing',
@@ -92,16 +100,16 @@ export const landingRouter = router({
         badRequest(err)
       }
 
-      await writePlatformAudit(ctx.supabase, {
+      // Rebuild must run after a successful publish even if audit logging fails.
+      const rebuild = await scheduleRebuild(ctx.supabase)
+
+      void writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
         action: 'landing.publish',
         targetType: 'landing',
         targetId: String(version.version),
         meta: { note: input.note, version: version.version },
       })
-
-      scheduleRebuild(ctx.supabase)
-      const rebuild = await getRebuildState(ctx.supabase)
 
       return {
         version: {
@@ -129,7 +137,7 @@ export const landingRouter = router({
           message: err instanceof Error ? err.message : 'Version not found',
         })
       }
-      await writePlatformAudit(ctx.supabase, {
+      void writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
         action: 'landing.restore',
         targetType: 'landing',
@@ -146,9 +154,14 @@ export const landingRouter = router({
   deleteMedia: platformProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const row = await removeLandingMedia(ctx.supabase, input.id)
+      let row
+      try {
+        row = await removeLandingMedia(ctx.supabase, input.id)
+      } catch (err) {
+        badRequest(err)
+      }
       if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Media not found' })
-      await writePlatformAudit(ctx.supabase, {
+      void writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
         action: 'landing.media_delete',
         targetType: 'landing_media',
@@ -160,8 +173,15 @@ export const landingRouter = router({
 
   /** Signed token for opening the draft in a new tab on the landing origin. */
   createPreviewToken: platformProcedure.mutation(async ({ ctx }) => {
-    const token = await signPreviewToken(ctx.user.id)
-    return { token, expiresInSec: 30 * 60 }
+    try {
+      const token = await signPreviewToken(ctx.user.id)
+      return { token, expiresInSec: 30 * 60 }
+    } catch (err) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: err instanceof Error ? err.message : 'Could not create preview token',
+      })
+    }
   }),
 
   rebuildStatus: platformProcedure.query(async ({ ctx }) => {

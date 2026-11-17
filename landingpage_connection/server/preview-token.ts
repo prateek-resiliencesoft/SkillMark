@@ -2,10 +2,13 @@ import { SignJWT, jwtVerify } from 'jose'
 
 const PURPOSE = 'landing-preview'
 
+/** Fail closed — never fall back to a known default (that would let anyone forge preview tokens). */
 function key() {
-  return new TextEncoder().encode(
-    process.env.AUTH_SECRET || 'resiliencesoft-default-storage-auth-secret-key-32',
-  )
+  const secret = process.env.AUTH_SECRET
+  if (!secret || secret.length < 32) {
+    throw new Error('AUTH_SECRET must be set (32+ chars) to sign landing preview tokens')
+  }
+  return new TextEncoder().encode(secret)
 }
 
 /** Short-lived token so "Preview in new tab" can read the draft without admin cookies. */

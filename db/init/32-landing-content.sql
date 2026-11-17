@@ -62,14 +62,19 @@ COMMENT ON TABLE public.landing_media IS
   'Metadata for images uploaded from Landing Page Controls.';
 
 -- Latest rebuild attempt (so the admin can poll without scanning versions).
+-- rebuildAfter: durable debounce — dispatch when now >= rebuildAfter.
 CREATE TABLE IF NOT EXISTS public.landing_rebuild (
   id          smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   "runId"     text,
   status      text NOT NULL DEFAULT 'idle',
   "startedAt" timestamptz,
   "updatedAt" timestamptz NOT NULL DEFAULT now(),
-  detail      text
+  detail      text,
+  "rebuildAfter" timestamptz
 );
+
+ALTER TABLE public.landing_rebuild
+  ADD COLUMN IF NOT EXISTS "rebuildAfter" timestamptz;
 
 INSERT INTO public.landing_rebuild (id, status)
 VALUES (1, 'idle')
