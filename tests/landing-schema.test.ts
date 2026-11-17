@@ -269,32 +269,37 @@ test("soft mode strips unsupported children/blocks instead of throwing", () => {
   assert.deepEqual(custom.blocks[0]!.children, []);
 });
 
-test("scopeCss allows flat declarations including var() and calc()", () => {
-  const sel = '[data-lp-section="a"]';
-  assert.equal(scopeCss(sel, "color: red; padding: 1rem"), `${sel}{color: red; padding: 1rem}`);
-  assert.equal(scopeCss(sel, "color: var(--brand)"), `${sel}{color: var(--brand)}`);
-  assert.equal(
-    scopeCss(sel, "width: calc(100% - 2rem); margin: calc(1rem * 2)"),
-    `${sel}{width: calc(100% - 2rem); margin: calc(1rem * 2)}`,
-  );
-  assert.equal(
-    scopeCss(sel, "color: var(--x, var(--y, #fff))"),
-    `${sel}{color: var(--x, var(--y, #fff))}`,
-  );
+test("scopeCss accepts flat calc/min/scale/var declarations", () => {
+  const sel = ".scoped";
+  const accept = (css: string) => assert.equal(scopeCss(sel, css), `${sel}{${css}}`);
+
+  accept("width: calc(100% - 2rem)");
+  accept("max-width: min(100%, 40rem)");
+  // Valid transform usage — bare `scale(1.2) * 2` is not CSS; multiply inside calc/scale.
+  accept("transform: scale(1.2)");
+  accept("transform: scale(calc(1.2 * 2))");
+  accept("color: var(--brand)");
+  accept("color: var(--x, var(--y, #fff))");
+  accept("margin: calc(1rem * 2); padding: 1rem");
 });
 
-test("scopeCss rejects blocks, at-rules, and url()", () => {
-  assert.equal(scopeCss(".x", "h2{color:red}"), "");
-  assert.equal(scopeCss(".x", "} body{color:red"), "");
-  assert.equal(scopeCss(".x", "h2{color:red"), "");
-  assert.equal(scopeCss(".x", "/* { */ } body{color:red}"), "");
-  assert.equal(scopeCss(".x", 'content:"}"; } body{color:red}'), "");
-  assert.equal(scopeCss(".x", "@import url(x.css);"), "");
-  assert.equal(scopeCss(".x", "@media (min-width: 600px)"), "");
-  assert.equal(scopeCss(".x", "@keyframes spin"), "");
-  assert.equal(scopeCss(".x", "background: url(evil)"), "");
-  assert.equal(scopeCss(".x", "background: URL('https://x.test/a.png')"), "");
-  assert.equal(scopeCss(".x", "width: expression(alert(1))"), "");
+test("scopeCss rejects at-rules, url(), and braced blocks", () => {
+  const reject = (css: string) => assert.equal(scopeCss(".x", css), "");
+
+  reject("@media (min-width: 600px)");
+  reject("@media screen { color: red }");
+  reject("@import url(x.css);");
+  reject("@keyframes spin");
+  reject("background: url(evil)");
+  reject("background: url('https://x.test/a.png')");
+  reject("background: URL(\"https://x.test/a.png\")");
+  reject("color: red { }");
+  reject("color: red { color: blue }");
+  reject("h2{color:red}");
+  reject("} body{color:red");
+  reject("/* { */ } body{color:red}");
+  reject('content:"}"; } body{color:red}');
+  reject("width: expression(alert(1))");
 });
 
 test("stripCssNoise removes comments and strings", () => {
