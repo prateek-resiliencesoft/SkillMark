@@ -412,7 +412,8 @@ async function promRange(
     },
   );
   if (!res.ok) {
-    throw new Error(`Grafana Prometheus ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const body = (await res.text().catch(() => "")).slice(0, 300)
+    throw new Error(formatPromError(res.status, body, uid))
   }
   const json = (await res.json()) as {
     data?: { result?: { values?: [number, string][] }[] };
@@ -432,6 +433,24 @@ async function promInstant(base: string, token: string, uid: string, query: stri
   const json = (await res.json()) as { data?: { result?: { value?: [number, string] }[] } };
   const v = Number(json.data?.result?.[0]?.value?.[1]);
   return Number.isFinite(v) ? v : null;
+}
+
+function formatPromError(status: number, body: string, uid: string): string {
+  const joined = `Grafana Prometheus ${status}: ${body}`
+  if (/DatasourceError|communicating with your datasource/i.test(body) || status === 503) {
+    return (
+      `${joined} — Grafana could not reach Prometheus datasource "${uid}". ` +
+      `Check GRAFANA_PROM_DATASOURCE_UID, open that datasource in Grafana → Save & test, ` +
+      `and confirm the service account can query datasources.`
+    )
+  }
+  if (status === 401 || status === 403) {
+    return `${joined} — Service account token may be missing Datasources:query (or expired). Rotate GRAFANA_SERVICE_ACCOUNT_TOKEN.`
+  }
+  if (status === 404) {
+    return `${joined} — No Prometheus datasource with uid "${uid}". Set GRAFANA_PROM_DATASOURCE_UID.`
+  }
+  return joined
 }
 
 /** CPU, memory, disk, load and bandwidth for the app server from node_exporter. */
@@ -463,33 +482,51 @@ export async function queryServerMetrics(input: { minutes?: number }): Promise<S
   const queries = metricQueries(instance);
   const keys = Object.keys(queries) as ServerMetricKey[];
 
-  try {
-    const disk = `instance="${escapeLabel(instance)}",mountpoint="/",fstype!="tmpfs"`;
-    const [results, memTotal, diskTotal, diskFree, cores] = await Promise.all([
-      Promise.all(keys.map((k) => promRange(url, token, promUid, queries[k], start, end, stepSeconds))),
-      promInstant(url, token, promUid, `node_memory_MemTotal_bytes{instance="${escapeLabel(instance)}"}`),
-      promInstant(url, token, promUid, `node_filesystem_size_bytes{${disk}}`),
-      promInstant(url, token, promUid, `node_filesystem_avail_bytes{${disk}}`),
-      promInstant(
-        url,
-        token,
-        promUid,
-        `count(count by (cpu) (node_cpu_seconds_total{instance="${escapeLabel(instance)}"}))`,
-      ),
-    ]);
-    const series: ServerMetricsResult["series"] = {};
-    keys.forEach((k, idx) => {
-      series[k] = results[idx];
-    });
+  const disk = `instance="${escapeLabel(instance)}",mountpoint="/",fstype!="tmpfs"`;
+  const rangeSettled = await Promise.allSettled(
+    keys.map((k) => promRange(url, token, promUid, queries[k], start, end, stepSeconds)),
+  );
+  const [memTotal, diskTotal, diskFree, cores] = await Promise.all([
+    promInstant(url, token, promUid, `node_memory_MemTotal_bytes{instance="${escapeLabel(instance)}"}`),
+    promInstant(url, token, promUid, `node_filesystem_size_bytes{${disk}}`),
+    promInstant(url, token, promUid, `node_filesystem_avail_bytes{${disk}}`),
+    promInstant(
+      url,
+      token,
+      promUid,
+      `count(count by (cpu) (node_cpu_seconds_total{instance="${escapeLabel(instance)}"}))`,
+    ),
+  ]);
+
+  const series: ServerMetricsResult["series"] = {};
+  const failures: string[] = [];
+  keys.forEach((k, idx) => {
+    const r = rangeSettled[idx]!;
+    if (r.status === "fulfilled") series[k] = r.value;
+    else failures.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
+  });
+
+  // Empty series with no instant gauges → likely wrong instance label or no scrapes.
+  const hasAnySeries = Object.values(series).some((s) => (s?.length ?? 0) > 0);
+  if (!hasAnySeries && failures.length === 0 && memTotal == null) {
     return {
       ...empty,
       series,
-      memoryTotalBytes: memTotal,
-      diskTotalBytes: diskTotal,
-      diskFreeBytes: diskFree,
-      cpuCores: cores,
+      error:
+        `No Prometheus series for instance="${instance}". ` +
+        `Confirm node_exporter / Alloy is scraping and GRAFANA_LOG_INSTANCE matches the instance label.`,
     };
-  } catch (err) {
-    return { ...empty, error: err instanceof Error ? err.message : String(err) };
   }
+
+  return {
+    ...empty,
+    series,
+    memoryTotalBytes: memTotal,
+    diskTotalBytes: diskTotal,
+    diskFreeBytes: diskFree,
+    cpuCores: cores,
+    ...(failures.length
+      ? { error: failures.length === keys.length ? failures[0] : `Partial metrics failure: ${failures[0]}` }
+      : {}),
+  };
 }

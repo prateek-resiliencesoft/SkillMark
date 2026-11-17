@@ -223,6 +223,29 @@ export function LandingEditor() {
 
   const deviceWidth = device === "desktop" ? "100%" : device === "tablet" ? "768px" : "390px";
 
+  if (draftQuery.isError) {
+    return (
+      <div className="space-y-4 rounded-xl border border-destructive/30 bg-destructive/5 p-6">
+        <PageHeader
+          kicker="Landing"
+          title="Landing Page Controls"
+          description="Could not load the draft from the API."
+        />
+        <p className="text-sm text-destructive">
+          {draftQuery.error.message || "Unknown error loading landing draft."}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          If this is a fresh environment, apply{" "}
+          <code className="rounded bg-muted px-1">db/init/32-landing-content.sql</code> (
+          <code className="rounded bg-muted px-1">npm run db:migrate</code>) and reload PostgREST.
+        </p>
+        <TacticalButton size="sm" variant="outline" onClick={() => void draftQuery.refetch()}>
+          Retry
+        </TacticalButton>
+      </div>
+    );
+  }
+
   if (draftQuery.isLoading || !doc) {
     return (
       <div className="space-y-4">
@@ -269,6 +292,11 @@ export function LandingEditor() {
 
   return (
     <div className="space-y-4">
+      {draftQuery.data?.dbWarning ? (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          {draftQuery.data.dbWarning}
+        </div>
+      ) : null}
       <PageHeader
         kicker="Landing"
         title="Landing Page Controls"

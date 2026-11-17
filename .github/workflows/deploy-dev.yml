@@ -129,14 +129,16 @@ jobs:
               [ "$st" = healthy ] && break
               sleep 3
             done
+            # Idempotent migrations (same script as prod).
             db_user="$(grep -E '^POSTGRES_USER=' /opt/skillmark-dev/.env.dev | cut -d= -f2-)"
             db_name="$(grep -E '^POSTGRES_DB=' /opt/skillmark-dev/.env.dev | cut -d= -f2-)"
-            for f in $(ls /opt/skillmark-dev/src/db/init/*.sql | sort); do
-              case "$(basename "$f")" in 00-*|01-*) continue ;; esac
-              echo "Applying $(basename "$f")"
-              "${DC[@]}" exec -T db psql -U "$db_user" -d "$db_name" -v ON_ERROR_STOP=1 -q < "$f"
-            done
-            "${DC[@]}" exec -T db psql -U "$db_user" -d "$db_name" -c "NOTIFY pgrst, 'reload schema';"
+            SKIP_DB_BACKUP=1 \
+              POSTGRES_USER="$db_user" \
+              POSTGRES_DB="$db_name" \
+              COMPOSE_ENV_FILE=/opt/skillmark-dev/.env.dev \
+              COMPOSE_PROJECT_NAME=skillmark-dev \
+              DB_INIT_DIR=/opt/skillmark-dev/src/db/init \
+              bash /opt/skillmark-dev/src/scripts/db-migrate.sh /opt/skillmark-dev/docker-compose.dev.yml
 
             if [ "$app_up" = 1 ]; then
               if [ "$voice_up" = 1 ]; then
