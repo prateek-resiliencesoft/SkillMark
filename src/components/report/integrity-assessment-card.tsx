@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { IntegrityAssessment, IntegritySignal } from "@/lib/integrity/signals";
+import { LOW_LEVEL, REVIEW_LEVEL, type IntegrityAssessment, type IntegritySignal } from "@/lib/integrity/signals";
 import { cn } from "@/lib/utils";
 import { ShieldAlert } from "lucide-react";
 
@@ -46,8 +46,18 @@ export function IntegrityAssessmentCard({
         </CardTitle>
         <p className="text-xs text-muted-foreground">
           These are signals, not proof. Noise suppression, network lag or accessibility tools can trigger them.
-          &quot;Needs review&quot; requires two independent kinds of signal; please check the recording before deciding.
+          &quot;Needs review&quot; requires two independent kinds of signal at {Math.round(REVIEW_LEVEL * 100)}%+
+          ({assessment.elevatedGroups} of {assessment.groups.length} here); please check the recording before deciding.
         </p>
+        {Object.keys(assessment.signalCounts).length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Raw signals:{" "}
+            {Object.entries(assessment.signalCounts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([type, n]) => `${type.replace(/_/g, " ")} ×${n}`)
+              .join(" · ")}
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {assessment.groups.length === 0 ? (
@@ -62,12 +72,19 @@ export function IntegrityAssessmentCard({
                 </div>
                 <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
                   <div
-                    className={cn("h-full", g.level >= 0.5 ? "bg-red-500" : g.level >= 0.3 ? "bg-amber-500" : "bg-emerald-500")}
+                    className={cn("h-full", g.level >= REVIEW_LEVEL ? "bg-red-500" : g.level >= LOW_LEVEL ? "bg-amber-500" : "bg-emerald-500")}
                     style={{ width: `${Math.round(g.level * 100)}%` }}
                   />
                 </div>
-                <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
-                  {g.reasons.slice(0, 5).map((r) => <li key={r}>{r}</li>)}
+                <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                  {g.factors.map((f) => (
+                    <li key={f.key} className="flex flex-wrap gap-x-2">
+                      <span className="text-foreground">{f.label}</span>
+                      <span>confidence {Math.round(f.confidence * 100)}%</span>
+                      <span>×{f.count}</span>
+                      {f.examples.length > 0 && <span className="truncate">({f.examples.join("; ")})</span>}
+                    </li>
+                  ))}
                 </ul>
               </li>
             ))}

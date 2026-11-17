@@ -11,6 +11,7 @@ import {
   type IntegritySignal,
 } from "../src/lib/integrity/signals";
 import { applyAntiCheatingViolation, countStrikes } from "../src/lib/head-movement";
+import { effectiveIntegrityConfig } from "../src/lib/integrity/config";
 
 test("classifyDeviceLabel", () => {
   assert.equal(classifyDeviceLabel("video", "OBS Virtual Camera"), "virtual");
@@ -150,6 +151,32 @@ test("assessIntegrity needs two independent groups for review", () => {
 
   const viaStrike = assessIntegrity(one, [{ type: "offscreen_voice", timestamp: t }]);
   assert.equal(viaStrike.concern, "review");
+});
+
+test("repeated weak signals alone cannot reach review; counts and factors are reported", () => {
+  const many: IntegritySignal[] = Array.from({ length: 20 }, (_, i) => ({ type: "reading_pattern" as const, timestamp: i, value: 3 }));
+  const a = assessIntegrity(many);
+  assert.notEqual(a.concern, "review");
+  const conv = a.groups.find((g) => g.group === "conversation")!;
+  assert.ok(conv.level < 0.5);
+  assert.equal(conv.signalCount, 20);
+  assert.equal(conv.factors[0].count, 20);
+  assert.equal(conv.factors[0].confidence, 0.3);
+  assert.equal(a.signalCounts.reading_pattern, 20);
+  assert.equal(a.elevatedGroups, 0);
+});
+
+test("effectiveIntegrityConfig enforces anti-cheat → head → integrity → liveness", () => {
+  const all = { antiCheatingEnabled: true, headMovementDetectionEnabled: true, integrityChecksEnabled: true, livenessChallengesEnabled: true };
+  assert.deepEqual(effectiveIntegrityConfig(all), { headMovementDetectionEnabled: true, integrityChecksEnabled: true, livenessChallengesEnabled: true });
+  assert.deepEqual(effectiveIntegrityConfig({ ...all, headMovementDetectionEnabled: false }), {
+    headMovementDetectionEnabled: false, integrityChecksEnabled: false, livenessChallengesEnabled: false,
+  });
+  assert.deepEqual(effectiveIntegrityConfig({ ...all, integrityChecksEnabled: false }), {
+    headMovementDetectionEnabled: true, integrityChecksEnabled: false, livenessChallengesEnabled: false,
+  });
+  assert.equal(effectiveIntegrityConfig({ ...all, antiCheatingEnabled: false }).livenessChallengesEnabled, false);
+  assert.equal(effectiveIntegrityConfig(null).integrityChecksEnabled, false);
 });
 
 test("new warn-tier types count as strikes; signals never do", () => {

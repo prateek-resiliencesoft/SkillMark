@@ -33,7 +33,9 @@ import {
   normalizeInterviewerGender,
   type InterviewerGender,
 } from "@/lib/interviewer-persona";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
+import { cn } from "@/lib/utils";
 import {
     Copy,
     Globe,
@@ -88,6 +90,12 @@ export default function SettingsTab() {
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>((interview as any).headMovementDetectionEnabled ?? false);
   const [integrityChecksEnabled, setIntegrityChecksEnabled] = useState<boolean>((interview as any).integrityChecksEnabled ?? false);
   const [livenessChallengesEnabled, setLivenessChallengesEnabled] = useState<boolean>((interview as any).livenessChallengesEnabled ?? false);
+  const integrity = effectiveIntegrityConfig({
+    antiCheatingEnabled,
+    headMovementDetectionEnabled,
+    integrityChecksEnabled,
+    livenessChallengesEnabled,
+  });
   const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>(() =>
     parseCompletionNotifyMembers((interview as any).completionNotifyMembers),
   );
@@ -433,32 +441,39 @@ export default function SettingsTab() {
                 {antiCheatingEnabled && (
                   <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
                     <div>
-                      <Label>Integrity Checks (AI copilots, other voices, virtual devices)</Label>
+                      <Label className={cn(!integrity.headMovementDetectionEnabled && "text-muted-foreground")}>
+                        Integrity Checks (AI copilots, other voices, virtual devices)
+                      </Label>
                       <p className="text-xs text-muted-foreground">
                         Warns and strikes when another voice is heard while the candidate&apos;s mouth is closed, or the camera/mic is switched mid-interview.
                         Silently records reviewer-only signals: virtual cameras/mics, voice vs. lip-movement correlation, uniform answer delays,
                         reading-like eye movement and browser extensions injecting into the page. The AI interviewer also asks first-hand follow-ups.
-                        Lip-sync and eye checks need Head Movement Detection.
+                        Audio checks run in voice interviews only.
                       </p>
+                      {!integrity.headMovementDetectionEnabled && (
+                        <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                          Turn on Head Movement Detection first: these checks use its face tracking.
+                        </p>
+                      )}
                     </div>
                     <Switch
-                      checked={integrityChecksEnabled}
+                      checked={integrity.integrityChecksEnabled}
+                      disabled={!integrity.headMovementDetectionEnabled}
                       onCheckedChange={setIntegrityChecksEnabled}
                     />
                   </div>
                 )}
-                {antiCheatingEnabled && integrityChecksEnabled && (
+                {integrity.integrityChecksEnabled && (
                   <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
                     <div>
                       <Label>Liveness Prompts</Label>
                       <p className="text-xs text-muted-foreground">
                         Twice per interview, at random times, asks the candidate to turn their head, cover their face, or smile.
                         Catches pre-recorded video and many real-time face swaps. Results go to the report only, never strikes.
-                        Needs Head Movement Detection.
                       </p>
                     </div>
                     <Switch
-                      checked={livenessChallengesEnabled}
+                      checked={integrity.livenessChallengesEnabled}
                       onCheckedChange={setLivenessChallengesEnabled}
                     />
                   </div>
@@ -514,9 +529,7 @@ export default function SettingsTab() {
                 ? Number(timeLimitMinutes)
                 : null,
               antiCheatingEnabled,
-              headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
-              integrityChecksEnabled: antiCheatingEnabled && integrityChecksEnabled,
-              livenessChallengesEnabled: antiCheatingEnabled && integrityChecksEnabled && livenessChallengesEnabled,
+              ...integrity,
               completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
             })
           }

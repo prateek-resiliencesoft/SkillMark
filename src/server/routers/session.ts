@@ -2,6 +2,7 @@ import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/li
 import { recordPreflightEvent } from "@/lib/preflight-server";
 import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { INTEGRITY_SIGNAL_TYPES } from "@/lib/integrity/signals";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
@@ -775,10 +776,10 @@ export const sessionRouter = router({
       if (input.violation.type === "offscreen_voice" || input.violation.type === "device_switch") {
         const { data: iv } = await ctx.supabase
           .from("interviews")
-          .select("integrityChecksEnabled")
+          .select("antiCheatingEnabled, headMovementDetectionEnabled, integrityChecksEnabled")
           .eq("id", session.interviewId)
           .single();
-        if (!(antiCheatingOn && iv?.integrityChecksEnabled)) {
+        if (!effectiveIntegrityConfig(iv).integrityChecksEnabled) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Integrity checks are not enabled for this interview" });
         }
       }
@@ -840,10 +841,10 @@ export const sessionRouter = router({
 
       const { data: iv } = await ctx.supabase
         .from("interviews")
-        .select("antiCheatingEnabled, integrityChecksEnabled")
+        .select("antiCheatingEnabled, headMovementDetectionEnabled, integrityChecksEnabled")
         .eq("id", session.interviewId)
         .single();
-      if (!(iv?.antiCheatingEnabled && iv?.integrityChecksEnabled)) {
+      if (!effectiveIntegrityConfig(iv).integrityChecksEnabled) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Integrity checks are not enabled for this interview" });
       }
 

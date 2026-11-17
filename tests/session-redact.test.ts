@@ -17,3 +17,11 @@ test("non-member view strips interviewer-only data but keeps candidate fields", 
   assert.equal(r.interview.assessmentCriteria, undefined);
   assert.equal(r.interview.invitedEmails, undefined);
 });
+
+test("any future integrity* session field is stripped for candidates", () => {
+  const r = redactSessionForCandidate({ id: "s1", integrity: { score: 40 }, integrityScore: 40, integrityNotes: "x" }) as Record<string, unknown>;
+  assert.equal(r.id, "s1");
+  assert.equal(r.integrity, undefined);
+  assert.equal(r.integrityScore, undefined);
+  assert.equal(r.integrityNotes, undefined);
+});

@@ -10,6 +10,7 @@ import { IntervieweeTourProvider } from "@/components/session/interviewee-tour-p
 import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { PreparingScreen } from "@/components/session/preparing-screen";
 import type { InterviewContext } from "@/hooks/use-voice";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import dynamic from "next/dynamic";
@@ -108,6 +109,7 @@ export default function SlugSessionPage() {
   }
 
   const antiCheatingEnabled = !isPreview && !!interview.data.antiCheatingEnabled;
+  const integrity = effectiveIntegrityConfig({ ...interview.data, antiCheatingEnabled });
 
   if (!onboardingDone) {
     return (
@@ -223,7 +225,7 @@ export default function SlugSessionPage() {
       aiTone: interview.data.aiTone,
       language: interview.data.language,
       followUpDepth: interview.data.followUpDepth,
-      integrityProbing: antiCheatingEnabled && !!interview.data.integrityChecksEnabled,
+      integrityProbing: integrity.integrityChecksEnabled,
       startQuestionIndex: isResuming ? resumeQuestionIndex : undefined,
       questions: interview.data.questions.map((q: any) => ({
         text: q.text,
@@ -238,7 +240,7 @@ export default function SlugSessionPage() {
 
     return (
       <>
-        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={!!interview.data.integrityChecksEnabled} livenessChallengesEnabled={!!interview.data.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={sessionId!}
@@ -260,7 +262,7 @@ export default function SlugSessionPage() {
 
   return (
     <>
-      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={!!interview.data.integrityChecksEnabled} livenessChallengesEnabled={!!interview.data.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={sessionId!}

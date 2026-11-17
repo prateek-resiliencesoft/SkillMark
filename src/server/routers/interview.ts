@@ -4,6 +4,7 @@ import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
+import { effectiveIntegrityConfig, type IntegrityConfigInput } from "@/lib/integrity/config";
 import {
   assertMinRole,
   filterAccessibleProjectIds,
@@ -474,6 +475,7 @@ export const interviewRouter = router({
         .from("interviews")
         .insert({
           ...rest,
+          ...effectiveIntegrityConfig(rest),
           projectId,
           userId: ctx.user.id,
           requireInvite: true,
@@ -684,6 +686,12 @@ export const interviewRouter = router({
         );
         if (data.aiGender) data.aiGender = nextGender;
       }
+      const touchesIntegrity = (
+        ["antiCheatingEnabled", "headMovementDetectionEnabled", "integrityChecksEnabled", "livenessChallengesEnabled"] as const
+      ).some((k) => data[k] !== undefined);
+      if (touchesIntegrity) {
+        Object.assign(data, effectiveIntegrityConfig({ ...(result.interview as IntegrityConfigInput), ...data }));
+      }
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .update(data)
@@ -884,9 +892,7 @@ export const interviewRouter = router({
           requireInvite: source.requireInvite,
           invitedEmails: source.invitedEmails,
           antiCheatingEnabled: source.antiCheatingEnabled,
-          headMovementDetectionEnabled: source.headMovementDetectionEnabled ?? false,
-          integrityChecksEnabled: (source as { integrityChecksEnabled?: boolean }).integrityChecksEnabled ?? false,
-          livenessChallengesEnabled: (source as { livenessChallengesEnabled?: boolean }).livenessChallengesEnabled ?? false,
+          ...effectiveIntegrityConfig(source as IntegrityConfigInput),
         })
         .select()
         .single();

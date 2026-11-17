@@ -2,7 +2,7 @@
 
 import { detectionsSuppressed, suppressDetections } from "@/lib/anti-cheating-state";
 import { AvSyncMonitor, SpeechGate } from "@/lib/integrity/av-sync";
-import { isAiSpeaking, registerMediaTrack, subscribeFaceFrames, subscribeMediaTracks } from "@/lib/integrity/bus";
+import { isAiSpeaking, subscribeFaceFrames, subscribeMediaTracks } from "@/lib/integrity/bus";
 import { classifyDeviceLabel } from "@/lib/integrity/devices";
 import {
   LIVENESS_PROMPT,
@@ -36,7 +36,7 @@ const EXTENSION_URL = /^(chrome|moz|safari-web)-extension:\/\//i;
 /**
  * Integrity checks on top of the existing anti-cheating guards. Consumes the
  * head tracker's face frames and the interview's own media tracks via the
- * integrity bus; opens only a mic analyser of its own.
+ * integrity bus; it never opens a camera or microphone itself.
  */
 export function useIntegrityMonitor({ enabled, livenessEnabled, onWarn, onVirtualDevice, onSignal }: Options) {
   const cb = useRef({ onWarn, onVirtualDevice, onSignal });
@@ -130,9 +130,12 @@ export function useIntegrityMonitor({ enabled, livenessEnabled, onWarn, onVirtua
     cleanups.push(() => clearInterval(resourceTimer));
 
     // ── Mic analyser (lip-sync + answer timing) ───────────────────
+    // Taps the interview's own mic track (registered by useVoice); never opens
+    // a second capture. Chat interviews have no mic, so audio checks stay idle.
     let analyser: AnalyserNode | null = null;
-    let micStream: MediaStream | null = null;
     let audioCtx: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    let tappedTrack: MediaStreamTrack | null = null;
     const buf = new Float32Array(2048);
     const readRms = () => {
       if (!analyser) return 0;
@@ -141,25 +144,36 @@ export function useIntegrityMonitor({ enabled, livenessEnabled, onWarn, onVirtua
       for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
       return Math.sqrt(s / buf.length);
     };
-    (async () => {
-      try {
-        suppressDetections(15_000);
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
-        });
-        if (cancelled) { micStream.getTracks().forEach((t) => t.stop()); return; }
-        micStream.getAudioTracks().forEach(registerMediaTrack);
-        audioCtx = new AudioContext();
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = buf.length;
-        audioCtx.createMediaStreamSource(micStream).connect(analyser);
-      } catch (err) {
-        console.warn("[integrity] mic analyser unavailable", err);
-        signal({ type: "detector_unavailable", detail: "Microphone analyser could not start" });
-      }
-    })();
+    const detach = () => {
+      source?.disconnect();
+      source = null;
+      analyser = null;
+      tappedTrack = null;
+    };
+    cleanups.push(
+      subscribeMediaTracks((track) => {
+        if (track.kind !== "audio" || track.readyState !== "live" || track === tappedTrack) return;
+        try {
+          if (!audioCtx) {
+            audioCtx = new AudioContext();
+            if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+          }
+          detach();
+          const node = audioCtx.createAnalyser();
+          node.fftSize = buf.length;
+          source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+          source.connect(node);
+          analyser = node;
+          tappedTrack = track;
+          track.addEventListener("ended", () => { if (tappedTrack === track) detach(); }, { once: true });
+        } catch (err) {
+          console.warn("[integrity] mic analyser unavailable", err);
+          signal({ type: "detector_unavailable", detail: "Microphone analyser could not attach to the interview mic" });
+        }
+      }),
+    );
     cleanups.push(() => {
-      micStream?.getTracks().forEach((t) => t.stop());
+      detach();
       void audioCtx?.close().catch(() => {});
     });
 
