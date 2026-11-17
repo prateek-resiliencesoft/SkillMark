@@ -1,5 +1,6 @@
 import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
 import { canMarkCompleted } from "@/lib/session-report-policy";
+import { stripToolCallText } from "@/lib/transcript/sanitize";
 
 export type VoiceSavePayload = {
   sessionId?: string;
@@ -161,7 +162,11 @@ export async function handleVoiceSave(
           lastSaved = null;
         }
       }
-      const { kept, dropped } = dropRepeatedUserLines(lastSaved, messages);
+      // Never store tool-call text the voice model spoke ("signal_question_change{…}").
+      const clean = messages
+        .map((m) => ({ ...m, content: stripToolCallText(typeof m.content === "string" ? m.content : "") }))
+        .filter((m) => m.content);
+      const { kept, dropped } = dropRepeatedUserLines(lastSaved, clean);
       if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);
       if (kept.length > 0) {
         try {

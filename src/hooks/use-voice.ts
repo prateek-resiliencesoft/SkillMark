@@ -30,7 +30,9 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import { VadFailsafe, type FailsafeReason } from "@/lib/voice/vad-failsafe";
-import { compareUserLines, normalizeForCompare } from "@/lib/transcript/dedupe";
+import { compareUserLines, joinTranscriptChunk, normalizeForCompare } from "@/lib/transcript/dedupe";
+import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "@/lib/transcript/sanitize";
+import { buildResumeHints, type RecentLine, type ResumeHints } from "@/lib/voice/resume-prompt";
 import { registerMediaTrack, setAiSpeaking } from "@/lib/integrity/bus";
 
 const PLAYBACK_START_LEAD_S = 0.18;
@@ -72,6 +74,8 @@ export interface InterviewContext {
   /** Anti-cheat integrity checks on: interviewer adds verification follow-ups. */
   integrityProbing?: boolean;
   startQuestionIndex?: number;
+  /** Page reload mid-interview: recent saved transcript, so the AI continues. */
+  resume?: ResumeHints | null;
   candidateFocus?: { skills?: string[] | null; questions?: Array<{ text: string; skill?: string | null }> | null } | null;
   questions: Array<{
     text: string;
@@ -256,6 +260,13 @@ export function useVoice({
   const asrBufferRef = useRef<string>("");
   const chatBufferRef = useRef<string>("");
   const lastOnAIResponseRef = useRef<string>("");
+  /** Last saved interviewer line, and whether the candidate spoke since (repeat check). */
+  const lastAssistantLineRef = useRef<string>("");
+  const userSpokeSinceAssistantRef = useRef(false);
+  /** Recent lines + finished questions, sent to the relay on (re)connect so it resumes. */
+  const recentLinesRef = useRef<RecentLine[]>(interviewContext.resume?.recent ?? []);
+  const askedQuestionsRef = useRef(new Set<number>(interviewContext.resume?.askedQuestionIndexes ?? []));
+  const incrementalSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentQuestionIndexRef = useRef(
     interviewContext.startQuestionIndex ?? 0
   );
@@ -565,6 +576,13 @@ export function useVoice({
           context: {
             ...interviewContext,
             startQuestionIndex: currentQuestionIndexRef.current,
+            // On a reconnect the relay rebuilds the AI session from this:
+            // where we are, what was asked, and the last few lines.
+            resume: buildResumeHints(
+              currentQuestionIndexRef.current,
+              recentLinesRef.current,
+              [...askedQuestionsRef.current],
+            ),
           },
         }),
         onJsonMessage: (msg) => {
@@ -657,6 +675,7 @@ export function useVoice({
   const trackMessage = useCallback(
     (msg: Omit<TrackedMessage, "timestamp" | "seq" | "id">) => {
       msgSeqRef.current += 1;
+      recentLinesRef.current = [...recentLinesRef.current, { role: msg.role, text: msg.content }].slice(-12);
       trackedMessagesRef.current.push({
         ...msg,
         id: newMessageId(),
@@ -670,10 +689,11 @@ export function useVoice({
   /** Save accumulated messages to the server (incremental, non-completing).
    *  Called on each question transition so progress is not lost. */
   const saveProgress = useCallback(
-    async (currentQuestionIndex: number) => {
+    async (currentQuestionIndex: number, opts: { flushAsr?: boolean } = {}) => {
       // Flush any remaining ASR buffer (chatBuffer is already cleared
-      // before this is called by the question_change handler).
-      const pendingAsrText = asrBufferRef.current.trim();
+      // before this is called by the question_change handler). Mid-question
+      // saves leave a still-growing answer alone.
+      const pendingAsrText = opts.flushAsr === false ? "" : asrBufferRef.current.trim();
       if (pendingAsrText) {
         trackMessage({ role: "user", content: pendingAsrText });
         asrBufferRef.current = "";
@@ -721,6 +741,9 @@ export function useVoice({
     },
     [sessionId, trackMessage],
   );
+  /** Latest saveProgress, for the delayed save after each interviewer line. */
+  const saveProgressRef = useRef(saveProgress);
+  saveProgressRef.current = saveProgress;
 
   /** Send audio held during a VAD-fallback reconnect, then resume live streaming. */
   const flushFallbackQueue = useCallback(() => {
@@ -801,18 +824,43 @@ export function useVoice({
    * the text buffer is cleared (barge-in, button transitions, question change)
    * so interviewer lines aren't silently dropped from the transcript.
    */
-  const commitAssistantBuffer = useCallback(() => {
-    const text = chatBufferRef.current.trim();
-    chatBufferRef.current = "";
-    if (!text) return "";
-    const normalized = text.replace(/\s+/g, " ").trim();
-    if (normalized !== lastOnAIResponseRef.current.replace(/\s+/g, " ").trim()) {
+  /**
+   * Save one interviewer line: tool-call text removed, a cut-off turn ended
+   * with "…" (never glued to the next one), and the same line said twice in a
+   * row (no candidate words between) kept once. Saves progress shortly after,
+   * so a reload or reconnect can resume from the server.
+   */
+  const saveAssistantLine = useCallback(
+    (raw: string, partial = false): string => {
+      const text = partial ? closePartialTurn(raw) : stripToolCallText(raw);
+      if (!text) return "";
+      const normalized = text.replace(/\s+/g, " ").trim();
+      if (normalized === lastOnAIResponseRef.current.replace(/\s+/g, " ").trim()) return text;
       lastOnAIResponseRef.current = text;
+      if (!userSpokeSinceAssistantRef.current && isRepeatedAssistantLine(lastAssistantLineRef.current, text)) {
+        log.debug(`Skipping repeated ASSISTANT line: "${text.slice(0, 60)}..."`);
+        return text;
+      }
+      lastAssistantLineRef.current = text;
+      userSpokeSinceAssistantRef.current = false;
       onAIResponse?.(text);
       trackMessage({ role: "assistant", content: text });
-    }
-    return text;
-  }, [onAIResponse, trackMessage]);
+      if (incrementalSaveTimerRef.current) clearTimeout(incrementalSaveTimerRef.current);
+      incrementalSaveTimerRef.current = setTimeout(() => {
+        incrementalSaveTimerRef.current = null;
+        if (trackedMessagesRef.current.length) void saveProgressRef.current?.(currentQuestionIndexRef.current, { flushAsr: false });
+      }, 3_000);
+      return text;
+    },
+    [onAIResponse, trackMessage],
+  );
+
+  const commitAssistantBuffer = useCallback((partial = false) => {
+    const raw = chatBufferRef.current;
+    chatBufferRef.current = "";
+    if (!raw.trim()) return "";
+    return saveAssistantLine(raw, partial);
+  }, [saveAssistantLine]);
 
   /** Handle JSON messages from relay */
   const handleRelayMessage = useCallback(
@@ -856,7 +904,7 @@ export function useVoice({
           interruptPlayback();
           setState((s) => ({ ...s, isProcessing: false }));
           if (chatBufferRef.current.trim()) {
-            const text = commitAssistantBuffer();
+            const text = commitAssistantBuffer(true);
             setState((s) => ({ ...s, aiTranscript: text }));
           }
           break;
@@ -908,6 +956,7 @@ export function useVoice({
               log.debug(`Skipping repeated USER final (${kind}): "${normalized.slice(0, 60)}..."`);
             } else {
               lastFinalUserTranscriptRef.current = { text: normalized, at: Date.now(), questionIndex: qIdx };
+              userSpokeSinceAssistantRef.current = true;
               onTranscript?.(finalText, true);
               // Grown version of the line still waiting to be saved → replace it.
               const pending = trackedMessagesRef.current;
@@ -936,10 +985,10 @@ export function useVoice({
         case "chat": {
           const text = extractText(msg.data);
           if (text) {
-            chatBufferRef.current += text;
+            chatBufferRef.current = joinTranscriptChunk(chatBufferRef.current, text);
             setState((s) => ({
               ...s,
-              aiTranscript: chatBufferRef.current,
+              aiTranscript: stripToolCallText(chatBufferRef.current),
               lastAssistantUtteranceEndedAt: 0,
               isProcessing: false,
             }));
@@ -953,7 +1002,7 @@ export function useVoice({
             chatBufferRef.current += (chatBufferRef.current ? " " : "") + text;
             setState((s) => ({
               ...s,
-              aiTranscript: chatBufferRef.current,
+              aiTranscript: stripToolCallText(chatBufferRef.current),
               lastAssistantUtteranceEndedAt: 0,
               isProcessing: false,
             }));
@@ -989,7 +1038,8 @@ export function useVoice({
               });
             }
           }
-          const fullResponse = chatBufferRef.current.trim();
+          const partialTurn = msg.partial === true;
+          const fullResponse = (partialTurn ? closePartialTurn : stripToolCallText)(chatBufferRef.current);
           chatBufferRef.current = "";
           // Keep last transcript visible until next AI speech (replaced by tts_text/chat)
           setState((s) => ({
@@ -999,22 +1049,9 @@ export function useVoice({
               msg.type === "tts_ended" ? Date.now() : s.lastAssistantUtteranceEndedAt,
             isProcessing: false,
           }));
-          if (fullResponse) {
-            // Dedupe: chat_ended and tts_ended often both fire for same response.
-            // Use dedicated ref — trackedMessagesRef can lag; normalize for comparison.
-            const normalized = fullResponse.replace(/\s+/g, " ").trim();
-            const lastSent = lastOnAIResponseRef.current.replace(/\s+/g, " ").trim();
-            if (normalized === lastSent) {
-              log.debug(`Skipping duplicate ASSISTANT (${msg.type})`);
-            } else {
-              lastOnAIResponseRef.current = fullResponse;
-              onAIResponse?.(fullResponse);
-              trackMessage({ role: "assistant", content: fullResponse });
-              log.debug(
-                `Tracked ASSISTANT (${msg.type}): "${fullResponse.slice(0, 60)}..."`
-              );
-            }
-          }
+          // chat_ended and tts_ended often both fire for the same response:
+          // saveAssistantLine skips the second one and repeated questions.
+          if (fullResponse) saveAssistantLine(fullResponse);
           break;
         }
 
@@ -1022,21 +1059,16 @@ export function useVoice({
           relayReconnectingRef.current = true;
           silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           interruptPlayback();
-          if (chatBufferRef.current.trim()) {
-            const text = chatBufferRef.current.trim();
-            lastOnAIResponseRef.current = text;
-            onAIResponse?.(text);
-            trackMessage({ role: "assistant", content: text });
-          }
-          chatBufferRef.current = "";
+          // The AI was cut mid-turn: keep what it said as its own, ended line.
+          commitAssistantBuffer(true);
           lastOnAIResponseRef.current = "";
-          setState((s) => ({ ...s, aiTranscript: "", isProcessing: true }));
+          setState((s) => ({ ...s, aiTranscript: "", isProcessing: true, isReconnecting: true }));
           break;
 
         case "session_reconnected":
           relayReconnectingRef.current = false;
           silenceCheckRef.current.suppress(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
-          setState((s) => ({ ...s, isProcessing: false }));
+          setState((s) => ({ ...s, isProcessing: false, isReconnecting: false }));
           if (fallbackQueueRef.current) flushFallbackQueue();
           break;
 
@@ -1055,6 +1087,8 @@ export function useVoice({
           lastOnAIResponseRef.current = "";
           const idx = msg.questionIndex as number;
           const total = msg.totalQuestions as number;
+          // Moving forward finishes the previous question (sent on reconnect).
+          if (idx > currentQuestionIndexRef.current) askedQuestionsRef.current.add(currentQuestionIndexRef.current);
 
           // Persist messages from the previous question (fire-and-forget)
           saveProgress(idx);
@@ -1164,7 +1198,7 @@ export function useVoice({
           break;
       }
     },
-    [interruptPlayback, extractText, onTranscript, onAIResponse, onError, onQuestionChange, saveProgress, sessionId, trackMessage, flushFallbackQueue, switchToServerVad, commitAssistantBuffer]
+    [interruptPlayback, extractText, onTranscript, onError, onQuestionChange, saveProgress, sessionId, trackMessage, flushFallbackQueue, switchToServerVad, commitAssistantBuffer, saveAssistantLine]
   );
 
   const clearEndpointTimer = useCallback(() => {
@@ -1656,7 +1690,11 @@ export function useVoice({
     }
     const pendingChatText = chatBufferRef.current.trim();
     if (pendingChatText) {
-      trackMessage({ role: "assistant", content: pendingChatText });
+      {
+        // The AI was still mid-turn: end the line cleanly, drop tool-call text.
+        const line = closePartialTurn(pendingChatText);
+        if (line) trackMessage({ role: "assistant", content: line });
+      }
       chatBufferRef.current = "";
     }
 
@@ -1747,7 +1785,11 @@ export function useVoice({
       }
       const pendingChatText = chatBufferRef.current.trim();
       if (pendingChatText) {
-        trackMessage({ role: "assistant", content: pendingChatText });
+        {
+        // The AI was still mid-turn: end the line cleanly, drop tool-call text.
+        const line = closePartialTurn(pendingChatText);
+        if (line) trackMessage({ role: "assistant", content: line });
+      }
         chatBufferRef.current = "";
       }
       // Everything not yet acknowledged, including lines a save is still sending.

@@ -74,7 +74,8 @@ export type SaveLine = { role: string; content: string };
 
 /**
  * Server-side guard for /api/voice/save: drop candidate lines that repeat the
- * candidate line right before them (with no interviewer line in between).
+ * candidate line right before them (with no interviewer line in between), and
+ * interviewer lines that repeat the interviewer line right before them.
  * `lastSaved` is the newest row already in the DB for this session.
  * Exact / contained repeats are dropped, and "similar" repeats unless the new
  * line is clearly longer; a line that extends the previous one is kept
@@ -90,6 +91,16 @@ export function dropRepeatedUserLines<T extends SaveLine>(
   for (const m of messages) {
     const isUser = m.role === "user" || m.role === "USER";
     const prevIsUser = !!prev && (prev.role === "user" || prev.role === "USER");
+    const isAssistant = !isUser;
+    const prevIsAssistant = !!prev && !prevIsUser;
+    if (isAssistant && prevIsAssistant) {
+      // Same interviewer line twice in a row (e.g. a question re-asked after a reconnect).
+      const kind = compareUserLines(prev!.content, m.content);
+      if (kind === "same" || kind === "contained" || kind === "similar") {
+        dropped += 1;
+        continue;
+      }
+    }
     if (isUser && prevIsUser) {
       const kind = compareUserLines(prev!.content, m.content);
       const prevWords = normalizeForCompare(prev!.content).split(" ").length;
