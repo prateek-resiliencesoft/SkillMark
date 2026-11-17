@@ -130,14 +130,76 @@ test("softParseProps preserves valid fields", () => {
   assert.equal("junk" in out, false);
 });
 
-test("scopeCss rejects brace escapes including comment tricks", () => {
-  assert.equal(scopeCss('[data-lp-section="a"]', "h2{color:red}"), '[data-lp-section="a"]{h2{color:red}}');
+test("softParseProps keeps valid list items when one entry is invalid", () => {
+  const fields: Field[] = [
+    {
+      kind: "list",
+      key: "items",
+      label: "Items",
+      itemLabel: "Item",
+      fields: [
+        { kind: "text", key: "title", label: "Title" },
+        { kind: "number", key: "n", label: "N" },
+      ],
+    },
+  ];
+  const out = softParseProps(fields, {
+    items: [
+      { title: "Good", n: 1 },
+      "not-an-object",
+      { title: "Also good", n: "bad" },
+      null,
+    ],
+  });
+  assert.deepEqual(out.items, [
+    { title: "Good", n: 1 },
+    { title: "Also good", n: 0 }, // invalid n → default
+  ]);
+});
+
+test("softParseProps keeps valid stringList entries", () => {
+  const fields: Field[] = [{ kind: "stringList", key: "tags", label: "Tags" }];
+  const out = softParseProps(fields, { tags: ["a", 2, "b", null, "c"] });
+  assert.deepEqual(out.tags, ["a", "b", "c"]);
+});
+
+test("strict mode rejects children on non-container blocks", () => {
+  const doc = defaultSiteDocument();
+  doc.pages[0]!.sections.push({
+    id: "custom1",
+    type: "custom",
+    hidden: false,
+    props: {},
+    style: {},
+    blocks: [
+      {
+        id: "b1",
+        type: "heading",
+        props: { text: "Hi", level: "h2" },
+        style: {},
+        children: [{ id: "c1", type: "text", props: { text: "nope" }, style: {}, children: [] }],
+      },
+    ],
+  });
+  assert.throws(() => validateSectionProps(doc, { strict: true }), /cannot have children/i);
+});
+
+test("strict mode rejects blocks on preset sections", () => {
+  const doc = defaultSiteDocument();
+  const hero = doc.pages[0]!.sections.find((s) => s.type === "hero")!;
+  hero.blocks = [{ id: "b1", type: "text", props: { text: "x" }, style: {}, children: [] }];
+  assert.throws(() => validateSectionProps(doc, { strict: true }), /cannot contain blocks/i);
+});
+
+test("scopeCss only allows flat declaration lists", () => {
+  assert.equal(scopeCss('[data-lp-section="a"]', "color: red; padding: 1rem"), '[data-lp-section="a"]{color: red; padding: 1rem}');
+  assert.equal(scopeCss(".x", "h2{color:red}"), "");
   assert.equal(scopeCss(".x", "} body{color:red"), "");
   assert.equal(scopeCss(".x", "h2{color:red"), "");
-  // Brace inside a comment must not fool the balance check into accepting an escaping }
   assert.equal(scopeCss(".x", "/* { */ } body{color:red}"), "");
   assert.equal(scopeCss(".x", 'content:"}"; } body{color:red}'), "");
   assert.equal(scopeCss(".x", "@import url(x.css);"), "");
+  assert.equal(scopeCss(".x", "background: url(evil)"), "");
 });
 
 test("stripCssNoise removes comments and strings", () => {

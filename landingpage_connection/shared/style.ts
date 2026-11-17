@@ -22,7 +22,13 @@ export const STYLE_FIELDS: Field[] = [
   { kind: 'boolean', key: 'hideOnMobile', label: 'Hide on mobile', optional: true },
   { kind: 'boolean', key: 'hideOnDesktop', label: 'Hide on desktop', optional: true },
   { kind: 'text', key: 'anchorId', label: 'Anchor id', help: 'Lets links like /#pricing jump here. Letters, numbers and dashes.', optional: true },
-  { kind: 'css', key: 'customCss', label: 'Custom CSS', help: 'Applies to this element only. Nest selectors with &, e.g. "& h2 { color: red }".', optional: true },
+  {
+    kind: 'css',
+    key: 'customCss',
+    label: 'Custom CSS declarations',
+    help: 'Flat declarations only (no { } blocks, @rules, or url()). Example: color: red; padding: 1rem;',
+    optional: true,
+  },
 ]
 
 export const styleSchema = fieldsToZod(STYLE_FIELDS)
@@ -48,68 +54,35 @@ export type Style = {
 }
 
 /**
- * Remove comments and string/url() contents so brace counting matches what CSS
- * actually parses (braces inside comments/strings don't close rules).
+ * Only allow a flat CSS declaration list (no braces / at-rules / urls).
+ * Wrapping that in `selector{…}` cannot escape the scope — there are no `}`
+ * in the input for the browser to close the wrapper early.
  */
+export function isFlatDeclarationList(css: string): boolean {
+  const raw = css.trim()
+  if (!raw) return true
+  if (/[{}]/.test(raw)) return false
+  if (/@[\w-]+/.test(raw)) return false
+  if (/url\s*\(/i.test(raw)) return false
+  if (/expression\s*\(/i.test(raw)) return false
+  if (/<\/|\bjavascript:/i.test(raw)) return false
+  // Property-ish tokens only: names, values, units, commas, quotes, hashes.
+  return /^[\s\w\-.:#%(),;'"\/\\!+]+$/i.test(raw)
+}
+
+/** @deprecated Prefer isFlatDeclarationList — kept for tests that strip noise. */
 export function stripCssNoise(css: string): string {
-  let out = ''
-  let i = 0
-  while (i < css.length) {
-    // Block comment
-    if (css[i] === '/' && css[i + 1] === '*') {
-      i += 2
-      while (i < css.length && !(css[i] === '*' && css[i + 1] === '/')) i++
-      i += 2
-      continue
-    }
-    // Double-quoted string
-    if (css[i] === '"') {
-      i++
-      while (i < css.length) {
-        if (css[i] === '\\') { i += 2; continue }
-        if (css[i] === '"') { i++; break }
-        i++
-      }
-      out += '""'
-      continue
-    }
-    // Single-quoted string
-    if (css[i] === "'") {
-      i++
-      while (i < css.length) {
-        if (css[i] === '\\') { i += 2; continue }
-        if (css[i] === "'") { i++; break }
-        i++
-      }
-      out += "''"
-      continue
-    }
-    out += css[i]
-    i++
-  }
-  return out
+  // No longer used by scopeCss; retained so older imports keep compiling.
+  return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(["'])(?:\\.|(?!\1).)*\1/g, '""')
 }
 
 /**
  * Wrap admin CSS so it only reaches one element.
- * Strips angle brackets, ignores braces in comments/strings, and rejects
- * unbalanced braces so a `}` can't terminate the wrapper and inject globals.
+ * Free-form CSS with blocks is rejected; only flat declarations are applied.
  */
 export function scopeCss(selector: string, css: string | undefined): string {
   const raw = (css ?? '').replace(/</g, '').trim()
   if (!raw) return ''
-  // Block at-rules that could pull in external content or escape context.
-  if (/@(?:import|charset|namespace)\b/i.test(raw)) return ''
-
-  const body = stripCssNoise(raw)
-  let depth = 0
-  for (const ch of body) {
-    if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth < 0) return ''
-    }
-  }
-  if (depth !== 0) return ''
+  if (!isFlatDeclarationList(raw)) return ''
   return `${selector}{${raw}}`
 }

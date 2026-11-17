@@ -125,8 +125,45 @@ export function softParseProps(fields: Field[], props: Record<string, unknown>):
       if (!f.optional) out[f.key] = emptyValue(f)
       continue
     }
+    const value = props[f.key]
+
+    // List / stringList: soft-validate entries individually so one bad item
+    // does not wipe the whole list.
+    if (f.kind === 'list') {
+      if (!Array.isArray(value)) {
+        if (!f.optional) out[f.key] = []
+        continue
+      }
+      const kept: Record<string, unknown>[] = []
+      for (const item of value) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+        kept.push(softParseProps(f.fields, item as Record<string, unknown>))
+      }
+      out[f.key] = kept.slice(0, f.max ?? 50)
+      continue
+    }
+    if (f.kind === 'stringList') {
+      if (!Array.isArray(value)) {
+        if (!f.optional) out[f.key] = []
+        continue
+      }
+      out[f.key] = value
+        .filter((x): x is string => typeof x === 'string')
+        .map((x) => x.slice(0, 1000))
+        .slice(0, f.max ?? 50)
+      continue
+    }
+    if (f.kind === 'group') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        if (!f.optional) out[f.key] = emptyItem(f.fields)
+        continue
+      }
+      out[f.key] = softParseProps(f.fields, value as Record<string, unknown>)
+      continue
+    }
+
     const schema = fieldSchema(f)
-    const result = schema.safeParse(props[f.key])
+    const result = schema.safeParse(value)
     if (result.success) {
       out[f.key] = result.data
     } else if (!f.optional) {
