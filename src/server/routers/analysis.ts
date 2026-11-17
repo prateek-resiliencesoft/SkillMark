@@ -127,6 +127,11 @@ export const analysisRouter = router({
         detail?: string;
         imageUrl?: string;
         imagePath?: string;
+        screenImageUrl?: string;
+        screenImagePath?: string;
+        displayInfo?: unknown;
+        evidence?: unknown;
+        narrative?: string;
       };
       const rawLog = ((session as Record<string, unknown>).antiCheatingLog ?? null) as
         | StrikeLog[]
@@ -135,15 +140,21 @@ export const analysisRouter = router({
       if (!mediaClearedAt && rawLog?.length) {
         antiCheatingLog = await Promise.all(
           rawLog.map(async (v) => {
-            const source = v.imagePath || v.imageUrl;
-            if (!source) return v;
-            const signed = await resolveSessionSignedUrl(
-              "screenshots",
-              source,
-              input.sessionId,
-              organizationId,
-            );
-            return signed ? { ...v, imageUrl: signed } : v;
+            const camSource = v.imagePath || v.imageUrl;
+            const screenSource = v.screenImagePath || v.screenImageUrl;
+            const [camSigned, screenSigned] = await Promise.all([
+              camSource
+                ? resolveSessionSignedUrl("screenshots", camSource, input.sessionId, organizationId)
+                : Promise.resolve(undefined),
+              screenSource
+                ? resolveSessionSignedUrl("screenshots", screenSource, input.sessionId, organizationId)
+                : Promise.resolve(undefined),
+            ]);
+            return {
+              ...v,
+              ...(camSigned ? { imageUrl: camSigned } : {}),
+              ...(screenSigned ? { screenImageUrl: screenSigned } : {}),
+            };
           }),
         );
       }

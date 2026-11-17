@@ -701,6 +701,36 @@ export const sessionRouter = router({
           detail: z.string().max(500).optional(),
           imageUrl: z.string().max(2000).optional(),
           imagePath: z.string().max(500).optional(),
+          screenImageUrl: z.string().max(2000).optional(),
+          screenImagePath: z.string().max(500).optional(),
+          displayInfo: z
+            .object({
+              count: z.number().int().min(1).max(16),
+              capturedSharedOnly: z.boolean(),
+              screens: z
+                .array(
+                  z.object({
+                    label: z.string().max(200).optional(),
+                    width: z.number().int().nonnegative(),
+                    height: z.number().int().nonnegative(),
+                    isPrimary: z.boolean().optional(),
+                  }),
+                )
+                .max(16)
+                .optional(),
+            })
+            .optional(),
+          evidence: z
+            .object({
+              type: z.string().max(200),
+              when: z.string().max(100),
+              whatDetected: z.string().max(500),
+              strikeNumber: z.number().int().min(1).max(20),
+              displaysSummary: z.string().max(500),
+              evidenceAttached: z.string().max(200),
+            })
+            .optional(),
+          narrative: z.string().max(2000).optional(),
         }),
       }),
     )

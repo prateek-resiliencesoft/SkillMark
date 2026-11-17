@@ -118,12 +118,33 @@ export class HeadMovementMonitor {
   }
 }
 
+export interface StrikeDisplayInfo {
+  count: number;
+  screens?: { label?: string; width: number; height: number; isPrimary?: boolean }[];
+  /** Browser can only pixel-capture the shared display, not every monitor. */
+  capturedSharedOnly: boolean;
+}
+
+export interface StrikeEvidenceFields {
+  type: string;
+  when: string;
+  whatDetected: string;
+  strikeNumber: number;
+  displaysSummary: string;
+  evidenceAttached: string;
+}
+
 export interface LoggedViolation {
   type: string;
   timestamp: number;
   detail?: string;
   imageUrl?: string;
   imagePath?: string;
+  screenImageUrl?: string;
+  screenImagePath?: string;
+  displayInfo?: StrikeDisplayInfo;
+  evidence?: StrikeEvidenceFields;
+  narrative?: string;
 }
 
 export function countHeadViolations(log: unknown[]): number {
