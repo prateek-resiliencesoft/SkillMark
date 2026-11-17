@@ -4,6 +4,7 @@ import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
+import { effectiveIntegrityConfig, type IntegrityConfigInput } from "@/lib/integrity/config";
 import {
   assertMinRole,
   filterAccessibleProjectIds,
@@ -359,6 +360,8 @@ export const interviewRouter = router({
         llmModel: z.string().optional(),
         antiCheatingEnabled: z.boolean().default(false),
         headMovementDetectionEnabled: z.boolean().default(false),
+        integrityChecksEnabled: z.boolean().default(false),
+        livenessChallengesEnabled: z.boolean().default(false),
         completionNotifyMembers: z
           .array(
             z.object({
@@ -472,6 +475,7 @@ export const interviewRouter = router({
         .from("interviews")
         .insert({
           ...rest,
+          ...effectiveIntegrityConfig(rest),
           projectId,
           userId: ctx.user.id,
           requireInvite: true,
@@ -638,6 +642,8 @@ export const interviewRouter = router({
         invitedEmails: z.array(z.string().email()).optional(),
         antiCheatingEnabled: z.boolean().optional(),
         headMovementDetectionEnabled: z.boolean().optional(),
+        integrityChecksEnabled: z.boolean().optional(),
+        livenessChallengesEnabled: z.boolean().optional(),
         completionNotifyMembers: z
           .array(
             z.object({
@@ -679,6 +685,12 @@ export const interviewRouter = router({
           data.aiGender ?? nextGender,
         );
         if (data.aiGender) data.aiGender = nextGender;
+      }
+      const touchesIntegrity = (
+        ["antiCheatingEnabled", "headMovementDetectionEnabled", "integrityChecksEnabled", "livenessChallengesEnabled"] as const
+      ).some((k) => data[k] !== undefined);
+      if (touchesIntegrity) {
+        Object.assign(data, effectiveIntegrityConfig({ ...(result.interview as IntegrityConfigInput), ...data }));
       }
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
@@ -880,7 +892,7 @@ export const interviewRouter = router({
           requireInvite: source.requireInvite,
           invitedEmails: source.invitedEmails,
           antiCheatingEnabled: source.antiCheatingEnabled,
-          headMovementDetectionEnabled: source.headMovementDetectionEnabled ?? false,
+          ...effectiveIntegrityConfig(source as IntegrityConfigInput),
         })
         .select()
         .single();

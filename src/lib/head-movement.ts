@@ -9,6 +9,7 @@ export const MAX_HEAD_VIOLATIONS = 3; // 1st & 2nd = warning, 3rd = disqualify
 export const MAX_STRIKES = MAX_HEAD_VIOLATIONS;
 export const STRIKE_TYPES = new Set([
   "page_departure", "tab_switch", "focus_lost", "head_movement", "multi_screen", "paste", "copy", "cut",
+  "offscreen_voice", "device_switch",
 ]);
 export const STRIKE_LABEL: Record<string, string> = {
   page_departure: "Left the interview page",
@@ -19,6 +20,8 @@ export const STRIKE_LABEL: Record<string, string> = {
   paste: "Pasted external content",
   copy: "Copied content",
   cut: "Cut content",
+  offscreen_voice: "Another voice detected while your mouth was closed",
+  device_switch: "Camera or microphone was switched",
 };
 
 export type HeadFrameState = "ok" | "looking_away" | "no_face" | "multiple_faces";

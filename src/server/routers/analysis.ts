@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { effectiveDurationSeconds, lastMessageAt } from "@/lib/session-activity";
+import { assessIntegrity, type IntegritySignal } from "@/lib/integrity/signals";
 import {
   objectPathFromSignedUrl,
   pathBelongsToSession,
@@ -159,6 +160,9 @@ export const analysisRouter = router({
         );
       }
 
+      const rawSignals = (session as Record<string, unknown>).integritySignals;
+      const integritySignals = (Array.isArray(rawSignals) ? rawSignals : []) as IntegritySignal[];
+
       return {
         organizationId,
         interviewTitle: interview.title,
@@ -184,6 +188,8 @@ export const analysisRouter = router({
         audioDuration: (session as Record<string, unknown>).audioDuration as number | null,
         screenshots,
         antiCheatingLog,
+        integritySignals,
+        integrity: integritySignals.length ? assessIntegrity(integritySignals, rawLog ?? []) : null,
         mediaReviewStatus:
           (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
         mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,

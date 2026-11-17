@@ -26,6 +26,7 @@ import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import { buildReportData } from "@/lib/report-data";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
+import { IntegrityAssessmentCard } from "@/components/report/integrity-assessment-card";
 import {
   ReportHero,
   ReportIntegrity,
@@ -1104,6 +1105,10 @@ function SessionDetail({
             })()}
 
             <ReportIntegrity data={report} sessionId={sessionId} />
+            <IntegrityAssessmentCard
+              assessment={summary.data?.integrity}
+              signals={summary.data?.integritySignals}
+            />
             {strikeEvents.length > 0 && (
               <Card>
                 <CardHeader className="pb-3">

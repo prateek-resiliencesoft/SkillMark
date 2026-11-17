@@ -1,5 +1,8 @@
 import { buildInterviewerPrompt } from "@/lib/ai/prompts/interviewer";
 import { buildCandidateFocusSection } from "@/lib/ai/prompts/candidate-focus";
+import { buildIntegrityProbingSection } from "@/lib/ai/prompts/integrity-probing";
+import { isChineseInterviewLanguage } from "@/lib/interview-language";
+import { effectiveIntegrityConfig, type IntegrityConfigInput } from "@/lib/integrity/config";
 import { resolveProvider } from "@/lib/ai/registry";
 import { taskFromFollowUpDepth } from "@/lib/ai/credentials";
 import { createLogger } from "@/lib/logger";
@@ -62,6 +65,13 @@ export async function POST(req: Request) {
       conversationHistory,
       currentQuestionIndex: currentQuestionIndex ?? 0,
     });
+
+    const probing = buildIntegrityProbingSection(
+      effectiveIntegrityConfig(interview as IntegrityConfigInput).integrityChecksEnabled,
+      isChineseInterviewLanguage(String(interview.language ?? "")),
+    );
+    const systemMsg = promptMessages.find((m) => m.role === "system");
+    if (probing && systemMsg && typeof systemMsg.content === "string") systemMsg.content += "\n" + probing;
 
     // Per-candidate tailoring (invite sessions only).
     if (sessionId) {

@@ -49,6 +49,8 @@ const INTEGRITY_LABELS: Record<string, string> = {
   cut: "Cut attempt",
   multi_screen: "Multi-screen detected",
   head_movement: "Head movement / looking away",
+  offscreen_voice: "Another voice detected",
+  device_switch: "Camera / mic switched",
 };
 
 /** hire ≥ 7, maybe ≥ 5, else no. Disqualified sessions are always "no". */

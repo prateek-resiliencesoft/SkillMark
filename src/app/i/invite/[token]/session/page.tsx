@@ -9,6 +9,7 @@ import { PreparingScreen } from "@/components/session/preparing-screen";
 import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { Card, CardContent } from "@/components/ui/card";
 import { useInterviewLinkGuard } from "@/hooks/use-interview-link-guard";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
 import { Clock } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
@@ -214,6 +215,7 @@ export default function InviteSessionPage() {
   }
 
   const useVoice = interview.voiceEnabled;
+  const integrity = effectiveIntegrityConfig(interview);
 
   if (useVoice) {
     const interviewContext = {
@@ -224,6 +226,7 @@ export default function InviteSessionPage() {
       aiTone: interview.aiTone,
       language: interview.language,
       followUpDepth: interview.followUpDepth,
+      integrityProbing: integrity.integrityChecksEnabled,
       candidateFocus:
         (candidate.data as any).tailorInterview !== false
           ? {
@@ -244,7 +247,7 @@ export default function InviteSessionPage() {
 
     return (
       <>
-        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
+        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={session.id}
@@ -267,7 +270,7 @@ export default function InviteSessionPage() {
 
   return (
     <>
-      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
+      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={session.id}
