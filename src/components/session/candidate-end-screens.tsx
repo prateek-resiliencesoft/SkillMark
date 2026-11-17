@@ -20,7 +20,6 @@ function Shell({ children }: { children: React.ReactNode }) {
 /** Shown right after a candidate finishes. */
 export function CandidateThankYou({
   timeLimitReached = false,
-  saving = false,
   sessionId,
   inviteToken,
 }: {
@@ -28,8 +27,6 @@ export function CandidateThankYou({
   /** When known, an optional feedback form is shown. */
   sessionId?: string | null;
   inviteToken?: string | null;
-  /** Final save still running: ask the candidate to keep the tab open briefly. */
-  saving?: boolean;
 }) {
   return (
     <Shell>
@@ -43,12 +40,8 @@ export function CandidateThankYou({
       <p className="mt-2 text-muted-foreground">
         Your interview is complete. Our team will review your interview and contact you.
       </p>
-      <p className="mt-6 text-sm text-muted-foreground">
-        {saving
-          ? "Saving your interview… please keep this tab open for a few seconds."
-          : "You can now close this tab."}
-      </p>
-      {sessionId && !saving ? <CandidateFeedback sessionId={sessionId} inviteToken={inviteToken} /> : null}
+      <p className="mt-6 text-sm text-muted-foreground">You can now close this tab.</p>
+      {sessionId ? <CandidateFeedback sessionId={sessionId} inviteToken={inviteToken} /> : null}
     </Shell>
   );
 }

@@ -12,6 +12,9 @@ const TABLE = "candidate_feedback";
 /** Feedback is accepted for this long after the session started. */
 export const FEEDBACK_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
+/** Session states that accept feedback (ended, or being ended right now). */
+const FEEDBACK_SESSION_STATUSES = new Set(["COMPLETED", "ABANDONED", "IN_PROGRESS"]);
+
 export type FeedbackErrorCode = "UNAVAILABLE" | "NOT_FOUND" | "NOT_ENDED" | "TOO_LATE" | "FORBIDDEN" | "DUPLICATE";
 export class FeedbackError extends Error {
   constructor(
@@ -33,7 +36,9 @@ type SessionCtx = { sessionId: string; candidateId: string | null; organizationI
 async function sessionContext(db: Db, sessionId: string, inviteToken: string | undefined, nowMs: number): Promise<SessionCtx> {
   const { data: s } = await db.from("sessions").select("id, status, interviewId, startedAt, createdAt").eq("id", sessionId).maybeSingle();
   if (!s) throw new FeedbackError("NOT_FOUND", "Session not found.", 404);
-  if (s.status !== "COMPLETED" && s.status !== "ABANDONED") {
+  // IN_PROGRESS too: the thank-you screen shows the form at once, while the
+  // final save may still be landing (it runs in the background).
+  if (!FEEDBACK_SESSION_STATUSES.has(String(s.status))) {
     throw new FeedbackError("NOT_ENDED", "Feedback opens when the interview has ended.", 409);
   }
   const started = new Date(s.startedAt ?? s.createdAt ?? 0).getTime();
