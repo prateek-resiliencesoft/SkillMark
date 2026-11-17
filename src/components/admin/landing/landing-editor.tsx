@@ -62,6 +62,9 @@ export function LandingEditor() {
   const [doc, setDoc] = useState<SiteDocument | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** Bumps on every local edit; only the matching revision may clear dirty after save. */
+  const revisionRef = useRef(0);
+  const savedRevisionRef = useRef(0);
   const [pageId, setPageId] = useState("home");
   const [sectionId, setSectionId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("simple");
@@ -100,22 +103,30 @@ export function LandingEditor() {
   const updateDoc = useCallback((updater: (d: SiteDocument) => SiteDocument) => {
     setDoc((prev) => {
       if (!prev) return prev;
+      revisionRef.current += 1;
       setDirty(true);
       return updater(deepClone(prev));
     });
   }, []);
 
-  // Autosave
+  // Autosave — only clear dirty when the response matches the revision that was sent.
   useEffect(() => {
     if (!doc || !dirty) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const revisionAtSchedule = revisionRef.current;
+    const snapshot = doc;
     saveTimer.current = setTimeout(() => {
+      // Another edit landed while we waited — let the next effect run handle it.
+      if (revisionRef.current !== revisionAtSchedule) return;
       setSaving(true);
+      const revisionAtSend = revisionRef.current;
       saveMut.mutate(
-        { content: doc },
+        { content: snapshot },
         {
           onSuccess: () => {
-            setDirty(false);
+            savedRevisionRef.current = revisionAtSend;
+            // Only clear dirty if nothing newer has been typed since this request left.
+            if (revisionRef.current === revisionAtSend) setDirty(false);
             setSaving(false);
             utils.landing.getDraft.invalidate();
           },

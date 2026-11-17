@@ -47,8 +47,22 @@ export type Style = {
   customCss?: string
 }
 
-/** Wraps admin CSS so it only reaches one element and cannot close the style tag. */
+/**
+ * Wrap admin CSS so it only reaches one element.
+ * Strips angle brackets (can't close a <style> tag) and rejects brace-unbalanced
+ * input so a `}` can't terminate the wrapper and inject global rules.
+ */
 export function scopeCss(selector: string, css: string | undefined): string {
   const body = (css ?? '').replace(/</g, '').trim()
-  return body ? `${selector}{${body}}` : ''
+  if (!body) return ''
+  let depth = 0
+  for (const ch of body) {
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth < 0) return '' // would escape the wrapper
+    }
+  }
+  if (depth !== 0) return '' // unclosed blocks — refuse rather than guess
+  return `${selector}{${body}}`
 }

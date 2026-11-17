@@ -9,6 +9,13 @@ import type { Context } from '@/server/context'
 
 type Db = Context['supabase']
 
+export class LandingDbError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message)
+    this.name = 'LandingDbError'
+  }
+}
+
 export type LandingVersionRow = {
   id: string
   version: number
@@ -39,6 +46,8 @@ export type RebuildState = {
   startedAt: string | null
   updatedAt: string
   detail: string | null
+  /** When set and <= now, a rebuild dispatch is due (durable debounce). */
+  rebuildAfter: string | null
 }
 
 export async function getDraft(db: Db): Promise<{ content: SiteDocument; updatedAt: string | null; updatedBy: string | null }> {
@@ -77,20 +86,18 @@ export async function saveDraft(db: Db, content: SiteDocument, userId: string): 
 }
 
 export async function discardDraft(db: Db, userId: string): Promise<SiteDocument> {
-  const published = await getPublished(db)
-  const content = published?.content ?? defaultSiteDocument()
+  let content: SiteDocument
+  try {
+    const published = await getPublished(db)
+    content = published?.content ?? defaultSiteDocument()
+  } catch (err) {
+    if (err instanceof LandingDbError) throw err
+    throw err
+  }
   return saveDraft(db, content, userId)
 }
 
-export async function getPublished(db: Db): Promise<LandingVersionRow | null> {
-  const { data, error } = await db
-    .from('landing_versions')
-    .select('id, version, content, note, publishedAt, publishedBy, rebuildRunId, rebuildStatus')
-    .order('version', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (error || !data) return null
+function mapVersionRow(data: Record<string, unknown>): LandingVersionRow {
   return {
     id: data.id as string,
     version: data.version as number,
@@ -101,6 +108,23 @@ export async function getPublished(db: Db): Promise<LandingVersionRow | null> {
     rebuildRunId: (data.rebuildRunId as string) ?? null,
     rebuildStatus: (data.rebuildStatus as string) ?? null,
   }
+}
+
+/**
+ * Latest published version, or null when none exist.
+ * Throws LandingDbError on query failure so callers don't treat outages as "no publish".
+ */
+export async function getPublished(db: Db): Promise<LandingVersionRow | null> {
+  const { data, error } = await db
+    .from('landing_versions')
+    .select('id, version, content, note, publishedAt, publishedBy, rebuildRunId, rebuildStatus')
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw new LandingDbError(error.message, error)
+  if (!data) return null
+  return mapVersionRow(data as Record<string, unknown>)
 }
 
 export type LandingVersionMeta = Omit<LandingVersionRow, 'content'>
@@ -144,6 +168,11 @@ export async function getVersion(db: Db, version: number): Promise<LandingVersio
   }
 }
 
+function isUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false
+  return error.code === '23505' || /duplicate key|unique/i.test(error.message ?? '')
+}
+
 export async function publish(
   db: Db,
   content: SiteDocument,
@@ -155,33 +184,28 @@ export async function publish(
   // Persist the draft first so discard/restore stays consistent.
   await saveDraft(db, parsed, userId)
 
-  const latest = await getPublished(db)
-  const nextVersion = (latest?.version ?? 0) + 1
+  const noteText = note.trim().slice(0, 500)
+  // Retry on version collisions from concurrent publishes.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const latest = await getPublished(db)
+    const nextVersion = (latest?.version ?? 0) + 1
 
-  const { data, error } = await db
-    .from('landing_versions')
-    .insert({
-      version: nextVersion,
-      content: parsed as never,
-      note: note.trim().slice(0, 500),
-      publishedAt: new Date().toISOString(),
-      publishedBy: userId,
-    })
-    .select('id, version, content, note, publishedAt, publishedBy, rebuildRunId, rebuildStatus')
-    .single()
+    const { data, error } = await db
+      .from('landing_versions')
+      .insert({
+        version: nextVersion,
+        content: parsed as never,
+        note: noteText,
+        publishedAt: new Date().toISOString(),
+        publishedBy: userId,
+      })
+      .select('id, version, content, note, publishedAt, publishedBy, rebuildRunId, rebuildStatus')
+      .single()
 
-  if (error) throw error
-
-  return {
-    id: data.id as string,
-    version: data.version as number,
-    content: parseSiteDocument(data.content),
-    note: (data.note as string) ?? '',
-    publishedAt: data.publishedAt as string,
-    publishedBy: (data.publishedBy as string) ?? null,
-    rebuildRunId: (data.rebuildRunId as string) ?? null,
-    rebuildStatus: (data.rebuildStatus as string) ?? null,
+    if (!error && data) return mapVersionRow(data as Record<string, unknown>)
+    if (!isUniqueViolation(error)) throw error
   }
+  throw new Error('Could not allocate a publish version — please try again')
 }
 
 export async function restoreVersion(db: Db, version: number, userId: string): Promise<SiteDocument> {
@@ -244,48 +268,63 @@ export async function deleteMedia(db: Db, id: string): Promise<LandingMediaRow |
   return existing
 }
 
-export async function getRebuildState(db: Db): Promise<RebuildState> {
-  const { data } = await db
-    .from('landing_rebuild')
-    .select('runId, status, startedAt, updatedAt, detail')
-    .eq('id', 1)
-    .maybeSingle()
-
+function mapRebuild(data: Record<string, unknown> | null | undefined): RebuildState {
   return {
     runId: (data?.runId as string) ?? null,
     status: (data?.status as string) ?? 'idle',
     startedAt: (data?.startedAt as string) ?? null,
     updatedAt: (data?.updatedAt as string) ?? new Date().toISOString(),
     detail: (data?.detail as string) ?? null,
+    rebuildAfter: (data?.rebuildAfter as string) ?? null,
   }
+}
+
+export async function getRebuildState(db: Db): Promise<RebuildState> {
+  const { data } = await db
+    .from('landing_rebuild')
+    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
+    .eq('id', 1)
+    .maybeSingle()
+
+  return mapRebuild(data as Record<string, unknown> | null)
 }
 
 export async function setRebuildState(
   db: Db,
   patch: Partial<Omit<RebuildState, 'updatedAt'>>,
 ): Promise<RebuildState> {
+  const current = await getRebuildState(db)
   const { data, error } = await db
     .from('landing_rebuild')
     .upsert(
       {
         id: 1,
-        runId: patch.runId ?? null,
-        status: patch.status ?? 'idle',
-        startedAt: patch.startedAt ?? null,
-        detail: patch.detail ?? null,
+        runId: patch.runId !== undefined ? patch.runId : current.runId,
+        status: patch.status !== undefined ? patch.status : current.status,
+        startedAt: patch.startedAt !== undefined ? patch.startedAt : current.startedAt,
+        detail: patch.detail !== undefined ? patch.detail : current.detail,
+        rebuildAfter: patch.rebuildAfter !== undefined ? patch.rebuildAfter : current.rebuildAfter,
         updatedAt: new Date().toISOString(),
       },
       { onConflict: 'id' },
     )
-    .select('runId, status, startedAt, updatedAt, detail')
+    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
     .single()
 
   if (error) throw error
-  return {
-    runId: (data.runId as string) ?? null,
-    status: (data.status as string) ?? 'idle',
-    startedAt: (data.startedAt as string) ?? null,
-    updatedAt: data.updatedAt as string,
-    detail: (data.detail as string) ?? null,
+  return mapRebuild(data as Record<string, unknown>)
+}
+
+/** True if draft or latest published document references this media id/URL. */
+export async function mediaIsReferenced(db: Db, mediaId: string): Promise<boolean> {
+  const needle = `/api/public/landing/media/${mediaId}`
+  const draft = await getDraft(db)
+  const haystacks: string[] = [JSON.stringify(draft.content)]
+  try {
+    const published = await getPublished(db)
+    if (published) haystacks.push(JSON.stringify(published.content))
+  } catch {
+    /* ignore — still check draft */
   }
+  return haystacks.some((h) => h.includes(needle) || h.includes(mediaId))
 }

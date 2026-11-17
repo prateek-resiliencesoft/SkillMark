@@ -20,11 +20,34 @@ export type Field =
   | (Base & { kind: 'list'; itemLabel: string; titleKey?: string; fields: Field[]; max?: number })
   | (Base & { kind: 'group'; fields: Field[] })
 
-const UNSAFE_SCHEME = /^\s*(javascript|vbscript|data(?!:image\/(png|jpe?g|webp|gif|avif);base64,)):/i
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/
 
-/** Allows relative paths, anchors, http(s), mailto, tel and `{appUrl}` style tokens. */
+/**
+ * Allowlist for CMS links rendered as navigation targets.
+ * Accepts relative paths, hash anchors, and http(s)/mailto/tel — plus `{token}` placeholders.
+ */
 export function isSafeHref(value: string): boolean {
-  return !UNSAFE_SCHEME.test(value)
+  const raw = value.trim()
+  if (!raw || CONTROL_CHARS.test(raw)) return false
+  // Template tokens used in defaults (resolved before render).
+  if (/^\{[a-zA-Z]+\}$/.test(raw) || /\{[a-zA-Z]+\}/.test(raw)) {
+    // Still reject if a dangerous scheme appears outside the token.
+    const withoutTokens = raw.replace(/\{[a-zA-Z]+\}/g, '')
+    if (!withoutTokens) return true
+    return isSafeHref(withoutTokens)
+  }
+  // Relative / same-site paths and hashes.
+  if (raw.startsWith('/') || raw.startsWith('#') || raw.startsWith('?')) return true
+  // mailto / tel without a full URL parse (URL() rejects some valid mailto forms).
+  if (/^mailto:[^\s]+$/i.test(raw) || /^tel:[+\d()\-\s.]+$/i.test(raw)) return true
+
+  try {
+    const u = new URL(raw)
+    const protocol = u.protocol.toLowerCase()
+    return protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:' || protocol === 'tel:'
+  } catch {
+    return false
+  }
 }
 
 const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i

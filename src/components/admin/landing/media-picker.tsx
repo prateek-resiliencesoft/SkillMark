@@ -63,6 +63,13 @@ export function MediaLibrary({ onPick }: { onPick?: (url: string) => void }) {
       utils.landing.listMedia.invalidate();
       toast({ title: "Image removed" });
     },
+    onError: (err) => {
+      toast({
+        title: "Could not delete image",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
   });
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);

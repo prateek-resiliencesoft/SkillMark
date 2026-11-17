@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import { checkRateLimit } from '@/lib/api-rate-limit'
 import { defaultSiteDocument } from '@landing/shared/defaults'
 import { supabaseAdmin } from '@/lib/supabase/admin'
-import { getDraft, getPublished } from './repository'
+import { getDraft, getPublished, LandingDbError } from './repository'
 import { readLandingMediaBytes } from './media'
 import { verifyPreviewToken } from './preview-token'
 
@@ -33,7 +33,7 @@ export function landingOptions() {
   return new Response(null, { status: 204, headers: CORS })
 }
 
-/** GET /api/public/landing — latest published SiteDocument (or defaults). */
+/** GET /api/public/landing — latest published SiteDocument (or defaults when never published). */
 export async function getPublishedLanding(request: Request): Promise<Response> {
   const limited = checkRateLimit(`publanding:${clientIp(request)}`)
   if (limited) {
@@ -41,7 +41,20 @@ export async function getPublishedLanding(request: Request): Promise<Response> {
     return limited
   }
 
-  const published = await getPublished(supabaseAdmin)
+  let published
+  try {
+    published = await getPublished(supabaseAdmin)
+  } catch (err) {
+    if (err instanceof LandingDbError) {
+      // Distinguish outage from "no publish yet" — do not silently serve defaults.
+      return Response.json(
+        { error: 'Landing content temporarily unavailable' },
+        { status: 503, headers: { ...CORS, 'Cache-Control': 'no-store', 'Retry-After': '30' } },
+      )
+    }
+    throw err
+  }
+
   const document = published?.content ?? defaultSiteDocument()
   const body = {
     data: document,
