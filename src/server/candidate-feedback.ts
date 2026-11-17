@@ -154,26 +154,51 @@ export function summarizeFeedback(rows: Pick<FeedbackRow, "rating" | "tags">[]):
   return { total: rows.length, average, distribution, topTags };
 }
 
-const MAX_SCAN = 2000;
+/** Page size for scanning all matching feedback (PostgREST caps a single response). */
+export const FEEDBACK_SCAN_PAGE = 1000;
 
-/** Admin list (newest first) with names, filters and a summary of the filtered set. */
-export async function listFeedback(
-  db: Db,
-  f: FeedbackFilters = {},
-): Promise<{ available: boolean; rows: FeedbackRow[]; summary: FeedbackSummary; orgs: { id: string; name: string }[] }> {
+type FeedbackRaw = Omit<FeedbackRow, "candidateName" | "candidateEmail" | "organizationName" | "interviewTitle">;
+
+function feedbackQuery(db: Db, f: FeedbackFilters) {
   let q = db.from(TABLE).select('id, "createdAt", rating, tags, comment, "sessionId", "candidateId", "organizationId", "interviewId"');
   if (f.organizationId) q = q.eq("organizationId", f.organizationId);
   if (f.rating) q = q.eq("rating", f.rating);
   if (f.from) q = q.gte("createdAt", f.from);
   if (f.to) q = q.lte("createdAt", f.to);
-  const { data, error } = await q.order("createdAt", { ascending: false }).limit(MAX_SCAN);
-  if (error) {
-    if (isMissingTable(error)) return { available: false, rows: [], summary: summarizeFeedback([]), orgs: [] };
-    throw error;
-  }
-  const raw = (data ?? []) as Omit<FeedbackRow, "candidateName" | "candidateEmail" | "organizationName" | "interviewTitle">[];
+  return q.order("createdAt", { ascending: false });
+}
 
-  const ids = <K extends keyof (typeof raw)[number]>(k: K) => Array.from(new Set(raw.map((r) => r[k]).filter(Boolean))) as string[];
+/** Load every matching feedback row (paginated) so summary totals are not capped. */
+async function scanFeedbackRows(
+  db: Db,
+  f: FeedbackFilters,
+  pageSize: number,
+): Promise<{ available: boolean; raw: FeedbackRaw[] }> {
+  const raw: FeedbackRaw[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await feedbackQuery(db, f).range(from, from + pageSize - 1);
+    if (error) {
+      if (isMissingTable(error)) return { available: false, raw: [] };
+      throw error;
+    }
+    const page = (data ?? []) as FeedbackRaw[];
+    raw.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return { available: true, raw };
+}
+
+/** Admin list (newest first) with names, filters and a summary of the full filtered set. */
+export async function listFeedback(
+  db: Db,
+  f: FeedbackFilters = {},
+  opts: { pageSize?: number } = {},
+): Promise<{ available: boolean; rows: FeedbackRow[]; summary: FeedbackSummary; orgs: { id: string; name: string }[] }> {
+  const pageSize = opts.pageSize ?? FEEDBACK_SCAN_PAGE;
+  const { available, raw } = await scanFeedbackRows(db, f, pageSize);
+  if (!available) return { available: false, rows: [], summary: summarizeFeedback([]), orgs: [] };
+
+  const ids = <K extends keyof FeedbackRaw>(k: K) => Array.from(new Set(raw.map((r) => r[k]).filter(Boolean))) as string[];
   const lookup = async (table: string, cols: string, list: string[]) => {
     if (!list.length) return new Map<string, Record<string, unknown>>();
     const { data: rows } = await db.from(table).select(cols).in("id", list);
