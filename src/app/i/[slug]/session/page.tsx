@@ -227,6 +227,17 @@ export default function SlugSessionPage() {
       followUpDepth: interview.data.followUpDepth,
       integrityProbing: integrity.integrityChecksEnabled,
       startQuestionIndex: isResuming ? resumeQuestionIndex : undefined,
+      // Reload mid-interview: the AI continues from the saved transcript
+      // instead of greeting again (questions before the current one count as asked).
+      resume: isResuming
+        ? {
+            recent: (resumeTextMessages ?? []).slice(-8).map((m: any) => ({
+              role: m.role === "USER" ? ("user" as const) : ("assistant" as const),
+              text: String(m.content ?? ""),
+            })),
+            askedQuestionIndexes: [],
+          }
+        : undefined,
       questions: interview.data.questions.map((q: any) => ({
         text: q.text,
         type: q.type,
