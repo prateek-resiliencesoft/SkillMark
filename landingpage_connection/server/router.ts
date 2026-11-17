@@ -41,14 +41,17 @@ export const landingRouter = router({
   getDraft: platformProcedure.query(async ({ ctx }) => {
     const draft = await getDraft(ctx.supabase)
     let published = null
+    let dbWarning: string | null = null
     try {
       published = await getPublished(ctx.supabase)
     } catch (err) {
       if (!(err instanceof LandingDbError)) throw err
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Could not load published landing content',
-      })
+      // Missing migration (relation does not exist) or transient PostgREST outage —
+      // still open the editor on defaults instead of hanging the UI on a hard failure.
+      dbWarning =
+        /does not exist|42P01/i.test(err.message)
+          ? 'Landing tables are missing. Apply db/init/32-landing-content.sql (npm run db:migrate), then reload.'
+          : `Could not load published landing content: ${err.message}`
     }
     const rebuild = await getRebuildState(ctx.supabase)
     return {
@@ -61,6 +64,7 @@ export const landingRouter = router({
       rebuild,
       rebuildConfigured: !!readRebuildConfig(),
       defaults: defaultSiteDocument(),
+      dbWarning,
     }
   }),
 
