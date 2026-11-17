@@ -56,7 +56,12 @@ export const hexColor = z.string().regex(HEX, 'Use a hex color like #5944f6')
 
 const safeUrl = z.string().max(2000).refine(isSafeHref, 'This link type is not allowed')
 
-function fieldSchema(field: Field): z.ZodType {
+export type FieldsToZodOpts = {
+  /** Reject unrecognized keys (admin save/publish). */
+  strict?: boolean
+}
+
+function fieldSchema(field: Field, opts?: FieldsToZodOpts): z.ZodType {
   let s: z.ZodType
   switch (field.kind) {
     case 'text':
@@ -96,19 +101,40 @@ function fieldSchema(field: Field): z.ZodType {
       s = z.array(z.string().max(1000)).max(field.max ?? 50)
       break
     case 'list':
-      s = z.array(fieldsToZod(field.fields)).max(field.max ?? 50)
+      s = z.array(fieldsToZod(field.fields, opts)).max(field.max ?? 50)
       break
     case 'group':
-      s = fieldsToZod(field.fields)
+      s = fieldsToZod(field.fields, opts)
       break
   }
   return field.optional ? s.optional() : s
 }
 
-export function fieldsToZod(fields: Field[]) {
+export function fieldsToZod(fields: Field[], opts?: FieldsToZodOpts) {
   const shape: Record<string, z.ZodType> = {}
-  for (const f of fields) shape[f.key] = fieldSchema(f)
-  return z.object(shape)
+  for (const f of fields) shape[f.key] = fieldSchema(f, opts)
+  const obj = z.object(shape)
+  return opts?.strict ? obj.strict() : obj
+}
+
+/** Soft-parse: keep valid keys, default missing/invalid required ones. Never throws. */
+export function softParseProps(fields: Field[], props: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const f of fields) {
+    if (!(f.key in props)) {
+      if (!f.optional) out[f.key] = emptyValue(f)
+      continue
+    }
+    const schema = fieldSchema(f)
+    const result = schema.safeParse(props[f.key])
+    if (result.success) {
+      out[f.key] = result.data
+    } else if (!f.optional) {
+      out[f.key] = emptyValue(f)
+    }
+    // invalid optional → drop
+  }
+  return out
 }
 
 /** An empty value of the right type, used when adding a list item in the admin. */
