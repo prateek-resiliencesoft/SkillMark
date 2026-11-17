@@ -3,7 +3,7 @@
 import type { AntiCheatingViolation } from "@/hooks/use-anti-cheating";
 import { useAntiCheating } from "@/hooks/use-anti-cheating";
 import { markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
-import { captureCameraSnapshot, uploadStrikeSnapshot } from "@/lib/capture-camera-snapshot";
+import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
 import { MAX_STRIKES, STRIKE_LABEL } from "@/lib/head-movement";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
@@ -48,15 +48,18 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
         localCount.current += 1;
         let count = localCount.current;
         let disqualified = count >= MAX_STRIKES;
-        let imageUrl: string | undefined;
-        let imagePath: string | undefined;
+        let evidencePayload: Awaited<ReturnType<typeof captureStrikeEvidence>> = {
+          detail: violation.detail || reason,
+        };
         try {
-          const blob = await captureCameraSnapshot();
-          if (blob) {
-            const uploaded = await uploadStrikeSnapshot(sessionId, blob, `strike-${violation.type}`);
-            imageUrl = uploaded.imageUrl;
-            imagePath = uploaded.imagePath;
-          }
+          evidencePayload = await captureStrikeEvidence({
+            sessionId,
+            type: violation.type,
+            detail: violation.detail || reason,
+            timestamp: violation.timestamp,
+            strikeNumber: count,
+            prefix: `strike-${violation.type}`,
+          });
         } catch (err) {
           console.warn("[anti-cheating] snapshot failed", err);
         }
@@ -66,9 +69,7 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
             violation: {
               type: violation.type,
               timestamp: violation.timestamp,
-              detail: violation.detail || reason,
-              imageUrl,
-              imagePath,
+              ...evidencePayload,
             },
           });
           const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;

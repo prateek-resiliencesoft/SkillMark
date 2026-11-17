@@ -140,12 +140,12 @@ export function useInterviewRecording({
 
   /** Acquire camera and screen streams, reusing stored streams from onboarding. */
   const acquireStreams = useCallback(async () => {
-    // Reuse camera stream from onboarding if still active
+    // Reuse camera stream from onboarding if still active. Keep it in the
+    // store so strike evidence can grab a webcam frame without re-prompting.
     const storedCam = getStoredCameraStream();
     if (storedCam) {
       setCameraStream(storedCam);
       cameraStreamRef.current = storedCam;
-      setStoredCameraStream(null);
     } else if (!wasCameraSkipped()) {
       try {
         const cam = await navigator.mediaDevices.getUserMedia({
@@ -153,21 +153,23 @@ export function useInterviewRecording({
         });
         setCameraStream(cam);
         cameraStreamRef.current = cam;
+        setStoredCameraStream(cam);
       } catch (err) {
         log.warn("Camera not available:", err);
       }
     }
 
-    // Reuse screen stream from onboarding if still active
+    // Reuse screen stream from onboarding if still active. Keep it in the
+    // store so strike evidence can grab a frame at the same moment.
     const storedScreen = getStoredScreenStream();
     if (storedScreen) {
       setScreenStream(storedScreen);
       screenStreamRef.current = storedScreen;
-      setStoredScreenStream(null);
 
       storedScreen.getVideoTracks()[0]?.addEventListener("ended", () => {
         setScreenStream(null);
         screenStreamRef.current = null;
+        setStoredScreenStream(null);
       });
     } else if (!wasScreenSkipped()) {
       try {
@@ -176,10 +178,12 @@ export function useInterviewRecording({
         });
         setScreenStream(screen);
         screenStreamRef.current = screen;
+        setStoredScreenStream(screen);
 
         screen.getVideoTracks()[0]?.addEventListener("ended", () => {
           setScreenStream(null);
           screenStreamRef.current = null;
+          setStoredScreenStream(null);
         });
       } catch (err) {
         log.warn("Screen share not available:", err);
@@ -656,6 +660,8 @@ export function useInterviewRecording({
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     setCameraStream(null);
     setScreenStream(null);
+    setStoredScreenStream(null);
+    setStoredCameraStream(null);
 
     // Clean up hidden video elements
     if (cameraVideoRef.current) {
