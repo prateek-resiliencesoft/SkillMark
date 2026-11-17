@@ -5,8 +5,17 @@ import { resolveInterviewLanguage } from "@/lib/interview-language";
  * Kept pure so unit tests can cover quiet / short / clipping cases.
  */
 export const MIC_TEST_CHECK = {
-  /** Real speech must be detected at least this long (Silero or energy). */
-  minSpeechMs: 1_500,
+  /**
+   * Pass as soon as this much speech is heard (Silero or energy). About half
+   * of "my microphone is working": a partial sentence is enough.
+   */
+  minSpeechMs: 1_000,
+  /** When listening times out, a shorter but clear voice still passes. */
+  minSpeechMsAtTimeout: 500,
+  /** Stop listening after this long and decide with what was heard. */
+  listenTimeoutMs: 8_000,
+  /** Silence played before the prompt so a waking speaker can't clip its start. */
+  playbackLeadInSec: 0.4,
   /** RMS while speaking — below this is "too quiet / move closer". */
   minSpeechRms: 0.012,
   /** Peak RMS below this means we never heard a clear voice. */
@@ -40,13 +49,18 @@ export interface MicTestVerdict {
   message: string;
 }
 
-export function evaluateMicTest(stats: MicTestStats): MicTestVerdict {
+/**
+ * `final`: listening ended (timeout), so judge what was heard with the
+ * shorter minimum instead of waiting for more speech.
+ */
+export function evaluateMicTest(stats: MicTestStats, opts: { final?: boolean } = {}): MicTestVerdict {
+  const minSpeechMs = opts.final ? MIC_TEST_CHECK.minSpeechMsAtTimeout : MIC_TEST_CHECK.minSpeechMs;
   if (stats.speechMs <= 0 || stats.peakRms < MIC_TEST_CHECK.minPeakRms * 0.5) {
     return {
       pass: false,
       reason: "no_speech",
       message:
-        "We couldn't hear you. Check the selected microphone, then say the sample sentence clearly.",
+        "We couldn't hear you. Check your microphone, then press Retry and say the sentence.",
     };
   }
   if (stats.peakRms >= MIC_TEST_CHECK.clipPeakRms) {
@@ -57,12 +71,12 @@ export function evaluateMicTest(stats: MicTestStats): MicTestVerdict {
         "Your microphone is too loud or clipping. Move a bit farther away and retry.",
     };
   }
-  if (stats.speechMs < MIC_TEST_CHECK.minSpeechMs) {
+  if (stats.speechMs < minSpeechMs) {
     return {
       pass: false,
       reason: "too_short",
       message:
-        "That was too short. Please say the full sample sentence in a normal speaking voice.",
+        "That was too short. Press Retry and say the full sentence.",
     };
   }
   if (

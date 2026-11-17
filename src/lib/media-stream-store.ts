@@ -6,6 +6,8 @@
  * during onboarding, so downstream code knows not to re-prompt.
  */
 
+import { registerMediaTrack } from "@/lib/integrity/bus";
+
 let cameraStream: MediaStream | null = null;
 let screenStream: MediaStream | null = null;
 let cameraSkipped = false;
@@ -13,7 +15,10 @@ let screenSkipped = false;
 
 export function setStoredCameraStream(stream: MediaStream | null) {
   cameraStream = stream;
-  if (stream) cameraSkipped = false;
+  if (stream) {
+    cameraSkipped = false;
+    stream.getVideoTracks().forEach(registerMediaTrack);
+  }
 }
 
 export function getStoredCameraStream(): MediaStream | null {

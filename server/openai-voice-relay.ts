@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
+import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import {
   interviewLanguageRequirement,
   isChineseInterviewLanguage,
@@ -208,6 +209,7 @@ interface InterviewContext {
   aiTone: string;
   language: string;
   followUpDepth: string;
+  integrityProbing?: boolean;
   startQuestionIndex?: number;
   questions: Array<{
     text: string;
@@ -1811,7 +1813,9 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
       ws.on("message", h);
     });
 
-    const systemPrompt = buildSystemPrompt(ctx, currentQuestionIndex);
+    const systemPrompt =
+      buildSystemPrompt(ctx, currentQuestionIndex) +
+      buildIntegrityProbingSection(ctx.integrityProbing, isChineseInterview(ctx));
 
     ws.send(JSON.stringify({
       type: "session.update",

@@ -1,5 +1,6 @@
 "use client";
 
+import { beaconBodies, newMessageId, unsentMessages } from "@/lib/transcript/outbox";
 import { createLogger } from "@/lib/logger";
 import {
   buildRelayTargets,
@@ -30,6 +31,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import { VadFailsafe, type FailsafeReason } from "@/lib/voice/vad-failsafe";
 import { compareUserLines, normalizeForCompare } from "@/lib/transcript/dedupe";
+import { registerMediaTrack, setAiSpeaking } from "@/lib/integrity/bus";
 
 const PLAYBACK_START_LEAD_S = 0.18;
 // Short fade-in when playback (re)starts from silence, to avoid a click.
@@ -67,6 +69,8 @@ export interface InterviewContext {
   aiTone: string;
   language: string;
   followUpDepth: string;
+  /** Anti-cheat integrity checks on: interviewer adds verification follow-ups. */
+  integrityProbing?: boolean;
   startQuestionIndex?: number;
   candidateFocus?: { skills?: string[] | null; questions?: Array<{ text: string; skill?: string | null }> | null } | null;
   questions: Array<{
@@ -115,6 +119,8 @@ interface VoiceState {
 }
 
 interface TrackedMessage {
+  /** Stable id: the server ignores a line it already stored, so resends are safe. */
+  id: string;
   role: "user" | "assistant";
   content: string;
   source?: "voice" | "chat";
@@ -181,6 +187,8 @@ export function useVoice({
   );
   const isListeningRef = useRef(false);
   const trackedMessagesRef = useRef<TrackedMessage[]>([]);
+  /** Lines sent but not yet acknowledged; a tab-close beacon resends them. */
+  const inFlightRef = useRef(new Map<string, TrackedMessage>());
   const msgSeqRef = useRef(0);
   /** Serialize progress saves so earlier questions never insert after later ones. */
   const saveChainRef = useRef(Promise.resolve());
@@ -528,6 +536,7 @@ export function useVoice({
 
       // Reset tracked messages
       trackedMessagesRef.current = [];
+      inFlightRef.current.clear();
       msgSeqRef.current = 0;
       saveChainRef.current = Promise.resolve();
 
@@ -646,10 +655,11 @@ export function useVoice({
   );
 
   const trackMessage = useCallback(
-    (msg: Omit<TrackedMessage, "timestamp" | "seq">) => {
+    (msg: Omit<TrackedMessage, "timestamp" | "seq" | "id">) => {
       msgSeqRef.current += 1;
       trackedMessagesRef.current.push({
         ...msg,
+        id: newMessageId(),
         timestamp: new Date().toISOString(),
         seq: msgSeqRef.current,
       });
@@ -671,6 +681,7 @@ export function useVoice({
 
       const messages = [...trackedMessagesRef.current];
       trackedMessagesRef.current = []; // clear so next question starts fresh
+      for (const m of messages) inFlightRef.current.set(m.id, m);
 
       if (messages.length === 0 && typeof currentQuestionIndex !== "number") return;
 
@@ -682,11 +693,13 @@ export function useVoice({
             body: JSON.stringify({ sessionId, messages, currentQuestionIndex }),
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          for (const m of messages) inFlightRef.current.delete(m.id);
           log.info(
             `Progress saved: ${messages.length} msgs, Q${currentQuestionIndex + 1}`,
           );
         } catch (err) {
           // Put unsaved messages back so final complete / retry can still persist them
+          for (const m of messages) inFlightRef.current.delete(m.id);
           trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
           log.error("Failed to save progress:", err);
           reportSessionError(sessionId, {
@@ -1311,6 +1324,7 @@ export function useVoice({
         },
       });
       mediaStreamRef.current = stream;
+      stream.getAudioTracks().forEach(registerMediaTrack);
 
       const ctx = new AudioContext({ sampleRate: 16000 });
       const source = ctx.createMediaStreamSource(stream);
@@ -1431,6 +1445,7 @@ export function useVoice({
 
         const now = performance.now();
         const aiSpeaking = now < micHoldUntilRef.current;
+        setAiSpeaking(aiSpeaking);
         lastMicRmsRef.current = rms;
         if (rms > micPeakSinceCheckRef.current) micPeakSinceCheckRef.current = rms;
 
@@ -1645,8 +1660,10 @@ export function useVoice({
       chatBufferRef.current = "";
     }
 
-    const messages = [...trackedMessagesRef.current];
+    // Include lines a progress save is still sending (ids make the resend safe).
+    const messages = unsentMessages(inFlightRef.current.values(), trackedMessagesRef.current);
     trackedMessagesRef.current = [];
+    for (const m of messages) inFlightRef.current.set(m.id, m);
     if (!sessionId) return false;
     if (completedOnServerRef.current && messages.length === 0) return true;
 
@@ -1674,6 +1691,7 @@ export function useVoice({
           throw new Error(`HTTP ${res.status}${body.error ? `: ${body.error}` : ""}`);
         }
         completedOnServerRef.current = true;
+        for (const m of messages) inFlightRef.current.delete(m.id);
         return true;
       } catch (err) {
         lastErr = err;
@@ -1684,6 +1702,7 @@ export function useVoice({
     }
 
     // Last resort: the status-only safety net (also via beacon if fetch is dead).
+    for (const m of messages) inFlightRef.current.delete(m.id);
     trackedMessagesRef.current = [...messages, ...trackedMessagesRef.current];
     log.error("Failed to save voice data:", lastErr);
     reportSessionError(sessionId, {
@@ -1731,11 +1750,29 @@ export function useVoice({
         trackMessage({ role: "assistant", content: pendingChatText });
         chatBufferRef.current = "";
       }
-      const messages = [...trackedMessagesRef.current];
+      // Everything not yet acknowledged, including lines a save is still sending.
+      const messages = unsentMessages(inFlightRef.current.values(), trackedMessagesRef.current);
       if (!complete && messages.length === 0) return true;
-      const blob = new Blob([JSON.stringify({ sessionId, messages, complete })], { type: "application/json" });
-      const sent = navigator.sendBeacon("/api/voice/save", blob);
-      if (sent) trackedMessagesRef.current = [];
+      let sent = true;
+      for (const body of beaconBodies(sessionId, messages, complete)) {
+        const blob = new Blob([body], { type: "application/json" });
+        let ok = navigator.sendBeacon("/api/voice/save", blob);
+        if (!ok) {
+          // Beacon queue full: keepalive fetch survives the tab closing too.
+          try {
+            void fetch("/api/voice/save", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => undefined);
+            ok = true;
+          } catch {
+            ok = false;
+          }
+        }
+        sent = sent && ok;
+      }
+      if (sent) {
+        // Keep them as in-flight: a later save/beacon may resend (safe), never drop.
+        for (const m of trackedMessagesRef.current) inFlightRef.current.set(m.id, m);
+        trackedMessagesRef.current = [];
+      }
       return sent;
     },
     [sessionId, trackMessage],

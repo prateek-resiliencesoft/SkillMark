@@ -17,6 +17,7 @@ const ORG_B = "00000000-0000-4000-8000-00000000000b";
 const S1 = "11111111-1111-4111-8111-111111111111";
 const S2 = "22222222-2222-4222-8222-222222222222";
 const S3 = "33333333-3333-4333-8333-333333333333";
+const S5 = "55555555-5555-4555-8555-555555555555";
 const NOW = Date.parse("2026-11-16T12:00:00Z");
 
 function world() {
@@ -25,6 +26,7 @@ function world() {
       { id: S1, status: "COMPLETED", interviewId: "iv-a", startedAt: "2026-11-16T10:00:00Z" },
       { id: S2, status: "IN_PROGRESS", interviewId: "iv-a", startedAt: "2026-11-16T11:00:00Z" },
       { id: S3, status: "ABANDONED", interviewId: "iv-b", startedAt: "2026-10-01T10:00:00Z" },
+      { id: S5, status: "DISQUALIFIED", interviewId: "iv-a", startedAt: "2026-11-16T11:00:00Z" },
     ],
     candidates: [
       { id: "c1", sessionId: S1, inviteToken: "tok-1", name: "Asha", email: "asha@example.com" },
@@ -77,14 +79,22 @@ test("submit: stores org, candidate, interview; one per session", async () => {
   assert.deepEqual(await feedbackStatus(db, S1, undefined, NOW), { available: true, submitted: true });
 });
 
-test("submit: refuses live sessions, wrong token, unknown and old sessions", async () => {
+test("submit: refuses disqualified sessions, wrong token, unknown and old sessions", async () => {
   const { db } = world();
   const code = (p: Promise<unknown>) => p.then(() => "ok", (e: any) => e.code);
-  assert.equal(await code(submitFeedback(db, input({ sessionId: S2 }), { nowMs: NOW })), "NOT_ENDED");
+  assert.equal(await code(submitFeedback(db, input({ sessionId: S5 }), { nowMs: NOW })), "NOT_ENDED");
   assert.equal(await code(submitFeedback(db, input({ inviteToken: "someone-else" }), { nowMs: NOW })), "FORBIDDEN");
   assert.equal(await code(submitFeedback(db, input({ sessionId: "44444444-4444-4444-8444-444444444444" }), { nowMs: NOW })), "NOT_FOUND");
   assert.equal(await code(submitFeedback(db, input({ sessionId: S3 }), { nowMs: NOW })), "TOO_LATE");
-  assert.deepEqual(await feedbackStatus(db, S2, undefined, NOW), { available: false, submitted: false });
+  assert.deepEqual(await feedbackStatus(db, S5, undefined, NOW), { available: false, submitted: false });
+});
+
+test("submit: accepted while the final save is still landing (IN_PROGRESS)", async () => {
+  const { db, tables } = world();
+  assert.deepEqual(await feedbackStatus(db, S2, undefined, NOW), { available: true, submitted: false });
+  await submitFeedback(db, input({ sessionId: S2, rating: 5 }), { nowMs: NOW });
+  assert.equal(tables.candidate_feedback.length, 1);
+  assert.equal(tables.candidate_feedback[0].sessionId, S2);
 });
 
 test("missing table: form hidden, submit says unavailable, admin list empty", async () => {
