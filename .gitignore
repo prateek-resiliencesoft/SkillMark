@@ -55,3 +55,6 @@ public/mediapipe/
 
 # Generated Silero VAD / onnxruntime assets (scripts/vad-assets.sh)
 public/vad/
+
+# graphify (generated locally; do not commit — embeds machine paths)
+graphify-out/

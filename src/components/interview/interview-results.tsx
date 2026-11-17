@@ -78,6 +78,20 @@ interface ResearchFinding {
   dataPoints?: string[];
 }
 
+interface CodeEvaluation {
+  snippetId?: string;
+  snippetLabel?: string;
+  language?: string;
+  question?: string;
+  candidateAnswer?: string;
+  expectedApproach?: string;
+  referenceCode?: string;
+  whatWentWrong?: string[];
+  levelNotes?: string;
+  score?: number;
+  evaluation?: string;
+}
+
 function MediaReviewActions({
   sessionId,
   status,
@@ -550,6 +564,7 @@ function SessionDetail({
         }[];
         questionEvaluations?: QuestionEvaluation[];
         researchFindings?: ResearchFinding[];
+        codeEvaluations?: CodeEvaluation[];
         captureFailure?: { reason: string; recordingAvailable?: boolean } | null;
         transcriptSource?: string;
         toneAnalysis?: {
@@ -577,6 +592,9 @@ function SessionDetail({
   const researchFindings: ResearchFinding[] = Array.isArray(insightsData)
     ? []
     : (insightsData?.researchFindings ?? []);
+  const codeEvaluations: CodeEvaluation[] = Array.isArray(insightsData)
+    ? []
+    : (insightsData?.codeEvaluations ?? []);
   const toneAnalysis = Array.isArray(insightsData)
     ? null
     : (insightsData?.toneAnalysis ?? null);
@@ -599,6 +617,22 @@ function SessionDetail({
     detail?: string;
     imageUrl?: string;
     imagePath?: string;
+    screenImageUrl?: string;
+    screenImagePath?: string;
+    displayInfo?: {
+      count: number;
+      capturedSharedOnly?: boolean;
+      screens?: { label?: string; width: number; height: number; isPrimary?: boolean }[];
+    };
+    evidence?: {
+      type: string;
+      when: string;
+      whatDetected: string;
+      strikeNumber: number;
+      displaysSummary: string;
+      evidenceAttached: string;
+    };
+    narrative?: string;
   }[];
   const strikeEvents = antiCheatingLog;
 
@@ -1078,38 +1112,92 @@ function SessionDetail({
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                     {strikeEvents.map((v, i) => {
                       const label = STRIKE_LABEL[v.type] ?? v.type;
-                      const reason = v.detail || label;
+                      const reason = v.evidence?.whatDetected || v.detail || label;
+                      const ev = v.evidence;
                       return (
                         <div key={`${v.timestamp}-${i}`} className="overflow-hidden rounded-md border">
-                          {v.imageUrl ? (
-                            <button
-                              type="button"
-                              className="block w-full"
-                              onClick={() => setLightboxImg({ src: v.imageUrl!, alt: reason })}
-                            >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img
-                                src={v.imageUrl}
-                                alt={`Strike ${i + 1}: ${reason}`}
-                                className="aspect-video w-full object-cover"
-                              />
-                            </button>
-                          ) : (
-                            <div className="flex aspect-video items-center justify-center bg-muted px-3 text-center text-xs text-muted-foreground">
-                              No snapshot captured
+                          <div className="grid grid-cols-2 gap-px bg-border">
+                            <div className="bg-background">
+                              {v.imageUrl ? (
+                                <button
+                                  type="button"
+                                  className="block w-full"
+                                  onClick={() =>
+                                    setLightboxImg({ src: v.imageUrl!, alt: `Webcam · ${reason}` })
+                                  }
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={v.imageUrl}
+                                    alt={`Strike ${i + 1} webcam: ${reason}`}
+                                    className="aspect-video w-full object-contain bg-muted"
+                                  />
+                                </button>
+                              ) : (
+                                <div className="flex aspect-video items-center justify-center bg-muted px-2 text-center text-xs text-muted-foreground">
+                                  No webcam
+                                </div>
+                              )}
+                              <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Webcam
+                              </p>
                             </div>
-                          )}
-                          <div className="space-y-0.5 px-2 py-1.5 text-xs">
+                            <div className="bg-background">
+                              {v.screenImageUrl ? (
+                                <button
+                                  type="button"
+                                  className="block w-full"
+                                  onClick={() =>
+                                    setLightboxImg({
+                                      src: v.screenImageUrl!,
+                                      alt: `Screen · ${reason}`,
+                                    })
+                                  }
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={v.screenImageUrl}
+                                    alt={`Strike ${i + 1} screen: ${reason}`}
+                                    className="aspect-video w-full object-contain bg-muted"
+                                  />
+                                </button>
+                              ) : (
+                                <div className="flex aspect-video items-center justify-center bg-muted px-2 text-center text-xs text-muted-foreground">
+                                  No screen share
+                                </div>
+                              )}
+                              <p className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Shared screen
+                              </p>
+                            </div>
+                          </div>
+                          <div className="space-y-2 px-3 py-2 text-xs">
                             <p className="font-medium text-foreground">
-                              Strike {i + 1}: {label}
+                              Strike {ev?.strikeNumber ?? i + 1}: {label}
                             </p>
-                            <p className="text-muted-foreground">
-                              {new Date(v.timestamp).toLocaleString()}
-                              {v.detail && v.detail !== label ? ` · ${v.detail}` : ""}
-                            </p>
+                            <dl className="grid gap-1 text-muted-foreground sm:grid-cols-[7rem_1fr]">
+                              <dt className="font-medium text-foreground/80">When</dt>
+                              <dd>{ev?.when ?? new Date(v.timestamp).toLocaleString()}</dd>
+                              <dt className="font-medium text-foreground/80">What detected</dt>
+                              <dd>{reason}</dd>
+                              <dt className="font-medium text-foreground/80">Displays</dt>
+                              <dd>
+                                {ev?.displaysSummary ??
+                                  (v.displayInfo
+                                    ? `${v.displayInfo.count} display(s)`
+                                    : "Unknown")}
+                              </dd>
+                              <dt className="font-medium text-foreground/80">Evidence</dt>
+                              <dd>{ev?.evidenceAttached ?? "—"}</dd>
+                            </dl>
+                            {v.narrative && (
+                              <p className="border-t pt-2 text-muted-foreground leading-relaxed">
+                                {v.narrative}
+                              </p>
+                            )}
                           </div>
                         </div>
                       );
@@ -1126,6 +1214,40 @@ function SessionDetail({
                 (m: any) => (m.contentType as string) === "CODE",
               );
               if (!codeMsgs || codeMsgs.length === 0) return null;
+
+              // Match by stable snippet id first, then label. Never by array index —
+              // summary generation drops empty snippets, so index alignment can attach
+              // an evaluation to the wrong code message.
+              const usedEval = new Set<number>();
+              const matchEval = (
+                snippetId: string | undefined,
+                label: string,
+              ): CodeEvaluation | undefined => {
+                if (snippetId) {
+                  const byId = codeEvaluations.findIndex(
+                    (e, i) =>
+                      !usedEval.has(i) &&
+                      e.snippetId &&
+                      e.snippetId.trim() === snippetId.trim(),
+                  );
+                  if (byId >= 0) {
+                    usedEval.add(byId);
+                    return codeEvaluations[byId];
+                  }
+                }
+                const byLabel = codeEvaluations.findIndex(
+                  (e, i) =>
+                    !usedEval.has(i) &&
+                    e.snippetLabel &&
+                    e.snippetLabel.trim().toLowerCase() === label.trim().toLowerCase(),
+                );
+                if (byLabel >= 0) {
+                  usedEval.add(byLabel);
+                  return codeEvaluations[byLabel];
+                }
+                return undefined;
+              };
+
               return (
                 <Card>
                   <CardHeader>
@@ -1137,8 +1259,13 @@ function SessionDetail({
                         {codeMsgs.length === 1 ? "snippet" : "snippets"}
                       </Badge>
                     </CardTitle>
+                    {codeEvaluations.length === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Regenerate the report to attach question, expected approach, and level-calibrated review for each snippet.
+                      </p>
+                    )}
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="space-y-6">
                     {codeMsgs.map((msg: any) => {
                       const data = msg.whiteboardData as Record<
                         string,
@@ -1148,40 +1275,120 @@ function SessionDetail({
                       const code = (data?.code as string) ?? "";
                       const language =
                         (data?.language as string) ?? "plaintext";
+                      const snippetId =
+                        typeof msg.content === "string" && msg.content.trim()
+                          ? msg.content.trim()
+                          : undefined;
+                      const ev = matchEval(snippetId, label);
                       return (
                         <div
                           key={msg.id}
-                          className="overflow-hidden rounded-lg border bg-zinc-950"
+                          className="overflow-hidden rounded-lg border"
                         >
-                          <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-3 py-1.5">
-                            <span className="text-xs font-medium text-zinc-200">
-                              {label}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <Badge
-                                variant="outline"
-                                className="border-zinc-700 text-[10px] font-normal text-zinc-400"
-                              >
-                                {getCodeLanguage(language)
-                                  ? `${getCodeLanguage(language)!.label} ${getCodeLanguage(language)!.version}`
-                                  : language}
-                              </Badge>
-                              <span className="text-[10px] text-zinc-500">
-                                {new Date(msg.timestamp).toLocaleTimeString(
-                                  undefined,
-                                  {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  },
-                                )}
-                              </span>
+                          <div className="space-y-3 border-b bg-muted/30 px-4 py-3 text-sm">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{label}</span>
+                              {typeof ev?.score === "number" && (
+                                <Badge variant="secondary">Score {ev.score}/10</Badge>
+                              )}
+                              {ev?.levelNotes && (
+                                <span className="text-xs text-muted-foreground">{ev.levelNotes}</span>
+                              )}
                             </div>
+                            {ev?.question && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Question asked
+                                </p>
+                                <p className="text-sm">{ev.question}</p>
+                              </div>
+                            )}
+                            {ev?.candidateAnswer && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  What they answered
+                                </p>
+                                <p className="text-sm text-muted-foreground italic">
+                                  “{ev.candidateAnswer}”
+                                </p>
+                              </div>
+                            )}
+                            {ev?.expectedApproach && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  Expected approach (for their level)
+                                </p>
+                                <p className="text-sm whitespace-pre-wrap">{ev.expectedApproach}</p>
+                              </div>
+                            )}
+                            {ev?.evaluation && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  AI review
+                                </p>
+                                <p className="text-sm whitespace-pre-wrap">{ev.evaluation}</p>
+                              </div>
+                            )}
+                            {ev?.whatWentWrong && ev.whatWentWrong.length > 0 && (
+                              <div>
+                                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  What went wrong (vs their level)
+                                </p>
+                                <ul className="list-disc space-y-1 pl-4 text-sm text-muted-foreground">
+                                  {ev.whatWentWrong.map((w, j) => (
+                                    <li key={j}>{w}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
                           </div>
-                          <CodeBlock
-                            code={code}
-                            language={language}
-                            className="text-sm"
-                          />
+
+                          <div className="bg-zinc-950">
+                            <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-3 py-1.5">
+                              <span className="text-xs font-medium text-zinc-200">
+                                Their code
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <Badge
+                                  variant="outline"
+                                  className="border-zinc-700 text-[10px] font-normal text-zinc-400"
+                                >
+                                  {getCodeLanguage(language)
+                                    ? `${getCodeLanguage(language)!.label} ${getCodeLanguage(language)!.version}`
+                                    : language}
+                                </Badge>
+                                <span className="text-[10px] text-zinc-500">
+                                  {new Date(msg.timestamp).toLocaleTimeString(
+                                    undefined,
+                                    {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    },
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                            <CodeBlock
+                              code={code}
+                              language={language}
+                              className="text-sm"
+                            />
+                          </div>
+
+                          {ev?.referenceCode?.trim() && (
+                            <div className="border-t bg-zinc-950">
+                              <div className="border-b border-zinc-800 bg-zinc-900 px-3 py-1.5">
+                                <span className="text-xs font-medium text-zinc-200">
+                                  Reference solution (level-appropriate)
+                                </span>
+                              </div>
+                              <CodeBlock
+                                code={ev.referenceCode}
+                                language={ev.language || language}
+                                className="text-sm"
+                              />
+                            </div>
+                          )}
                         </div>
                       );
                     })}

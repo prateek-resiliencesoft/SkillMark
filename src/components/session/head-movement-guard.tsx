@@ -8,7 +8,7 @@ import {
   type HeadFrameState,
 } from "@/lib/head-movement";
 import { detectionsSuppressed, markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
-import { uploadStrikeSnapshot } from "@/lib/capture-camera-snapshot";
+import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -50,25 +50,30 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
         if (done.current) return;
         const timestamp = Date.now();
         localCount.current += 1;
-        let imageUrl: string | undefined;
-        let imagePath: string | undefined;
+        let count = localCount.current;
+        let evidencePayload: Awaited<ReturnType<typeof captureStrikeEvidence>> = {
+          detail: HEAD_STATE_LABEL[kind],
+        };
         try {
-          const blob = await captureRef.current();
-          if (blob) {
-            const uploaded = await uploadStrikeSnapshot(sessionId, blob, "head-movement");
-            imageUrl = uploaded.imageUrl;
-            imagePath = uploaded.imagePath;
-          }
+          const webcamBlob = await captureRef.current();
+          evidencePayload = await captureStrikeEvidence({
+            sessionId,
+            type: "head_movement",
+            detail: HEAD_STATE_LABEL[kind],
+            timestamp,
+            strikeNumber: count,
+            webcamBlob,
+            prefix: "head-movement",
+          });
         } catch (err) {
           console.warn("[head-movement] snapshot upload failed", err);
         }
 
-        let count = localCount.current;
         let disqualified = count >= MAX_STRIKES;
         try {
           const res = await reportRef.current.mutateAsync({
             sessionId,
-            violation: { type: "head_movement", timestamp, detail: HEAD_STATE_LABEL[kind], imageUrl, imagePath },
+            violation: { type: "head_movement", timestamp, ...evidencePayload },
           });
           const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;
           if (typeof strikes === "number") {

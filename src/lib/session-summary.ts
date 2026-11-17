@@ -5,8 +5,16 @@
  */
 import { svgDataUrlToPng } from "@/lib/ai/convert-svg";
 import { extractJson } from "@/lib/ai/extract-json";
-import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
+import {
+  buildSummaryPrompt,
+  type CandidateJudgingContext,
+} from "@/lib/ai/prompts/summary";
 import { resolveTaskModels } from "@/lib/ai/registry";
+import {
+  experienceBucket,
+  profileToResumeText,
+  type CandidateProfile,
+} from "@/lib/documents/cv-profile";
 import { createLogger } from "@/lib/logger";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -15,6 +23,48 @@ import { assessCandidateCapture, buildCaptureFailure } from "@/lib/transcript/ca
 const log = createLogger("session-summary");
 
 export type SummaryOutcome = "scored" | "capture_failure" | "no_messages";
+
+/** Load workExperience / skills / resume for experience-calibrated code review. */
+export async function loadCandidateJudgingContext(
+  sessionId: string,
+): Promise<CandidateJudgingContext | null> {
+  const { data: session } = await supabaseAdmin
+    .from("sessions")
+    .select("candidateId")
+    .eq("id", sessionId)
+    .maybeSingle();
+  const candidateId = (session as { candidateId?: string | null } | null)?.candidateId;
+  if (!candidateId) return null;
+
+  const { data: c } = await supabaseAdmin
+    .from("candidates")
+    .select("workExperience, notes, skills, education, profile")
+    .eq("id", candidateId)
+    .maybeSingle();
+  if (!c) return null;
+
+  const profile = (c.profile ?? null) as
+    | (Partial<CandidateProfile> & { resumeMarkdown?: string })
+    | null;
+  let resumeText = profile?.resumeMarkdown?.trim() || null;
+  if (!resumeText && profile && (profile.name || profile.techStack?.length || profile.experience?.length)) {
+    try {
+      resumeText = profileToResumeText(profile as CandidateProfile);
+    } catch {
+      /* ignore malformed profile */
+    }
+  }
+
+  const years = profile?.totalExperienceYears ?? null;
+  return {
+    workExperience: c.workExperience ?? (years != null ? experienceBucket(years) : null),
+    notes: c.notes,
+    skills: Array.isArray(c.skills) ? c.skills : [],
+    education: c.education,
+    resumeText,
+    experienceYears: years,
+  };
+}
 
 /**
  * When interviewer lines exist but the candidate's answers are missing, store
@@ -130,6 +180,7 @@ export async function generateSessionSummary(
       .map((m) => {
         const data = m.whiteboardData as Record<string, unknown>;
         return {
+          id: typeof m.content === "string" && m.content.trim() ? m.content.trim() : undefined,
           label: (data.label as string) || "Untitled Snippet",
           code: (data.code as string) || "",
           language: (data.language as string) || "plaintext",
@@ -160,6 +211,7 @@ export async function generateSessionSummary(
     const drawingsInput =
       whiteboardDrawings.length > 0 ? whiteboardDrawings : null;
     const codeInput = codeSnippetsInput.length > 0 ? codeSnippetsInput : null;
+    const candidateContext = await loadCandidateJudgingContext(sessionId);
 
     const promptMessages = buildSummaryPrompt(
       interviewTitle,
@@ -170,6 +222,7 @@ export async function generateSessionSummary(
       language,
       drawingsInput,
       codeInput,
+      candidateContext,
     );
 
     let response;
@@ -201,6 +254,7 @@ export async function generateSessionSummary(
           language,
           textOnlyDrawings,
           codeInput,
+          candidateContext,
         );
         response = await provider.generateResponse({
           messages: fallbackMessages,
@@ -241,6 +295,9 @@ export async function generateSessionSummary(
     }
     if (parsed.toneAnalysis) {
       insightsData.toneAnalysis = parsed.toneAnalysis;
+    }
+    if (parsed.codeEvaluations) {
+      insightsData.codeEvaluations = parsed.codeEvaluations;
     }
 
     await supabaseAdmin

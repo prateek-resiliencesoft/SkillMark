@@ -16,6 +16,7 @@ import {
 import { normalizeSkills, tailorCandidates } from "../candidate-tailoring";
 import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
+import { feedbackForSession } from "../candidate-feedback";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
 export type { InviteDeliveryResult };
@@ -154,6 +155,21 @@ export const candidateRouter = router({
    * Signed CV / resume for a candidate — form application file, batch-uploaded
    * cvPath, or parsed resumeMarkdown when no binary exists.
    */
+  /** The candidate's thank-you-screen feedback, for people with access to the interview. */
+  feedback: protectedProcedure
+    .input(z.object({ candidateId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("id, interviewId, sessionId")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+      const { organizationId } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      if (!c.sessionId || !organizationId) return null;
+      return feedbackForSession(ctx.supabase, c.sessionId as string, organizationId as string);
+    }),
+
   resumeAccess: protectedProcedure
     .input(z.object({ candidateId: z.string() }))
     .query(async ({ ctx, input }) => {
