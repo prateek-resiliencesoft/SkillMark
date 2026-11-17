@@ -65,6 +65,10 @@ export function LandingEditor() {
   /** Bumps on every local edit; only the matching revision may clear dirty after save. */
   const revisionRef = useRef(0);
   const savedRevisionRef = useRef(0);
+  /** Serialize saves so an older in-flight write can never overwrite a newer one. */
+  const saveInFlightRef = useRef(false);
+  const saveQueuedRef = useRef(false);
+  const latestDocRef = useRef<SiteDocument | null>(null);
   const [pageId, setPageId] = useState("home");
   const [sectionId, setSectionId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("simple");
@@ -83,8 +87,13 @@ export function LandingEditor() {
   const previewToken = trpc.landing.createPreviewToken.useMutation();
   const versions = trpc.landing.listVersions.useQuery(undefined, { enabled: tab === "versions" });
   const rebuild = trpc.landing.rebuildStatus.useQuery(undefined, {
-    refetchInterval: (data) =>
-      ["queued", "in_progress", "requested"].includes(data?.status ?? "") ? 5000 : false,
+    // Keep polling while a rebuild is scheduled (debounce) or already running.
+    refetchInterval: (data) => {
+      const status = data?.status ?? "";
+      if (["scheduled", "queued", "in_progress", "requested"].includes(status)) return 5000;
+      if (data?.rebuildAfter) return 5000;
+      return false;
+    },
   });
 
   useEffect(() => {
@@ -105,42 +114,67 @@ export function LandingEditor() {
       if (!prev) return prev;
       revisionRef.current += 1;
       setDirty(true);
-      return updater(deepClone(prev));
+      const next = updater(deepClone(prev));
+      latestDocRef.current = next;
+      return next;
     });
   }, []);
 
-  // Autosave — only clear dirty when the response matches the revision that was sent.
+  // Keep latestDocRef in sync when draft is loaded / restored / discarded.
+  useEffect(() => {
+    latestDocRef.current = doc;
+  }, [doc]);
+
+  const runSave = useCallback(async () => {
+    const snapshot = latestDocRef.current;
+    if (!snapshot) return;
+    if (saveInFlightRef.current) {
+      saveQueuedRef.current = true;
+      return;
+    }
+    saveInFlightRef.current = true;
+    const revisionAtSend = revisionRef.current;
+    setSaving(true);
+    let ok = false;
+    try {
+      await saveMut.mutateAsync({ content: snapshot });
+      ok = true;
+      savedRevisionRef.current = revisionAtSend;
+      if (revisionRef.current === revisionAtSend) setDirty(false);
+      utils.landing.getDraft.invalidate();
+    } catch (err) {
+      toast({
+        title: "Could not save draft",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      saveInFlightRef.current = false;
+      setSaving(false);
+      // Chain only when a newer edit arrived during this save (or we were queued).
+      // Do not spin forever after a failure.
+      const newer = revisionRef.current > revisionAtSend;
+      if (ok && (saveQueuedRef.current || newer)) {
+        saveQueuedRef.current = false;
+        void runSave();
+      } else if (!ok && saveQueuedRef.current) {
+        // Leave dirty=true; next edit/debounce will retry. Clear the queue flag.
+        saveQueuedRef.current = false;
+      }
+    }
+  }, [saveMut, toast, utils.landing.getDraft]);
+
+  // Debounced autosave — never overlaps; older writes cannot finish after newer ones.
   useEffect(() => {
     if (!doc || !dirty) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    const revisionAtSchedule = revisionRef.current;
-    const snapshot = doc;
     saveTimer.current = setTimeout(() => {
-      // Another edit landed while we waited — let the next effect run handle it.
-      if (revisionRef.current !== revisionAtSchedule) return;
-      setSaving(true);
-      const revisionAtSend = revisionRef.current;
-      saveMut.mutate(
-        { content: snapshot },
-        {
-          onSuccess: () => {
-            savedRevisionRef.current = revisionAtSend;
-            // Only clear dirty if nothing newer has been typed since this request left.
-            if (revisionRef.current === revisionAtSend) setDirty(false);
-            setSaving(false);
-            utils.landing.getDraft.invalidate();
-          },
-          onError: (err) => {
-            setSaving(false);
-            toast({ title: "Could not save draft", description: err.message, variant: "destructive" });
-          },
-        },
-      );
+      void runSave();
     }, 900);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [doc, dirty]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [doc, dirty, runSave]);
 
   // Push draft to iframe
   useEffect(() => {

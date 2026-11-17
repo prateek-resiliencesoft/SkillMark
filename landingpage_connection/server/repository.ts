@@ -315,6 +315,31 @@ export async function setRebuildState(
   return mapRebuild(data as Record<string, unknown>)
 }
 
+/**
+ * Atomically claim a due rebuild. Returns the claimed row, or null if nothing
+ * is due / another caller already claimed it (conditional update).
+ */
+export async function claimDueRebuild(db: Db): Promise<RebuildState | null> {
+  const now = new Date().toISOString()
+  const { data, error } = await db
+    .from('landing_rebuild')
+    .update({
+      rebuildAfter: null,
+      status: 'requested',
+      detail: 'Dispatching due rebuild…',
+      updatedAt: now,
+    })
+    .eq('id', 1)
+    .not('rebuildAfter', 'is', null)
+    .lte('rebuildAfter', now)
+    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+  return mapRebuild(data as Record<string, unknown>)
+}
+
 /** True if draft or latest published document references this media id/URL. */
 export async function mediaIsReferenced(db: Db, mediaId: string): Promise<boolean> {
   const needle = `/api/public/landing/media/${mediaId}`

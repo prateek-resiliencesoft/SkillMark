@@ -1,10 +1,16 @@
 /**
  * Trigger the landing-site GitHub Actions deploy workflow after publish.
  * Debounce is durable: we store rebuildAfter in the DB so serverless / multi-
- * instance deployments still fire exactly once when due.
+ * instance deployments still fire exactly once when due. Claiming uses a
+ * conditional update so concurrent pollers cannot double-dispatch.
  */
 import type { Context } from '@/server/context'
-import { getRebuildState, setRebuildState, type RebuildState } from './repository'
+import {
+  claimDueRebuild,
+  getRebuildState,
+  setRebuildState,
+  type RebuildState,
+} from './repository'
 
 const DEBOUNCE_MS = 30_000
 
@@ -107,35 +113,32 @@ async function runDispatch(db: Context['supabase']) {
 
 /**
  * Schedule a rebuild by writing rebuildAfter = now + debounce.
- * Any instance that later polls (rebuildStatus / publish) will dispatch when due.
+ * Also arms an opportunistic in-process timer (best-effort) so a live Node
+ * process dispatches even if nobody polls. Durable claim remains the lock.
  */
 export async function scheduleRebuild(db: Context['supabase']): Promise<RebuildState> {
   const after = new Date(Date.now() + DEBOUNCE_MS).toISOString()
-  return setRebuildState(db, {
+  const state = await setRebuildState(db, {
     status: 'scheduled',
     detail: `Rebuild scheduled for ${after}`,
     rebuildAfter: after,
   })
+  // Best-effort wake; atomic claim prevents double-dispatch.
+  setTimeout(() => {
+    void maybeDispatchDueRebuild(db)
+  }, DEBOUNCE_MS + 100)
+  return state
 }
 
-/** If a scheduled rebuild is due, dispatch it. Safe to call on every status poll. */
+/** If a scheduled rebuild is due, claim it atomically and dispatch. */
 export async function maybeDispatchDueRebuild(db: Context['supabase']): Promise<RebuildState> {
-  const state = await getRebuildState(db)
-  if (!state.rebuildAfter) return state
-  if (Date.parse(state.rebuildAfter) > Date.now()) return state
-  // Claim the slot so concurrent pollers don't double-dispatch.
-  await setRebuildState(db, {
-    ...state,
-    rebuildAfter: null,
-    status: 'requested',
-    detail: 'Dispatching due rebuild…',
-  })
+  const claimed = await claimDueRebuild(db)
+  if (!claimed) return getRebuildState(db)
   await runDispatch(db)
   return getRebuildState(db)
 }
 
 export async function pollRebuildStatus(db: Context['supabase']): Promise<RebuildState> {
-  // Fire any due durable rebuild first.
   let state = await maybeDispatchDueRebuild(db)
 
   const cfg = readRebuildConfig()

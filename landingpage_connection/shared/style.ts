@@ -48,21 +48,68 @@ export type Style = {
 }
 
 /**
+ * Remove comments and string/url() contents so brace counting matches what CSS
+ * actually parses (braces inside comments/strings don't close rules).
+ */
+export function stripCssNoise(css: string): string {
+  let out = ''
+  let i = 0
+  while (i < css.length) {
+    // Block comment
+    if (css[i] === '/' && css[i + 1] === '*') {
+      i += 2
+      while (i < css.length && !(css[i] === '*' && css[i + 1] === '/')) i++
+      i += 2
+      continue
+    }
+    // Double-quoted string
+    if (css[i] === '"') {
+      i++
+      while (i < css.length) {
+        if (css[i] === '\\') { i += 2; continue }
+        if (css[i] === '"') { i++; break }
+        i++
+      }
+      out += '""'
+      continue
+    }
+    // Single-quoted string
+    if (css[i] === "'") {
+      i++
+      while (i < css.length) {
+        if (css[i] === '\\') { i += 2; continue }
+        if (css[i] === "'") { i++; break }
+        i++
+      }
+      out += "''"
+      continue
+    }
+    out += css[i]
+    i++
+  }
+  return out
+}
+
+/**
  * Wrap admin CSS so it only reaches one element.
- * Strips angle brackets (can't close a <style> tag) and rejects brace-unbalanced
- * input so a `}` can't terminate the wrapper and inject global rules.
+ * Strips angle brackets, ignores braces in comments/strings, and rejects
+ * unbalanced braces so a `}` can't terminate the wrapper and inject globals.
  */
 export function scopeCss(selector: string, css: string | undefined): string {
-  const body = (css ?? '').replace(/</g, '').trim()
-  if (!body) return ''
+  const raw = (css ?? '').replace(/</g, '').trim()
+  if (!raw) return ''
+  // Block at-rules that could pull in external content or escape context.
+  if (/@(?:import|charset|namespace)\b/i.test(raw)) return ''
+
+  const body = stripCssNoise(raw)
   let depth = 0
   for (const ch of body) {
     if (ch === '{') depth++
     else if (ch === '}') {
       depth--
-      if (depth < 0) return '' // would escape the wrapper
+      if (depth < 0) return ''
     }
   }
-  if (depth !== 0) return '' // unclosed blocks — refuse rather than guess
-  return `${selector}{${body}}`
+  if (depth !== 0) return ''
+  return `${selector}{${raw}}`
 }
