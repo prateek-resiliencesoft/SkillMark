@@ -439,6 +439,79 @@ type MicPhase =
   | "analyzing"
   | "confirm";
 
+const OUTPUT_SUSPENDED = "audio output suspended";
+
+/**
+ * Play a clip through an already-running AudioContext: the whole file is
+ * fetched and decoded first, then started after a short silent lead-in, so a
+ * waking speaker or Bluetooth headset can't swallow the first words.
+ */
+async function playClipWebAudio(ctx: AudioContext, src: string, cancelled: () => boolean): Promise<void> {
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${src}`);
+  const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+  if (ctx.state !== "running") {
+    await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1_000))]);
+    if ((ctx.state as AudioContextState) !== "running") throw new Error(OUTPUT_SUSPENDED);
+  }
+  if (cancelled()) return;
+  await new Promise<void>((resolve) => {
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(ctx.destination);
+    const leadIn = MIC_TEST_CHECK.playbackLeadInSec;
+    const timer = setTimeout(() => resolve(), (leadIn + buffer.duration) * 1000 + 1_500);
+    node.onended = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    node.start(ctx.currentTime + leadIn);
+  });
+}
+
+/** Fallback: <audio>, started only once it can play through, after the same lead-in. */
+function playClipElement(src: string, audioRef: { current: HTMLAudioElement | null }): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const audio = new Audio();
+    audio.preload = "auto";
+    audio.playbackRate = 1;
+    audio.defaultPlaybackRate = 1;
+    audio.volume = 1;
+    audioRef.current = audio;
+    let started = false;
+    let settled = false;
+    const finish = (err?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(loadTimer);
+      audio.oncanplaythrough = null;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.onpause = null;
+      if (err) reject(err);
+      else resolve();
+    };
+    const start = () => {
+      if (started) return;
+      started = true;
+      setTimeout(() => {
+        if (audioRef.current !== audio) return finish(); // stopped meanwhile
+        const p = audio.play();
+        if (p && typeof p.then === "function") p.catch((err) => finish(err ?? new Error("play failed")));
+      }, MIC_TEST_CHECK.playbackLeadInSec * 1000);
+    };
+    audio.oncanplaythrough = start;
+    audio.onended = () => finish();
+    audio.onpause = () => {
+      if (!audio.ended) finish(); // Stop pressed
+    };
+    audio.onerror = () => finish(new Error(`Failed to play ${src}`));
+    const loadTimer = setTimeout(start, 5_000);
+    audio.src = src;
+    audio.load();
+  });
+}
+
 function describeMicError(err: unknown): string {
   const name = (err as { name?: string })?.name;
   if (name === "NotAllowedError" || name === "SecurityError")
@@ -487,6 +560,11 @@ function MicCheck({
   const peakRef = useRef(0);
   const vadSpeakingRef = useRef(false);
   const finishedRef = useRef(false);
+  /** True only after the prompt ended: frames before that are not counted. */
+  const countingRef = useRef(false);
+  const listenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumped on every start / stop so a cancelled run never continues. */
+  const runIdRef = useRef(0);
 
   const phaseRef = useRef<MicPhase>("idle");
   phaseRef.current = phase;
@@ -498,6 +576,11 @@ function MicCheck({
   const samplePhrase = getMicTestSamplePhrase(language);
 
   const stopMicCapture = useCallback(() => {
+    countingRef.current = false;
+    if (listenTimerRef.current) {
+      clearTimeout(listenTimerRef.current);
+      listenTimerRef.current = null;
+    }
     const vad = vadRef.current;
     vadRef.current = null;
     if (vad) {
@@ -527,6 +610,7 @@ function MicCheck({
   }, []);
 
   const stopAll = useCallback(() => {
+    runIdRef.current += 1;
     stopSpeaker();
     stopMicCapture();
   }, [stopMicCapture, stopSpeaker]);
@@ -587,7 +671,176 @@ function MicCheck({
     [stopMicCapture, report],
   );
 
-  const startListening = useCallback(async () => {
+  /**
+   * Open the mic and start reading levels right away (before the prompt plays),
+   * so speech is caught the moment the prompt ends. Resolves once audio frames
+   * are flowing. Silero VAD loads in the background; energy detection covers
+   * the gap until it is ready.
+   */
+  const openMic = useCallback(async (runId: number) => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    if (runIdRef.current !== runId) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    micStreamRef.current = stream;
+
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    micCtxRef.current = ctx;
+    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+
+    void startInterviewVad({
+      getStream: async () => micStreamRef.current ?? stream,
+      onSpeechStart: () => {
+        vadSpeakingRef.current = true;
+      },
+      onSpeechEnd: () => {
+        vadSpeakingRef.current = false;
+      },
+      // Follow each frame's probability so a misfire (e.g. the prompt's echo)
+      // can't leave "speaking" stuck on.
+      onSpeechProb: (p) => {
+        vadSpeakingRef.current = p >= 0.5;
+      },
+    }).then((vad) => {
+      if (!vad) return;
+      if (runIdRef.current === runId && micStreamRef.current === stream) vadRef.current = vad;
+      else {
+        void vad.pause().catch(() => {});
+        void vad.destroy().catch(() => {});
+      }
+    });
+
+    // 1024-sample frames (64 ms) so the level bar and the speech count react fast.
+    const workletCode = `
+      class MicProcessor extends AudioWorkletProcessor {
+        constructor() { super(); this._buf = new Float32Array(1024); this._pos = 0; }
+        process(inputs) {
+          const ch = inputs[0]?.[0];
+          if (!ch) return true;
+          for (let i = 0; i < ch.length; i++) {
+            this._buf[this._pos++] = ch[i];
+            if (this._pos >= 1024) {
+              this.port.postMessage(this._buf);
+              this._buf = new Float32Array(1024);
+              this._pos = 0;
+            }
+          }
+          return true;
+        }
+      }
+      registerProcessor('mic-processor', MicProcessor);
+    `;
+    const source = ctx.createMediaStreamSource(stream);
+    let firstFrame: () => void = () => {};
+    const flowing = new Promise<void>((resolve) => {
+      firstFrame = resolve;
+    });
+    const onChunk = (input: Float32Array) => {
+      firstFrame();
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < input.length; i++) {
+        const v = input[i];
+        sum += v * v;
+        const a = Math.abs(v);
+        if (a > peak) peak = a;
+      }
+      const rms = Math.sqrt(sum / input.length);
+      setLevel(Math.min(1, rms * 8));
+      // Only count after the prompt has finished (never the prompt's echo).
+      if (!countingRef.current || finishedRef.current) return;
+      if (rms > peakRef.current) peakRef.current = rms;
+
+      // Keep a short recording for optional playback (max ~5s).
+      if (recordSamplesRef.current < 16_000 * 5) {
+        recordChunksRef.current.push(new Float32Array(input));
+        recordSamplesRef.current += input.length;
+      }
+
+      const frameMs = (input.length / ctx.sampleRate) * 1000;
+      const isSpeech = vadSpeakingRef.current || rms >= MIC_TEST_CHECK.minSpeechRms;
+      if (isSpeech) {
+        speechMsRef.current += frameMs;
+        speechRmsSumRef.current += rms;
+        speechFramesRef.current += 1;
+      } else {
+        noiseRmsSumRef.current += rms;
+        noiseFramesRef.current += 1;
+      }
+      if (speechMsRef.current >= MIC_TEST_CHECK.minSpeechMs) finishListeningRef.current(false);
+    };
+    // AudioWorklet from an inline Blob URL; if the browser can't load it, use
+    // a ScriptProcessor so the mic test still works.
+    try {
+      if (!ctx.audioWorklet) throw new Error("AudioWorklet not supported");
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
+      try {
+        await ctx.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+      const worklet = new AudioWorkletNode(ctx, "mic-processor");
+      source.connect(worklet);
+      // Do not connect to destination (avoids feedback / echo into speakers).
+      worklet.port.onmessage = (e) => onChunk(e.data as Float32Array);
+    } catch {
+      const sp = ctx.createScriptProcessor(1024, 1, 1);
+      source.connect(sp);
+      // Chrome needs the node connected to run; output is silent (zeros).
+      sp.connect(ctx.destination);
+      sp.onaudioprocess = (ev) => {
+        ev.outputBuffer.getChannelData(0).fill(0);
+        onChunk(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      };
+    }
+    // Mic is "ready" once frames arrive (bounded wait; some devices start slowly).
+    await Promise.race([flowing, new Promise((r) => setTimeout(r, 2_000))]);
+  }, []);
+
+  /** Decide with what was heard so far (on enough speech, or at the timeout). */
+  const finishListening = useCallback(
+    (final: boolean) => {
+      if (finishedRef.current || !countingRef.current) return;
+      finishedRef.current = true;
+      countingRef.current = false;
+      if (listenTimerRef.current) {
+        clearTimeout(listenTimerRef.current);
+        listenTimerRef.current = null;
+      }
+      const meanSpeech =
+        speechFramesRef.current > 0 ? speechRmsSumRef.current / speechFramesRef.current : 0;
+      const noiseFloor =
+        noiseFramesRef.current > 0 ? noiseRmsSumRef.current / noiseFramesRef.current : undefined;
+      const verdict = evaluateMicTest(
+        {
+          speechMs: speechMsRef.current,
+          peakRms: peakRef.current,
+          meanSpeechRms: meanSpeech,
+          noiseFloorRms: noiseFloor,
+        },
+        { final },
+      );
+      setPhase("analyzing");
+      if (verdict.pass) void passTest();
+      else failTest(verdict.message);
+    },
+    [failTest, passTest],
+  );
+  const finishListeningRef = useRef(finishListening);
+  finishListeningRef.current = finishListening;
+
+  /** Prompt finished: count speech from this moment (mic is already open). */
+  const beginListening = useCallback(() => {
     finishedRef.current = false;
     speechMsRef.current = 0;
     speechRmsSumRef.current = 0;
@@ -595,246 +848,96 @@ function MicCheck({
     noiseRmsSumRef.current = 0;
     noiseFramesRef.current = 0;
     peakRef.current = 0;
-    vadSpeakingRef.current = false;
+    vadSpeakingRef.current = false; // drop any state left from the prompt audio
     recordChunksRef.current = [];
     recordSamplesRef.current = 0;
     setFailMessage(null);
+    countingRef.current = true;
     setPhase("listening");
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      micStreamRef.current = stream;
-
-      const ctx = new AudioContext({ sampleRate: 16000 });
-      micCtxRef.current = ctx;
-      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-
-      // Never throws: worklet → retry → ScriptProcessor → null (energy-only check).
-      const vad = await startInterviewVad({
-        getStream: async () => micStreamRef.current ?? stream,
-        onSpeechStart: () => {
-          vadSpeakingRef.current = true;
-        },
-        onSpeechEnd: () => {
-          vadSpeakingRef.current = false;
-        },
-        onSpeechProb: (p) => {
-          if (p >= 0.6) vadSpeakingRef.current = true;
-        },
-      });
-      if (vad) vadRef.current = vad;
-
-      const workletCode = `
-        class MicProcessor extends AudioWorkletProcessor {
-          constructor() { super(); this._buf = new Float32Array(4096); this._pos = 0; }
-          process(inputs) {
-            const ch = inputs[0]?.[0];
-            if (!ch) return true;
-            for (let i = 0; i < ch.length; i++) {
-              this._buf[this._pos++] = ch[i];
-              if (this._pos >= 4096) {
-                this.port.postMessage(this._buf);
-                this._buf = new Float32Array(4096);
-                this._pos = 0;
-              }
-            }
-            return true;
-          }
-        }
-        registerProcessor('mic-processor', MicProcessor);
-      `;
-      const source = ctx.createMediaStreamSource(stream);
-      // Mic-level reader: AudioWorklet from an inline Blob URL; if the browser
-      // can't load it ("Unable to load a worklet's module"), use a
-      // ScriptProcessor so the mic test still works.
-      let onChunk: ((input: Float32Array) => void) | null = null;
-      try {
-        if (!ctx.audioWorklet) throw new Error("AudioWorklet not supported");
-        const blob = new Blob([workletCode], { type: "application/javascript" });
-        const workletUrl = URL.createObjectURL(blob);
-        try {
-          await ctx.audioWorklet.addModule(workletUrl);
-        } finally {
-          URL.revokeObjectURL(workletUrl);
-        }
-        const worklet = new AudioWorkletNode(ctx, "mic-processor");
-        source.connect(worklet);
-        // Do not connect to destination (avoids feedback / echo into speakers).
-        worklet.port.onmessage = (e) => onChunk?.(e.data as Float32Array);
-      } catch {
-        const sp = ctx.createScriptProcessor(4096, 1, 1);
-        source.connect(sp);
-        // Chrome needs the node connected to run; output is silent (zeros).
-        sp.connect(ctx.destination);
-        sp.onaudioprocess = (ev) => {
-          ev.outputBuffer.getChannelData(0).fill(0);
-          onChunk?.(new Float32Array(ev.inputBuffer.getChannelData(0)));
-        };
-      }
-      onChunk = (input: Float32Array) => {
-        if (finishedRef.current) return;
-        let sum = 0;
-        let peak = 0;
-        for (let i = 0; i < input.length; i++) {
-          const v = input[i];
-          sum += v * v;
-          const a = Math.abs(v);
-          if (a > peak) peak = a;
-        }
-        const rms = Math.sqrt(sum / input.length);
-        setLevel(Math.min(1, rms * 8));
-        if (rms > peakRef.current) peakRef.current = rms;
-
-        // Keep a short recording for optional playback (max ~5s).
-        if (recordSamplesRef.current < 16_000 * 5) {
-          recordChunksRef.current.push(new Float32Array(input));
-          recordSamplesRef.current += input.length;
-        }
-
-        const frameMs = (input.length / ctx.sampleRate) * 1000;
-        const isSpeech =
-          vadSpeakingRef.current || rms >= MIC_TEST_CHECK.minSpeechRms;
-        if (isSpeech) {
-          speechMsRef.current += frameMs;
-          speechRmsSumRef.current += rms;
-          speechFramesRef.current += 1;
-        } else {
-          noiseRmsSumRef.current += rms;
-          noiseFramesRef.current += 1;
-        }
-
-        if (speechMsRef.current >= MIC_TEST_CHECK.minSpeechMs) {
-          finishedRef.current = true;
-          const meanSpeech =
-            speechFramesRef.current > 0
-              ? speechRmsSumRef.current / speechFramesRef.current
-              : 0;
-          const noiseFloor =
-            noiseFramesRef.current > 0
-              ? noiseRmsSumRef.current / noiseFramesRef.current
-              : undefined;
-          const verdict = evaluateMicTest({
-            speechMs: speechMsRef.current,
-            peakRms: Math.max(peakRef.current, peak),
-            meanSpeechRms: meanSpeech,
-            noiseFloorRms: noiseFloor,
-          });
-          setPhase("analyzing");
-          if (verdict.pass) {
-            void passTest();
-          } else {
-            failTest(verdict.message);
-          }
-        }
-      };
-    } catch (err) {
-      const code = mediaErrorCode(err);
-      report("mic_permission", "denied");
-      report("error", "error", { code, source: "microphone" });
-      setError(describeMicError(err));
-      setPhase("idle");
-      stopMicCapture();
-    }
-  }, [failTest, passTest, stopMicCapture, report]);
+    listenTimerRef.current = setTimeout(
+      () => finishListeningRef.current(true),
+      MIC_TEST_CHECK.listenTimeoutMs,
+    );
+  }, []);
 
   /**
-   * Play the pre-generated Kore clip via a single HTMLAudioElement.
-   * Avoids AudioContext sample-rate mismatches and never falls back to
-   * browser speechSynthesis (that path sounded robotic).
+   * Click → open the mic → play the prompt (fully loaded, after a short silent
+   * lead-in on an already-running output) → listen.
    */
   const playSpeakerClip = useCallback(async () => {
+    stopAll();
+    const runId = ++runIdRef.current;
     setError(null);
     setFailMessage(null);
+    setLevel(0);
+
+    // Create and resume the output context inside the click, so the browser
+    // allows playback and the speaker / headset is awake before the prompt.
+    let outCtx: AudioContext | null = null;
+    try {
+      outCtx = new AudioContext();
+      audioCtxRef.current = outCtx;
+      void outCtx.resume().catch(() => {});
+    } catch {
+      outCtx = null;
+    }
     setPhase("requesting");
-    stopSpeaker();
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("unsupported");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      await openMic(runId);
+      if (runIdRef.current !== runId) return;
       report("mic_permission", "granted");
     } catch (err) {
+      if (runIdRef.current !== runId) return;
       const code = mediaErrorCode(err);
       report("mic_permission", "denied");
       report("error", "error", { code, source: "microphone" });
       setError(describeMicError(err));
+      stopAll();
       setPhase("idle");
       return;
     }
 
     setPhase("playing");
+    const lang = languageRef.current || "en";
+    const sources = [micTestAudioSrc(lang, "mp3"), micTestAudioSrc(lang, "wav")];
+    if (lang.toLowerCase().slice(0, 2) !== "en") sources.push(micTestAudioSrc("en", "mp3"), micTestAudioSrc("en", "wav"));
 
-    const tryPlay = (src: string) =>
-      new Promise<void>((resolve, reject) => {
-        const audio = new Audio();
-        audio.preload = "auto";
-        audio.src = src;
-        // Ensure no accidental pitch/tempo change.
-        audio.playbackRate = 1;
-        audio.defaultPlaybackRate = 1;
-        audio.volume = 1;
-        audioRef.current = audio;
-        const cleanup = () => {
-          audio.onended = null;
-          audio.onerror = null;
-        };
-        audio.onended = () => {
-          cleanup();
-          resolve();
-        };
-        audio.onerror = () => {
-          cleanup();
-          reject(new Error(`Failed to play ${src}`));
-        };
-        const p = audio.play();
-        if (p && typeof p.then === "function") {
-          p.catch((err) => {
-            cleanup();
-            reject(err);
-          });
-        }
-      });
-
-    try {
-      // Prefer language clip (mp3→wav); fall back to English if locale clip missing.
-      const lang = languageRef.current;
-      const playLang = async (code: string) => {
-        try {
-          await tryPlay(micTestAudioSrc(code, "mp3"));
-        } catch {
-          await tryPlay(micTestAudioSrc(code, "wav"));
-        }
-      };
+    let played = false;
+    for (const src of sources) {
+      if (runIdRef.current !== runId) return;
       try {
-        await playLang(lang || "en");
-      } catch {
-        if ((lang || "en").toLowerCase().slice(0, 2) !== "en") {
-          await playLang("en");
-        } else {
-          throw new Error("en clip failed");
+        if (outCtx) await playClipWebAudio(outCtx, src, () => runIdRef.current !== runId);
+        else await playClipElement(src, audioRef);
+        played = true;
+        break;
+      } catch (err) {
+        if (runIdRef.current !== runId) return;
+        // File missing or undecodable: try the next one. Output blocked: same clip via <audio>.
+        if (!(err instanceof Error && err.message === OUTPUT_SUSPENDED)) continue;
+        try {
+          await playClipElement(src, audioRef);
+          played = true;
+          break;
+        } catch {
+          /* try the next file */
         }
       }
-      audioRef.current = null;
-      setSpeakerOk(true);
-      report("speaker_test", "played");
-      void startListening();
-    } catch {
-      audioRef.current = null;
-      report("error", "error", { code: "speaker_failed", source: "speaker" });
-      setError(
-        "Could not play the speaker test clip. Check your speakers/volume and retry.",
-      );
-      setPhase("idle");
     }
-  }, [startListening, stopSpeaker, report]);
+    if (runIdRef.current !== runId) return;
+    stopSpeaker();
+    if (!played) {
+      report("error", "error", { code: "speaker_failed", source: "speaker" });
+      setError("Could not play the speaker test. Check your speakers or volume, then retry.");
+      stopMicCapture();
+      setPhase("idle");
+      return;
+    }
+    setSpeakerOk(true);
+    report("speaker_test", "played");
+    beginListening();
+  }, [beginListening, openMic, report, stopAll, stopMicCapture, stopSpeaker]);
 
   useEffect(() => {
     return () => {
@@ -883,7 +986,7 @@ function MicCheck({
                 <div className="flex gap-1">
                   <div className="h-2 w-2 animate-pulse rounded-full bg-destructive" />
                   <span className="text-[11px] font-medium text-destructive">
-                    Listening...
+                    Listening… speak now
                   </span>
                 </div>
               </div>
@@ -924,14 +1027,16 @@ function MicCheck({
               Stop
             </Button>
           )}
-          {(phase === "listening" || phase === "analyzing" || phase === "playback") && (
+          {phase === "listening" && (
+            <Button size="sm" variant="outline" onClick={() => void playSpeakerClip()} className="w-full">
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              Start over
+            </Button>
+          )}
+          {(phase === "analyzing" || phase === "playback") && (
             <Button size="sm" variant="outline" disabled className="w-full">
               <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              {phase === "listening"
-                ? "Listening..."
-                : phase === "playback"
-                  ? "Playing back..."
-                  : "Checking..."}
+              {phase === "playback" ? "Playing back..." : "Checking..."}
             </Button>
           )}
           {phase === "confirm" && !done && (
@@ -973,18 +1078,16 @@ function MicCheck({
                 </span>
               </>
             )}
-            {phase === "requesting" && "Granting microphone access..."}
+            {phase === "requesting" && "Getting your microphone ready..."}
             {phase === "playing" &&
-              "Playing a clear sample in the interview voice — listen carefully."}
+              "Listen to the short message. When it ends, you'll see \"Listening\"."}
             {phase === "listening" && (
               <>
-                Now say clearly:{" "}
+                Speak now:{" "}
                 <span className="font-medium text-foreground">
                   &quot;{samplePhrase}&quot;
                 </span>{" "}
-                The level bar should move. We need about{" "}
-                {Math.round(MIC_TEST_CHECK.minSpeechMs / 100) / 10}s of clear
-                speech.
+                The level bar should move.
               </>
             )}
             {phase === "playback" &&
