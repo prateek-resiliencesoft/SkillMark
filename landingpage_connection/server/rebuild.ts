@@ -2,7 +2,8 @@
  * Trigger the landing-site GitHub Actions deploy workflow after publish.
  * Debounce is durable: we store rebuildAfter in the DB so serverless / multi-
  * instance deployments still fire exactly once when due. Claiming uses a
- * conditional update so concurrent pollers cannot double-dispatch.
+ * conditional update + lease so concurrent pollers cannot double-dispatch and
+ * abandoned claims can be retried.
  */
 import type { Context } from '@/server/context'
 import {
@@ -71,43 +72,89 @@ async function findLatestRunId(cfg: RebuildConfig): Promise<string | null> {
   return id != null ? String(id) : null
 }
 
+/**
+ * Write dispatch progress / outcome without erasing a newer rebuildAfter that
+ * another publish may have scheduled while this dispatch was in flight.
+ * Only clear the claim lease on terminal outcomes so abandoned claims stay reclaimable.
+ */
+async function setDispatchOutcome(
+  db: Context['supabase'],
+  patch: {
+    runId: string | null
+    status: string
+    startedAt: string
+    detail: string
+  },
+  opts: { clearClaim: boolean },
+): Promise<void> {
+  const current = await getRebuildState(db)
+  const pending =
+    current.rebuildAfter != null && Date.parse(current.rebuildAfter) > Date.now()
+      ? current.rebuildAfter
+      : null
+
+  await setRebuildState(db, {
+    runId: patch.runId,
+    status: pending ? 'scheduled' : patch.status,
+    startedAt: patch.startedAt,
+    detail: pending
+      ? `${patch.detail} Another rebuild is scheduled for ${pending}.`
+      : patch.detail,
+    rebuildAfter: pending,
+    ...(opts.clearClaim ? { claimExpiresAt: null } : {}),
+  })
+}
+
 async function runDispatch(db: Context['supabase']) {
   const cfg = readRebuildConfig()
   if (!cfg) {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'skipped',
-      startedAt: new Date().toISOString(),
-      detail: 'LANDING_DEPLOY_GITHUB_TOKEN / LANDING_DEPLOY_REPO not set — runtime fetch still works.',
-      rebuildAfter: null,
-    })
+    await setDispatchOutcome(
+      db,
+      {
+        runId: null,
+        status: 'skipped',
+        startedAt: new Date().toISOString(),
+        detail: 'LANDING_DEPLOY_GITHUB_TOKEN / LANDING_DEPLOY_REPO not set — runtime fetch still works.',
+      },
+      { clearClaim: true },
+    )
     return
   }
 
   try {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'requested',
-      startedAt: new Date().toISOString(),
-      detail: 'Dispatching deploy workflow…',
-      rebuildAfter: null,
-    })
+    // Keep the claim lease while the GitHub call is in flight.
+    await setDispatchOutcome(
+      db,
+      {
+        runId: null,
+        status: 'requested',
+        startedAt: new Date().toISOString(),
+        detail: 'Dispatching deploy workflow…',
+      },
+      { clearClaim: false },
+    )
     const { runId, detail } = await dispatchWorkflow(cfg)
-    await setRebuildState(db, {
-      runId,
-      status: runId ? 'queued' : 'requested',
-      startedAt: new Date().toISOString(),
-      detail,
-      rebuildAfter: null,
-    })
+    await setDispatchOutcome(
+      db,
+      {
+        runId,
+        status: runId ? 'queued' : 'requested',
+        startedAt: new Date().toISOString(),
+        detail,
+      },
+      { clearClaim: true },
+    )
   } catch (err) {
-    await setRebuildState(db, {
-      runId: null,
-      status: 'error',
-      startedAt: new Date().toISOString(),
-      detail: err instanceof Error ? err.message : String(err),
-      rebuildAfter: null,
-    })
+    await setDispatchOutcome(
+      db,
+      {
+        runId: null,
+        status: 'error',
+        startedAt: new Date().toISOString(),
+        detail: err instanceof Error ? err.message : String(err),
+      },
+      { clearClaim: true },
+    )
   }
 }
 
@@ -130,7 +177,7 @@ export async function scheduleRebuild(db: Context['supabase']): Promise<RebuildS
   return state
 }
 
-/** If a scheduled rebuild is due, claim it atomically and dispatch. */
+/** If a scheduled rebuild is due (or an abandoned claim expired), claim and dispatch. */
 export async function maybeDispatchDueRebuild(db: Context['supabase']): Promise<RebuildState> {
   const claimed = await claimDueRebuild(db)
   if (!claimed) return getRebuildState(db)

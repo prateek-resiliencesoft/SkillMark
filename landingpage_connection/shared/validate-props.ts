@@ -1,8 +1,9 @@
 /**
  * Validate section/block props against the field descriptors for their type.
  *
- * Strict (admin save/publish): reject unknown types and unknown keys.
- * Soft (public migrate): keep valid fields; default only invalid/missing ones.
+ * Strict (admin save/publish): reject unknown types, unknown keys, and
+ * unsupported children/blocks (never silently delete content).
+ * Soft (public migrate): keep valid fields; soft-parse list items one by one.
  */
 import { fieldsToZod, softParseProps } from './fields'
 import { BLOCK_MAP } from './blocks'
@@ -49,7 +50,6 @@ function validateProps(
   knownEmpty: boolean,
 ): Record<string, unknown> {
   if (fields === null && !knownEmpty) {
-    // Unknown type — only reached after callers check maps; keep as safety net.
     if (opts.strict) throw issue(path, 'Unknown type')
     return emptyPropsObject()
   }
@@ -79,8 +79,6 @@ function validateBlock(block: Block, path: string, opts: ValidateOpts): Block {
   const def = BLOCK_MAP[block.type]
   if (!def) {
     if (opts.strict) throw issue(`${path}.type`, `Unknown block type "${block.type}"`)
-    // Soft: drop unknown blocks by returning a spacer with no content impact — caller filters?
-    // Better: keep structure but empty props so tree length stays stable for debugging.
     return {
       ...block,
       props: emptyPropsObject(),
@@ -90,19 +88,26 @@ function validateBlock(block: Block, path: string, opts: ValidateOpts): Block {
 
   const fields = def.fields.length > 0 ? def.fields : null
   const props = validateProps(`${path}.props`, block.props ?? {}, fields, opts, def.fields.length === 0)
-  const children = (block.children ?? []).map((c, i) => validateBlock(c, `${path}.children[${i}]`, opts))
-  // Containers only keep children; non-containers strip them in strict mode.
-  const nextChildren = def.container ? children : opts.strict ? [] : children
-  return { ...block, props, children: nextChildren }
+  const rawChildren = block.children ?? []
+
+  if (!def.container) {
+    if (opts.strict && rawChildren.length > 0) {
+      throw issue(
+        `${path}.children`,
+        `Block type "${block.type}" cannot have children — remove them or use a container block`,
+      )
+    }
+    return { ...block, props, children: [] }
+  }
+
+  const children = rawChildren.map((c, i) => validateBlock(c, `${path}.children[${i}]`, opts))
+  return { ...block, props, children }
 }
 
 function validateSection(section: Section, path: string, opts: ValidateOpts): Section {
   if (section.type === CUSTOM_SECTION) {
     const blocks = (section.blocks ?? []).map((b, i) => validateBlock(b, `${path}.blocks[${i}]`, opts))
-    // Soft: drop unknown block types entirely so they don't render blank forever.
-    const cleaned = opts.strict
-      ? blocks
-      : blocks.filter((b) => BLOCK_MAP[b.type])
+    const cleaned = opts.strict ? blocks : blocks.filter((b) => BLOCK_MAP[b.type])
     return {
       ...section,
       props: validateEmptyProps(`${path}.props`, (section.props as Record<string, unknown>) ?? {}, opts),
@@ -124,13 +129,18 @@ function validateSection(section: Section, path: string, opts: ValidateOpts): Se
     opts,
     preset.fields.length === 0,
   )
-  // Preset sections don't use blocks; strip in strict, ignore in soft.
-  const blocks =
-    opts.strict
-      ? []
-      : (section.blocks ?? []).map((b, i) => validateBlock(b, `${path}.blocks[${i}]`, opts))
 
-  return { ...section, props, blocks }
+  const rawBlocks = section.blocks ?? []
+  // Preset sections are not block trees — reject leftover blocks in strict mode
+  // so save/publish cannot silently delete them.
+  if (opts.strict && rawBlocks.length > 0) {
+    throw issue(
+      `${path}.blocks`,
+      `Preset section "${section.type}" cannot contain blocks — remove them or convert the section to custom`,
+    )
+  }
+
+  return { ...section, props, blocks: [] }
 }
 
 export function validateSectionProps(doc: SiteDocument, opts: ValidateOpts): SiteDocument {

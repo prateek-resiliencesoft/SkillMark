@@ -63,6 +63,7 @@ COMMENT ON TABLE public.landing_media IS
 
 -- Latest rebuild attempt (so the admin can poll without scanning versions).
 -- rebuildAfter: durable debounce — dispatch when now >= rebuildAfter.
+-- claimExpiresAt: lease for an in-flight claim so abandoned claims can retry.
 CREATE TABLE IF NOT EXISTS public.landing_rebuild (
   id          smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   "runId"     text,
@@ -70,11 +71,15 @@ CREATE TABLE IF NOT EXISTS public.landing_rebuild (
   "startedAt" timestamptz,
   "updatedAt" timestamptz NOT NULL DEFAULT now(),
   detail      text,
-  "rebuildAfter" timestamptz
+  "rebuildAfter" timestamptz,
+  "claimExpiresAt" timestamptz
 );
 
 ALTER TABLE public.landing_rebuild
   ADD COLUMN IF NOT EXISTS "rebuildAfter" timestamptz;
+
+ALTER TABLE public.landing_rebuild
+  ADD COLUMN IF NOT EXISTS "claimExpiresAt" timestamptz;
 
 INSERT INTO public.landing_rebuild (id, status)
 VALUES (1, 'idle')

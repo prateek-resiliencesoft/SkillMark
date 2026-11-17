@@ -48,7 +48,15 @@ export type RebuildState = {
   detail: string | null
   /** When set and <= now, a rebuild dispatch is due (durable debounce). */
   rebuildAfter: string | null
+  /**
+   * Lease end for an in-flight claim. If the process dies after claiming but
+   * before dispatch completes, later pollers can reclaim once this expires.
+   */
+  claimExpiresAt: string | null
 }
+
+/** How long a claim is exclusive before another poller may retry. */
+export const REBUILD_CLAIM_LEASE_MS = 120_000
 
 export async function getDraft(db: Db): Promise<{ content: SiteDocument; updatedAt: string | null; updatedBy: string | null }> {
   const { data, error } = await db
@@ -268,6 +276,9 @@ export async function deleteMedia(db: Db, id: string): Promise<LandingMediaRow |
   return existing
 }
 
+const REBUILD_SELECT =
+  'runId, status, startedAt, updatedAt, detail, rebuildAfter, claimExpiresAt'
+
 function mapRebuild(data: Record<string, unknown> | null | undefined): RebuildState {
   return {
     runId: (data?.runId as string) ?? null,
@@ -276,13 +287,14 @@ function mapRebuild(data: Record<string, unknown> | null | undefined): RebuildSt
     updatedAt: (data?.updatedAt as string) ?? new Date().toISOString(),
     detail: (data?.detail as string) ?? null,
     rebuildAfter: (data?.rebuildAfter as string) ?? null,
+    claimExpiresAt: (data?.claimExpiresAt as string) ?? null,
   }
 }
 
 export async function getRebuildState(db: Db): Promise<RebuildState> {
   const { data } = await db
     .from('landing_rebuild')
-    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
+    .select(REBUILD_SELECT)
     .eq('id', 1)
     .maybeSingle()
 
@@ -304,40 +316,74 @@ export async function setRebuildState(
         startedAt: patch.startedAt !== undefined ? patch.startedAt : current.startedAt,
         detail: patch.detail !== undefined ? patch.detail : current.detail,
         rebuildAfter: patch.rebuildAfter !== undefined ? patch.rebuildAfter : current.rebuildAfter,
+        claimExpiresAt:
+          patch.claimExpiresAt !== undefined ? patch.claimExpiresAt : current.claimExpiresAt,
         updatedAt: new Date().toISOString(),
       },
       { onConflict: 'id' },
     )
-    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
+    .select(REBUILD_SELECT)
     .single()
 
   if (error) throw error
   return mapRebuild(data as Record<string, unknown>)
 }
 
+function leaseUntilIso(from = new Date()): string {
+  return new Date(from.getTime() + REBUILD_CLAIM_LEASE_MS).toISOString()
+}
+
 /**
- * Atomically claim a due rebuild. Returns the claimed row, or null if nothing
- * is due / another caller already claimed it (conditional update).
+ * Atomically claim a due rebuild, or reclaim an abandoned in-flight claim whose
+ * lease expired. Returns the claimed row, or null if nothing is claimable.
  */
 export async function claimDueRebuild(db: Db): Promise<RebuildState | null> {
-  const now = new Date().toISOString()
-  const { data, error } = await db
-    .from('landing_rebuild')
-    .update({
-      rebuildAfter: null,
-      status: 'requested',
-      detail: 'Dispatching due rebuild…',
-      updatedAt: now,
-    })
-    .eq('id', 1)
-    .not('rebuildAfter', 'is', null)
-    .lte('rebuildAfter', now)
-    .select('runId, status, startedAt, updatedAt, detail, rebuildAfter')
-    .maybeSingle()
+  const now = new Date()
+  const nowIso = now.toISOString()
+  const lease = leaseUntilIso(now)
 
-  if (error) throw error
-  if (!data) return null
-  return mapRebuild(data as Record<string, unknown>)
+  // 1) Claim a due scheduled rebuild.
+  {
+    const { data, error } = await db
+      .from('landing_rebuild')
+      .update({
+        rebuildAfter: null,
+        status: 'requested',
+        claimExpiresAt: lease,
+        detail: 'Dispatching due rebuild…',
+        updatedAt: nowIso,
+      })
+      .eq('id', 1)
+      .not('rebuildAfter', 'is', null)
+      .lte('rebuildAfter', nowIso)
+      .select(REBUILD_SELECT)
+      .maybeSingle()
+
+    if (error) throw error
+    if (data) return mapRebuild(data as Record<string, unknown>)
+  }
+
+  // 2) Reclaim abandoned claims (process died after claim, before dispatch finished).
+  {
+    const { data, error } = await db
+      .from('landing_rebuild')
+      .update({
+        claimExpiresAt: lease,
+        detail: 'Retrying abandoned rebuild claim…',
+        updatedAt: nowIso,
+      })
+      .eq('id', 1)
+      .eq('status', 'requested')
+      .not('claimExpiresAt', 'is', null)
+      .lt('claimExpiresAt', nowIso)
+      .select(REBUILD_SELECT)
+      .maybeSingle()
+
+    if (error) throw error
+    if (data) return mapRebuild(data as Record<string, unknown>)
+  }
+
+  return null
 }
 
 /** True if draft or latest published document references this media id/URL. */
