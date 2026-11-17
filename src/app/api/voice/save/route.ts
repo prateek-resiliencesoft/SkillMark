@@ -6,7 +6,8 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { finalizeRecordingParts } from "@/lib/recording-parts-server";
 import { NextResponse } from "next/server";
-import { handleVoiceSave, type CompletionSession, type ProgressSession, type VoiceSaveOps, type VoiceSavePayload } from "./logic";
+import { randomUUID } from "node:crypto";
+import { handleVoiceSave, messageRowId, type CompletionSession, type ProgressSession, type VoiceSaveOps, type VoiceSavePayload } from "./logic";
 
 const log = createLogger("api/voice/save");
 const voiceSaveOps: VoiceSaveOps = {
@@ -22,7 +23,10 @@ const voiceSaveOps: VoiceSaveOps = {
     scheduleRecordingFallback(sessionId);
   },
   async insertMessages(sessionId, messages) {
-    await supabaseAdmin.from("messages").insert(
+    // Upsert on the client's line id, ignoring ones already stored: a retry or
+    // tab-close beacon can resend lines without duplicating them. Errors throw
+    // so the client keeps the lines and sends them again.
+    const { error } = await supabaseAdmin.from("messages").upsert(
       messages.map((m, i) => {
         const clientTs = m.timestamp ? new Date(m.timestamp) : null;
         const tsValid = clientTs && !Number.isNaN(clientTs.getTime());
@@ -31,6 +35,7 @@ const voiceSaveOps: VoiceSaveOps = {
           ? new Date(clientTs.getTime() + (typeof m.seq === "number" ? m.seq : i)).toISOString()
           : undefined;
         return {
+          id: messageRowId(m.id, randomUUID),
           sessionId,
           role: m.role === "user" ? ("USER" as const) : ("ASSISTANT" as const),
           content: m.content,
@@ -41,7 +46,9 @@ const voiceSaveOps: VoiceSaveOps = {
           ...(timestamp ? { timestamp } : {}),
         };
       }),
+      { onConflict: "id", ignoreDuplicates: true, defaultToNull: false },
     );
+    if (error) throw new Error(`messages insert failed: ${error.message}`);
   },
   async loadSessionForCompletion(sessionId) {
     const { data, error } = await supabaseAdmin
