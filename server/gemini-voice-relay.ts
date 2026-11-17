@@ -26,6 +26,9 @@ import {
 } from "../src/lib/interview-language";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
+import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "../src/lib/transcript/sanitize";
+import { candidateAskedToGoBack, decideQuestionMove, nextOpenQuestion } from "../src/lib/voice/question-progress";
+import { askedBefore, resumeBehaviorRule, resumeCue, shouldResume, type ResumeHints, type ResumeState } from "../src/lib/voice/resume-prompt";
 import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, SILENCE_PROMPTS, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
 import { stuckTurnReason } from "../src/lib/voice/turn-guard";
 import { ENDPOINTING_CONFIG } from "../src/lib/voice/endpointing-config";
@@ -241,6 +244,8 @@ interface InterviewContext {
   followUpDepth: string;
   integrityProbing?: boolean;
   startQuestionIndex?: number;
+  /** Sent by the browser when it reconnects / reloads mid-interview. */
+  resume?: ResumeHints | null;
   candidateFocus?: CandidateFocus | null;
   questions: Array<{
     text: string;
@@ -294,7 +299,7 @@ function int16ToFloat32(buf: Buffer): Buffer {
 
 // ── System prompt builder ───────────────────────────────────────────
 
-function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
+function buildSystemPrompt(ctx: InterviewContext, startIdx: number, resume?: ResumeState | null): string {
   const isZh = isChineseInterview(ctx);
   const sorted = ctx.questions.sort((a, b) => a.order - b.order);
 
@@ -343,7 +348,7 @@ ${ctx.objective ? `- 目标: ${ctx.objective}` : ""}
 ${questionList}
 
 ## 你的行为准则
-1. 从第${currentQ}个问题开始。先用温暖友好的方式自我介绍（提到你的名字、面试主题和问题数量）。然后说一句过渡语，比如"我们开始吧，这是第一个问题。"之后再提出问题。问候、过渡语和问题必须是三个独立的句子，不要合并。
+${resume ? resumeBehaviorRule(resume, true) : `1. 从第${currentQ}个问题开始。先用温暖友好的方式自我介绍（提到你的名字、面试主题和问题数量）。然后说一句过渡语，比如"我们开始吧，这是第一个问题。"之后再提出问题。问候、过渡语和问题必须是三个独立的句子，不要合并。`}
 2. 提问脚本问题时，必须逐字朗读题目原文——不要改写、软化或替换列表中的问题文本。
 3. 如果某题有 SKIP IF 标注，且受访者早前（例如自我介绍）已覆盖这些话题，则跳过：调用 signal_question_change 进入下一题，不要提问。
 4. 对每个问题，根据受访者的回答进行${maxFollowUps}次以内的追问。语气要像友好、耐心的真人面试官，而不是冷冰冰地连珠发问。
@@ -398,7 +403,7 @@ ${ctx.objective ? `- Objective: ${ctx.objective}` : ""}
 ${questionList}
 
 ## Your Behavior
-1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.
+${resume ? resumeBehaviorRule(resume, false) : `1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.`}
 2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
 3. If a question has a SKIP IF note and the participant already covered those topics earlier (e.g. in their introduction), skip it: call signal_question_change to the next index without asking it.
 4. For each question, follow up based on the participant's answers (up to ${maxFollowUps} follow-ups). Sound like a warm, patient human interviewer, not a rapid-fire questionnaire.
@@ -697,7 +702,11 @@ async function handleInterview(
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
   const langCode = languageCode(ctx);
-  let currentQuestionIndex = ctx.startQuestionIndex ?? 0;
+  let currentQuestionIndex = Math.min(Math.max(0, ctx.startQuestionIndex ?? 0), Math.max(0, sortedQuestions.length - 1));
+  /** Questions asked and left: the model may never go back to them on its own. */
+  const completed = new Set<number>(askedBefore(currentQuestionIndex, ctx.resume?.askedQuestionIndexes ?? [], sortedQuestions.length));
+  /** Browser reconnected / reloaded mid-interview: continue, don't start over. */
+  const resumingAtStart = shouldResume(ctx.startQuestionIndex, ctx.resume);
   let questionEnteredAt = Date.now();
   const MIN_QUESTION_DWELL_MS = 15_000;
 
@@ -711,6 +720,9 @@ async function handleInterview(
   let modelBuf = "";           // full model text for this turn
   let modelPending = "";       // text not yet sent as tts_text
   let modelAudioBytes = 0;
+  /** Last model audio/text chunk, and candidate words since then (stale-turn check). */
+  let lastModelChunkAt = 0;
+  let userWordsSinceModelChunk = false;
   let playbackEndsAt = 0;      // estimated time the browser finishes playing
   let lastUserSpeech = 0;
   let userSpokeThisQuestion = false;
@@ -878,6 +890,17 @@ async function handleInterview(
   const addContext = (text: string) =>
     gemSend({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
 
+  /** Where the interview stands, for a resume system prompt / cue. */
+  function resumeState(pendingAnswer: boolean): ResumeState {
+    return {
+      current: currentQuestionIndex,
+      questions: sortedQuestions,
+      asked: [...completed].filter((i) => i !== currentQuestionIndex),
+      recent: history.slice(-8),
+      pendingAnswer,
+    };
+  }
+
   function pushHistory(role: "user" | "assistant", text: string) {
     if (!text.trim()) return;
     history.push({ role, text: text.trim() });
@@ -900,21 +923,28 @@ async function handleInterview(
     const re = /^[\s\S]*?[.!?。！？]+(\s|$)/;
     let m: RegExpMatchArray | null;
     while ((m = modelPending.match(re))) {
-      const piece = m[0].trim();
+      const piece = stripToolCallText(m[0]);
       if (piece) send({ type: "tts_text", data: { text: piece } });
       modelPending = modelPending.slice(m[0].length);
     }
     if (force && modelPending.trim()) {
-      send({ type: "tts_text", data: { text: modelPending.trim() } });
+      const piece = stripToolCallText(modelPending);
+      if (piece) send({ type: "tts_text", data: { text: piece } });
       modelPending = "";
     }
   }
 
+  /** Newest history line is an AI line saying the same thing (no candidate line between). */
+  function repeatsLastAssistant(text: string): boolean {
+    const last = history[history.length - 1];
+    return !!last && last.role === "assistant" && isRepeatedAssistantLine(last.text, text);
+  }
+
   function endModelTurn() {
     flushModelText(true);
-    const text = modelBuf.trim();
+    const text = stripToolCallText(modelBuf);
     if (text || modelAudioBytes > 0) {
-      if (text) { pushHistory("assistant", text); log.info(`AI: ${JSON.stringify(text)}`); }
+      if (text && !repeatsLastAssistant(text)) { pushHistory("assistant", text); log.info(`AI: ${JSON.stringify(text)}`); }
       send({ type: "tts_ended" });
     }
     modelBuf = "";
@@ -928,6 +958,29 @@ async function handleInterview(
       const wait = Math.max(0, playbackEndsAt - Date.now()) + 500;
       setTimeout(() => markComplete("farewell finished"), wait);
     }
+  }
+
+  /**
+   * An AI turn that never got turnComplete (cut by a drop or barge-in) must not
+   * be glued to the next one ("That makes sense, reviewingYes, I'm here!"):
+   * end it as its own line marked partial.
+   */
+  function closeCutModelTurn(why: string) {
+    if (!modelBuf.trim() && modelAudioBytes === 0) return;
+    flushModelText(true);
+    const text = closePartialTurn(modelBuf);
+    if (text && !repeatsLastAssistant(text)) pushHistory("assistant", text);
+    send({ type: "tts_ended", partial: true });
+    log.info(`AI turn closed as partial (${why})`);
+    modelBuf = "";
+    modelAudioBytes = 0;
+  }
+
+  /** New model output after a stalled turn + candidate words → the old turn was cut. */
+  function closeStaleModelTurn() {
+    if (!modelBuf.trim() && modelAudioBytes === 0) return;
+    const gap = Date.now() - lastModelChunkAt;
+    if ((gap > 1_500 && userWordsSinceModelChunk) || gap > 4_000) closeCutModelTurn(`stale ${gap}ms`);
   }
 
   function markComplete(reason: string) {
@@ -945,12 +998,25 @@ async function handleInterview(
     completeTimer = setTimeout(() => markComplete("timeout fallback"), 20_000);
   }
 
-  function moveTo(idx: number, auto: boolean) {
+  /** Returns false when nothing is left to ask (the interview is ending instead). */
+  function moveTo(idx: number, auto: boolean): boolean {
     const priorUser = history.filter((h) => h.role === "user").map((h) => h.text);
     // When advancing, skip questions already covered by earlier answers
     let resolved = idx;
     if (idx > currentQuestionIndex) {
-      resolved = nextAskableQuestionIndex(sortedQuestions, idx, priorUser);
+      completed.add(currentQuestionIndex);
+      // Skip covered questions and ones already asked (e.g. after going back).
+      resolved = idx;
+      for (let guard = 0; guard < sortedQuestions.length + 1; guard++) {
+        const next = nextOpenQuestion(nextAskableQuestionIndex(sortedQuestions, resolved, priorUser), sortedQuestions.length, completed);
+        if (next === resolved) break;
+        resolved = next;
+      }
+      if (resolved >= sortedQuestions.length) {
+        // Everything left was already asked: finish instead of repeating.
+        beginEnding();
+        return false;
+      }
     }
     const dir = resolved > currentQuestionIndex ? "next" : "previous";
     send({ type: "transitioning", direction: dir, ...(auto ? { auto: true } : {}) });
@@ -968,6 +1034,7 @@ async function handleInterview(
       log.info(`Skipped covered Qs → landed on Q${currentQuestionIndex + 1}`);
     }
     log.info(`→ Q${currentQuestionIndex + 1}/${sortedQuestions.length}`);
+    return true;
   }
 
   function requestTransition(targetIdx: number, label: string, reason: "button" | "user_request") {
@@ -980,7 +1047,10 @@ async function handleInterview(
       sayText(`[SYSTEM] The participant ${reason === "button" ? `clicked "${label}"` : "asked to finish"}. All questions are done. Give a brief thank-you and farewell now. Do not call any function.`);
       return;
     }
-    moveTo(targetIdx, false);
+    if (!moveTo(targetIdx, false)) {
+      sayText("[SYSTEM] All questions have been asked. Give a brief thank-you and farewell now. Do not call any function.");
+      return;
+    }
     const q = sortedQuestions[currentQuestionIndex];
     sayText(reason === "user_request"
       ? `[SYSTEM] The participant explicitly asked to go ${label.toLowerCase()}. We are now on question ${currentQuestionIndex + 1}: "${q?.text}". Briefly acknowledge and introduce this question now. Do not call signal_question_change.`
@@ -1015,22 +1085,31 @@ async function handleInterview(
         const args = (c.args || {}) as { questionIndex?: number; userRequested?: boolean };
         const newIdx = typeof args.questionIndex === "number" ? args.questionIndex : currentQuestionIndex + 1;
         const userRequested = args.userRequested === true;
-        const dwell = Date.now() - questionEnteredAt;
         log.info(`Gemini called signal_question_change → Q${newIdx + 1}${userRequested ? " (user requested)" : ""}`);
-        if (newIdx === currentQuestionIndex) {
-          result = `You are already on question ${newIdx + 1}. Continue naturally.`;
-        } else if (newIdx < sortedQuestions.length && newIdx > currentQuestionIndex && !userRequested
-                   && (!userSpokeThisQuestion || dwell < MIN_QUESTION_DWELL_MS)) {
-          result = `Rejected: the participant has not given a substantive answer yet. Stay on question ${currentQuestionIndex + 1} and reply to the participant out loud now (ask them to answer or to say a bit more). Do NOT say you are moving on.`;
-          log.warn("Rejected premature question change");
-        } else if (newIdx >= sortedQuestions.length) {
+        // Server-side state decides: no going back or re-asking unless the
+        // candidate's own words asked for it.
+        const lastUser = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
+        const decision = decideQuestionMove(
+          {
+            current: currentQuestionIndex,
+            total: sortedQuestions.length,
+            completed,
+            userSpokeThisQuestion,
+            dwellMs: Date.now() - questionEnteredAt,
+            minDwellMs: MIN_QUESTION_DWELL_MS,
+          },
+          { target: newIdx, userRequested, candidateAskedBack: candidateAskedToGoBack(lastUser) },
+        );
+        if (!decision.ok) {
+          result = decision.message;
+          if (decision.reason !== "same") log.warn(`Rejected question change to Q${newIdx + 1} (${decision.reason})`);
+        } else if (decision.end) {
           beginEnding();
           result = "Interview is now complete. Please give a brief farewell.";
-        } else if (newIdx >= 0) {
-          moveTo(newIdx, true);
-          result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Naturally transition and ask this question.`;
+        } else if (moveTo(decision.target, true)) {
+          result = `Moved to question ${currentQuestionIndex + 1} of ${sortedQuestions.length}: "${sortedQuestions[currentQuestionIndex]?.text}". Naturally transition and ask this question. Do not repeat earlier questions.`;
         } else {
-          result = "Invalid question index.";
+          result = "All questions have been asked. Please give a brief farewell.";
         }
       }
       responses.push({ id: c.id, name: c.name, response: { result } });
@@ -1060,6 +1139,7 @@ async function handleInterview(
     if (sc.inputTranscription?.text) {
       userBuf = joinTranscriptChunk(userBuf, sc.inputTranscription.text);
       userTextSinceModel = true;
+      userWordsSinceModelChunk = true;
       lastUserSpeech = Date.now();
       send({ type: "asr", data: { results: [{ text: userBuf.trim() }] } });
     }
@@ -1069,9 +1149,10 @@ async function handleInterview(
       flushModelText(true);
       send({ type: "interrupt" });
       playbackEndsAt = 0;
-      if (modelBuf.trim()) pushHistory("assistant", modelBuf.trim());
+      const cutText = closePartialTurn(modelBuf);
+      if (cutText && !repeatsLastAssistant(cutText)) pushHistory("assistant", cutText);
       const wasSpeaking = !!(modelBuf.trim() || modelAudioBytes);
-      if (wasSpeaking) send({ type: "tts_ended" });
+      if (wasSpeaking) send({ type: "tts_ended", partial: true });
       modelBuf = ""; modelAudioBytes = 0;
       if (wasSpeaking) scheduleAiCutResume("barge_in");
     }
@@ -1080,7 +1161,10 @@ async function handleInterview(
       for (const p of parts) {
         const inline = p.inlineData;
         if (inline?.data && String(inline.mimeType || "").startsWith("audio/")) {
+          closeStaleModelTurn();
           if (userBuf.trim()) flushUser();
+          lastModelChunkAt = Date.now();
+          userWordsSinceModelChunk = false;
           clearResponseWatchdog();
           userTextSinceModel = false;
           watchdogNudges = 0;
@@ -1096,9 +1180,13 @@ async function handleInterview(
       }
     }
     if (sc.outputTranscription?.text) {
+      closeStaleModelTurn();
       if (userBuf.trim()) flushUser();
-      modelBuf += sc.outputTranscription.text;
-      modelPending += sc.outputTranscription.text;
+      lastModelChunkAt = Date.now();
+      userWordsSinceModelChunk = false;
+      // Join safely: a chunk starting a new sentence gets a space ("reviewing Yes").
+      modelBuf = joinTranscriptChunk(modelBuf, sc.outputTranscription.text);
+      modelPending = modelPending ? joinTranscriptChunk(modelPending, sc.outputTranscription.text) : sc.outputTranscription.text;
       if (modelAudioBytes > 0) flushModelText(false);
     }
     if (sc.generationComplete || sc.turnComplete) {
@@ -1135,11 +1223,8 @@ async function handleInterview(
     // The browser cuts AI playback on reconnect; remember if it was mid-sentence.
     const aiWasSpeaking = modelAudioBytes > 0 || Date.now() < playbackEndsAt;
     // Save what the AI said so far, then tell the browser (it saves its buffer on this).
-    flushModelText(true);
-    if (modelBuf.trim() || modelAudioBytes > 0) send({ type: "tts_ended" });
+    closeCutModelTurn(`reconnect:${why}`);
     send({ type: "session_reconnecting" });
-    if (modelBuf.trim()) pushHistory("assistant", modelBuf.trim());
-    modelBuf = ""; modelAudioBytes = 0;
     // Finish the candidate's pending words now so they aren't glued to the next turn.
     if (userBuf.trim()) flushUser();
     const pendingUserAnswer = userTextSinceModel;
@@ -1151,7 +1236,8 @@ async function handleInterview(
           apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
           clientVad: vadForThisSocket,
           gender: ctx.aiGender,
-          systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex),
+          // Fresh or resumed, the new session must continue, never start over.
+          systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumeState(pendingUserAnswer)),
         });
         gem = ws;
         gemClientVad = vadForThisSocket;
@@ -1160,13 +1246,9 @@ async function handleInterview(
         try { old?.removeAllListeners("close"); old?.close(); } catch { /* ignore */ }
         attach(ws);
         if (!handle) {
-          const recap = history.slice(-12).map((h) => `${h.role === "user" ? "Participant" : "You"}: ${h.text}`).join("\n");
-          addContext(`[SYSTEM] The connection was restored. Conversation so far:\n${recap}`);
-          if (!clientTurnOpen) {
-            sayText(pendingUserAnswer
-              ? `[SYSTEM] Connection restored. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". The participant's last answer (above) has not been replied to yet — respond to it now out loud.`
-              : `[SYSTEM] Connection restored. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly continue the interview from where it left off.`);
-          }
+          // The resume rule in the system prompt carries the asked questions and
+          // recent transcript; this cue makes it speak now.
+          if (!clientTurnOpen) sayText(resumeCue(resumeState(pendingUserAnswer), isZh));
         } else if (pendingUserAnswer && !clientTurnOpen) {
           armResponseWatchdog("after_resume");
         } else if (aiWasSpeaking) {
@@ -1242,14 +1324,22 @@ async function handleInterview(
 
   // ── Initial connection ──
   try {
-    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex) });
+    // Seed history from the browser (reconnect / reload) so the resume prompt has context.
+    for (const l of ctx.resume?.recent ?? []) {
+      if (l && (l.role === "user" || l.role === "assistant") && typeof l.text === "string") {
+        const t = stripToolCallText(l.text);
+        if (t) pushHistory(l.role, t);
+      }
+    }
+    if (resumingAtStart) log.info(`Resuming at Q${currentQuestionIndex + 1} (asked: ${[...completed].map((i) => i + 1).join(",") || "none"}, ${history.length} recent lines)`);
+    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null) });
     attach(gem);
     log.info(`Gemini session established (clientVad=${clientVadEnabled})`);
     send({ type: "ready", sessionId: "gemini-session", clientVad: clientVadEnabled });
     send({ type: "question_change", questionIndex: currentQuestionIndex, totalQuestions: sortedQuestions.length });
     await new Promise((r) => setTimeout(r, 1_500));
-    sayText(currentQuestionIndex > 0
-      ? `[SYSTEM] The participant is returning to the interview. Continue from question ${currentQuestionIndex + 1}.`
+    sayText(resumingAtStart
+      ? resumeCue(resumeState(false), isZh)
       : "[SYSTEM] The participant has just joined. Please greet them and begin with question 1.");
   } catch (err) {
     log.error("Failed to connect to Gemini:", err);
@@ -1363,8 +1453,8 @@ async function handleInterview(
           beginEnding();
           sayText(noAnswerAdvanceCue(0, null));
         } else {
-          moveTo(fromIdx + 1, true);
-          sayText(noAnswerAdvanceCue(currentQuestionIndex + 1, sortedQuestions[currentQuestionIndex]?.text ?? ""));
+          if (moveTo(fromIdx + 1, true)) sayText(noAnswerAdvanceCue(currentQuestionIndex + 1, sortedQuestions[currentQuestionIndex]?.text ?? ""));
+          else sayText(noAnswerAdvanceCue(0, null));
         }
         return;
       }

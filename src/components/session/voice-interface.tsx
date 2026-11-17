@@ -712,9 +712,14 @@ export function VoiceInterface({
     setRemainingSeconds(durationMinutes * 60);
   }, [voice.isConnected, durationMinutes]);
 
+  // The clock stops while the voice connection is being restored, so a
+  // network drop doesn't eat the candidate's time.
+  const reconnectingRef = useRef(false);
+  reconnectingRef.current = voice.isReconnecting;
   useEffect(() => {
     if (remainingSeconds === null || remainingSeconds <= 0) return;
     const id = setInterval(() => {
+      if (reconnectingRef.current) return;
       setRemainingSeconds((prev) => {
         if (prev === null) return null;
         return prev <= 1 ? 0 : prev - 1;
@@ -1563,7 +1568,7 @@ export function VoiceInterface({
           role="status"
           className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
         >
-          Connection lost. Reconnecting…
+          Connection lost. Reconnecting… Your answers so far are saved and the timer is paused.
         </div>
       )}
       {voice.micCheckPrompt && voice.isConnected && !locallyCompleted && (
