@@ -20,6 +20,7 @@ import {
   verifyBatchAccess,
   verifyProjectAccess,
 } from "../batch-access";
+import { mergeInviteMessages, type InviteMessages } from "@/lib/messaging/invite-messages";
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
 import { assertMinRole, protectedProcedure, router } from "../trpc";
 
@@ -595,7 +596,9 @@ export const batchRouter = router({
 
       let query = ctx.supabase
         .from("candidates")
-        .select("id, name, email, phone, inviteToken, emailStatus, whatsappStatus, scheduledAt, expiresAt, interview:interviews(title)")
+        .select(
+          "id, name, email, phone, inviteToken, emailStatus, whatsappStatus, scheduledAt, expiresAt, inviteMessages, interview:interviews(title)",
+        )
         .eq("batchId", batch.id);
       if (input.candidateIds?.length) query = query.in("id", input.candidateIds);
       const { data: candidates, error } = await query;
@@ -635,21 +638,46 @@ export const batchRouter = router({
           const errors: string[] = [];
           const row: (typeof results)[number] = { candidateId: c.id };
 
+          const messagePatch: InviteMessages = {};
           if (input.channels.email && !(input.onlyUnsent && c.emailStatus === "sent")) {
             const r = await deliverEmail(cfg, c.email, vars, undefined, input.emailProvider);
             row.email = r.status;
             update.emailStatus = r.status;
             update.emailProvider = r.provider;
-            if (r.status === "sent") update.emailSentAt = new Date().toISOString();
+            if (r.status === "sent") {
+              const sentAt = new Date().toISOString();
+              update.emailSentAt = sentAt;
+              messagePatch.email = {
+                subject: r.subject,
+                text: r.text,
+                sentAt,
+                provider: r.provider,
+                to: String(c.email ?? ""),
+              };
+            }
             if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
           }
           if (input.channels.whatsapp && !(input.onlyUnsent && c.whatsappStatus === "sent")) {
-            const r = await deliverWhatsapp(cfg, c.phone, vars);
+            const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
+            const r = await deliverWhatsapp(cfg, phone, vars);
             row.whatsapp = r.status;
             update.whatsappStatus = r.status;
             update.whatsappProvider = r.provider;
-            if (r.status === "sent") update.whatsappSentAt = new Date().toISOString();
+            if (r.status === "sent") {
+              const sentAt = new Date().toISOString();
+              update.whatsappSentAt = sentAt;
+              messagePatch.whatsapp = {
+                text: r.text,
+                sentAt,
+                provider: r.provider ?? "resilio",
+                to: phone ?? "",
+                templateName: r.templateName,
+              };
+            }
             if (r.error) errors.push(`WhatsApp: ${r.error}`);
+          }
+          if (Object.keys(messagePatch).length) {
+            update.inviteMessages = mergeInviteMessages(c.inviteMessages, messagePatch);
           }
           if (Object.keys(update).length) {
             update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;

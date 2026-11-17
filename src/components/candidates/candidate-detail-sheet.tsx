@@ -13,9 +13,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
@@ -106,6 +108,99 @@ function Row({ icon: Icon, label, value }: { icon: React.ComponentType<{ classNa
   );
 }
 
+type InviteMessageView = {
+  channel: "email" | "whatsapp";
+  source: "exact" | "reconstructed";
+  status: string | null;
+  sentAt: string | null;
+  provider: string | null;
+  to: string | null;
+  subject?: string | null;
+  text: string | null;
+  templateName?: string | null;
+};
+
+function InviteMessagesSection({ views }: { views?: InviteMessageView[] | null }) {
+  const [openChannel, setOpenChannel] = useState<"email" | "whatsapp" | null>(null);
+  if (!views?.length) return null;
+
+  return (
+    <section className="rounded-xl border bg-card p-4 shadow-sm">
+      <h4 className="mb-3 text-sm font-semibold">Invite messages</h4>
+      <div className="space-y-2">
+        {views.map((v) => {
+          const isOpen = openChannel === v.channel;
+          const Icon = v.channel === "email" ? Mail : MessageCircle;
+          const title = v.channel === "email" ? "Email" : "WhatsApp";
+          return (
+            <div key={v.channel} className="rounded-lg border bg-background/60">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted/40"
+                onClick={() => setOpenChannel(isOpen ? null : v.channel)}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="font-medium">{title}</span>
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                    v.source === "exact"
+                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                      : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                  )}
+                >
+                  {v.source === "exact" ? "Exact (saved)" : "Reconstructed"}
+                </span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  {v.status ?? "not sent"}
+                  {v.sentAt ? ` · ${fmt(v.sentAt)}` : ""}
+                </span>
+              </button>
+              {isOpen && (
+                <div className="space-y-2 border-t px-3 py-3 text-xs">
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    <div>
+                      <span className="text-muted-foreground">To</span>
+                      <p className="break-all font-medium text-foreground">{v.to || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Provider</span>
+                      <p className="font-medium text-foreground">{v.provider || "—"}</p>
+                    </div>
+                    {v.channel === "email" && (
+                      <div className="sm:col-span-2">
+                        <span className="text-muted-foreground">Subject</span>
+                        <p className="font-medium text-foreground">{v.subject || "—"}</p>
+                      </div>
+                    )}
+                    {v.channel === "whatsapp" && v.templateName ? (
+                      <div className="sm:col-span-2">
+                        <span className="text-muted-foreground">Template</span>
+                        <p className="font-medium text-foreground">{v.templateName}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Message</span>
+                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 p-2.5 font-sans text-[12px] leading-relaxed text-foreground code-scrollbar">
+                      {v.text?.trim() || "—"}
+                    </pre>
+                  </div>
+                  {v.source === "reconstructed" && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Rebuilt from the current org template. Resend to save the exact message that went out.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function CandidateDetailSheet({
   candidateId,
   onOpenChange,
@@ -153,6 +248,8 @@ export function CandidateDetailSheet({
   const [form, setForm] = useState<CandidateFormState>(EMPTY_CANDIDATE_FORM);
   const [confirmDiscard, setConfirmDiscard] = useState<null | "close" | "cancel">(null);
   const [copied, setCopied] = useState(false);
+  const [sendEmail, setSendEmail] = useState(false);
+  const [sendWhatsapp, setSendWhatsapp] = useState(false);
 
   const original = useMemo(() => (c ? toForm(c) : null), [c]);
   useEffect(() => {
@@ -216,22 +313,27 @@ export function CandidateDetailSheet({
     onError: (err) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
-  const describeDelivery = (d: { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } } | undefined) => {
-    const parts: string[] = [];
-    let fail = false;
-    for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-      const r = d?.[ch];
-      if (!r) continue;
-      if (r.status !== "sent") fail = true;
-      parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-    }
-    return { parts, fail };
+  const canEmail = !!delivery.data?.email && !!String(c?.email ?? "").trim();
+  const phoneTrim = String(c?.phone ?? "").replace(/[\s()-]/g, "");
+  const canWhatsapp = !!delivery.data?.whatsapp && phoneTrim.startsWith("+");
+  const canSendAny = canEmail || canWhatsapp;
+
+  useEffect(() => {
+    // Default to every channel that is actually sendable for this candidate.
+    setSendEmail(canEmail);
+    setSendWhatsapp(canWhatsapp);
+  }, [canEmail, canWhatsapp, candidateId]);
+
+  const selectedChannels = {
+    email: sendEmail && canEmail,
+    whatsapp: sendWhatsapp && canWhatsapp,
   };
+  const hasSelectedChannel = selectedChannels.email || selectedChannels.whatsapp;
 
   const resend = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
-      const { parts, fail } = describeDelivery(d);
-      toast({ title: fail ? "Some messages not sent" : "Invite link sent", description: parts.join(" · ") || "Nothing to send", variant: fail ? "destructive" : undefined });
+      const s = summarizeDelivery(d, { verb: "resent" });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
       void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
       onSaved();
     },
@@ -240,13 +342,8 @@ export function CandidateDetailSheet({
 
   const sendNew = trpc.candidate.sendNewLink.useMutation({
     onSuccess: (d) => {
-      const { parts, fail } = describeDelivery(d.delivery);
-      const sent = parts.join(" · ");
-      toast({
-        title: fail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
-        description: sent || "Copy the link to share it with the candidate.",
-        variant: fail ? "destructive" : undefined,
-      });
+      const s = summarizeDelivery(d.delivery, { newLink: true });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
       void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
       onSaved();
     },
@@ -342,54 +439,115 @@ export function CandidateDetailSheet({
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
                   <h4 className="mb-2 text-sm font-semibold">Invite link</h4>
                   {link ? (
-                    <div className="flex items-center gap-2">
-                      <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">{link}</code>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(link);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 1500);
-                        }}
-                      >
-                        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={resend.isLoading || sendNew.isLoading || (!needsNewLink && !(delivery.data?.email || delivery.data?.whatsapp))}
-                        title={
-                          needsNewLink
-                            ? "Invalidate this link, start a fresh session, and send the new link"
-                            : delivery.data?.email || delivery.data?.whatsapp
-                              ? "Send the current link again"
-                              : "Configure WhatsApp/Email in Integrations"
-                        }
-                        onClick={() => {
-                          const channels = {
-                            email: !!delivery.data?.email && !!c.email,
-                            whatsapp: !!delivery.data?.whatsapp && !!c.phone,
-                          };
-                          if (needsNewLink) {
-                            sendNew.mutate({ candidateId: c.id, channels });
-                          } else {
-                            resend.mutate({ candidateId: c.id, channels });
-                          }
-                        }}
-                      >
-                        {resend.isLoading || sendNew.isLoading ? (
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Send className="mr-1.5 h-3.5 w-3.5" />
-                        )}
-                        {needsNewLink ? "Send new link" : "Resend"}
-                      </Button>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">{link}</code>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(link);
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 1500);
+                          }}
+                        >
+                          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+
+                      {canSendAny ? (
+                        <div className="space-y-2 rounded-lg border bg-background/60 p-3">
+                          <p className="text-xs font-medium text-foreground">
+                            {needsNewLink ? "Send new link via" : "Resend via"}
+                          </p>
+                          {canWhatsapp && (
+                            <label className="flex items-start gap-2 text-sm">
+                              <Checkbox
+                                checked={sendWhatsapp}
+                                onCheckedChange={(v) => setSendWhatsapp(v === true)}
+                              />
+                              <span>
+                                WhatsApp
+                                <span className="block text-[11px] text-muted-foreground">To {phoneTrim}</span>
+                              </span>
+                            </label>
+                          )}
+                          {canEmail && (
+                            <label className="flex items-start gap-2 text-sm">
+                              <Checkbox
+                                checked={sendEmail}
+                                onCheckedChange={(v) => setSendEmail(v === true)}
+                              />
+                              <span>
+                                Email
+                                <span className="block text-[11px] text-muted-foreground">To {String(c.email).trim()}</span>
+                              </span>
+                            </label>
+                          )}
+                          <Button
+                            size="sm"
+                            className="mt-1"
+                            disabled={resend.isLoading || sendNew.isLoading || !hasSelectedChannel}
+                            title={
+                              needsNewLink
+                                ? "Invalidate this link, start a fresh session, and send the new link"
+                                : "Send the current link on the selected channels"
+                            }
+                            onClick={() => {
+                              if (needsNewLink) {
+                                sendNew.mutate({ candidateId: c.id, channels: selectedChannels });
+                              } else {
+                                resend.mutate({ candidateId: c.id, channels: selectedChannels });
+                              }
+                            }}
+                          >
+                            {resend.isLoading || sendNew.isLoading ? (
+                              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Send className="mr-1.5 h-3.5 w-3.5" />
+                            )}
+                            {needsNewLink ? "Send new link" : "Resend"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">
+                            {!delivery.data?.email && !delivery.data?.whatsapp
+                              ? "No email or WhatsApp provider connected. Configure them in Settings → Integrations to resend invites."
+                              : !c.email && !phoneTrim
+                                ? "Add an email or phone (+country code) on this candidate to send the invite."
+                                : delivery.data?.whatsapp && phoneTrim && !phoneTrim.startsWith("+")
+                                  ? "Phone must start with a country code (e.g. +91…) for WhatsApp."
+                                  : "No sendable channel for this candidate with the connected providers."}
+                          </p>
+                          {needsNewLink && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={sendNew.isLoading}
+                              onClick={() =>
+                                sendNew.mutate({
+                                  candidateId: c.id,
+                                  channels: { email: false, whatsapp: false },
+                                })
+                              }
+                            >
+                              {sendNew.isLoading ? (
+                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                              ) : null}
+                              Create new link (no send)
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">No invite link.</p>
                   )}
                   {c.lastSendError && <p className="mt-2 text-xs text-destructive">Last send error: {c.lastSendError}</p>}
                 </section>
+
+                <InviteMessagesSection views={c.inviteMessageViews} />
 
                 {hasResume && (
                   <section className="rounded-xl border bg-card p-4 shadow-sm">

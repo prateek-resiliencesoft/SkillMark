@@ -45,6 +45,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
@@ -594,44 +595,26 @@ export function CandidateManager({
       toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
   });
 
-  const describeDelivery = (d: { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } } | undefined) => {
-    const parts: string[] = [];
-    let anyFail = false;
-    for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-      const r = d?.[ch];
-      if (!r) continue;
-      if (r.status !== "sent") anyFail = true;
-      parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-    }
-    return { parts, anyFail };
-  };
-
   const resendInviteMutation = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
       invalidateAll();
-      const { parts, anyFail } = describeDelivery(d);
-      toast({
-        title: anyFail ? "Some messages not sent" : "Invite link sent",
-        description: parts.join(" · ") || "Nothing to send",
-        variant: anyFail ? "destructive" : undefined,
-      });
+      const s = summarizeDelivery(d, { verb: "resent" });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
   });
   const sendNewLinkMutation = trpc.candidate.sendNewLink.useMutation({
     onSuccess: (d) => {
       invalidateAll();
-      const { parts, anyFail } = describeDelivery(d.delivery);
-      const sent = parts.join(" · ");
-      toast({
-        title: anyFail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
-        description: sent || "Copy the link to share it with the candidate.",
-        variant: anyFail ? "destructive" : undefined,
-      });
+      const s = summarizeDelivery(d.delivery, { newLink: true });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
     },
     onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
   });
   const deliveryOptions = trpc.candidate.deliveryOptions.useQuery({ interviewId });
+  const [resendRowId, setResendRowId] = useState<string | null>(null);
+  const [rowSendEmail, setRowSendEmail] = useState(true);
+  const [rowSendWhatsapp, setRowSendWhatsapp] = useState(true);
 
   const handleCopyInviteLink = useCallback(
     (inviteToken: string) => {
@@ -1483,36 +1466,96 @@ export function CandidateManager({
                               <LinkIcon className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           ) : null}
-                          {row.type === "candidate" && row.inviteToken ? (
-                            (needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt }) ||
-                              deliveryOptions.data?.email ||
-                              deliveryOptions.data?.whatsapp) ? (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
-                              title={
-                                needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt })
-                                  ? "Send new link (fresh token)"
-                                  : "Resend link (WhatsApp / Email)"
-                              }
-                              disabled={resendInviteMutation.isLoading || sendNewLinkMutation.isLoading}
-                              onClick={() => {
-                                const channels = {
-                                  email: !!deliveryOptions.data?.email,
-                                  whatsapp: !!deliveryOptions.data?.whatsapp,
-                                };
-                                if (needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt })) {
-                                  sendNewLinkMutation.mutate({ candidateId: row.id, channels });
-                                } else {
-                                  resendInviteMutation.mutate({ candidateId: row.id, channels });
-                                }
-                              }}
-                            >
-                              <Send className="h-3.5 w-3.5 text-muted-foreground" />
-                            </Button>
-                            ) : null
-                          ) : null}
+                          {row.type === "candidate" && row.inviteToken ? (() => {
+                            const rowEmailOk = !!deliveryOptions.data?.email && !!String(row.email ?? "").trim();
+                            const rowPhone = String(row.phone ?? "").replace(/[\s()-]/g, "");
+                            const rowWaOk = !!deliveryOptions.data?.whatsapp && rowPhone.startsWith("+");
+                            const fresh = needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt });
+                            if (!rowEmailOk && !rowWaOk && !fresh) return null;
+                            return (
+                              <Popover
+                                open={resendRowId === row.id}
+                                onOpenChange={(open) => {
+                                  setResendRowId(open ? row.id : null);
+                                  if (open) {
+                                    setRowSendEmail(rowEmailOk);
+                                    setRowSendWhatsapp(rowWaOk);
+                                  }
+                                }}
+                              >
+                                <PopoverTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    title={fresh ? "Send new link" : "Resend invite"}
+                                    disabled={resendInviteMutation.isLoading || sendNewLinkMutation.isLoading}
+                                  >
+                                    <Send className="h-3.5 w-3.5 text-muted-foreground" />
+                                  </Button>
+                                </PopoverTrigger>
+                                <PopoverContent align="end" className="w-64 space-y-3 p-3">
+                                  <p className="text-xs font-medium">
+                                    {fresh ? "Send new link via" : "Resend via"}
+                                  </p>
+                                  {rowWaOk && (
+                                    <label className="flex items-start gap-2 text-sm">
+                                      <Checkbox
+                                        checked={rowSendWhatsapp}
+                                        onCheckedChange={(v) => setRowSendWhatsapp(v === true)}
+                                      />
+                                      <span>
+                                        WhatsApp
+                                        <span className="block text-[11px] text-muted-foreground">To {rowPhone}</span>
+                                      </span>
+                                    </label>
+                                  )}
+                                  {rowEmailOk && (
+                                    <label className="flex items-start gap-2 text-sm">
+                                      <Checkbox
+                                        checked={rowSendEmail}
+                                        onCheckedChange={(v) => setRowSendEmail(v === true)}
+                                      />
+                                      <span>
+                                        Email
+                                        <span className="block text-[11px] text-muted-foreground">
+                                          To {String(row.email).trim()}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  )}
+                                  {!rowEmailOk && !rowWaOk && (
+                                    <p className="text-[11px] text-muted-foreground">
+                                      No connected channel for this candidate. You can still create a new link to copy.
+                                    </p>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    className="w-full"
+                                    disabled={
+                                      resendInviteMutation.isLoading ||
+                                      sendNewLinkMutation.isLoading ||
+                                      (!(rowSendEmail && rowEmailOk) && !(rowSendWhatsapp && rowWaOk) && !fresh)
+                                    }
+                                    onClick={() => {
+                                      const channels = {
+                                        email: rowSendEmail && rowEmailOk,
+                                        whatsapp: rowSendWhatsapp && rowWaOk,
+                                      };
+                                      if (fresh) {
+                                        sendNewLinkMutation.mutate({ candidateId: row.id, channels });
+                                      } else if (channels.email || channels.whatsapp) {
+                                        resendInviteMutation.mutate({ candidateId: row.id, channels });
+                                      }
+                                      setResendRowId(null);
+                                    }}
+                                  >
+                                    {fresh ? "Send new link" : "Resend"}
+                                  </Button>
+                                </PopoverContent>
+                              </Popover>
+                            );
+                          })() : null}
                         </TableCell>
                       </TableRow>
                     );
