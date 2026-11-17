@@ -39,6 +39,7 @@ import {
     Phone,
     Send,
     Sparkles,
+    Star,
     User,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -142,6 +143,11 @@ export function CandidateDetailSheet({
     { enabled: open && !!candidateId && hasResume, retry: false },
   );
   const [cvOpening, setCvOpening] = useState(false);
+  const feedbackQ = trpc.candidate.feedback.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId && !!c?.sessionId, retry: false },
+  );
+  const feedback = feedbackQ.data;
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<CandidateFormState>(EMPTY_CANDIDATE_FORM);
@@ -466,6 +472,30 @@ export function CandidateDetailSheet({
                     </a>
                   )}
                 </section>
+
+                {feedback ? (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-semibold">Candidate feedback</h4>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex" aria-label={`${feedback.rating} of 5`}>
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <Star key={n} className={cn("h-4 w-4", n <= feedback.rating ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30")} />
+                        ))}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{new Date(feedback.createdAt).toLocaleString()}</span>
+                    </div>
+                    {feedback.tags?.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {feedback.tags.map((t) => (
+                          <span key={t} className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {feedback.comment ? <p className="mt-2 whitespace-pre-line text-sm">{feedback.comment}</p> : null}
+                  </section>
+                ) : null}
 
                 {/* Interview activity — shown for any status once the candidate attempted it */}
                 {c.session && interviewBegun && (

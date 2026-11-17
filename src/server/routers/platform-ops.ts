@@ -12,6 +12,7 @@ import { abandonSession } from "@/lib/session-link-server";
 import { scheduleSessionReport } from "@/lib/session-report-server";
 import { updatePassword } from "@/lib/users";
 import { issueNewInviteLink } from "../new-invite-link";
+import { listFeedback } from "../candidate-feedback";
 import { writePlatformAudit } from "../tenant";
 import { platformProcedure, router } from "../trpc";
 import type { Context } from "../context";
@@ -79,6 +80,19 @@ function sessionView(s: SessionRow, cand?: Record<string, unknown>) {
 }
 
 export const platformOpsRouter = router({
+  /** Candidate feedback from the thank-you screen, newest first, with a summary. */
+  feedbackList: platformProcedure
+    .input(
+      z.object({
+        organizationId: z.string().uuid().optional(),
+        rating: z.number().int().min(1).max(5).optional(),
+        from: z.string().datetime({ offset: true }).optional(),
+        to: z.string().datetime({ offset: true }).optional(),
+        search: z.string().max(200).optional(),
+      }),
+    )
+    .query(({ ctx, input }) => listFeedback(ctx.supabase, input)),
+
   /** Real counts for the overview charts. */
   overviewStats: platformProcedure
     .input(

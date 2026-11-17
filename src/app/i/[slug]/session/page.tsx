@@ -104,7 +104,7 @@ export default function SlugSessionPage() {
 
   if (session.data.status === "COMPLETED" || completed) {
     try { localStorage.removeItem(STORAGE_PREFIX + slug); } catch { /* noop */ }
-    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} />;
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} sessionId={isPreview ? null : session.data.id} />;
   }
 
   const antiCheatingEnabled = !isPreview && !!interview.data.antiCheatingEnabled;

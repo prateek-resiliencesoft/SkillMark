@@ -124,7 +124,7 @@ export default function PublicInterviewPage() {
 
   if (completed) {
     try { localStorage.removeItem(STORAGE_PREFIX + slug); } catch { /* noop */ }
-    return <CandidateThankYou timeLimitReached={false} />;
+    return <CandidateThankYou timeLimitReached={false} sessionId={storedSessionId} />;
   }
 
   if (storedSessionId && existingSession.isLoading) {
