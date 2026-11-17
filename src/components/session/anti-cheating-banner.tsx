@@ -2,31 +2,48 @@
 
 import type { AntiCheatingViolation } from "@/hooks/use-anti-cheating";
 import { useAntiCheating } from "@/hooks/use-anti-cheating";
+import { useIntegrityMonitor, type IntegrityWarnKind } from "@/hooks/use-integrity-monitor";
 import { markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
 import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
 import { MAX_STRIKES, STRIKE_LABEL } from "@/lib/head-movement";
+import type { IntegritySignal } from "@/lib/integrity/signals";
 import { trpc } from "@/lib/trpc/client";
-import { AlertTriangle, Ban } from "lucide-react";
+import { AlertTriangle, Ban, Camera } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface AntiCheatingGuardProps {
   enabled: boolean;
   sessionId?: string;
+  /** Device guard, lip-sync, answer timing, reading pattern, extension detection. */
+  integrityChecksEnabled?: boolean;
+  livenessChallengesEnabled?: boolean;
   /** Called after the candidate acknowledges the final (3rd) violation. */
   onDisqualified?: () => void;
 }
+
+type GuardViolation = Omit<AntiCheatingViolation, "type"> & {
+  type: AntiCheatingViolation["type"] | IntegrityWarnKind;
+};
 
 type ModalState =
   | { phase: "checking"; reason: string }
   | { phase: "warning"; count: number; reason: string }
   | { phase: "final"; reason: string };
 
+const SIGNAL_FLUSH_MS = 10_000;
+
 /**
  * Page departure / paste / multi-screen violations. Shares one strict
  * 3-strike count (server-side) with head-movement detection: warnings 1 and 2
  * need OK, the 3rd ends and disqualifies the session.
  */
-export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCheatingGuardProps) {
+export function AntiCheatingGuard({
+  enabled,
+  sessionId,
+  integrityChecksEnabled = false,
+  livenessChallengesEnabled = false,
+  onDisqualified,
+}: AntiCheatingGuardProps) {
   const [modal, setModal] = useState<ModalState | null>(null);
   const openRef = useRef(false);
   const done = useRef(false);
@@ -39,7 +56,7 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
   onDqRef.current = onDisqualified;
 
   const handleViolation = useCallback(
-    (violation: AntiCheatingViolation) => {
+    (violation: GuardViolation) => {
       if (!sessionId || done.current || openRef.current) return;
       openRef.current = true;
       const reason = STRIKE_LABEL[violation.type] ?? "Anti-cheating violation";
@@ -95,6 +112,52 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
 
   useAntiCheating({ enabled, onViolation: handleViolation });
 
+  // ── Integrity checks ────────────────────────────────────────────
+  const [deviceNotice, setDeviceNotice] = useState<{ label: string; kind: "audio" | "video" } | null>(null);
+  const recordSignals = trpc.session.recordIntegritySignals.useMutation();
+  const recordRef = useRef(recordSignals);
+  recordRef.current = recordSignals;
+  const pending = useRef<IntegritySignal[]>([]);
+  const integrityOn = enabled && integrityChecksEnabled && !!sessionId;
+
+  const flushSignals = useCallback(() => {
+    if (!sessionId || pending.current.length === 0) return;
+    const batch = pending.current.splice(0, 50);
+    recordRef.current.mutateAsync({ sessionId, signals: batch }).catch((err) => {
+      console.warn("[integrity] signal upload failed", err);
+      pending.current = [...batch, ...pending.current].slice(0, 200);
+    });
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!integrityOn) return;
+    const timer = setInterval(flushSignals, SIGNAL_FLUSH_MS);
+    window.addEventListener("pagehide", flushSignals);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("pagehide", flushSignals);
+      flushSignals();
+    };
+  }, [integrityOn, flushSignals]);
+
+  const { livenessPrompt } = useIntegrityMonitor({
+    enabled: integrityOn,
+    livenessEnabled: livenessChallengesEnabled,
+    onWarn: (type, detail) => handleViolation({ type, timestamp: Date.now(), detail }),
+    onVirtualDevice: (label, kind) => setDeviceNotice((cur) => cur ?? { label, kind }),
+    onSignal: (s) => {
+      if (done.current) return;
+      pending.current.push(s);
+      if (pending.current.length >= 50) flushSignals();
+    },
+  });
+
+  useEffect(() => {
+    if (!deviceNotice) return;
+    markModalOpen(true);
+    return () => markModalOpen(false);
+  }, [deviceNotice]);
+
   useEffect(() => {
     if (!modal) return;
     markModalOpen(true);
@@ -123,7 +186,49 @@ export function AntiCheatingGuard({ enabled, sessionId, onDisqualified }: AntiCh
     setModal(null);
   }, [modal]);
 
-  if (!enabled || !modal) return null;
+  if (!enabled) return null;
+  if (!modal) {
+    return (
+      <>
+        {livenessPrompt && (
+          <div
+            role="status"
+            aria-live="assertive"
+            className="pointer-events-none fixed left-1/2 top-4 z-[9995] -translate-x-1/2 rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg"
+          >
+            {livenessPrompt}
+          </div>
+        )}
+        {deviceNotice && (
+          <div
+            className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="vd-title"
+          >
+            <div className="mx-4 w-full max-w-md rounded-2xl border border-amber-200 bg-white p-5 text-center shadow-2xl sm:p-6 dark:border-amber-900 dark:bg-gray-900">
+              <Camera className="mx-auto h-10 w-10 text-amber-600" />
+              <h2 id="vd-title" className="mt-3 text-lg font-bold text-gray-900 dark:text-gray-100">
+                Please use your physical {deviceNotice.kind === "video" ? "camera" : "microphone"}
+              </h2>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                This interview is using a virtual {deviceNotice.kind === "video" ? "camera" : "audio device"} (&quot;{deviceNotice.label}&quot;).
+                Switch to your built-in or USB {deviceNotice.kind === "video" ? "webcam" : "microphone"} in your browser or system settings.
+                This is not a violation; it has been noted for the interviewer.
+              </p>
+              <button
+                type="button"
+                onClick={() => setDeviceNotice(null)}
+                className="mt-5 w-full rounded-lg bg-amber-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-700"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
   const warnings = MAX_STRIKES - 1;
   const isFinal = modal.phase === "final";
 

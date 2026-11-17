@@ -86,6 +86,8 @@ export default function SettingsTab() {
     interview.antiCheatingEnabled ?? false,
   );
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>((interview as any).headMovementDetectionEnabled ?? false);
+  const [integrityChecksEnabled, setIntegrityChecksEnabled] = useState<boolean>((interview as any).integrityChecksEnabled ?? false);
+  const [livenessChallengesEnabled, setLivenessChallengesEnabled] = useState<boolean>((interview as any).livenessChallengesEnabled ?? false);
   const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>(() =>
     parseCompletionNotifyMembers((interview as any).completionNotifyMembers),
   );
@@ -429,6 +431,39 @@ export default function SettingsTab() {
                   </div>
                 )}
                 {antiCheatingEnabled && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
+                    <div>
+                      <Label>Integrity Checks (AI copilots, other voices, virtual devices)</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Warns and strikes when another voice is heard while the candidate&apos;s mouth is closed, or the camera/mic is switched mid-interview.
+                        Silently records reviewer-only signals: virtual cameras/mics, voice vs. lip-movement correlation, uniform answer delays,
+                        reading-like eye movement and browser extensions injecting into the page. The AI interviewer also asks first-hand follow-ups.
+                        Lip-sync and eye checks need Head Movement Detection.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={integrityChecksEnabled}
+                      onCheckedChange={setIntegrityChecksEnabled}
+                    />
+                  </div>
+                )}
+                {antiCheatingEnabled && integrityChecksEnabled && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
+                    <div>
+                      <Label>Liveness Prompts</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Twice per interview, at random times, asks the candidate to turn their head, cover their face, or smile.
+                        Catches pre-recorded video and many real-time face swaps. Results go to the report only, never strikes.
+                        Needs Head Movement Detection.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={livenessChallengesEnabled}
+                      onCheckedChange={setLivenessChallengesEnabled}
+                    />
+                  </div>
+                )}
+                {antiCheatingEnabled && (
               <div className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                 <p className="font-medium">When enabled, interviewees will experience:</p>
                 <ul className="mt-1 list-inside list-disc space-y-0.5">
@@ -480,6 +515,8 @@ export default function SettingsTab() {
                 : null,
               antiCheatingEnabled,
               headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
+              integrityChecksEnabled: antiCheatingEnabled && integrityChecksEnabled,
+              livenessChallengesEnabled: antiCheatingEnabled && integrityChecksEnabled && livenessChallengesEnabled,
               completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
             })
           }

@@ -18,6 +18,7 @@ import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log";
 import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
+import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import {
   getGeminiInterviewLanguageCode,
   interviewLanguageRequirement,
@@ -238,6 +239,7 @@ interface InterviewContext {
   aiTone: string;
   language: string;
   followUpDepth: string;
+  integrityProbing?: boolean;
   startQuestionIndex?: number;
   candidateFocus?: CandidateFocus | null;
   questions: Array<{
@@ -322,7 +324,9 @@ function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
   }).join("\n");
 
   const currentQ = startIdx + 1;
-  const focus = buildCandidateFocusSection(ctx.candidateFocus, sorted.length);
+  const focus =
+    buildCandidateFocusSection(ctx.candidateFocus, sorted.length) +
+    buildIntegrityProbingSection(ctx.integrityProbing, isZh);
 
   if (isZh) {
     const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "zh");

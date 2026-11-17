@@ -359,6 +359,8 @@ export const interviewRouter = router({
         llmModel: z.string().optional(),
         antiCheatingEnabled: z.boolean().default(false),
         headMovementDetectionEnabled: z.boolean().default(false),
+        integrityChecksEnabled: z.boolean().default(false),
+        livenessChallengesEnabled: z.boolean().default(false),
         completionNotifyMembers: z
           .array(
             z.object({
@@ -638,6 +640,8 @@ export const interviewRouter = router({
         invitedEmails: z.array(z.string().email()).optional(),
         antiCheatingEnabled: z.boolean().optional(),
         headMovementDetectionEnabled: z.boolean().optional(),
+        integrityChecksEnabled: z.boolean().optional(),
+        livenessChallengesEnabled: z.boolean().optional(),
         completionNotifyMembers: z
           .array(
             z.object({
@@ -881,6 +885,8 @@ export const interviewRouter = router({
           invitedEmails: source.invitedEmails,
           antiCheatingEnabled: source.antiCheatingEnabled,
           headMovementDetectionEnabled: source.headMovementDetectionEnabled ?? false,
+          integrityChecksEnabled: (source as { integrityChecksEnabled?: boolean }).integrityChecksEnabled ?? false,
+          livenessChallengesEnabled: (source as { livenessChallengesEnabled?: boolean }).livenessChallengesEnabled ?? false,
         })
         .select()
         .single();

@@ -38,6 +38,7 @@ import { bt } from "../src/lib/i18n";
 import { isChineseInterviewLanguage } from "../src/lib/interview-language";
 import { interviewerPromptIdentity } from "../src/lib/interviewer-persona";
 import { createLogger } from "../src/lib/logger";
+import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { SPOKEN, PROMPTS } from "./voice-relay-prompts";
 
@@ -84,6 +85,7 @@ interface InterviewContext {
   aiTone: string;
   language: string;
   followUpDepth: string;
+  integrityProbing?: boolean;
   startQuestionIndex?: number;
   questions: Array<{
     text: string;
@@ -1024,9 +1026,9 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
       forceLanguage: userLangSamples.length > 0 ? (isZh ? "zh" : "en") : undefined,
     };
 
-    const prompt = bt(isZh, isCodingOrWhiteboard
-      ? PROMPTS.response.codingWb(promptParams)
-      : PROMPTS.response.normal(promptParams));
+    const prompt = isCodingOrWhiteboard
+      ? bt(isZh, PROMPTS.response.codingWb(promptParams))
+      : bt(isZh, PROMPTS.response.normal(promptParams)) + buildIntegrityProbingSection(ctx.integrityProbing, isZh);
 
     const maxTokens = getMaxTokensForQuestion(currentQ.type);
     const startMs = Date.now();

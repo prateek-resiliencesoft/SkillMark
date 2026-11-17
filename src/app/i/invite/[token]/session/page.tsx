@@ -224,6 +224,7 @@ export default function InviteSessionPage() {
       aiTone: interview.aiTone,
       language: interview.language,
       followUpDepth: interview.followUpDepth,
+      integrityProbing: !!interview.antiCheatingEnabled && !!interview.integrityChecksEnabled,
       candidateFocus:
         (candidate.data as any).tailorInterview !== false
           ? {
@@ -244,7 +245,7 @@ export default function InviteSessionPage() {
 
     return (
       <>
-        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
+        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={!!interview.integrityChecksEnabled} livenessChallengesEnabled={!!interview.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={session.id}
@@ -267,7 +268,7 @@ export default function InviteSessionPage() {
 
   return (
     <>
-      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
+      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={!!interview.integrityChecksEnabled} livenessChallengesEnabled={!!interview.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={session.id}
