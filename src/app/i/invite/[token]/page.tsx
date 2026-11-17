@@ -174,7 +174,7 @@ export default function InvitePage() {
   }
 
   if (session?.status === "COMPLETED") {
-    return <CandidateThankYou />;
+    return <CandidateThankYou sessionId={session?.id ?? null} inviteToken={token} />;
   }
 
   // One-time link already used (finished, interrupted, or running in another tab)

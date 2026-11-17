@@ -121,7 +121,7 @@ export default function InviteSessionPage() {
 
   // Fresh completion in this tab → thank-you. Any other visit to a finished link → expired.
   if (completed) {
-    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} />;
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} sessionId={session.id} inviteToken={token} />;
   }
 
   const isExpired = !!(
@@ -159,12 +159,12 @@ export default function InviteSessionPage() {
   }
 
   if (linkExpired || session.status === "ABANDONED") {
-    return <LinkExpiredScreen reason="interrupted" />;
+    return <LinkExpiredScreen reason="interrupted" sessionId={session.id} inviteToken={token} />;
   }
 
   if (session.status === "COMPLETED") {
     // Reload after finishing: the same thank-you screen, nothing else.
-    return <CandidateThankYou />;
+    return <CandidateThankYou sessionId={session.id} inviteToken={token} />;
   }
 
   if (startError) {

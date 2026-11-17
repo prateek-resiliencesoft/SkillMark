@@ -1371,7 +1371,7 @@ export function VoiceInterface({
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
   // Same thank-you screen as the session page uses after completion / on reload.
-  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} />;
+  const completionScreen = <CandidateThankYou saving={isSaving} timeLimitReached={timerExpiredRef.current} sessionId={preview ? null : sessionId} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];

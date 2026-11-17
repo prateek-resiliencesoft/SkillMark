@@ -3,6 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { CheckCircle2, Clock, WifiOff } from "lucide-react";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
+import { CandidateFeedback } from "@/components/session/candidate-feedback";
 
 export const PRODUCT_SITE_URL = "https://resiliencesoftinterview.com";
 
@@ -20,8 +21,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 export function CandidateThankYou({
   timeLimitReached = false,
   saving = false,
+  sessionId,
+  inviteToken,
 }: {
   timeLimitReached?: boolean;
+  /** When known, an optional feedback form is shown. */
+  sessionId?: string | null;
+  inviteToken?: string | null;
   /** Final save still running: ask the candidate to keep the tab open briefly. */
   saving?: boolean;
 }) {
@@ -42,12 +48,22 @@ export function CandidateThankYou({
           ? "Saving your interview… please keep this tab open for a few seconds."
           : "You can now close this tab."}
       </p>
+      {sessionId && !saving ? <CandidateFeedback sessionId={sessionId} inviteToken={inviteToken} /> : null}
     </Shell>
   );
 }
 
 /** Shown when a one-time link was already used, ended, interrupted, or revoked. */
-export function LinkExpiredScreen({ reason = "used" }: { reason?: "used" | "interrupted" | "expired" }) {
+export function LinkExpiredScreen({
+  reason = "used",
+  sessionId,
+  inviteToken,
+}: {
+  reason?: "used" | "interrupted" | "expired";
+  /** Interview ended early: still let the candidate leave feedback. */
+  sessionId?: string | null;
+  inviteToken?: string | null;
+}) {
   return (
     <Shell>
       <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
@@ -62,6 +78,7 @@ export function LinkExpiredScreen({ reason = "used" }: { reason?: "used" | "inte
       {reason === "used" && (
         <p className="mt-3 text-xs text-muted-foreground">{EXPIRED_INVITE_MESSAGE}</p>
       )}
+      {reason === "interrupted" && sessionId ? <CandidateFeedback sessionId={sessionId} inviteToken={inviteToken} /> : null}
     </Shell>
   );
 }
