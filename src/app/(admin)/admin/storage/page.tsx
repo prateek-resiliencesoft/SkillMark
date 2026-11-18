@@ -390,7 +390,11 @@ export default function AdminStoragePage() {
         />
       </div>
 
-      <CapacityOverview usage={usageQuery.data} loading={usageQuery.isLoading} />
+      <CapacityOverview
+        usage={usageQuery.data}
+        loading={usageQuery.isLoading}
+        onQuotaSaved={() => usageQuery.refetch()}
+      />
 
       {/* Main Mode Navigation Strip */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-3 dark:border-white/[0.08]">

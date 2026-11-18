@@ -59,6 +59,7 @@ import {
   loadPlatformSettings,
   upsertPlatformSetting,
 } from "../platform-settings";
+import type { Context } from "../context";
 import { platformProcedure, router } from "../trpc";
 import {
   type OrgPlan,
@@ -131,6 +132,16 @@ async function pausedMap(ids: string[]): Promise<Record<string, string>> {
     if (r.paused_at) out[r.id] = r.paused_at;
   }
   return out;
+}
+
+async function loadStorageQuotaBytes(supabase: Context["supabase"]): Promise<number | null> {
+  const { data } = await supabase
+    .from("platform_settings")
+    .select("value")
+    .eq("key", "storageQuota")
+    .maybeSingle();
+  const bytes = (data?.value as { bytes?: unknown } | null)?.bytes;
+  return typeof bytes === "number" && bytes > 0 ? bytes : null;
 }
 
 export const platformRouter = router({
@@ -1713,7 +1724,7 @@ export const platformRouter = router({
       const config = getStorageConfigSummary();
       const [snap, capacity] = await Promise.all([
         getStorageSnapshot(ctx.supabase, { fresh: input?.fresh }),
-        getStorageCapacity(),
+        loadStorageQuotaBytes(ctx.supabase).then((q) => getStorageCapacity(q)),
       ]);
 
       const tenantBytes = sumBytes(snap.items);
@@ -1804,6 +1815,7 @@ export const platformRouter = router({
         config,
         capacity: {
           source: capacity.source,
+          limitFrom: capacity.limitFrom,
           totalBytes: capacity.totalBytes,
           // Disk reports real free space; for B2 it is quota minus used (when a quota is set).
           freeBytes:
@@ -1843,6 +1855,25 @@ export const platformRouter = router({
       };
     }),
 
+  /**
+   * Plan size for the bucket. Backblaze/S3 cannot report it through their API, so a super admin
+   * enters the figure from their Backblaze plan once. Pass null to clear it.
+   */
+  setStorageQuota: platformProcedure
+    .input(z.object({ gb: z.number().positive().max(1_000_000).nullable() }))
+    .mutation(async ({ ctx, input }) => {
+      const bytes = input.gb == null ? null : Math.round(input.gb * 1024 ** 3);
+      await upsertPlatformSetting(ctx.supabase, "storageQuota", { bytes }, ctx.user.id);
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "storage.set_quota",
+        targetType: "storage",
+        targetId: ctx.user.id,
+        meta: { gb: input.gb },
+      });
+      return { bytes };
+    }),
+
   /** How much space deleting this selection would free — shown BEFORE the user confirms. */
   storageDeletePreview: platformProcedure
     .input(
@@ -1863,8 +1894,7 @@ export const platformRouter = router({
         projectIds: input.scope === "projects" ? input.projectIds : undefined,
       });
       const { objects, bytes } = await measurePrefixes(prefixes);
-      const capacity = await getStorageCapacity();
-      return { objects, bytes, prefixes: prefixes.length, capacity };
+      return { objects, bytes, prefixes: prefixes.length };
     }),
 
   /**

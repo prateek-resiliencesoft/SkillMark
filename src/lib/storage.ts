@@ -385,11 +385,13 @@ export async function storedObjectExists(key: string): Promise<boolean> {
 /**
  * Capacity of the backing store.
  * - Local disk: real total/free from the filesystem.
- * - S3/B2/R2: buckets are unlimited, so "total" is the plan limit you configure via
- *   STORAGE_QUOTA_GB (or STORAGE_QUOTA_BYTES); null when none is set.
+ * - S3/B2/R2: the S3 API cannot report the account plan size, so the limit must be
+ *   supplied: `configuredBytes` (saved by a super admin in the UI) or the
+ *   STORAGE_QUOTA_GB / STORAGE_QUOTA_BYTES env vars. "unset" means nobody has told us.
  */
-export async function getStorageCapacity(): Promise<{
-  source: "disk" | "quota" | "unlimited";
+export async function getStorageCapacity(configuredBytes?: number | null): Promise<{
+  source: "disk" | "quota" | "unset";
+  limitFrom: "admin" | "env" | null;
   totalBytes: number | null;
   freeBytes: number | null;
 }> {
@@ -399,20 +401,24 @@ export async function getStorageCapacity(): Promise<{
       const st = await fs.statfs(STORAGE_DIR);
       return {
         source: "disk",
+        limitFrom: null,
         totalBytes: Number(st.blocks) * Number(st.bsize),
         freeBytes: Number(st.bavail) * Number(st.bsize),
       };
     } catch {
-      return { source: "unlimited", totalBytes: null, freeBytes: null };
+      return { source: "unset", limitFrom: null, totalBytes: null, freeBytes: null };
     }
+  }
+  if (configuredBytes && configuredBytes > 0) {
+    return { source: "quota", limitFrom: "admin", totalBytes: configuredBytes, freeBytes: null };
   }
   const bytes = Number(process.env.STORAGE_QUOTA_BYTES);
   const gb = Number(process.env.STORAGE_QUOTA_GB);
   const quota =
     Number.isFinite(bytes) && bytes > 0 ? bytes : Number.isFinite(gb) && gb > 0 ? gb * 1024 ** 3 : null;
   return quota
-    ? { source: "quota", totalBytes: quota, freeBytes: null }
-    : { source: "unlimited", totalBytes: null, freeBytes: null };
+    ? { source: "quota", limitFrom: "env", totalBytes: quota, freeBytes: null }
+    : { source: "unset", limitFrom: null, totalBytes: null, freeBytes: null };
 }
 
 /** Copy an object from source key to destination key (Backblaze B2/S3 or local disk). */

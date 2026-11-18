@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
-import { ChevronDown, ChevronRight, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, Users } from "lucide-react";
 import { EmptyState, Panel } from "@/components/admin/admin-ui";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AppRouter } from "@/server/routers/_app";
+import { useToast } from "@/hooks/use-toast";
+import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 
 export type StorageUsage = inferRouterOutputs<AppRouter>["platform"]["storageUsage"];
@@ -34,10 +36,24 @@ function Bar({ pct, className }: { pct: number; className?: string }) {
 export function CapacityOverview({
   usage,
   loading,
+  onQuotaSaved,
 }: {
   usage?: StorageUsage;
   loading: boolean;
+  onQuotaSaved?: () => void;
 }) {
+  const { toast } = useToast();
+  const [editing, setEditing] = useState(false);
+  const [gb, setGb] = useState("");
+  const saveQuota = trpc.platform.setStorageQuota.useMutation({
+    onSuccess: () => {
+      setEditing(false);
+      toast({ title: "Storage plan limit saved" });
+      onQuotaSaved?.();
+    },
+    onError: (err) =>
+      toast({ title: "Could not save limit", description: err.message, variant: "destructive" }),
+  });
   if (loading || !usage) {
     return <Skeleton className="h-28 w-full rounded-xl" />;
   }
@@ -78,16 +94,82 @@ export function CapacityOverview({
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Remaining
           </p>
-          <p className="font-heading text-2xl font-semibold text-emerald-500">
-            {capacity.freeBytes != null ? formatSize(capacity.freeBytes) : "Unlimited"}
+          <p
+            className={cn(
+              "font-heading text-2xl font-semibold",
+              capacity.freeBytes != null ? "text-emerald-500" : "text-muted-foreground",
+            )}
+          >
+            {capacity.freeBytes != null ? formatSize(capacity.freeBytes) : "Limit not set"}
           </p>
           <p className="text-[11px] text-muted-foreground">
             {capacity.source === "disk"
               ? "Free space on the server disk"
               : capacity.source === "quota"
-                ? `${pct.toFixed(1)}% of your configured plan used`
-                : "Bucket has no cap. Set STORAGE_QUOTA_GB to track a plan limit."}
+                ? `${pct.toFixed(1)}% of your ${formatSize(total)} plan used${
+                    capacity.limitFrom === "env" ? " (from server config)" : ""
+                  }`
+                : "Backblaze doesn't report your plan size to apps."}
           </p>
+          {capacity.source !== "disk" &&
+            (editing ? (
+              <form
+                className="mt-1.5 flex items-center justify-end gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const n = Number(gb);
+                  if (Number.isFinite(n) && n > 0) saveQuota.mutate({ gb: n });
+                }}
+              >
+                <input
+                  autoFocus
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={gb}
+                  onChange={(e) => setGb(e.target.value)}
+                  placeholder="Plan size"
+                  className="w-24 rounded-md border border-border/70 bg-background px-2 py-1 text-xs dark:border-white/[0.08] dark:bg-zinc-900"
+                />
+                <span className="text-[11px] text-muted-foreground">GB</span>
+                <button
+                  type="submit"
+                  disabled={saveQuota.isPending}
+                  className="rounded-md bg-primary px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-60"
+                >
+                  Save
+                </button>
+                {capacity.limitFrom === "admin" && (
+                  <button
+                    type="button"
+                    disabled={saveQuota.isPending}
+                    onClick={() => saveQuota.mutate({ gb: null })}
+                    className="rounded-md border border-border/70 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="px-1 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setGb(total ? String(+(total / 1024 ** 3).toFixed(2)) : "");
+                  setEditing(true);
+                }}
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+              >
+                <Pencil className="h-3 w-3" />
+                {total ? "Edit plan limit" : "Set plan limit (GB)"}
+              </button>
+            ))}
         </div>
       </div>
 
