@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { trpc } from "@/lib/trpc/client";
@@ -28,10 +29,11 @@ import {
   Play,
   Search,
   Sparkles,
+  Trash2,
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 
 export default function AdminOrganizationsPage() {
   const { toast } = useToast();
@@ -40,7 +42,9 @@ export default function AdminOrganizationsPage() {
   const deferredQuery = useDeferredValue(query);
   const [statusFilter, setStatusFilter] = useState<
     "all" | "ACTIVE" | "SUSPENDED" | "DELETED"
-  >("all");
+  >("ACTIVE");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [pauseTarget, setPauseTarget] = useState<{
     id: string;
     name: string;
@@ -86,6 +90,50 @@ export default function AdminOrganizationsPage() {
     },
   });
 
+  const removeMany = trpc.platform.softDeleteOrganizations.useMutation({
+    onSuccess: (res) => {
+      toast({
+        title: `${res.deleted} organization${res.deleted === 1 ? "" : "s"} deleted`,
+        description:
+          `All their data was erased${res.objects > 0 ? `, including ${res.objects} stored file(s)` : ""}.` +
+          (res.failed.length ? ` Could not delete: ${res.failed.join(", ")}.` : ""),
+        variant: res.failed.length ? "destructive" : undefined,
+      });
+      setDeleteOpen(false);
+      setSelected(new Set());
+      utils.platform.listOrganizations.invalidate();
+      utils.platform.overview.invalidate();
+      utils.platform.recentAudit.invalidate();
+      utils.platform.storageIndex.invalidate();
+      utils.platform.storageUsage.invalidate();
+    },
+    onError: (err) => {
+      toast({
+        title: "Could not delete organizations",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const items = list.data?.items ?? [];
+  const selectable = useMemo(
+    () => items.map((o) => o.id),
+    [items],
+  );
+  const allSelected = selectable.length > 0 && selectable.every((id) => selected.has(id));
+  const someSelected = selectable.some((id) => selected.has(id));
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(selectable));
+  const selectedNames = items.filter((o) => selected.has(o.id)).map((o) => o.name);
+
   const setPlan = trpc.platform.setOrganizationPlan.useMutation({
     onSuccess: (data) => {
       toast({ title: `Plan updated to ${data.planLabel}` });
@@ -118,21 +166,23 @@ export default function AdminOrganizationsPage() {
         resultCount={list.data?.total}
         onClear={() => {
           setQuery("");
-          setStatusFilter("all");
+          setStatusFilter("ACTIVE");
+          setSelected(new Set());
         }}
       >
         <Select
           value={statusFilter}
-          onValueChange={(v) =>
-            setStatusFilter(v as "all" | "ACTIVE" | "SUSPENDED" | "DELETED")
-          }
+          onValueChange={(v) => {
+            setStatusFilter(v as "all" | "ACTIVE" | "SUSPENDED" | "DELETED");
+            setSelected(new Set());
+          }}
         >
           <SelectTrigger className="h-9 w-[150px] text-xs font-medium border-border/70 dark:border-white/[0.08] dark:bg-zinc-900/80">
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent className="text-xs">
-            <SelectItem value="all">All statuses</SelectItem>
             <SelectItem value="ACTIVE">Active only</SelectItem>
+            <SelectItem value="all">Active + paused</SelectItem>
             <SelectItem value="SUSPENDED">Paused / Suspended</SelectItem>
             <SelectItem value="DELETED">Removed</SelectItem>
           </SelectContent>
@@ -152,26 +202,61 @@ export default function AdminOrganizationsPage() {
             icon={Building2}
             title="No organizations found"
             description={
-              query || statusFilter !== "all"
+              query || statusFilter !== "ACTIVE"
                 ? "No tenants matched your filter criteria. Try resetting your search."
                 : "No organizations exist on this instance yet."
             }
             action={
-              query || statusFilter !== "all" ? (
+              query || statusFilter !== "ACTIVE" ? (
                 <TacticalButton
                   variant="outline"
                   size="sm"
                   onClick={() => {
                     setQuery("");
-                    setStatusFilter("all");
+                    setStatusFilter("ACTIVE");
                   }}
                 >
-                  Clear Filters
+                  Reset Filters
                 </TacticalButton>
               ) : null
             }
           />
         ) : (
+          <>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 bg-muted/20 px-4 py-2.5 dark:border-white/[0.05] dark:bg-zinc-900/40">
+            <label className="flex cursor-pointer select-none items-center gap-2.5 text-xs font-medium text-muted-foreground">
+              <Checkbox
+                checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                onCheckedChange={toggleAll}
+                disabled={selectable.length === 0}
+                aria-label="Select all organizations"
+              />
+              {selected.size > 0
+                ? `${selected.size} selected`
+                : `Select all (${selectable.length})`}
+            </label>
+            {selected.size > 0 && (
+              <div className="flex items-center gap-2">
+                <TacticalButton
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-xs"
+                  onClick={() => setSelected(new Set())}
+                >
+                  Clear selection
+                </TacticalButton>
+                <TacticalButton
+                  size="sm"
+                  variant="destructive"
+                  className="h-8 gap-1.5 text-xs"
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete selected ({selected.size})</span>
+                </TacticalButton>
+              </div>
+            )}
+          </div>
           <ul className="divide-y divide-border/50 dark:divide-white/[0.05]">
             {(list.data?.items ?? []).map((org) => {
               const paused = org.status === "SUSPENDED";
@@ -186,6 +271,13 @@ export default function AdminOrganizationsPage() {
                   className="flex flex-col gap-4 p-4 transition-colors hover:bg-muted/30 dark:hover:bg-zinc-900/40 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                    <div className="flex h-10 items-center">
+                      <Checkbox
+                        checked={selected.has(org.id)}
+                        onCheckedChange={() => toggleOne(org.id)}
+                        aria-label={`Select ${org.name}`}
+                      />
+                    </div>
                     {/* Org Icon / Monogram */}
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40 font-heading text-sm font-bold text-foreground dark:border-white/[0.08] dark:bg-zinc-900">
                       {org.name.slice(0, 2).toUpperCase()}
@@ -295,8 +387,27 @@ export default function AdminOrganizationsPage() {
               );
             })}
           </ul>
+          </>
         )}
       </div>
+
+      {/* Bulk delete confirmation */}
+      <ConfirmAction
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          if (!open && !removeMany.isPending) setDeleteOpen(false);
+        }}
+        title={`Delete ${selected.size} organization${selected.size === 1 ? "" : "s"}?`}
+        description={`${selectedNames.slice(0, 5).join(", ")}${selectedNames.length > 5 ? ` and ${selectedNames.length - 5} more` : ""} will be permanently deleted with ALL of their data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV in the storage bucket. This cannot be undone.`}
+        confirmLabel="Delete organizations and all data"
+        confirmText="delete"
+        confirmPlaceholder="Type delete"
+        destructive
+        pending={removeMany.isPending}
+        onConfirm={() =>
+          removeMany.mutate({ ids: Array.from(selected) })
+        }
+      />
 
       {/* Confirmation Dialog */}
       <ConfirmAction

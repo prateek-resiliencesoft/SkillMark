@@ -58,3 +58,18 @@ public/vad/
 
 # graphify (generated locally; do not commit — embeds machine paths)
 graphify-out/
+
+# documentation & documents: never push to GitHub (anchored so src/content/docs and src/components/docs stay tracked)
+/docs/
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.odt
+*.rtf
+
+# local file storage (candidate recordings, images, CVs uploaded when S3/B2 is not configured)
+/storage/

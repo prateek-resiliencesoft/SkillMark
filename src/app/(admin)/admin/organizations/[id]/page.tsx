@@ -175,7 +175,7 @@ export default function AdminOrganizationDetailPage() {
 
   const softDelete = trpc.platform.softDeleteOrganization.useMutation({
     onSuccess: () => {
-      toast({ title: "Organization removed" });
+      toast({ title: "Organization and all its data deleted" });
       setDeleteOpen(false);
       invalidate();
       router.push("/admin/organizations");
@@ -806,8 +806,8 @@ export default function AdminOrganizationDetailPage() {
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         title={`Permanently remove “${data.name}”?`}
-        description="Pending candidate invites will be revoked immediately. Organization records are retained in database for audit compliance. Type the organization name to proceed."
-        confirmLabel="Remove Organization"
+        description="This permanently deletes the organization and ALL of its data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV in the storage bucket. This cannot be undone. Type the organization name to proceed."
+        confirmLabel="Delete organization and all data"
         confirmText={data.name}
         destructive
         pending={softDelete.isPending}

@@ -7,6 +7,7 @@
  */
 import { nanoid } from "@/lib/id";
 import { clearStoredMedia, resolveScopePrefixes } from "@/lib/media-review";
+import { purgeOrganization } from "@/lib/organization-purge";
 import { deleteAccount } from "@/lib/account-deletion";
 import {
   getStorageCapacity,
@@ -142,6 +143,29 @@ async function loadStorageQuotaBytes(supabase: Context["supabase"]): Promise<num
     .maybeSingle();
   const bytes = (data?.value as { bytes?: unknown } | null)?.bytes;
   return typeof bytes === "number" && bytes > 0 ? bytes : null;
+}
+
+async function purgeOrgAndAudit(
+  supabase: Context["supabase"],
+  actorId: string,
+  org: { id: string; name: string; slug: string },
+) {
+  const result = await purgeOrganization(supabase, { id: org.id });
+  await writePlatformAudit(supabase, {
+    actorId,
+    action: "org.delete",
+    targetType: "organization",
+    targetId: org.id,
+    meta: {
+      name: org.name,
+      slug: org.slug,
+      purged: true,
+      objects: result.objects,
+      bytes: result.bytes,
+      interviews: result.interviews,
+    },
+  });
+  return result;
 }
 
 export const platformRouter = router({
@@ -702,6 +726,7 @@ export const platformRouter = router({
       return { id: org.id as string, limits };
     }),
 
+  /** Permanently delete an organization and ALL of its data (database rows + bucket files). */
   softDeleteOrganization: platformProcedure
     .input(
       z.object({
@@ -730,42 +755,45 @@ export const platformRouter = router({
         });
       }
 
-      const previousName = existing.name as string;
-      const previousSlug = existing.slug as string;
-      const { data: org, error } = await ctx.supabase
-        .from("organizations")
-        .update({
-          status: "DELETED",
-          name: "Deleted organization",
-          slug: `deleted-${input.id.slice(0, 8)}-${nanoid(4)}`,
-        })
-        .eq("id", input.id)
-        .neq("status", "DELETED")
-        .select("id")
-        .maybeSingle();
-
-      if (error || !org) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Organization not found.",
-        });
-      }
-
-      await ctx.supabase
-        .from("organization_invites")
-        .update({ status: "REVOKED" })
-        .eq("organizationId", input.id)
-        .eq("status", "PENDING");
-
-      await writePlatformAudit(ctx.supabase, {
-        actorId: ctx.user.id,
-        action: "org.delete",
-        targetType: "organization",
-        targetId: org.id as string,
-        meta: { name: previousName, slug: previousSlug },
+      const result = await purgeOrgAndAudit(ctx.supabase, ctx.user.id, {
+        id: input.id,
+        name: existing.name as string,
+        slug: existing.slug as string,
       });
+      invalidateStorageSnapshot();
+      return { id: input.id, status: "DELETED" as const, ...result };
+    }),
 
-      return { id: org.id as string, status: "DELETED" as const };
+  /** Permanently delete several organizations and all of their data (database rows + bucket files). */
+  softDeleteOrganizations: platformProcedure
+    .input(z.object({ ids: z.array(z.string().uuid()).min(1).max(50) }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: rows } = await ctx.supabase
+        .from("organizations")
+        .select("id, name, slug")
+        .in("id", input.ids);
+
+      let deleted = 0;
+      let objects = 0;
+      let bytes = 0;
+      const failed: string[] = [];
+      for (const org of rows ?? []) {
+        try {
+          const r = await purgeOrgAndAudit(ctx.supabase, ctx.user.id, {
+            id: org.id as string,
+            name: org.name as string,
+            slug: org.slug as string,
+          });
+          deleted++;
+          objects += r.objects;
+          bytes += r.bytes;
+        } catch {
+          failed.push(org.name as string);
+        }
+      }
+      invalidateStorageSnapshot();
+
+      return { deleted, failed, objects, bytes };
     }),
 
   restoreOrganization: platformProcedure
