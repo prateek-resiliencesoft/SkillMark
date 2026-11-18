@@ -1249,6 +1249,54 @@ export const sessionRouter = router({
       return applyMediaReview(ctx.supabase, input.sessionId, input.action);
     }),
 
+  /** Reviewer-only flag: mark/unmark a session as doubtful with a remark. Informational only. */
+  setDoubtful: protectedProcedure
+    .input(
+      z.object({
+        sessionId: z.string(),
+        doubtful: z.boolean(),
+        remark: z.string().trim().max(1000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
+        .eq("id", input.sessionId)
+        .single();
+      if (!session) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const iv = session.interview as unknown as {
+        projectId: string;
+        project: { organizationId: string };
+      };
+      const membership = await getOrgMembership(ctx.supabase, iv.project.organizationId, ctx.user.id);
+      if (!membership) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      }
+      if (!(await hasProjectAccess(ctx.supabase, iv.projectId, ctx.user.id))) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No access to this project" });
+      }
+
+      if (input.doubtful && !input.remark) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Add a remark explaining the doubt" });
+      }
+
+      const update = input.doubtful
+        ? {
+            integrityDoubtfulAt: new Date().toISOString(),
+            integrityDoubtfulRemark: input.remark,
+            integrityDoubtfulBy: ctx.user.email ?? "A teammate",
+          }
+        : { integrityDoubtfulAt: null, integrityDoubtfulRemark: null, integrityDoubtfulBy: null };
+
+      const { error } = await ctx.supabase.from("sessions").update(update).eq("id", input.sessionId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { success: true };
+    }),
+
   /** Permanently delete sessions together with their candidate data and bucket media. */
   deleteMany: protectedProcedure
     .input(z.object({ ids: z.array(z.string()).min(1) }))

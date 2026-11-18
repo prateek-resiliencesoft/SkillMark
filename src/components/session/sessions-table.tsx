@@ -72,6 +72,8 @@ export interface SessionRow {
   totalDurationSeconds: number | null;
   createdAt: string | Date;
   _count: { messages: number };
+  integrityDoubtfulAt?: string | null;
+  integrityDoubtfulRemark?: string | null;
   interview?: { id: string; title: string };
 }
 
@@ -493,12 +495,23 @@ export function SessionsTable({
         );
       case "status":
         return (
-          <Badge
-            variant={session.status === "COMPLETED" ? "default" : "secondary"}
-            className="whitespace-nowrap"
-          >
-            {session.status}
-          </Badge>
+          <span className="flex items-center gap-1.5">
+            <Badge
+              variant={session.status === "COMPLETED" ? "default" : "secondary"}
+              className="whitespace-nowrap"
+            >
+              {session.status}
+            </Badge>
+            {session.integrityDoubtfulAt && (
+              <Badge
+                variant="destructive"
+                className="whitespace-nowrap"
+                title={session.integrityDoubtfulRemark ?? "Marked doubtful"}
+              >
+                Doubtful
+              </Badge>
+            )}
+          </span>
         );
       case "messages":
         return <span>{session._count.messages}</span>;
