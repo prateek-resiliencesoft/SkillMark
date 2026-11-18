@@ -196,6 +196,13 @@ export const analysisRouter = router({
           (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
         mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,
         mediaClearedAt,
+        doubtful: (session as { integrityDoubtfulAt?: string | null }).integrityDoubtfulAt
+          ? {
+              at: (session as { integrityDoubtfulAt: string }).integrityDoubtfulAt,
+              remark: (session as { integrityDoubtfulRemark?: string | null }).integrityDoubtfulRemark ?? "",
+              by: (session as { integrityDoubtfulBy?: string | null }).integrityDoubtfulBy ?? null,
+            }
+          : null,
       };
     }),
 

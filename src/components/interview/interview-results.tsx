@@ -21,7 +21,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import { buildReportData } from "@/lib/report-data";
@@ -55,6 +57,7 @@ import {
   PenLine,
   Search,
   Settings2,
+  ShieldAlert,
   SmilePlus,
   Sparkles,
   Tags,
@@ -171,6 +174,90 @@ function MediaReviewActions({
         </>
       )}
     </div>
+  );
+}
+
+/** Reviewer-only "doubtful" mark + remark. Informational: doesn't affect scoring or status. */
+function DoubtfulMark({
+  sessionId,
+  doubtful,
+}: {
+  sessionId: string;
+  doubtful?: { at: string; remark: string; by: string | null } | null;
+}) {
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const [open, setOpen] = useState(false);
+  const [remark, setRemark] = useState("");
+
+  const mutation = trpc.session.setDoubtful.useMutation({
+    onSuccess: (_d, vars) => {
+      void utils.analysis.getSessionSummary.invalidate({ sessionId });
+      void utils.session.listByInterview.invalidate();
+      setOpen(false);
+      toast({ title: vars.doubtful ? "Marked as doubtful" : "Doubtful mark removed" });
+    },
+    onError: (err) => {
+      toast({ title: "Failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) setRemark(doubtful?.remark ?? "");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button
+          variant={doubtful ? "destructive" : "outline"}
+          className={cn(!doubtful && "text-amber-700 hover:text-amber-800")}
+        >
+          <ShieldAlert className="mr-2 h-4 w-4" />
+          {doubtful ? "Marked doubtful" : "Mark doubtful"}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 space-y-3">
+        <div>
+          <p className="text-sm font-medium">Mark candidate as doubtful</p>
+          <p className="text-xs text-muted-foreground">
+            Flag a suspected cheater so the team knows before a manual round. Visible to your
+            team only; it doesn&apos;t change the score or status.
+          </p>
+        </div>
+        <Textarea
+          value={remark}
+          onChange={(e) => setRemark(e.target.value)}
+          placeholder="Remark, e.g. reading answers off screen, voice mismatch…"
+          maxLength={1000}
+          rows={4}
+        />
+        <div className="flex justify-between gap-2">
+          {doubtful ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={mutation.isLoading}
+              onClick={() => mutation.mutate({ sessionId, doubtful: false })}
+            >
+              Remove mark
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Button
+            size="sm"
+            disabled={mutation.isLoading || !remark.trim()}
+            onClick={() => mutation.mutate({ sessionId, doubtful: true, remark: remark.trim() })}
+          >
+            {mutation.isLoading && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+            {doubtful ? "Update remark" : "Mark doubtful"}
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -688,6 +775,19 @@ function SessionDetail({
           {statusNote}
         </p>
       )}
+      {summary.data?.doubtful && (
+        <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm no-print">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+          <div className="min-w-0">
+            <p className="font-medium text-destructive">Marked as doubtful</p>
+            <p className="whitespace-pre-wrap break-words">{summary.data.doubtful.remark}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {summary.data.doubtful.by ? `${summary.data.doubtful.by} · ` : ""}
+              {new Date(summary.data.doubtful.at).toLocaleString()}
+            </p>
+          </div>
+        </div>
+      )}
       {/* Top bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 no-print">
         <Button variant="outline" onClick={onBack}>
@@ -696,6 +796,7 @@ function SessionDetail({
         </Button>
         <div className="flex flex-wrap items-center gap-2">
           <SessionErrorLogButton sessionId={sessionId} />
+          <DoubtfulMark sessionId={sessionId} doubtful={summary.data?.doubtful} />
           <MediaReviewActions
             sessionId={sessionId}
             status={(summary.data as { mediaReviewStatus?: string } | undefined)?.mediaReviewStatus}
