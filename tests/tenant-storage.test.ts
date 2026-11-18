@@ -142,6 +142,7 @@ import {
   candidateFolderSlug,
   candidateMediaPrefix,
   mediaObjectKey,
+  parseMediaKey,
 } from "@/lib/storage-paths";
 
 describe("folderized candidate storage paths", () => {
@@ -190,5 +191,36 @@ describe("folderized candidate storage paths", () => {
       cvKey,
       "orgs/org-1/projects/proj-1/candidates/John_Doe_12345678/CV/resume.pdf",
     );
+  });
+
+  it("uses one folder per person when the email is known", () => {
+    const a = candidateFolderSlug({
+      candidateId: "aaaaaaaa-1111-2222-3333-444444444444",
+      candidateName: "Sayyad Moin Ali",
+      candidateEmail: "AliSayyadMoin@gmail.com ",
+    });
+    const b = candidateFolderSlug({
+      candidateId: "bbbbbbbb-1111-2222-3333-444444444444",
+      candidateName: "Sayyad Moin Ali",
+      candidateEmail: "alisayyadmoin@gmail.com",
+    });
+    assert.equal(a, b);
+    assert.match(a, /^Sayyad_Moin_Ali_[0-9a-f]{8}$/);
+  });
+
+  it("reuses an assigned session prefix and parses keys back", () => {
+    const key = mediaObjectKey({
+      orgId: "org-1",
+      projectId: "proj-1",
+      candidateId: "x",
+      kind: "recordings",
+      fileName: "a.m4a",
+      prefix: "orgs/org-1/projects/proj-1/candidates/Old_Folder_deadbeef",
+    });
+    assert.equal(key, "orgs/org-1/projects/proj-1/candidates/Old_Folder_deadbeef/recordings/a.m4a");
+    const parsed = parseMediaKey(key);
+    assert.equal(parsed.folderSlug, "Old_Folder_deadbeef");
+    assert.equal(parsed.kind, "recordings");
+    assert.equal(parsed.folderPrefix, "orgs/org-1/projects/proj-1/candidates/Old_Folder_deadbeef");
   });
 });

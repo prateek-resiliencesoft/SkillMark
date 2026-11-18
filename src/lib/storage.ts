@@ -327,20 +327,92 @@ export async function listObjectsWithMetadata(
   return items;
 }
 
+/** Every object under a prefix with sizes (no item cap). */
+export async function listAllObjects(prefix: string = ""): Promise<StorageObjectMeta[]> {
+  const clean = prefix ? prefix.replace(/^\/+/, "").replace(/\/?$/, "/") : "";
+  return listObjectsWithMetadata(clean, Number.MAX_SAFE_INTEGER);
+}
+
+/** Total bytes + object count under a prefix, without deleting anything. */
+export async function measurePrefix(prefix: string): Promise<{ objects: number; bytes: number }> {
+  const objs = await listAllObjects(prefix);
+  return { objects: objs.length, bytes: objs.reduce((n, o) => n + o.size, 0) };
+}
+
+/** Delete all objects under a candidate/org prefix and report what was freed. Does not touch DB. */
+export async function deletePrefixStats(
+  prefix: string,
+): Promise<{ objects: number; bytes: number }> {
+  const objs = await listAllObjects(prefix);
+  let bytes = 0;
+  let objects = 0;
+  const queue = [...objs];
+  const worker = async () => {
+    for (let o = queue.shift(); o; o = queue.shift()) {
+      if (isObjectStorageEnabled()) {
+        await s3Delete(o.key);
+      } else {
+        const full = path.resolve(STORAGE_DIR, o.key);
+        if (!full.startsWith(STORAGE_DIR + path.sep)) continue;
+        await fs.rm(full, { force: true });
+        await fs.rm(full + ".meta", { force: true }).catch(() => {});
+      }
+      bytes += o.size;
+      objects += 1;
+    }
+  };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  return { objects, bytes };
+}
+
 /** Delete all objects under a candidate/org prefix. Does not touch DB. */
 export async function deletePrefix(prefix: string): Promise<number> {
-  const keys = await listObjectKeys(prefix);
-  for (const k of keys) {
-    if (isObjectStorageEnabled()) {
-      await s3Delete(k);
-    } else {
-      const full = path.resolve(STORAGE_DIR, k);
-      if (!full.startsWith(STORAGE_DIR + path.sep)) continue;
-      await fs.rm(full, { force: true });
-      await fs.rm(full + ".meta", { force: true }).catch(() => {});
+  return (await deletePrefixStats(prefix)).objects;
+}
+
+/** Whether an object exists at the key (used to avoid overwriting when merging folders). */
+export async function storedObjectExists(key: string): Promise<boolean> {
+  const clean = key.replace(/^\/+/, "");
+  if (isObjectStorageEnabled()) return s3Head(clean);
+  try {
+    await fs.access(safeJoin("files", clean));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Capacity of the backing store.
+ * - Local disk: real total/free from the filesystem.
+ * - S3/B2/R2: buckets are unlimited, so "total" is the plan limit you configure via
+ *   STORAGE_QUOTA_GB (or STORAGE_QUOTA_BYTES); null when none is set.
+ */
+export async function getStorageCapacity(): Promise<{
+  source: "disk" | "quota" | "unlimited";
+  totalBytes: number | null;
+  freeBytes: number | null;
+}> {
+  if (!isObjectStorageEnabled()) {
+    try {
+      await fs.mkdir(STORAGE_DIR, { recursive: true });
+      const st = await fs.statfs(STORAGE_DIR);
+      return {
+        source: "disk",
+        totalBytes: Number(st.blocks) * Number(st.bsize),
+        freeBytes: Number(st.bavail) * Number(st.bsize),
+      };
+    } catch {
+      return { source: "unlimited", totalBytes: null, freeBytes: null };
     }
   }
-  return keys.length;
+  const bytes = Number(process.env.STORAGE_QUOTA_BYTES);
+  const gb = Number(process.env.STORAGE_QUOTA_GB);
+  const quota =
+    Number.isFinite(bytes) && bytes > 0 ? bytes : Number.isFinite(gb) && gb > 0 ? gb * 1024 ** 3 : null;
+  return quota
+    ? { source: "quota", totalBytes: quota, freeBytes: null }
+    : { source: "unlimited", totalBytes: null, freeBytes: null };
 }
 
 /** Copy an object from source key to destination key (Backblaze B2/S3 or local disk). */
