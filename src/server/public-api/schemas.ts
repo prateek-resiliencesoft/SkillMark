@@ -126,6 +126,9 @@ export const Interview = z.object({
   title: z.string(),
   description: z.string().nullable(),
   mode: z.string(),
+  language: z
+    .string()
+    .describe('Interview language: "en" (English), "hi" (Hindi, transcripts in Roman-script Hinglish), or "multi" (Hindi + English; the candidate picks one and can switch or mix)'),
   is_active: z.boolean(),
   time_limit_minutes: z.number().int().nullable(),
   session_count: z.number().int(),
