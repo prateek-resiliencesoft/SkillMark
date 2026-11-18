@@ -22,13 +22,11 @@ import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-pr
 import {
   detectLanguageSwitch,
   getGeminiInterviewLanguageCode,
-  HINDI_QUESTION_RULE,
   interviewLanguageRequirement,
   isChineseInterviewLanguage,
   isMultiLanguage,
   multiLanguageRequirement,
   normalizeCandidateLanguage,
-  resolveInterviewLanguage,
   type CandidateLanguage,
 } from "../src/lib/interview-language";
 import { devanagariToRoman } from "../src/lib/transcript/transliterate";
@@ -507,8 +505,7 @@ function languageRules(ctx: InterviewContext): string {
   if (isMultiLanguage(ctx.language)) {
     return multiLanguageRequirement(normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en");
   }
-  const base = interviewLanguageRequirement(ctx.language);
-  return resolveInterviewLanguage(ctx.language) === "hi" ? `${base}\n- ${HINDI_QUESTION_RULE}` : base;
+  return interviewLanguageRequirement(ctx.language);
 }
 
 /** Hindi text from Gemini may come back in Devanagari: keep everything in Roman script (Hinglish). */

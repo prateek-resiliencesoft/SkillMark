@@ -3,6 +3,7 @@ import {
   getInterviewLanguageDisplayName,
   getInterviewLanguageStyle,
   interviewLanguageRequirement,
+  isMultiLanguage,
 } from "@/lib/interview-language";
 import { interviewerPromptIdentity } from "@/lib/interviewer-persona";
 import type { LLMMessage } from "../types";
@@ -40,7 +41,9 @@ export function buildInterviewerPrompt(ctx: InterviewContext): LLMMessage[] {
     interview.videoEnabled && "Video",
   ].filter(Boolean).join(", ");
 
-  const interviewLanguageName = getInterviewLanguageDisplayName(interview.language);
+  const interviewLanguageName = isMultiLanguage(interview.language)
+    ? "Hindi and English (the participant may use either or mix them)"
+    : getInterviewLanguageDisplayName(interview.language);
   const interviewLanguageStyle = getInterviewLanguageStyle(interview.language);
   const ident = interviewerPromptIdentity(interview.aiName, (interview as { aiGender?: string }).aiGender, interview.aiTone, "en");
   const systemPrompt = `${ident.line} You are conducting a structured conversation.

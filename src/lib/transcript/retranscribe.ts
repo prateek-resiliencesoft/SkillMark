@@ -26,6 +26,7 @@ import { readFile, storage } from "@/lib/storage";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { objectPathFromSignedUrl, pathBelongsToSession } from "@/lib/tenant-storage";
 import { planTranscriptReplacement, type StoredMessage, type TranscribedTurn } from "./align";
+import { devanagariToRoman } from "@/lib/transcript/transliterate";
 
 const log = createLogger("retranscribe");
 
@@ -403,7 +404,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
     aligned.map((t) => ({
       sessionId,
       role: "USER" as const,
-      content: t.text,
+      content: devanagariToRoman(t.text),
       contentType: "TEXT" as const,
       questionId: t.questionId,
       wordCount: t.text.split(/\s+/).length,
