@@ -8,6 +8,7 @@
 import { buildReportData } from "@/lib/report-data";
 import { getSessionOverallScore } from "@/lib/session-score";
 import type { z } from "zod";
+import { normalizeInterviewLanguageSetting } from "@/lib/interview-language";
 import type {
   CreateInviteBody,
   ListCandidatesQuery,
@@ -249,7 +250,7 @@ export async function listInterviews(ctx: ApiCtx, q: z.output<typeof ListIntervi
   const before = decodeCursor(q.cursor);
   let b = ctx.db
     .from("interviews")
-    .select("id, title, description, mode, isActive, timeLimitMinutes, createdAt, updatedAt, projectId")
+    .select("id, title, description, mode, language, isActive, timeLimitMinutes, createdAt, updatedAt, projectId")
     .in("projectId", ctx.auth.projectIds);
   if (q.active) b = b.eq("isActive", q.active === "true");
   if (before) b = b.lt("createdAt", before);
@@ -273,6 +274,7 @@ export async function listInterviews(ctx: ApiCtx, q: z.output<typeof ListIntervi
       title: r.title,
       description: r.description ?? null,
       mode: r.mode ?? "CHAT",
+      language: normalizeInterviewLanguageSetting(r.language),
       is_active: r.isActive !== false,
       time_limit_minutes: r.timeLimitMinutes ?? null,
       session_count: counts.get(r.id)?.s ?? 0,

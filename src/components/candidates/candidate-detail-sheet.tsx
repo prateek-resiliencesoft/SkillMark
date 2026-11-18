@@ -34,6 +34,7 @@ import {
     ExternalLink,
     FileText,
     GraduationCap,
+    Languages,
     Loader2,
     Mail,
     MessageCircle,
@@ -44,6 +45,7 @@ import {
     Star,
     User,
 } from "lucide-react";
+import { interviewLanguageLabel } from "@/lib/interview-language";
 import { useEffect, useMemo, useState } from "react";
 import {
     CandidateFormFields,
@@ -610,6 +612,7 @@ export function CandidateDetailSheet({
                   <Row icon={CalendarClock} label="Link expires" value={fmt(c.expiresAt)} />
                   <Row icon={CalendarClock} label="Started" value={fmt(c.session?.interviewBeganAt ?? (interviewBegun ? (c.session?.startedAt ?? c.session?.createdAt) : null))} />
                   <Row icon={CalendarClock} label="Completed" value={fmt(c.session?.completedAt)} />
+                  <Row icon={Languages} label="Language" value={interviewLanguageLabel(c.interview?.language, c.session?.language)} />
                   <PreflightProgress
                     events={c.preflightEvents}
                     inviteToken={c.inviteToken}

@@ -211,7 +211,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     difficulty: z.enum(["easy", "medium", "hard"]).optional(),
     number_of_questions: z.number().int().min(1).max(30).optional(),
     duration_minutes: z.number().int().min(5).max(180).optional(),
-    language: z.string().max(10).default("en"),
+    language: z.string().max(10).default("en").describe('Interview language: "en" (English), "hi" (Hindi), or "multi" (Hindi + English; the candidate picks one and can switch or mix)'),
     mode: z.enum(["voice", "chat"]).default("voice"),
     questions: z.array(z.string().max(2000)).max(50).optional().describe("Predefined questions (always included)"),
     generate_questions: z.boolean().default(true),

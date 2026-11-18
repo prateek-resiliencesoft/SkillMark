@@ -24,6 +24,7 @@ import {
   type FormSettings,
   type InterviewConfig,
 } from "@/lib/forms/schema";
+import { interviewLanguageSelectOptions, normalizeInterviewLanguageSetting } from "@/lib/interview-language";
 import { trpc } from "@/lib/trpc/client";
 import { ArrowDown, ArrowUp, Copy, ExternalLink, Eye, FileText, KeyRound, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import Link from "next/link";
@@ -316,7 +317,7 @@ export function FormBuilder({ formId }: { formId: string }) {
                 <div className="space-y-1"><Label>Mode</Label><select className={sel} value={config.mode} onChange={(e) => setCfg({ mode: e.target.value as InterviewConfig["mode"] })}><option value="voice">voice</option><option value="chat">chat</option></select></div>
                 <div className="space-y-1"><Label>Number of questions</Label><Input type="number" min={1} max={30} value={config.numberOfQuestions ?? ""} onChange={(e) => setCfg({ numberOfQuestions: num(e.target.value) })} /></div>
                 <div className="space-y-1"><Label>Duration (minutes)</Label><Input type="number" min={5} max={180} value={config.durationMinutes ?? ""} onChange={(e) => setCfg({ durationMinutes: num(e.target.value) })} /></div>
-                <div className="space-y-1"><Label>Language</Label><Input value={config.language ?? "en"} onChange={(e) => setCfg({ language: e.target.value })} /></div>
+                <div className="space-y-1"><Label>Language</Label><select className={sel} value={normalizeInterviewLanguageSetting(config.language ?? "en")} onChange={(e) => setCfg({ language: e.target.value })}>{interviewLanguageSelectOptions(config.language ?? "en").map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}</select></div>
                 <div className="space-y-1"><Label>Questions</Label><select className={sel} value={config.questionSource} onChange={(e) => setCfg({ questionSource: e.target.value as InterviewConfig["questionSource"] })}><option value="ai">AI-generated</option><option value="predefined">Predefined only</option></select></div>
               </div>
               <div className="space-y-1">

@@ -193,6 +193,7 @@ export const ENDPOINTS: EndpointDef[] = [
           title: "Frontend Developer",
           description: null,
           mode: "VOICE",
+          language: "en",
           is_active: true,
           time_limit_minutes: 30,
           session_count: 12,

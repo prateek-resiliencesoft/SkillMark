@@ -1,10 +1,7 @@
-export const LANGUAGES = [
-  { value: "en", label: "English" },
-  { value: "zh", label: "Chinese (中文)" },
-  { value: "hi", label: "Hinglish (Hindi-English)" },
-  { value: "es", label: "Spanish" },
-  { value: "fr", label: "French" },
-] as const;
+import { INTERVIEW_LANGUAGE_OPTIONS } from "@/lib/interview-language";
+
+/** Interview language: English, Hindi, or Multi-language (Hindi + English). */
+export const LANGUAGES = INTERVIEW_LANGUAGE_OPTIONS;
 
 export const AI_TONES = [
   { value: "CASUAL", label: "Casual" },
