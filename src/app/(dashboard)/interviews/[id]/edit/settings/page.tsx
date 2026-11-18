@@ -24,8 +24,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { CompletionNotifyMember } from "@/lib/completion-notify";
 import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
-import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
-import { resolveInterviewLanguage } from "@/lib/interview-language";
+import { AI_TONES, FOLLOW_UP_DEPTHS } from "@/lib/constants";
+import { interviewLanguageSelectOptions, normalizeInterviewLanguageSetting } from "@/lib/interview-language";
 import {
   INTERVIEWER_GENDER_OPTIONS,
   getInterviewerPersona,
@@ -52,7 +52,7 @@ import { useCallback, useState } from "react";
 import { useEditInterview } from "../edit-context";
 
 function normalizeInterviewLanguage(language?: string | null): string {
-  return resolveInterviewLanguage(language);
+  return normalizeInterviewLanguageSetting(language);
 }
 
 export default function SettingsTab() {
@@ -392,7 +392,7 @@ export default function SettingsTab() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {LANGUAGES.map((l) => (
+                {interviewLanguageSelectOptions(interview.language).map((l) => (
                   <SelectItem key={l.value} value={l.value}>
                     {l.label}
                   </SelectItem>

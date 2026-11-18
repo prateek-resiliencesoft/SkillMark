@@ -36,6 +36,7 @@ import { useInterviewRecording } from "@/hooks/use-interview-recording";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVoice, type InterviewContext } from "@/hooks/use-voice";
+import { isMultiLanguage } from "@/lib/interview-language";
 import {
     AlertCircle,
     Check,
@@ -1621,6 +1622,23 @@ export function VoiceInterface({
               <div className="flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-0.5">
                 <div className="h-2 w-2 animate-pulse rounded-full bg-destructive" />
                 <span className="text-[10px] font-medium text-destructive">REC</span>
+              </div>
+            )}
+            {isMultiLanguage(interviewContext.language) && (
+              <div className="flex overflow-hidden rounded-md border text-xs" role="radiogroup" aria-label="Interview language">
+                {(["en", "hi"] as const).map((lang) => (
+                  <button
+                    key={lang}
+                    type="button"
+                    role="radio"
+                    aria-checked={(voice.candidateLanguage ?? "en") === lang}
+                    disabled={preview || !voice.isConnected}
+                    className={`px-2 py-0.5 font-medium ${(voice.candidateLanguage ?? "en") === lang ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                    onClick={() => voice.setLanguage(lang)}
+                  >
+                    {lang === "en" ? "English" : "Hindi"}
+                  </button>
+                ))}
               </div>
             )}
             <Badge variant={preview ? "outline" : voice.isConnected ? "default" : "secondary"}>

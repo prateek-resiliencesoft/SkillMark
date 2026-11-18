@@ -12,6 +12,7 @@ import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { assertActiveInterviewSession } from "@/lib/session-access";
 import { NextResponse } from "next/server";
+import { devanagariToRoman } from "@/lib/transcript/transliterate";
 
 const log = createLogger("api/ai/chat");
 
@@ -103,10 +104,13 @@ export async function POST(req: Request) {
     const isComplete = response.content.includes("[INTERVIEW_COMPLETE]");
     const questionAdvanced = response.content.includes("[NEXT_QUESTION]");
 
-    const cleanContent = response.content
-      .replace("[INTERVIEW_COMPLETE]", "")
-      .replace("[NEXT_QUESTION]", "")
-      .trim();
+    // Hindi is stored as Roman-script Hinglish, never Devanagari.
+    const cleanContent = devanagariToRoman(
+      response.content
+        .replace("[INTERVIEW_COMPLETE]", "")
+        .replace("[NEXT_QUESTION]", "")
+        .trim(),
+    );
 
     await supabaseAdmin.from("messages").insert({
       sessionId: access.sessionId,

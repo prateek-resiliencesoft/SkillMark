@@ -16,6 +16,7 @@ import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { useCandidateLanguage } from "@/hooks/use-candidate-language";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
@@ -72,6 +73,7 @@ export default function InviteSessionPage() {
 
   const session = (candidate.data as any)?.session ?? null;
   const interview = (candidate.data as any)?.interview;
+  const { candidateLanguage, chooseLanguage } = useCandidateLanguage(session?.id, interview?.language, session?.language);
 
   // Interview is live once onboarding is accepted: keep the one-time link alive.
   useInterviewLinkGuard({
@@ -201,6 +203,8 @@ export default function InviteSessionPage() {
         questionCount={interview.questions?.length ?? 0}
         timeLimitMinutes={interview.timeLimitMinutes}
         language={interview.language}
+        candidateLanguage={candidateLanguage}
+        onLanguageChange={chooseLanguage}
         antiCheatingEnabled={!!interview.antiCheatingEnabled}
         voiceEnabled={!!interview.voiceEnabled}
         chatEnabled={!!interview.chatEnabled}
@@ -225,6 +229,7 @@ export default function InviteSessionPage() {
       aiGender: interview.aiGender,
       aiTone: interview.aiTone,
       language: interview.language,
+      candidateLanguage,
       followUpDepth: interview.followUpDepth,
       integrityProbing: integrity.integrityChecksEnabled,
       candidateFocus:

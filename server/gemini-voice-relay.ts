@@ -20,10 +20,16 @@ import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import {
+  detectLanguageSwitch,
   getGeminiInterviewLanguageCode,
   interviewLanguageRequirement,
   isChineseInterviewLanguage,
+  isMultiLanguage,
+  multiLanguageRequirement,
+  normalizeCandidateLanguage,
+  type CandidateLanguage,
 } from "../src/lib/interview-language";
+import { devanagariToRoman } from "../src/lib/transcript/transliterate";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
 import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "../src/lib/transcript/sanitize";
@@ -246,6 +252,8 @@ interface InterviewContext {
   startQuestionIndex?: number;
   /** Sent by the browser when it reconnects / reloads mid-interview. */
   resume?: ResumeHints | null;
+  /** Multi-language interviews: the language the candidate chose / last switched to. */
+  candidateLanguage?: string | null;
   candidateFocus?: CandidateFocus | null;
   questions: Array<{
     text: string;
@@ -429,7 +437,7 @@ When transitioning to a CODING or WHITEBOARD question:
   5. Discussion naturally CONCLUDED → Brief acknowledgement, then call signal_question_change
 
 ## Language Requirements
-- ${interviewLanguageRequirement(ctx.language)}
+- ${languageRules(ctx)}
 
 ## Code and Whiteboard Visibility
 - You CAN see the participant's code and whiteboard! The system sends you real-time updates via [CODE_UPDATE] and [WHITEBOARD_UPDATE] messages containing their editor code and whiteboard images.
@@ -486,7 +494,39 @@ const GEMINI_TOOLS = [{
 }];
 
 function languageCode(ctx: InterviewContext | null, lang?: string): string {
+  // Multi-language: leave the output language open so the model can follow
+  // the candidate (Hindi, English or a mix); the prompt steers it.
+  if (ctx && isMultiLanguage(ctx.language)) return "";
   return getGeminiInterviewLanguageCode(ctx?.language || lang);
+}
+
+/** Language lines for the system prompt. */
+function languageRules(ctx: InterviewContext): string {
+  if (isMultiLanguage(ctx.language)) {
+    return multiLanguageRequirement(normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en");
+  }
+  return interviewLanguageRequirement(ctx.language);
+}
+
+/** Hindi text from Gemini may come back in Devanagari: keep everything in Roman script (Hinglish). */
+function romanizeOutgoing(m: Record<string, unknown>): Record<string, unknown> {
+  if ((m.type === "asr_ended" || m.type === "chat") && typeof m.text === "string") {
+    return { ...m, text: devanagariToRoman(m.text) };
+  }
+  const data = m.data as { text?: unknown; results?: Array<{ text?: unknown }> } | undefined;
+  if (m.type === "tts_text" && data && typeof data.text === "string") {
+    return { ...m, data: { ...data, text: devanagariToRoman(data.text) } };
+  }
+  if (m.type === "asr" && data && Array.isArray(data.results)) {
+    return {
+      ...m,
+      data: {
+        ...data,
+        results: data.results.map((r) => (typeof r?.text === "string" ? { ...r, text: devanagariToRoman(r.text) } : r)),
+      },
+    };
+  }
+  return m;
 }
 
 function pcmRms(buf: Buffer): number {
@@ -549,7 +589,7 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
         generationConfig: {
           responseModalities: ["AUDIO"],
           speechConfig: {
-            languageCode: opts.langCode,
+            ...(opts.langCode ? { languageCode: opts.langCode } : {}),
             voiceConfig: { prebuiltVoiceConfig: { voiceName: resolveGeminiVoice(opts.gender) } },
           },
           thinkingConfig: { thinkingLevel: "MINIMAL" },
@@ -644,7 +684,7 @@ async function handleMicTest(browserWs: WebSocket, language?: string, sessionId?
   const apiKeys = await resolveGeminiKeys(sessionId);
   log.info("Mic test mode (Gemini)");
   const send = (m: Record<string, unknown>) => {
-    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(m));
+    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(romanizeOutgoing(m)));
   };
   let gem: WebSocket;
   try {
@@ -702,6 +742,8 @@ async function handleInterview(
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
   const langCode = languageCode(ctx);
+  const multiLanguage = isMultiLanguage(ctx.language);
+  if (multiLanguage) ctx.candidateLanguage = normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en";
   let currentQuestionIndex = Math.min(Math.max(0, ctx.startQuestionIndex ?? 0), Math.max(0, sortedQuestions.length - 1));
   /** Questions asked and left: the model may never go back to them on its own. */
   const completed = new Set<number>(askedBefore(currentQuestionIndex, ctx.resume?.askedQuestionIndexes ?? [], sortedQuestions.length));
@@ -752,7 +794,7 @@ async function handleInterview(
   let aiCutTimer: ReturnType<typeof setTimeout> | null = null;
 
   const send = (m: Record<string, unknown>) => {
-    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(m));
+    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(romanizeOutgoing(m)));
   };
   const sendBinary = (b: Buffer) => {
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(b, { binary: true });
@@ -898,12 +940,40 @@ async function handleInterview(
       asked: [...completed].filter((i) => i !== currentQuestionIndex),
       recent: history.slice(-8),
       pendingAnswer,
+      language: multiLanguage ? (currentLanguage() === "hi" ? "Hindi (Hinglish)" : "English") : undefined,
     };
   }
 
+  /** Multi-language interviews: the language the candidate is using now. */
+  function currentLanguage(): CandidateLanguage {
+    return normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en";
+  }
+
+  /**
+   * Candidate switched language (by voice or the on-screen toggle). The prompt
+   * and any reconnect use ctx.candidateLanguage; the browser stores it.
+   */
+  function setCandidateLanguage(lang: CandidateLanguage, source: "voice" | "toggle") {
+    if (!multiLanguage || interviewDone) return;
+    const changed = currentLanguage() !== lang;
+    ctx.candidateLanguage = lang;
+    if (!changed) return;
+    log.info(`Language switched to ${lang} (${source})`);
+    send({ type: "language_change", language: lang, source });
+    if (source === "toggle") {
+      // A voice request is heard by the model itself; the toggle is not.
+      sayText(
+        lang === "hi"
+          ? "[SYSTEM] The participant switched the interview language to Hindi. From now on speak Hinglish (Hindi with English technical terms). Say one short line in Hindi and continue the current question in Hindi."
+          : "[SYSTEM] The participant switched the interview language to English. From now on speak English. Say one short line in English and continue the current question in English.",
+      );
+    }
+  }
+
   function pushHistory(role: "user" | "assistant", text: string) {
-    if (!text.trim()) return;
-    history.push({ role, text: text.trim() });
+    text = devanagariToRoman(text.trim());
+    if (!text) return;
+    history.push({ role, text });
     while (history.length > 40) history.shift();
   }
 
@@ -915,6 +985,10 @@ async function handleInterview(
     pushHistory("user", t);
     userSpokeThisQuestion = true;
     log.info(`User: ${JSON.stringify(t)}`);
+    if (multiLanguage) {
+      const asked = detectLanguageSwitch(t);
+      if (asked) setCandidateLanguage(asked, "voice");
+    }
     if (!interviewDone) tryUserNavigation(t);
   }
 
@@ -1356,6 +1430,11 @@ async function handleInterview(
     try { msg = JSON.parse(data.toString()); } catch { return; }
     try {
       if (msg.type === "ping") { send({ type: "pong" }); return; }
+      if (msg.type === "set_language") {
+        const lang = normalizeCandidateLanguage(typeof msg.language === "string" ? msg.language : null);
+        if (lang) setCandidateLanguage(lang, "toggle");
+        return;
+      }
       if (msg.type === "next_question") {
         requestTransition(Math.min(currentQuestionIndex + 1, sortedQuestions.length), "Next Question", "button");
         return;

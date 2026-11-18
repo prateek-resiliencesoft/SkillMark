@@ -8,6 +8,7 @@
 import { buildReportData } from "@/lib/report-data";
 import { getSessionOverallScore } from "@/lib/session-score";
 import type { z } from "zod";
+import { normalizeInterviewLanguageSetting } from "@/lib/interview-language";
 import type {
   CreateInviteBody,
   ListCandidatesQuery,
@@ -121,7 +122,7 @@ const CANDIDATE_STATUS: Record<string, "in_progress" | "completed" | "abandoned"
 
 async function scopedInterviews(ctx: ApiCtx, onlyId?: string) {
   if (!ctx.auth.projectIds.length) return [] as Record<string, any>[];
-  let q = ctx.db.from("interviews").select("id, title, projectId").in("projectId", ctx.auth.projectIds);
+  let q = ctx.db.from("interviews").select("id, title, language, projectId").in("projectId", ctx.auth.projectIds);
   if (onlyId) q = q.eq("id", onlyId);
   const { data, error } = await q;
   if (error) throw new ApiProblem("INTERNAL_ERROR", "Could not load interviews", 500);
@@ -209,7 +210,7 @@ async function loadMessages(ctx: ApiCtx, sessionId: string) {
 export async function getResult(ctx: ApiCtx, id: string) {
   const { session, interview } = await loadScopedSession(ctx, id);
   const messages = await loadMessages(ctx, id);
-  const r = buildReportData({ ...session, interviewTitle: interview.title, messages });
+  const r = buildReportData({ ...session, interviewTitle: interview.title, interviewLanguage: interview.language, messages });
   const status = reportStatusOf(session);
   const ready = status === "ready";
   return {
@@ -249,7 +250,7 @@ export async function listInterviews(ctx: ApiCtx, q: z.output<typeof ListIntervi
   const before = decodeCursor(q.cursor);
   let b = ctx.db
     .from("interviews")
-    .select("id, title, description, mode, isActive, timeLimitMinutes, createdAt, updatedAt, projectId")
+    .select("id, title, description, mode, language, isActive, timeLimitMinutes, createdAt, updatedAt, projectId")
     .in("projectId", ctx.auth.projectIds);
   if (q.active) b = b.eq("isActive", q.active === "true");
   if (before) b = b.lt("createdAt", before);
@@ -273,6 +274,7 @@ export async function listInterviews(ctx: ApiCtx, q: z.output<typeof ListIntervi
       title: r.title,
       description: r.description ?? null,
       mode: r.mode ?? "CHAT",
+      language: normalizeInterviewLanguageSetting(r.language),
       is_active: r.isActive !== false,
       time_limit_minutes: r.timeLimitMinutes ?? null,
       session_count: counts.get(r.id)?.s ?? 0,

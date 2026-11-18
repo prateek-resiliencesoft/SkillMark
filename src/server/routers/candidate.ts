@@ -141,7 +141,7 @@ export const candidateRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(id, title, timeLimitMinutes)")
+        .select("*, session:sessions!candidates_sessionId_fkey(*), interview:interviews(id, title, timeLimitMinutes, language)")
         .eq("id", input.id)
         .single();
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });

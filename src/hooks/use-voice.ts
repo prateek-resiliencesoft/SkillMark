@@ -2,6 +2,7 @@
 
 import { beaconBodies, newMessageId, unsentMessages } from "@/lib/transcript/outbox";
 import { createLogger } from "@/lib/logger";
+import { normalizeCandidateLanguage, type CandidateLanguage } from "@/lib/interview-language";
 import {
   buildRelayTargets,
   isRecoverableRelayErrorMessage,
@@ -63,6 +64,15 @@ function float32ToPcmHex(inputData: Float32Array): string {
   return hex;
 }
 
+/** Store the candidate's language on the session (kept on reload / resume). */
+function persistLanguage(sessionId: string, language: CandidateLanguage) {
+  void fetch("/api/voice/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, language }),
+  }).catch(() => undefined);
+}
+
 export interface InterviewContext {
   title: string;
   objective?: string | null;
@@ -76,6 +86,8 @@ export interface InterviewContext {
   startQuestionIndex?: number;
   /** Page reload mid-interview: recent saved transcript, so the AI continues. */
   resume?: ResumeHints | null;
+  /** Multi-language interviews: the candidate's chosen language ("en" | "hi"). */
+  candidateLanguage?: string | null;
   candidateFocus?: { skills?: string[] | null; questions?: Array<{ text: string; skill?: string | null }> | null } | null;
   questions: Array<{
     text: string;
@@ -120,6 +132,8 @@ interface VoiceState {
   micCheckPrompt: boolean;
   /** Voice connection dropped and is retrying (show "Reconnecting…"). */
   isReconnecting: boolean;
+  /** Multi-language interviews: language the candidate is using now. */
+  candidateLanguage: CandidateLanguage | null;
 }
 
 interface TrackedMessage {
@@ -174,9 +188,12 @@ export function useVoice({
     totalQuestions: interviewContext.questions.length,
     micCheckPrompt: false,
     isReconnecting: false,
+    candidateLanguage: normalizeCandidateLanguage(interviewContext.candidateLanguage),
   });
 
   const relayConnectorRef = useRef<RelayConnector<Record<string, unknown>> | null>(null);
+  /** Sent on every (re)connect so a resumed session keeps the language. */
+  const candidateLanguageRef = useRef<CandidateLanguage | null>(normalizeCandidateLanguage(interviewContext.candidateLanguage));
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -575,6 +592,7 @@ export function useVoice({
           clientVad: clientVadEnabledRef.current,
           context: {
             ...interviewContext,
+            candidateLanguage: candidateLanguageRef.current ?? interviewContext.candidateLanguage ?? null,
             startQuestionIndex: currentQuestionIndexRef.current,
             // On a reconnect the relay rebuilds the AI session from this:
             // where we are, what was asked, and the last few lines.
@@ -899,6 +917,17 @@ export function useVoice({
           // Relay was busy (candidate turn / reply in flight) — try again later.
           silenceCheckRef.current.skipRejected(performance.now(), ENDPOINTING_CONFIG.silenceCheckSuppressMs);
           break;
+
+        case "language_change": {
+          // Candidate asked to switch language by voice; the relay already switched.
+          const lang = normalizeCandidateLanguage(typeof msg.language === "string" ? msg.language : null);
+          if (lang && lang !== candidateLanguageRef.current) {
+            candidateLanguageRef.current = lang;
+            setState((s) => ({ ...s, candidateLanguage: lang }));
+            persistLanguage(sessionId, lang);
+          }
+          break;
+        }
 
         case "interrupt":
           interruptPlayback();
@@ -1635,6 +1664,18 @@ export function useVoice({
     relayConnectorRef.current?.sendJson({ type: "next_question" });
   }, []);
 
+  /** Multi-language interviews: switch language from the on-screen toggle. */
+  const setLanguage = useCallback(
+    (lang: CandidateLanguage) => {
+      if (lang === candidateLanguageRef.current) return;
+      candidateLanguageRef.current = lang;
+      setState((s) => ({ ...s, candidateLanguage: lang }));
+      relayConnectorRef.current?.sendJson({ type: "set_language", language: lang });
+      persistLanguage(sessionId, lang);
+    },
+    [sessionId],
+  );
+
   /** Request transition back to the previous question */
   const previousQuestion = useCallback(() => {
     relayConnectorRef.current?.sendJson({ type: "prev_question" });
@@ -1917,6 +1958,7 @@ export function useVoice({
     sendWhiteboardUpdate,
     interruptPlayback,
     dismissMicCheckPrompt,
+    setLanguage,
     mediaStreamRef,
     /** Save the transcript and mark the session COMPLETED (safe to call twice). */
     completeSession: saveAndComplete,
