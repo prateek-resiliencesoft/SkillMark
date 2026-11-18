@@ -1,6 +1,6 @@
 import { getAuthUser } from "@/lib/auth";
 import { createLogger } from "@/lib/logger";
-import { mediaObjectKey } from "@/lib/storage-paths";
+import { cvObjectName, mediaObjectKey } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { FILES_BUCKET } from "@/server/integrations/applications";
 import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   const { data: candidate } = await supabaseAdmin
     .from("candidates")
     .select(
-      "id, name, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
+      "id, name, email, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
     )
     .eq("id", candidateId)
     .maybeSingle();
@@ -49,8 +49,9 @@ export async function POST(req: Request) {
     projectId: interview.projectId,
     candidateId,
     candidateName: candidate.name,
+    candidateEmail: candidate.email as string | null,
     kind: "CV",
-    fileName: `0-${file.name}`,
+    fileName: cvObjectName(candidateId, file.name),
   });
 
   const buffer = Buffer.from(await file.arrayBuffer());

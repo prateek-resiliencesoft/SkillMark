@@ -6,19 +6,24 @@
  * "pause", "plan", "people" — never tenant/IDOR jargon.
  */
 import { nanoid } from "@/lib/id";
-import { clearStoredMedia } from "@/lib/media-review";
+import { clearStoredMedia, resolveScopePrefixes } from "@/lib/media-review";
 import { deleteAccount } from "@/lib/account-deletion";
 import {
+  getStorageCapacity,
   getStorageConfigSummary,
-  listObjectsWithMetadata,
   moveStoredObject,
   storage,
+  storedObjectExists,
 } from "@/lib/storage";
 import {
-  candidateFolderSlug,
-  candidateMediaPrefix,
-  mediaObjectKey,
-} from "@/lib/storage-paths";
+  filterItems,
+  getStorageSnapshot,
+  groupByCandidate,
+  invalidateStorageSnapshot,
+  measurePrefixes,
+  sumBytes,
+  type StoredFileItem,
+} from "../storage-explorer";
 import { authDb } from "@/lib/supabase/admin";
 import { setUserPaused } from "@/lib/users";
 import {
@@ -54,6 +59,7 @@ import {
   loadPlatformSettings,
   upsertPlatformSetting,
 } from "../platform-settings";
+import type { Context } from "../context";
 import { platformProcedure, router } from "../trpc";
 import {
   type OrgPlan,
@@ -126,6 +132,16 @@ async function pausedMap(ids: string[]): Promise<Record<string, string>> {
     if (r.paused_at) out[r.id] = r.paused_at;
   }
   return out;
+}
+
+async function loadStorageQuotaBytes(supabase: Context["supabase"]): Promise<number | null> {
+  const { data } = await supabase
+    .from("platform_settings")
+    .select("value")
+    .eq("key", "storageQuota")
+    .maybeSingle();
+  const bytes = (data?.value as { bytes?: unknown } | null)?.bytes;
+  return typeof bytes === "number" && bytes > 0 ? bytes : null;
 }
 
 export const platformRouter = router({
@@ -1551,9 +1567,11 @@ export const platformRouter = router({
           organizations: organizationIds.length,
           projects: input.projectIds?.length ?? 0,
           objects: result.objects,
+          bytes: result.bytes,
           sessions: result.sessions,
         },
       });
+      invalidateStorageSnapshot();
 
       return result;
     }),
@@ -1621,351 +1639,62 @@ export const platformRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const config = getStorageConfigSummary();
+      const snap = await getStorageSnapshot(ctx.supabase);
 
-      // Fetch orgs and projects map
-      const [{ data: orgs }, { data: projects }] = await Promise.all([
-        ctx.supabase.from("organizations").select("id, name"),
-        ctx.supabase.from("projects").select("id, name, organizationId"),
-      ]);
-
-      const orgMap = new Map((orgs ?? []).map((o) => [o.id as string, o.name as string]));
-      const projMap = new Map(
-        (projects ?? []).map((p) => [
-          p.id as string,
-          {
-            name: p.name as string,
-            organizationId: p.organizationId as string,
-            orgName: orgMap.get(p.organizationId as string) || "Unknown Org",
-          },
-        ]),
-      );
-
-      // Determine project filter
-      let targetProjectIds: string[] | undefined;
-      if (input.projectId) {
-        targetProjectIds = [input.projectId];
-      } else if (input.organizationId) {
-        targetProjectIds = (projects ?? [])
-          .filter((p) => p.organizationId === input.organizationId)
-          .map((p) => p.id as string);
-      }
-
-      // Fetch interview ids matching projects if filtered
-      const interviewMap = new Map<string, { id: string; title: string; projectId: string }>();
-      let interviewQuery = ctx.supabase.from("interviews").select("id, title, projectId");
-      if (targetProjectIds && targetProjectIds.length > 0) {
-        interviewQuery = interviewQuery.in("projectId", targetProjectIds);
-      }
-      const { data: interviewRows } = await interviewQuery;
-      for (const inv of interviewRows ?? []) {
-        interviewMap.set(inv.id as string, {
-          id: inv.id as string,
-          title: (inv.title as string) || "AI Interview",
-          projectId: inv.projectId as string,
-        });
-      }
-
-      const matchingInterviewIds = targetProjectIds
-        ? Array.from(interviewMap.keys())
-        : undefined;
-
-      const hasInterviews =
-        !targetProjectIds || (matchingInterviewIds && matchingInterviewIds.length > 0);
-
-      type StoredFileItem = {
-        id: string;
-        key: string;
-        name: string;
-        category: "recording" | "screenshot" | "resume" | "raw";
-        contentType?: string;
-        size?: number;
-        createdAt?: string;
-        signedUrl: string;
-        candidateName?: string;
-        candidateEmail?: string;
-        candidateId?: string;
-        sessionId?: string;
-        interviewTitle?: string;
-        interviewId?: string;
-        projectName?: string;
-        projectId?: string;
-        organizationName?: string;
-        organizationId?: string;
-        timestamp?: number;
-      };
-
-      const collected: StoredFileItem[] = [];
-
-      // 1. Collect Sessions (Recordings & Screenshots)
-      if (
-        hasInterviews &&
-        (input.category === "all" ||
-          input.category === "recordings" ||
-          input.category === "screenshots")
-      ) {
-        let sessionQuery = ctx.supabase
-          .from("sessions")
-          .select(
-            "id, interviewId, participantName, participantEmail, audioRecordingUrl, audioRecordings, screenshots, mediaStoragePrefix, createdAt",
-          )
-          .order("createdAt", { ascending: false })
-          .limit(100);
-
-        if (matchingInterviewIds && matchingInterviewIds.length > 0) {
-          sessionQuery = sessionQuery.in("interviewId", matchingInterviewIds);
-        }
-
-        const { data: sessions } = await sessionQuery;
-
-        for (const s of sessions ?? []) {
-          const inv = interviewMap.get(s.interviewId as string);
-          const proj = inv?.projectId ? projMap.get(inv.projectId) : undefined;
-          const orgName = proj ? proj.orgName : undefined;
-          const orgId = proj ? proj.organizationId : undefined;
-
-          // Recording: audioRecordingUrl
-          if (
-            (input.category === "all" || input.category === "recordings") &&
-            s.audioRecordingUrl &&
-            typeof s.audioRecordingUrl === "string"
-          ) {
-            const rawKey = s.audioRecordingUrl.replace(/^\/+/, "");
-            const parts = rawKey.split("/");
-            const fileName = parts[parts.length - 1] || "recording.m4a";
-            collected.push({
-              id: `rec-${s.id}-main`,
-              key: rawKey,
-              name: fileName,
-              category: "recording",
-              contentType: fileName.endsWith(".webm")
-                ? "audio/webm"
-                : fileName.endsWith(".mp4")
-                  ? "video/mp4"
-                  : "audio/m4a",
-              createdAt: s.createdAt as string,
-              signedUrl: "",
-              candidateName: (s.participantName as string) || "Candidate",
-              candidateEmail: (s.participantEmail as string) || undefined,
-              sessionId: s.id as string,
-              interviewTitle: inv?.title || "AI Interview",
-              interviewId: s.interviewId as string,
-              projectName: proj?.name || "Project",
-              projectId: inv?.projectId,
-              organizationName: orgName,
-              organizationId: orgId,
-            });
-          }
-
-          // Recordings: audioRecordings array
-          if (
-            (input.category === "all" || input.category === "recordings") &&
-            Array.isArray(s.audioRecordings)
-          ) {
-            (s.audioRecordings as Array<Record<string, unknown> | string>).forEach(
-              (rec, idx) => {
-                const recPath = typeof rec === "string" ? rec : (rec?.path as string);
-                if (
-                  recPath &&
-                  typeof recPath === "string" &&
-                  recPath !== s.audioRecordingUrl
-                ) {
-                  const rawKey = recPath.replace(/^\/+/, "");
-                  const parts = rawKey.split("/");
-                  const fileName =
-                    parts[parts.length - 1] || `recording-part-${idx + 1}.webm`;
-                  collected.push({
-                    id: `rec-${s.id}-${idx}`,
-                    key: rawKey,
-                    name: fileName,
-                    category: "recording",
-                    contentType: fileName.endsWith(".webm") ? "audio/webm" : "audio/m4a",
-                    createdAt: s.createdAt as string,
-                    signedUrl: "",
-                    candidateName: (s.participantName as string) || "Candidate",
-                    candidateEmail: (s.participantEmail as string) || undefined,
-                    sessionId: s.id as string,
-                    interviewTitle: inv?.title || "AI Interview",
-                    interviewId: s.interviewId as string,
-                    projectName: proj?.name || "Project",
-                    projectId: inv?.projectId,
-                    organizationName: orgName,
-                    organizationId: orgId,
-                  });
-                }
-              },
-            );
-          }
-
-          // Screenshots
-          if (
-            (input.category === "all" || input.category === "screenshots") &&
-            Array.isArray(s.screenshots)
-          ) {
-            (s.screenshots as Array<Record<string, unknown> | string>).forEach(
-              (shot, idx) => {
-                const shotPath =
-                  typeof shot === "string" ? shot : (shot?.path as string);
-                if (shotPath && typeof shotPath === "string") {
-                  const rawKey = shotPath.replace(/^\/+/, "");
-                  const parts = rawKey.split("/");
-                  const fileName = parts[parts.length - 1] || `proctor-${idx + 1}.jpg`;
-                  collected.push({
-                    id: `shot-${s.id}-${idx}`,
-                    key: rawKey,
-                    name: fileName,
-                    category: "screenshot",
-                    contentType: "image/jpeg",
-                    createdAt: s.createdAt as string,
-                    signedUrl: "",
-                    candidateName: (s.participantName as string) || "Candidate",
-                    candidateEmail: (s.participantEmail as string) || undefined,
-                    sessionId: s.id as string,
-                    interviewTitle: inv?.title || "AI Interview",
-                    interviewId: s.interviewId as string,
-                    projectName: proj?.name || "Project",
-                    projectId: inv?.projectId,
-                    organizationName: orgName,
-                    organizationId: orgId,
-                    timestamp:
-                      typeof shot === "object" && typeof shot?.timestamp === "number"
-                        ? shot.timestamp
-                        : undefined,
-                  });
-                }
-              },
-            );
-          }
-        }
-      }
-
-      // 2. Collect Candidates (Resumes & CVs)
-      if (hasInterviews && (input.category === "all" || input.category === "resumes")) {
-        let candQuery = ctx.supabase
-          .from("candidates")
-          .select("id, name, email, interviewId, sessionId, profile, createdAt")
-          .not("profile", "is", null)
-          .order("createdAt", { ascending: false })
-          .limit(100);
-
-        if (matchingInterviewIds && matchingInterviewIds.length > 0) {
-          candQuery = candQuery.in("interviewId", matchingInterviewIds);
-        }
-
-        const { data: candidates } = await candQuery;
-
-        for (const c of candidates ?? []) {
-          const profile = c.profile as Record<string, unknown> | null;
-          if (profile && typeof profile === "object" && profile.cvPath) {
-            const rawKey = String(profile.cvPath).replace(/^\/+/, "");
-            const fileName =
-              (profile.fileName as string) || rawKey.split("/").pop() || "resume.pdf";
-            const inv = interviewMap.get(c.interviewId as string);
-            const proj = inv?.projectId ? projMap.get(inv.projectId) : undefined;
-            collected.push({
-              id: `cv-${c.id}`,
-              key: rawKey,
-              name: fileName,
-              category: "resume",
-              contentType: (profile.cvType as string) || "application/pdf",
-              size: typeof profile.cvSize === "number" ? profile.cvSize : undefined,
-              createdAt: c.createdAt as string,
-              signedUrl: "",
-              candidateName: (c.name as string) || "Candidate",
-              candidateEmail: (c.email as string) || undefined,
-              candidateId: c.id as string,
-              sessionId: (c.sessionId as string) || undefined,
-              interviewTitle: inv?.title || "AI Interview",
-              interviewId: c.interviewId as string,
-              projectName: proj?.name || "Project",
-              projectId: inv?.projectId,
-              organizationName: proj?.orgName,
-              organizationId: proj?.organizationId,
-            });
-          }
-        }
-      }
-
-      // 3. Raw B2/S3 Direct Bucket Objects (if category === "raw" or "all")
-      if (input.category === "raw" || input.category === "all") {
-        try {
-          const rawPrefix = input.organizationId
-            ? `orgs/${input.organizationId}`
-            : "orgs/";
-          const rawObjects = await listObjectsWithMetadata(rawPrefix, 100);
-          const existingKeys = new Set(collected.map((c) => c.key));
-
-          for (const obj of rawObjects) {
-            if (!existingKeys.has(obj.key)) {
-              const parts = obj.key.split("/");
-              const fileName = parts[parts.length - 1] || obj.key;
-              let cat: "recording" | "screenshot" | "resume" | "raw" = "raw";
-              if (/\.(m4a|webm|mp3|wav|mp4)$/i.test(fileName)) cat = "recording";
-              else if (/\.(jpg|jpeg|png|webp)$/i.test(fileName)) cat = "screenshot";
-              else if (/\.(pdf|docx?)$/i.test(fileName)) cat = "resume";
-
-              let matchedOrgId: string | undefined;
-              let matchedProjId: string | undefined;
-              if (parts[0] === "orgs" && parts.length >= 4) {
-                matchedOrgId = parts[1];
-                if (parts[2] === "projects") matchedProjId = parts[3];
-              }
-
-              const proj = matchedProjId ? projMap.get(matchedProjId) : undefined;
-              const orgName =
-                (matchedOrgId ? orgMap.get(matchedOrgId) : undefined) || proj?.orgName;
-
-              if (input.organizationId && matchedOrgId && matchedOrgId !== input.organizationId)
-                continue;
-              if (input.projectId && matchedProjId && matchedProjId !== input.projectId)
-                continue;
-
-              if (input.category === "all" || input.category === cat || input.category === "raw") {
-                collected.push({
-                  id: `raw-${obj.key.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
-                  key: obj.key,
-                  name: fileName,
-                  category: cat,
-                  size: obj.size,
-                  createdAt: obj.lastModified,
-                  signedUrl: "",
-                  projectName: proj?.name,
-                  projectId: matchedProjId,
-                  organizationName: orgName,
-                  organizationId: matchedOrgId,
-                });
-              }
-            }
-          }
-        } catch {
-          // Continue gracefully
-        }
-      }
-
-      // 4. Apply text search filter if provided
-      let filtered = collected;
+      // 1. Scope (org / project) then text search.
+      let scoped = filterItems(snap, input);
       if (input.search && input.search.trim()) {
-        const query = input.search.toLowerCase();
-        filtered = filtered.filter(
-          (item) =>
-            item.name.toLowerCase().includes(query) ||
-            item.key.toLowerCase().includes(query) ||
-            item.candidateName?.toLowerCase().includes(query) ||
-            item.candidateEmail?.toLowerCase().includes(query) ||
-            item.projectName?.toLowerCase().includes(query) ||
-            item.organizationName?.toLowerCase().includes(query),
+        const q = input.search.toLowerCase();
+        scoped = scoped.filter((item) =>
+          [
+            item.name,
+            item.key,
+            item.candidateName,
+            item.candidateEmail,
+            item.projectName,
+            item.organizationName,
+          ].some((v) => v?.toLowerCase().includes(q)),
         );
       }
 
-      // 5. Slice to limit
-      const itemsToSign = filtered.slice(0, input.limit);
+      // 2. Counts + sizes per category (independent of the category tab).
+      const by = (cat: StoredFileItem["category"]) => scoped.filter((i) => i.category === cat);
+      const counts = {
+        all: scoped.length,
+        recordings: by("recording").length,
+        screenshots: by("screenshot").length,
+        resumes: by("resume").length,
+        raw: by("raw").length,
+      };
+      const bytes = {
+        all: sumBytes(scoped),
+        recordings: sumBytes(by("recording")),
+        screenshots: sumBytes(by("screenshot")),
+        resumes: sumBytes(by("resume")),
+        raw: sumBytes(by("raw")),
+      };
 
-      // 6. Generate signed URLs concurrently
+      // 3. Category tab.
+      const wanted =
+        input.category === "recordings"
+          ? "recording"
+          : input.category === "screenshots"
+            ? "screenshot"
+            : input.category === "resumes"
+              ? "resume"
+              : input.category === "raw"
+                ? "raw"
+                : null;
+      const filtered = (wanted ? scoped.filter((i) => i.category === wanted) : scoped)
+        .slice()
+        .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+
+      // 4. One entry per person; sizes/counts cover ALL files (not just the first page).
+      const candidateFolders = groupByCandidate(filtered);
+
+      // 5. Sign URLs (local crypto, cheap) for the newest files.
       await Promise.all(
-        itemsToSign.map(async (item) => {
-          if (item.key.startsWith("http://") || item.key.startsWith("https://")) {
-            item.signedUrl = item.key;
-            return;
-          }
+        filtered.slice(0, 800).map(async (item) => {
           try {
             const { data } = await storage.from("files").createSignedUrl(item.key, 7200);
             item.signedUrl = data?.signedUrl || "";
@@ -1975,117 +1704,204 @@ export const platformRouter = router({
         }),
       );
 
-      // Compute counts by category
-      const counts = {
-        all: collected.length,
-        recordings: collected.filter((c) => c.category === "recording").length,
-        screenshots: collected.filter((c) => c.category === "screenshot").length,
-        resumes: collected.filter((c) => c.category === "resume").length,
-        raw: collected.filter((c) => c.category === "raw").length,
-      };
-
-      // Group items into candidate-level folder directories:
-      // candidateName/recordings, candidateName/images, candidateName/CV
-      const candidateFolderMap = new Map<
-        string,
-        {
-          candidateId: string;
-          candidateName: string;
-          candidateEmail?: string;
-          organizationId?: string;
-          organizationName?: string;
-          projectId?: string;
-          projectName?: string;
-          folderSlug: string;
-          folderPath: string;
-          recordings: StoredFileItem[];
-          images: StoredFileItem[];
-          cv: StoredFileItem[];
-          raw: StoredFileItem[];
-          totalFiles: number;
-          totalSizeBytes: number;
-          latestActivity?: string;
-        }
-      >();
-
-      for (const item of itemsToSign) {
-        const candKey =
-          item.candidateId ||
-          item.candidateName ||
-          item.sessionId ||
-          (item.key.includes("/candidates/")
-            ? item.key.split("/candidates/")[1]?.split("/")[0]
-            : "unassigned");
-        const candName = item.candidateName || "Unassigned Assets";
-
-        if (!candidateFolderMap.has(candKey)) {
-          const folderSlug = candidateFolderSlug({
-            candidateId: item.candidateId || item.sessionId || "general",
-            candidateName: item.candidateName,
-          });
-          const folderPath =
-            item.organizationId && item.projectId
-              ? `orgs/${item.organizationId}/projects/${item.projectId}/candidates/${folderSlug}`
-              : `candidates/${folderSlug}`;
-
-          candidateFolderMap.set(candKey, {
-            candidateId: item.candidateId || item.sessionId || candKey,
-            candidateName: candName,
-            candidateEmail: item.candidateEmail,
-            organizationId: item.organizationId,
-            organizationName: item.organizationName,
-            projectId: item.projectId,
-            projectName: item.projectName,
-            folderSlug,
-            folderPath,
-            recordings: [],
-            images: [],
-            cv: [],
-            raw: [],
-            totalFiles: 0,
-            totalSizeBytes: 0,
-            latestActivity: item.createdAt,
-          });
-        }
-
-        const group = candidateFolderMap.get(candKey)!;
-        group.totalFiles += 1;
-        if (typeof item.size === "number") group.totalSizeBytes += item.size;
-        if (
-          item.createdAt &&
-          (!group.latestActivity || item.createdAt > group.latestActivity)
-        ) {
-          group.latestActivity = item.createdAt;
-        }
-
-        if (item.category === "recording") {
-          group.recordings.push(item);
-        } else if (item.category === "screenshot") {
-          group.images.push(item);
-        } else if (item.category === "resume") {
-          group.cv.push(item);
-        } else {
-          group.raw.push(item);
-        }
-      }
-
-      const candidateFolders = Array.from(candidateFolderMap.values());
-
       return {
-        items: itemsToSign,
+        items: filtered.slice(0, input.limit),
         candidateFolders,
         total: filtered.length,
         counts,
+        bytes,
         config,
       };
     }),
 
   /**
-   * Reorganize Backblaze B2 & storage folders into clean layout:
-   *   orgs/{org}/projects/{project}/candidates/{candidateName}_{shortId}/recordings/...
-   *   orgs/{org}/projects/{project}/candidates/{candidateName}_{shortId}/images/...
-   *   orgs/{org}/projects/{project}/candidates/{candidateName}_{shortId}/CV/...
-   * and update corresponding database records.
+   * Full storage accounting: how much is used / free, and which organizations,
+   * projects and candidates are taking the space. Sizes come from the object store itself.
+   */
+  storageUsage: platformProcedure
+    .input(z.object({ fresh: z.boolean().optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const config = getStorageConfigSummary();
+      const [snap, capacity] = await Promise.all([
+        getStorageSnapshot(ctx.supabase, { fresh: input?.fresh }),
+        loadStorageQuotaBytes(ctx.supabase).then((q) => getStorageCapacity(q)),
+      ]);
+
+      const tenantBytes = sumBytes(snap.items);
+      const sumOf = (cat: StoredFileItem["category"]) => {
+        const list = snap.items.filter((i) => i.category === cat);
+        return { files: list.length, bytes: sumBytes(list) };
+      };
+      const groups = groupByCandidate(snap.items);
+
+      type ProjectUsage = {
+        id: string;
+        name: string;
+        files: number;
+        bytes: number;
+        candidates: number;
+      };
+      type OrgUsage = {
+        id: string;
+        name: string;
+        files: number;
+        bytes: number;
+        candidates: number;
+        recordingsBytes: number;
+        imagesBytes: number;
+        cvBytes: number;
+        projects: ProjectUsage[];
+      };
+      const orgs = new Map<string, OrgUsage>();
+      const orgOf = (id: string): OrgUsage => {
+        let o = orgs.get(id);
+        if (!o) {
+          o = {
+            id,
+            name: snap.orgNames.get(id) ?? `Unknown organization (${id.slice(0, 8)})`,
+            files: 0,
+            bytes: 0,
+            candidates: 0,
+            recordingsBytes: 0,
+            imagesBytes: 0,
+            cvBytes: 0,
+            projects: [],
+          };
+          orgs.set(id, o);
+        }
+        return o;
+      };
+      const projectOf = (o: OrgUsage, id: string): ProjectUsage => {
+        let p = o.projects.find((x) => x.id === id);
+        if (!p) {
+          p = {
+            id,
+            name: snap.projects.get(id)?.name ?? `Unknown project (${id.slice(0, 8)})`,
+            files: 0,
+            bytes: 0,
+            candidates: 0,
+          };
+          o.projects.push(p);
+        }
+        return p;
+      };
+      for (const id of Array.from(snap.orgNames.keys())) orgOf(id);
+      for (const item of snap.items) {
+        if (!item.organizationId) continue;
+        const o = orgOf(item.organizationId);
+        o.files += 1;
+        o.bytes += item.size;
+        if (item.category === "recording") o.recordingsBytes += item.size;
+        else if (item.category === "screenshot") o.imagesBytes += item.size;
+        else if (item.category === "resume") o.cvBytes += item.size;
+        if (item.projectId) {
+          const p = projectOf(o, item.projectId);
+          p.files += 1;
+          p.bytes += item.size;
+        }
+      }
+      for (const g of groups) {
+        if (!g.organizationId) continue;
+        const o = orgOf(g.organizationId);
+        o.candidates += 1;
+        if (g.projectId) projectOf(o, g.projectId).candidates += 1;
+      }
+      const organizations = Array.from(orgs.values())
+        .map((o) => ({ ...o, projects: o.projects.sort((a, b) => b.bytes - a.bytes) }))
+        .sort((a, b) => b.bytes - a.bytes);
+
+      const used = snap.bucketBytes;
+      return {
+        config,
+        capacity: {
+          source: capacity.source,
+          limitFrom: capacity.limitFrom,
+          totalBytes: capacity.totalBytes,
+          // Disk reports real free space; for B2 it is quota minus used (when a quota is set).
+          freeBytes:
+            capacity.source === "disk"
+              ? capacity.freeBytes
+              : capacity.totalBytes != null
+                ? Math.max(0, capacity.totalBytes - used)
+                : null,
+        },
+        usedBytes: used,
+        usedObjects: snap.bucketObjects,
+        tenantBytes,
+        outsideTenantBytes: Math.max(0, used - tenantBytes),
+        byCategory: {
+          recordings: sumOf("recording"),
+          images: sumOf("screenshot"),
+          cv: sumOf("resume"),
+          other: sumOf("raw"),
+        },
+        organizations,
+        topCandidates: groups.slice(0, 15).map((g) => ({
+          groupKey: g.groupKey,
+          name: g.candidateName,
+          email: g.candidateEmail ?? null,
+          organizationName: g.organizationName ?? null,
+          projectName: g.projectName ?? null,
+          files: g.totalFiles,
+          bytes: g.totalSizeBytes,
+          folders: g.folderPaths.length,
+        })),
+        candidateFolders: groups.length,
+        duplicateFolders: groups.reduce((n, g) => n + g.duplicateFolders, 0),
+        duplicatePeople: groups.filter((g) => g.duplicateFolders > 0).length,
+        unlinkedFolders: groups.filter((g) => !g.linked).length,
+        unlinkedBytes: groups.filter((g) => !g.linked).reduce((n, g) => n + g.totalSizeBytes, 0),
+        generatedAt: new Date(snap.at).toISOString(),
+      };
+    }),
+
+  /**
+   * Plan size for the bucket. Backblaze/S3 cannot report it through their API, so a super admin
+   * enters the figure from their Backblaze plan once. Pass null to clear it.
+   */
+  setStorageQuota: platformProcedure
+    .input(z.object({ gb: z.number().positive().max(1_000_000).nullable() }))
+    .mutation(async ({ ctx, input }) => {
+      const bytes = input.gb == null ? null : Math.round(input.gb * 1024 ** 3);
+      await upsertPlatformSetting(ctx.supabase, "storageQuota", { bytes }, ctx.user.id);
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "storage.set_quota",
+        targetType: "storage",
+        targetId: ctx.user.id,
+        meta: { gb: input.gb },
+      });
+      return { bytes };
+    }),
+
+  /** How much space deleting this selection would free — shown BEFORE the user confirms. */
+  storageDeletePreview: platformProcedure
+    .input(
+      z.object({
+        scope: z.enum(["all", "organizations", "projects"]),
+        organizationIds: z.array(z.string().uuid()).max(200).optional(),
+        projectIds: z.array(z.string().uuid()).max(500).optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      let organizationIds = input.organizationIds ?? [];
+      if (input.scope === "all") {
+        const { data } = await ctx.supabase.from("organizations").select("id");
+        organizationIds = (data ?? []).map((o) => o.id as string);
+      }
+      const { prefixes } = await resolveScopePrefixes(ctx.supabase, {
+        organizationIds,
+        projectIds: input.scope === "projects" ? input.projectIds : undefined,
+      });
+      const { objects, bytes } = await measurePrefixes(prefixes);
+      return { objects, bytes, prefixes: prefixes.length };
+    }),
+
+  /**
+   * Merge duplicate candidate folders into ONE folder per person:
+   *   orgs/{org}/projects/{project}/candidates/{candidateName}_{shortId}/{recordings,images,CV}/...
+   * Every file in the object store is moved (nothing is overwritten) and the database
+   * references (recording, screenshots, CV path, session prefix) are updated.
    */
   reorganizeStoredFiles: platformProcedure
     .input(
@@ -2095,218 +1911,126 @@ export const platformRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const snap = await getStorageSnapshot(ctx.supabase, { fresh: true });
+      const groups = groupByCandidate(filterItems(snap, input));
+
+      const keyMap = new Map<string, string>(); // old key -> new key
+      const oldPrefixes: string[] = [];
+      const canonicalByOld = new Map<string, string>();
+      const candidateIds = new Set<string>();
       let migratedCount = 0;
+      let foldersMerged = 0;
+      let bytesMoved = 0;
+      let failed = 0;
+
+      for (const g of groups) {
+        if (!g.organizationId || !g.projectId || !g.folderPath.startsWith("orgs/")) continue;
+        const canonical = g.folderPath;
+        const sources = g.folderPaths.filter((p) => p !== canonical);
+        if (sources.length === 0) continue;
+
+        const all = [...g.recordings, ...g.images, ...g.cv, ...g.raw].filter(
+          (i) => i.folderPrefix && i.folderPrefix !== canonical,
+        );
+        for (const item of all) {
+          const folder = item.folderPrefix as string;
+          const rest = item.key.slice(folder.length + 1); // kind/file
+          let dest = `${canonical}/${rest}`;
+          if (await storedObjectExists(dest)) {
+            // Same file name already in the merged folder: keep both.
+            const dir = rest.includes("/") ? rest.slice(0, rest.lastIndexOf("/") + 1) : "";
+            const tag = (folder.split("/").pop() || "dup").slice(-8);
+            dest = `${canonical}/${dir}${tag}-${item.name}`;
+          }
+          if (await moveStoredObject(item.key, dest)) {
+            keyMap.set(item.key, dest);
+            migratedCount++;
+            bytesMoved += item.size;
+            if (item.candidateId) candidateIds.add(item.candidateId);
+          } else {
+            failed++;
+          }
+        }
+        for (const f of sources) {
+          oldPrefixes.push(f);
+          canonicalByOld.set(f, canonical);
+        }
+        foldersMerged += sources.length;
+      }
+
+      const remap = (v: string) => keyMap.get(v.replace(/^\/+/, "")) ?? v;
+      const remapList = (list: unknown) =>
+        Array.isArray(list)
+          ? (list as Array<Record<string, unknown> | string>).map((e) =>
+              typeof e === "string"
+                ? remap(e)
+                : e && typeof e.path === "string"
+                  ? { ...e, path: remap(e.path) }
+                  : e,
+            )
+          : list;
+
+      // Point sessions at their new folder + recording / screenshot keys.
       let sessionsUpdated = 0;
-      let candidatesUpdated = 0;
-
-      // 1. Fetch sessions with candidate and interview metadata
-      const sessionQuery = ctx.supabase
-        .from("sessions")
-        .select(
-          `id, audioRecordingUrl, screenshots, audioRecordings, mediaStoragePrefix, participantName,
-           interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
-        )
-        .order("createdAt", { ascending: false })
-        .limit(150);
-
-      const { data: sessions } = await sessionQuery;
-
-      for (const s of sessions ?? []) {
-        const interview = s.interview as unknown as {
-          id: string;
-          projectId: string;
-          project: { id: string; organizationId: string };
-        };
-        const orgId = interview?.project?.organizationId;
-        const projectId = interview?.projectId;
-        if (!orgId || !projectId) continue;
-
-        if (input.organizationId && orgId !== input.organizationId) continue;
-        if (input.projectId && projectId !== input.projectId) continue;
-
-        // Fetch candidate
-        const { data: candidate } = await ctx.supabase
-          .from("candidates")
-          .select("id, name")
-          .eq("sessionId", s.id)
-          .maybeSingle();
-
-        const candidateName =
-          (candidate?.name as string | undefined) ||
-          (s.participantName as string | undefined) ||
-          "Candidate";
-        const subjectId = candidate?.id || `session-${s.id}`;
-        const newPrefix = candidateMediaPrefix({
-          orgId,
-          projectId,
-          candidateId: subjectId,
-          candidateName,
-        });
-
-        let sessionDirty = false;
-        let newAudioRecordingUrl = s.audioRecordingUrl as string | null;
-        let newScreenshots = (s.screenshots as Array<Record<string, unknown> | string>) || [];
-
-        // Check audioRecordingUrl
-        if (
-          typeof s.audioRecordingUrl === "string" &&
-          s.audioRecordingUrl.startsWith("orgs/")
-        ) {
-          const currentKey = s.audioRecordingUrl.replace(/^\/+/, "");
-          const fileName = currentKey.split("/").pop() || "recording.m4a";
-          const desiredKey = mediaObjectKey({
-            orgId,
-            projectId,
-            candidateId: subjectId,
-            candidateName,
-            kind: "recordings",
-            fileName,
-          });
-
-          if (currentKey !== desiredKey) {
-            const moved = await moveStoredObject(currentKey, desiredKey);
-            if (moved) {
-              newAudioRecordingUrl = desiredKey;
-              sessionDirty = true;
-              migratedCount++;
-            }
-          }
-        }
-
-        // Check screenshots
-        if (Array.isArray(s.screenshots) && s.screenshots.length > 0) {
-          let shotsModified = false;
-          const updatedShots = await Promise.all(
-            (s.screenshots as Array<Record<string, unknown> | string>).map(
-              async (shot, idx) => {
-                const shotPath =
-                  typeof shot === "string" ? shot : (shot?.path as string | undefined);
-                if (typeof shotPath === "string" && shotPath.startsWith("orgs/")) {
-                  const currentKey = shotPath.replace(/^\/+/, "");
-                  const fileName =
-                    currentKey.split("/").pop() || `capture-${idx + 1}.jpg`;
-                  const desiredKey = mediaObjectKey({
-                    orgId,
-                    projectId,
-                    candidateId: subjectId,
-                    candidateName,
-                    kind: "images",
-                    fileName,
-                  });
-
-                  if (currentKey !== desiredKey) {
-                    const moved = await moveStoredObject(currentKey, desiredKey);
-                    if (moved) {
-                      shotsModified = true;
-                      migratedCount++;
-                      if (typeof shot === "object" && shot !== null) {
-                        return { ...shot, path: desiredKey };
-                      }
-                      return desiredKey;
-                    }
-                  }
-                }
-                return shot;
-              },
-            ),
-          );
-
-          if (shotsModified) {
-            newScreenshots = updatedShots;
-            sessionDirty = true;
-          }
-        }
-
-        if (sessionDirty || s.mediaStoragePrefix !== newPrefix) {
+      for (let i = 0; i < oldPrefixes.length; i += 50) {
+        const { data: rows } = await ctx.supabase
+          .from("sessions")
+          .select("id, audioRecordingUrl, screenshots, audioRecordings, mediaStoragePrefix")
+          .in("mediaStoragePrefix", oldPrefixes.slice(i, i + 50));
+        for (const s of rows ?? []) {
           await ctx.supabase
             .from("sessions")
             .update({
-              audioRecordingUrl: newAudioRecordingUrl,
-              screenshots: newScreenshots,
-              mediaStoragePrefix: newPrefix,
+              audioRecordingUrl:
+                typeof s.audioRecordingUrl === "string"
+                  ? remap(s.audioRecordingUrl)
+                  : s.audioRecordingUrl,
+              screenshots: remapList(s.screenshots),
+              audioRecordings: remapList(s.audioRecordings),
+              mediaStoragePrefix:
+                canonicalByOld.get(s.mediaStoragePrefix as string) ?? s.mediaStoragePrefix,
             })
             .eq("id", s.id);
           sessionsUpdated++;
         }
       }
 
-      // 2. Fetch candidates with resumes
-      const candQuery = ctx.supabase
-        .from("candidates")
-        .select(
-          `id, name, profile,
-           interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
-        )
-        .not("profile", "is", null)
-        .order("createdAt", { ascending: false })
-        .limit(100);
-
-      const { data: candidates } = await candQuery;
-
-      for (const c of candidates ?? []) {
-        const interview = c.interview as unknown as {
-          id: string;
-          projectId: string;
-          project: { id: string; organizationId: string };
-        };
-        const orgId = interview?.project?.organizationId;
-        const projectId = interview?.projectId;
-        if (!orgId || !projectId) continue;
-
-        if (input.organizationId && orgId !== input.organizationId) continue;
-        if (input.projectId && projectId !== input.projectId) continue;
-
-        const profile = c.profile as Record<string, unknown> | null;
-        if (profile && typeof profile === "object" && profile.cvPath) {
-          const currentCvPath = String(profile.cvPath).replace(/^\/+/, "");
-          if (currentCvPath.startsWith("orgs/")) {
-            const fileName =
-              (profile.fileName as string | undefined) ||
-              currentCvPath.split("/").pop() ||
-              "resume.pdf";
-            const desiredKey = mediaObjectKey({
-              orgId,
-              projectId,
-              candidateId: c.id as string,
-              candidateName: c.name as string,
-              kind: "CV",
-              fileName,
-            });
-
-            if (currentCvPath !== desiredKey) {
-              const moved = await moveStoredObject(currentCvPath, desiredKey);
-              if (moved) {
-                await ctx.supabase
-                  .from("candidates")
-                  .update({
-                    profile: {
-                      ...profile,
-                      cvPath: desiredKey,
-                    },
-                  })
-                  .eq("id", c.id);
-                candidatesUpdated++;
-                migratedCount++;
-              }
-            }
-          }
+      // Point candidates at their moved CV.
+      let candidatesUpdated = 0;
+      const ids = Array.from(candidateIds);
+      for (let i = 0; i < ids.length; i += 100) {
+        const { data: rows } = await ctx.supabase
+          .from("candidates")
+          .select("id, profile")
+          .in("id", ids.slice(i, i + 100));
+        for (const c of rows ?? []) {
+          const profile = c.profile as Record<string, unknown> | null;
+          const cvPath = profile && typeof profile.cvPath === "string" ? profile.cvPath : null;
+          if (!profile || !cvPath) continue;
+          const next = remap(cvPath);
+          if (next === cvPath) continue;
+          await ctx.supabase
+            .from("candidates")
+            .update({ profile: { ...profile, cvPath: next } })
+            .eq("id", c.id);
+          candidatesUpdated++;
         }
       }
 
+      invalidateStorageSnapshot();
       await writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
         action: "storage.reorganize_folders",
         targetType: "storage",
         targetId: ctx.user.id,
-        meta: {
-          migratedCount,
-          sessionsUpdated,
-          candidatesUpdated,
-        },
+        meta: { migratedCount, foldersMerged, bytesMoved, failed, sessionsUpdated, candidatesUpdated },
       });
 
       return {
         migratedCount,
+        foldersMerged,
+        bytesMoved,
+        failed,
         sessionsUpdated,
         candidatesUpdated,
       };

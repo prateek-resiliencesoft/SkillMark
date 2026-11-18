@@ -1,5 +1,5 @@
 import "server-only";
-import { deletePrefix } from "@/lib/storage";
+import { deletePrefix, deletePrefixStats } from "@/lib/storage";
 import { createLogger } from "@/lib/logger";
 import type { Context } from "@/server/context";
 
@@ -84,11 +84,13 @@ export async function archiveSessionData(
   return { cleared };
 }
 
-/** Delete object-storage files for organizations or projects. Scores and transcripts stay. */
-export async function clearStoredMedia(
+export type StorageScope = { organizationIds: string[]; projectIds?: string[] };
+
+/** Object-store prefixes a retention scope covers (shared by preview + delete). */
+export async function resolveScopePrefixes(
   supabase: Db,
-  scope: { organizationIds: string[]; projectIds?: string[] },
-): Promise<{ objects: number; sessions: number }> {
+  scope: StorageScope,
+): Promise<{ prefixes: string[]; projects: { id: string; organizationId: string }[] }> {
   const projectIds = scope.projectIds?.filter(Boolean);
   let projects: { id: string; organizationId: string }[] = [];
   if (projectIds && projectIds.length > 0) {
@@ -112,10 +114,22 @@ export async function clearStoredMedia(
     projectIds && projectIds.length > 0
       ? projects.map((p) => `orgs/${p.organizationId}/projects/${p.id}/`)
       : scope.organizationIds.map((id) => `orgs/${id}/`);
+  return { prefixes, projects };
+}
+
+/** Delete object-storage files for organizations or projects. Scores and transcripts stay. */
+export async function clearStoredMedia(
+  supabase: Db,
+  scope: StorageScope,
+): Promise<{ objects: number; bytes: number; sessions: number }> {
+  const { prefixes, projects } = await resolveScopePrefixes(supabase, scope);
 
   let objects = 0;
+  let bytes = 0;
   for (const prefix of prefixes) {
-    objects += await deletePrefix(prefix);
+    const r = await deletePrefixStats(prefix);
+    objects += r.objects;
+    bytes += r.bytes;
   }
 
   const ids = projects.map((p) => p.id);
@@ -149,7 +163,7 @@ export async function clearStoredMedia(
     }
   }
 
-  return { objects, sessions };
+  return { objects, bytes, sessions };
 }
 
 export async function applyMediaReview(

@@ -37,7 +37,7 @@ export async function POST(req: Request) {
     const { data: session } = await supabaseAdmin
       .from("sessions")
       .select(
-        `id, status, mediaStoragePrefix,
+        `id, status, mediaStoragePrefix, participantEmail,
          interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
       )
       .eq("id", sessionId)
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
 
     const { data: candidate } = await supabaseAdmin
       .from("candidates")
-      .select("id, name")
+      .select("id, name, email")
       .eq("sessionId", sessionId)
       .maybeSingle();
 
@@ -70,7 +70,12 @@ export async function POST(req: Request) {
       ((session as unknown as { participantName?: string }).participantName as
         | string
         | undefined);
+    const candidateEmail =
+      (candidate?.email as string | null | undefined) ||
+      ((session as unknown as { participantEmail?: string | null }).participantEmail ?? null);
     const subjectId = candidate?.id || `session-${sessionId}`;
+    // A session keeps writing into the folder it was assigned, so one person = one folder.
+    const folderPrefix = (session.mediaStoragePrefix as string | null) || null;
     const orgId = interview.project.organizationId;
     const projectId = interview.projectId;
 
@@ -99,6 +104,8 @@ export async function POST(req: Request) {
         projectId,
         candidateId: subjectId,
         candidateName,
+        candidateEmail,
+        prefix: folderPrefix,
         kind: "recordings",
         fileName: recordingPartFileName({ sessionId, runId, seq, elapsedSec, ext: recordingExtForMime(file.type) }),
       });
@@ -121,6 +128,7 @@ export async function POST(req: Request) {
               projectId,
               candidateId: subjectId,
               candidateName,
+              candidateEmail,
             }),
           })
           .eq("id", sessionId);
@@ -144,15 +152,20 @@ export async function POST(req: Request) {
       projectId,
       candidateId: subjectId,
       candidateName,
+      candidateEmail,
+      prefix: folderPrefix,
       kind,
       fileName: cleanFilename,
     });
-    const prefix = candidateMediaPrefix({
-      orgId,
-      projectId,
-      candidateId: subjectId,
-      candidateName,
-    });
+    const prefix =
+      folderPrefix ||
+      candidateMediaPrefix({
+        orgId,
+        projectId,
+        candidateId: subjectId,
+        candidateName,
+        candidateEmail,
+      });
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const defaultContentType =

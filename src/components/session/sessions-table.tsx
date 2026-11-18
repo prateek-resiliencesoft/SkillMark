@@ -224,6 +224,18 @@ function SortableHead({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
+function formatFreed(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
 export function SessionsTable({
   sessions,
   isLoading,
@@ -248,6 +260,7 @@ export function SessionsTable({
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key)),
@@ -346,11 +359,19 @@ export function SessionsTable({
 
   // ── Mutations ──
   const deleteMutation = trpc.session.deleteMany.useMutation({
-    onSuccess: ({ deleted }) => {
-      toast({ title: `${deleted} session${deleted > 1 ? "s" : ""} deleted` });
+    onSuccess: ({ deleted, bytes }) => {
+      toast({
+        title: `${deleted} candidate${deleted === 1 ? "" : "s"} deleted`,
+        description: `All data and media files were erased${
+          bytes > 0 ? ` (${formatFreed(bytes)} freed)` : ""
+        }.`,
+      });
       setSelectedIds(new Set());
+      setDeleteTarget(null);
       onDeleteSuccess?.();
     },
+    onError: (err) =>
+      toast({ title: "Could not delete candidate data", description: err.message, variant: "destructive" }),
   });
 
   const archiveMutation = trpc.session.archiveMany.useMutation({
@@ -696,7 +717,7 @@ export function SessionsTable({
                     ))}
 
                     {/* Frozen right: gear icon */}
-                    <TableHead className="sticky right-0 z-20 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                    <TableHead className="sticky right-0 z-20 w-20 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button
@@ -814,21 +835,33 @@ export function SessionsTable({
                       {/* Frozen right: action */}
                       <TableCell
                         onClick={(e) => e.stopPropagation()}
-                        className="sticky right-0 z-10 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
+                        className="sticky right-0 z-10 w-20 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
                       >
-                        {rowClickable && session.status === "COMPLETED" ? (
-                          <Hugeicon icon={ArrowRight01Icon} className="h-4 w-4 text-muted-foreground" />
-                        ) : (
+                        <div className="flex items-center gap-1">
+                          {rowClickable && session.status === "COMPLETED" ? (
+                            <Hugeicon icon={ArrowRight01Icon} className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="View session details"
+                              onClick={() => onSessionClick(session)}
+                            >
+                              <Hugeicon icon={ExternalLinkIcon} className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7"
-                            title="View session details"
-                            onClick={() => onSessionClick(session)}
+                            className="h-7 w-7 hover:bg-destructive/10"
+                            title="Delete candidate data and media"
+                            aria-label="Delete candidate data and media"
+                            onClick={() => setDeleteTarget(session)}
                           >
-                            <Hugeicon icon={ExternalLinkIcon} className="h-3.5 w-3.5 text-muted-foreground" />
+                            <Hugeicon icon={Delete02Icon} className="h-3.5 w-3.5 text-destructive" />
                           </Button>
-                        )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   )))}
@@ -917,6 +950,39 @@ export function SessionsTable({
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Single-candidate delete confirmation */}
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this candidate&apos;s data?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Deleting {deleteTarget?.participantName || deleteTarget?.participantEmail || "this candidate"}
+              &apos;s data will also erase their media files. The session, transcript, candidate
+              record and every recording, proctoring image and CV will be permanently removed from
+              the database and the storage bucket. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleteTarget) deleteMutation.mutate({ ids: [deleteTarget.id] });
+              }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Confirm & delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Delete confirmation dialog */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
@@ -925,7 +991,9 @@ export function SessionsTable({
             <AlertDialogDescription>
               Are you sure you want to delete {selectedIds.size} session
               {selectedIds.size > 1 ? "s" : ""}? This will permanently remove
-              all associated messages and data. This action cannot be undone.
+              all associated messages, candidate records and media files
+              (recordings, images, CV) from the database and the storage bucket.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
