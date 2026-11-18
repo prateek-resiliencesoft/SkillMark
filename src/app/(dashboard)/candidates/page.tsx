@@ -643,6 +643,10 @@ export default function CandidatesPage() {
       result = result.filter((row) => {
         const s = getSessionStatus(row);
         if (statusFilter === "NOT_STARTED") return s === "Not Started";
+        // Stale IN_PROGRESS sessions are shown as "Abandoned", so filter on the displayed label.
+        const abandoned = formatSessionStatusLabel(row.session) === "Abandoned";
+        if (statusFilter === "ABANDONED") return abandoned;
+        if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && !abandoned;
         return s === statusFilter;
       });
     }
@@ -1077,6 +1081,9 @@ export default function CandidatesPage() {
             </SelectItem>
             <SelectItem value="IN_PROGRESS">
               {isZh ? "进行中" : "In Progress"}
+            </SelectItem>
+            <SelectItem value="ABANDONED">
+              {isZh ? "已放弃" : "Abandoned"}
             </SelectItem>
             <SelectItem value="NOT_STARTED">
               {isZh ? "未开始" : "Not Started"}
