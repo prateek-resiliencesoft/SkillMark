@@ -13,6 +13,7 @@ import { redactSessionForCandidate } from "@/lib/session-redact";
 import { ERROR_CATEGORIES, ERROR_SEVERITIES, createClientErrorLimiter, summarizeErrorLog, type SessionErrorEntry } from "@/lib/session-error-log";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
+import { devanagariToRoman } from "@/lib/transcript/transliterate";
 
 const log = createLogger("router/session");
 
@@ -443,7 +444,8 @@ export const sessionRouter = router({
         .insert({
           sessionId: input.sessionId,
           role: "USER" as const,
-          content: input.content,
+          // Hindi is stored as Roman-script Hinglish, never Devanagari.
+          content: input.contentType === "TEXT" ? devanagariToRoman(input.content) : input.content,
           contentType: input.contentType,
           questionId: input.questionId ?? null,
           wordCount: input.content.split(/\s+/).length,

@@ -128,6 +128,7 @@ export function getInterviewLanguageStyle(language?: string | null): string {
 export function interviewLanguageRequirement(
   language?: string | null,
 ): string {
+  if (isMultiLanguage(language)) return multiLanguageRequirement("en");
   const key = resolveInterviewLanguage(language);
   if (key === "zh") {
     return "你必须始终用中文进行面试。你必须用中文回答。不要使用其他语言。";
@@ -137,6 +138,7 @@ export function interviewLanguageRequirement(
       "YOU MUST ALWAYS RESPOND IN HINGLISH (natural Hindi-English mix).",
       getInterviewLanguageStyle("hi"),
       "Conduct the whole interview in this Hinglish style — greetings, questions, follow-ups, and farewells.",
+      HINDI_QUESTION_RULE,
     ].join(" ");
   }
   const name = INTERVIEW_LANGUAGE_DISPLAY[key];
