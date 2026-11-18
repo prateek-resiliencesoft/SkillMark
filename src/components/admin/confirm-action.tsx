@@ -28,6 +28,8 @@ type ConfirmActionProps = {
   destructive?: boolean;
   pending?: boolean;
   onConfirm: () => void;
+  /** Extra content (e.g. an option checkbox) shown above the typed confirmation. */
+  children?: React.ReactNode;
 };
 
 /**
@@ -45,6 +47,7 @@ export function ConfirmAction({
   destructive = false,
   pending = false,
   onConfirm,
+  children,
 }: ConfirmActionProps) {
   const [typed, setTyped] = useState("");
   const needsMatch = Boolean(confirmText);
@@ -63,6 +66,7 @@ export function ConfirmAction({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children}
         {needsMatch ? (
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground">
