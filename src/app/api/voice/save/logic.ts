@@ -1,6 +1,8 @@
 import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
 import { canMarkCompleted } from "@/lib/session-report-policy";
 import { stripToolCallText } from "@/lib/transcript/sanitize";
+import { devanagariToRoman } from "@/lib/transcript/transliterate";
+import { normalizeCandidateLanguage } from "@/lib/interview-language";
 
 export type VoiceSavePayload = {
   sessionId?: string;
@@ -18,7 +20,14 @@ export type VoiceSavePayload = {
   }>;
   complete?: boolean;
   currentQuestionIndex?: number;
+  /** Candidate chose / switched language in a multi-language interview ("en" | "hi"). */
+  language?: string;
 };
+
+/** Text as stored: no tool-call text, and Hindi in Roman script (Hinglish), never Devanagari. */
+export function storedLineText(content: unknown): string {
+  return devanagariToRoman(stripToolCallText(typeof content === "string" ? content : "")).trim();
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -152,6 +161,19 @@ export async function handleVoiceSave(
   }
 
   let insertError: unknown = null;
+  // Language choice / switch: saved on its own so a failure never blocks the transcript.
+  const chosenLanguage = normalizeCandidateLanguage(payload.language);
+  if (chosenLanguage) {
+    try {
+      await ops.updateSession(sessionId, { language: chosenLanguage });
+    } catch (err) {
+      ops.log.error(`Saving language for ${sessionId} failed:`, err);
+    }
+    // Language-only call (choice in onboarding / switch): nothing else to do.
+    if (!(Array.isArray(messages) && messages.length) && !complete && typeof currentQuestionIndex !== "number") {
+      return { status: 200, body: { ok: true } };
+    }
+  }
   try {
     if (messages && Array.isArray(messages) && messages.length > 0) {
       let lastSaved: { role: string; content: string } | null = null;
@@ -164,7 +186,7 @@ export async function handleVoiceSave(
       }
       // Never store tool-call text the voice model spoke ("signal_question_change{…}").
       const clean = messages
-        .map((m) => ({ ...m, content: stripToolCallText(typeof m.content === "string" ? m.content : "") }))
+        .map((m) => ({ ...m, content: storedLineText(m.content) }))
         .filter((m) => m.content);
       const { kept, dropped } = dropRepeatedUserLines(lastSaved, clean);
       if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);

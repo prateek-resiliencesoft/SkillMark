@@ -16,6 +16,7 @@ import { reportSessionError } from "@/lib/session-error-report-client";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCandidateLanguage } from "@/hooks/use-candidate-language";
 
 const STORAGE_PREFIX = "aural_session_";
 
@@ -61,6 +62,9 @@ export default function SlugSessionPage() {
     { id: sessionId! },
     { enabled: !!sessionId, retry: false },
   );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sessionRow = session.data as any;
+  const { candidateLanguage, chooseLanguage } = useCandidateLanguage(sessionRow?.id, interview.data?.language, sessionRow?.language);
 
   useEffect(() => {
     if (!sessionId || session.isError) {
@@ -120,6 +124,8 @@ export default function SlugSessionPage() {
         questionCount={interview.data.questions.length}
         timeLimitMinutes={interview.data.timeLimitMinutes}
         language={interview.data.language}
+        candidateLanguage={candidateLanguage}
+        onLanguageChange={isPreview ? undefined : chooseLanguage}
         antiCheatingEnabled={antiCheatingEnabled}
         voiceEnabled={!!interview.data.voiceEnabled}
         chatEnabled={!!interview.data.chatEnabled}
@@ -224,6 +230,7 @@ export default function SlugSessionPage() {
       aiGender: interview.data.aiGender,
       aiTone: interview.data.aiTone,
       language: interview.data.language,
+      candidateLanguage,
       followUpDepth: interview.data.followUpDepth,
       integrityProbing: integrity.integrityChecksEnabled,
       startQuestionIndex: isResuming ? resumeQuestionIndex : undefined,

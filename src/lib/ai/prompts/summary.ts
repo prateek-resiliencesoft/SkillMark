@@ -1,4 +1,27 @@
-import { interviewLanguageContentInstruction } from "@/lib/interview-language";
+import { interviewLanguageContentInstruction, involvesHindi, isMultiLanguage } from "@/lib/interview-language";
+
+/**
+ * Report language rule. Hindi / multi-language interviews: the report is in
+ * English and Hinglish (or mixed) answers are scored like any other answer.
+ * Other non-English interviews keep writing the report in that language.
+ */
+export function reportLanguageInstruction(language?: string | null): string {
+  if (!language) return "";
+  if (involvesHindi(language)) {
+    const held = isMultiLanguage(language) ? "in Hindi and English (the candidate could choose and switch)" : "in Hindi";
+    return [
+      `\n\nLANGUAGE: This interview was held ${held}. The transcript may be in Hinglish (Hindi written in Roman script) or mix Hindi and English.`,
+      "Read it as normal speech and evaluate the content of the answers exactly as you would in English.",
+      "Score communication on clarity, structure and how well the candidate explains ideas in the language they chose.",
+      "Do NOT lower any score because the candidate spoke Hindi, mixed languages, used Roman-script spelling, or because of transcription errors in Hindi words.",
+      "Write the ENTIRE report in English (all text fields). You may quote the candidate's own words as said.",
+    ].join(" ");
+  }
+  const contentLang = interviewLanguageContentInstruction(language);
+  return contentLang
+    ? `\n\nIMPORTANT: ${contentLang} Apply this to the ENTIRE report (all text fields including summary, evaluations, insights, themes).`
+    : "";
+}
 import type { LLMContentPart, LLMMessage } from "../types";
 
 export interface WhiteboardDrawingInput {
@@ -108,7 +131,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
   const toneStep = hasCode ? (hasResearchQuestions ? "9" : "8") : (hasResearchQuestions ? "9" : "8");
   const researchStep = hasCode ? "10" : "9";
 
-  const toneInstruction = `${toneStep}. Analyze the participant's communication tone and confidence throughout the interview by examining speech patterns in the transcript: filler words ("um", "uh", "like", "嗯", "那个"), hedging language ("I think maybe", "I'm not sure but", "可能", "大概"), response lengths, directness vs evasiveness, and enthusiasm markers. Produce a per-question tone assessment.\n`;
+  const toneInstruction = `${toneStep}. Analyze the participant's communication tone and confidence throughout the interview by examining speech patterns in the transcript: filler words ("um", "uh", "like", "嗯", "那个", Hinglish "matlab", "woh", "haan"; judge them no more harshly than English fillers), hedging language ("I think maybe", "I'm not sure but", "可能", "大概"), response lengths, directness vs evasiveness, and enthusiasm markers. Produce a per-question tone assessment.\n`;
 
   const researchInstruction = hasResearchQuestions
     ? `${researchStep}. For each RESEARCH-type question, produce a detailed research finding: a comprehensive, specific summary of ALL information the participant shared on that topic, organized into key sub-topics with supporting details, data points, examples, and direct quotes. This should read like a thorough research brief — be as specific and detailed as possible.\n`
@@ -172,10 +195,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
     : "";
 
   // ── Language instruction ───────────────────────────────────────
-  const contentLang = language ? interviewLanguageContentInstruction(language) : "";
-  const languageInstruction = contentLang
-    ? `\n\nIMPORTANT: ${contentLang} Apply this to the ENTIRE report (all text fields including summary, evaluations, insights, themes).`
-    : "";
+  const languageInstruction = reportLanguageInstruction(language);
 
   const whiteboardInstruction = hasDrawings
     ? "\n- The participant created whiteboard drawings during the interview to visually illustrate their ideas. The drawing images are attached below. Analyze the visual content of each drawing and incorporate your observations into the report — describe what was drawn, how it relates to the discussion, and whether it demonstrates clear thinking or effective communication."
