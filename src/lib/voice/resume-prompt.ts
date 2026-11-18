@@ -23,7 +23,14 @@ export type ResumeState = {
   recent: RecentLine[];
   /** The candidate's last words have not been answered yet. */
   pendingAnswer?: boolean;
+  /** Language to keep speaking after the resume (e.g. "Hindi (Hinglish)"). */
+  language?: string;
 };
+
+/** " Keep speaking X." or "" — keeps the candidate's language across a reconnect. */
+export function resumeLanguageNote(s: Pick<ResumeState, "language">): string {
+  return s.language ? ` Keep speaking ${s.language}, the language the participant is using.` : "";
+}
 
 const MAX_LINES = 8;
 const MAX_CHARS = 280;
@@ -67,7 +74,7 @@ export function resumeBehaviorRule(s: ResumeState, isZh = false): string {
 ${asked.length ? `   以下问题已经问过，绝对不要再问：\n${askedList}\n` : ""}${recap ? `   最近的对话：\n${recap.split("\n").map((l) => `   ${l}`).join("\n")}\n` : ""}   自然地继续：可以简短说一句"抱歉，刚才连接断了。"如果受访者还没回答第${n}题，就再问一次这道题；如果他们正在回答，请他们继续。`;
   }
   return `1. RESUMING after a dropped connection. This is NOT the start of the interview: do NOT greet, do NOT introduce yourself, do NOT say how many questions there are, and NEVER call any question "the first question". We are on question ${n} of ${total}: "${s.questions[s.current]?.text ?? ""}".
-${asked.length ? `   Questions already asked — never ask these again:\n${askedList}\n` : ""}${recap ? `   Recent conversation:\n${recap.split("\n").map((l) => `   ${l}`).join("\n")}\n` : ""}   Continue naturally: you may say one short line like "Sorry, we got disconnected." If the participant had not answered question ${n} yet, ask it again; if they were in the middle of answering, ask them to go on.`;
+${asked.length ? `   Questions already asked — never ask these again:\n${askedList}\n` : ""}${recap ? `   Recent conversation:\n${recap.split("\n").map((l) => `   ${l}`).join("\n")}\n` : ""}   Continue naturally: you may say one short line like "Sorry, we got disconnected." If the participant had not answered question ${n} yet, ask it again; if they were in the middle of answering, ask them to go on.${resumeLanguageNote(s)}`;
 }
 
 /** First message after the resumed session is set up. */
@@ -81,8 +88,8 @@ export function resumeCue(s: ResumeState, isZh = false): string {
       : `[SYSTEM] 连接已恢复（不要打招呼或自我介绍）。当前第${n}题（共${total}题）："${q}"。从中断处继续：简短说明刚才断线了，然后继续这道题。不要重复已经问过的问题。`;
   }
   return s.pendingAnswer
-    ? `[SYSTEM] Connection restored (no greeting, no introduction). We are on question ${n} of ${total}: "${q}". The participant's last answer has not been replied to yet — respond to it now out loud.`
-    : `[SYSTEM] Connection restored (no greeting, no introduction). We are on question ${n} of ${total}: "${q}". Continue from where it left off: briefly say the connection dropped, then continue this question. Do not repeat questions already asked.`;
+    ? `[SYSTEM] Connection restored (no greeting, no introduction). We are on question ${n} of ${total}: "${q}". The participant's last answer has not been replied to yet — respond to it now out loud.${resumeLanguageNote(s)}`
+    : `[SYSTEM] Connection restored (no greeting, no introduction). We are on question ${n} of ${total}: "${q}". Continue from where it left off: briefly say the connection dropped, then continue this question. Do not repeat questions already asked.${resumeLanguageNote(s)}`;
 }
 
 /** Browser side: hints for the relay's init message (null on a fresh start). */

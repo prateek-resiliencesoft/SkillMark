@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { InterviewContext } from "@/hooks/use-voice";
 import { getMicTestSamplePhrase } from "@/lib/i18n";
+import { isMultiLanguage, type CandidateLanguage } from "@/lib/interview-language";
 import { startInterviewVad, type InterviewVad } from "@/lib/voice/silero-vad-client";
 import {
   evaluateMicTest,
@@ -71,7 +72,50 @@ interface IntervieweeOnboardingProps {
   oneTimeLink?: boolean;
   /** Invite token used to authorize pre-interview activity events. */
   inviteToken?: string;
+  /** Multi-language interviews: the language the candidate chose ("en" | "hi"). */
+  candidateLanguage?: CandidateLanguage | null;
+  onLanguageChange?: (language: CandidateLanguage) => void;
   onComplete: () => void;
+}
+
+/** Multi-language interviews: candidate picks the language to start in. */
+function LanguageChoice({
+  value,
+  onChange,
+}: {
+  value: CandidateLanguage | null;
+  onChange: (language: CandidateLanguage) => void;
+}) {
+  const options: Array<{ value: CandidateLanguage; label: string }> = [
+    { value: "en", label: "English" },
+    { value: "hi", label: "Hindi" },
+  ];
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="space-y-3 p-5">
+        <div>
+          <p className="font-medium">Interview language</p>
+          <p className="text-sm text-muted-foreground">
+            Choose the language to start in. You can switch or mix Hindi and English at any time.
+          </p>
+        </div>
+        <div className="flex gap-2" role="radiogroup" aria-label="Interview language">
+          {options.map((o) => (
+            <Button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={value === o.value}
+              variant={value === o.value ? "default" : "outline"}
+              onClick={() => onChange(o.value)}
+            >
+              {o.label}
+            </Button>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 type OnboardingStep = "info" | "checklist" | "howItWorks";
@@ -1404,8 +1448,13 @@ function OnboardingBody({
   scheduledAt,
   expiresAt,
   oneTimeLink = false,
+  candidateLanguage = null,
+  onLanguageChange,
   onComplete,
 }: IntervieweeOnboardingProps) {
+  const multiLanguage = isMultiLanguage(language);
+  /** Mic test and preview follow the chosen language in multi-language interviews. */
+  const effectiveLanguage = multiLanguage ? (candidateLanguage ?? "en") : language;
   const report = usePreflightReport();
   const [step, setStep] = useState<OnboardingStep>("info");
   const [agreed, setAgreed] = useState(false);
@@ -1415,7 +1464,7 @@ function OnboardingBody({
   const [screenDone, setScreenDone] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const allChecksDone = cameraDone && micDone && screenDone;
+  const allChecksDone = cameraDone && micDone && screenDone && (!multiLanguage || !onLanguageChange || !!candidateLanguage);
 
   const handleComplete = useCallback(() => {
     report("interview_started", "done");
@@ -1621,6 +1670,7 @@ function OnboardingBody({
       aiName: aiName ?? "ResilienceSoft Interview",
       aiTone: "professional",
       language: language ?? "en-US",
+      candidateLanguage: effectiveLanguage,
       followUpDepth: "medium",
       questions: Array.from({ length: questionCount }, (_, i) => ({
         text: `Question ${i + 1}`,
@@ -1675,8 +1725,11 @@ function OnboardingBody({
       {header}
       <StepIndicator current="checklist" />
       <div className="mx-auto w-full max-w-2xl flex-1 space-y-4 px-4 pb-8">
+        {multiLanguage && onLanguageChange && (
+          <LanguageChoice value={candidateLanguage} onChange={onLanguageChange} />
+        )}
         <CameraCheck done={cameraDone} onDone={() => setCameraDone(true)} allowSkip={!antiCheatingEnabled} />
-        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={language} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
+        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={effectiveLanguage} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
         <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} allowSkip={!antiCheatingEnabled} />
 
         <div className="sticky bottom-0 -mx-4 flex items-center justify-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-4 sm:backdrop-blur-none">
