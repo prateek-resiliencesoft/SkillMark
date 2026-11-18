@@ -4,7 +4,8 @@ import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { INTEGRITY_SIGNAL_TYPES } from "@/lib/integrity/signals";
 import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { createLogger } from "@/lib/logger";
-import { applyMediaReview, archiveSessionData, clearSessionMediaStorage } from "@/lib/media-review";
+import { applyMediaReview, archiveSessionData } from "@/lib/media-review";
+import { deleteSessionWithData } from "@/lib/candidate-data-deletion";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -341,6 +342,7 @@ export const sessionRouter = router({
             projectId,
             candidateId: candidate.id as string,
             candidateName: (candidate as unknown as { name?: string }).name,
+            candidateEmail: (candidate as unknown as { email?: string | null }).email ?? null,
           });
           await ctx.supabase
             .from("sessions")
@@ -1245,16 +1247,18 @@ export const sessionRouter = router({
       return applyMediaReview(ctx.supabase, input.sessionId, input.action);
     }),
 
+  /** Permanently delete sessions together with their candidate data and bucket media. */
   deleteMany: protectedProcedure
     .input(z.object({ ids: z.array(z.string()).min(1) }))
     .mutation(async ({ ctx, input }) => {
       const { data: sessions } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, mediaStoragePrefix, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
         )
         .in("id", input.ids);
 
+      // Authorize every session before deleting anything.
       await Promise.all(
         (sessions ?? []).map(async (s) => {
           const interviewData = s.interview as unknown as {
@@ -1286,16 +1290,25 @@ export const sessionRouter = router({
               message: "Not authorized to delete these sessions",
             });
           }
-
-          // Wipe object storage before DB delete
-          await clearSessionMediaStorage(ctx.supabase, s.id, s.mediaStoragePrefix).catch((err) => {
-            log.warn("media clear on delete failed", s.id, err);
-          });
         }),
       );
 
-      await ctx.supabase.from("sessions").delete().in("id", input.ids);
+      let objects = 0;
+      let bytes = 0;
+      for (const s of sessions ?? []) {
+        try {
+          const r = await deleteSessionWithData(ctx.supabase, s.id as string);
+          objects += r.objects;
+          bytes += r.bytes;
+        } catch (err) {
+          log.error("delete session with data failed", s.id, err);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Could not delete all data for this candidate. Try again.",
+          });
+        }
+      }
 
-      return { deleted: input.ids.length };
+      return { deleted: sessions?.length ?? 0, objects, bytes };
     }),
 });

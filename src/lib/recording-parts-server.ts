@@ -38,7 +38,7 @@ export async function resolveSessionMediaTarget(sessionId: string): Promise<Sess
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, status, mediaStoragePrefix, audioRecordingUrl, mediaClearedAt, participantName,
+      `id, status, mediaStoragePrefix, audioRecordingUrl, mediaClearedAt, participantName, participantEmail,
        interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
     )
     .eq("id", sessionId)
@@ -47,7 +47,7 @@ export async function resolveSessionMediaTarget(sessionId: string): Promise<Sess
   const interview = session.interview as unknown as { projectId: string; project: { organizationId: string } };
   const { data: candidate } = await supabaseAdmin
     .from("candidates")
-    .select("id, name")
+    .select("id, name, email")
     .eq("sessionId", sessionId)
     .maybeSingle();
   const candidateName =
@@ -62,6 +62,9 @@ export async function resolveSessionMediaTarget(sessionId: string): Promise<Sess
       projectId: interview.projectId,
       candidateId: subjectId,
       candidateName,
+      candidateEmail:
+        (candidate?.email as string | null | undefined) ||
+        ((session as unknown as { participantEmail?: string | null }).participantEmail ?? null),
     });
   return {
     sessionId,

@@ -12,7 +12,7 @@ import {
   type UploadedFileInfo,
 } from "@/lib/forms/schema";
 import { storage } from "@/lib/storage";
-import { candidateFolderSlug } from "@/lib/storage-paths";
+import { candidateFolderSlug, cvObjectName } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
@@ -264,11 +264,12 @@ export async function createApplication(opts: {
     const candFolder = candidateFolderSlug({
       candidateId: candidate.id,
       candidateName: name,
+      candidateEmail: email || null,
     });
     storedFiles[key] = [];
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
-      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candFolder}/${kind}/${i}-${safeName(f.name)}`;
+      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candFolder}/${kind}/${cvObjectName(candidate.id, safeName(f.name), i)}`;
       const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type || "application/octet-stream" });
       if (error) {
         throw new SubmissionError(

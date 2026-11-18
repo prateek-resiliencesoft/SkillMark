@@ -20,6 +20,10 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import {
+  CapacityOverview,
+  UsageBreakdown,
+} from "@/components/admin/storage-usage-panel";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -89,7 +93,7 @@ export default function AdminStoragePage() {
   const { toast } = useToast();
 
   // Navigation tab: Explorer (browse assets) vs Retention (prune files)
-  const [activeTab, setActiveTab] = useState<"explorer" | "retention">("explorer");
+  const [activeTab, setActiveTab] = useState<"explorer" | "usage" | "retention">("explorer");
 
   // Explorer visualization mode: folder_tree, candidate_dossiers, flat_table
   const [explorerMode, setExplorerMode] = useState<ExplorerMode>("folder_tree");
@@ -100,6 +104,11 @@ export default function AdminStoragePage() {
 
   // Telemetry queries
   const statsQuery = trpc.platform.storageStats.useQuery(undefined, {
+    staleTime: 30_000,
+  });
+
+  // Real occupied / remaining space and per-org / per-candidate breakdown
+  const usageQuery = trpc.platform.storageUsage.useQuery(undefined, {
     staleTime: 30_000,
   });
 
@@ -142,11 +151,16 @@ export default function AdminStoragePage() {
   const reorganizeMutation = trpc.platform.reorganizeStoredFiles.useMutation({
     onSuccess: (res) => {
       toast({
-        title: "Backblaze B2 Folders Reorganized",
-        description: `Successfully structured ${res.migratedCount} asset${res.migratedCount === 1 ? "" : "s"} across ${res.sessionsUpdated} session${res.sessionsUpdated === 1 ? "" : "s"} and ${res.candidatesUpdated} candidate${res.candidatesUpdated === 1 ? "" : "s"} into clean candidateName/recordings, /images, /CV folders.`,
+        title: res.migratedCount === 0 ? "Folders already clean" : "Candidate folders merged",
+        description:
+          res.migratedCount === 0
+            ? "Every candidate already has a single folder."
+            : `Moved ${res.migratedCount} file${res.migratedCount === 1 ? "" : "s"} (${formatBytes(res.bytesMoved)}) out of ${res.foldersMerged} duplicate folder${res.foldersMerged === 1 ? "" : "s"}; updated ${res.sessionsUpdated} session${res.sessionsUpdated === 1 ? "" : "s"} and ${res.candidatesUpdated} CV link${res.candidatesUpdated === 1 ? "" : "s"}.${res.failed ? ` ${res.failed} file(s) could not be moved.` : ""}`,
+        variant: res.failed ? "destructive" : undefined,
       });
       filesQuery.refetch();
       statsQuery.refetch();
+      usageQuery.refetch();
     },
     onError: (err) => {
       toast({
@@ -183,13 +197,14 @@ export default function AdminStoragePage() {
     onSuccess: (res) => {
       toast({
         title: "Stored files deleted",
-        description: `${res.objects} file${res.objects === 1 ? "" : "s"} removed from ${res.sessions} session${res.sessions === 1 ? "" : "s"}. Candidate scores were preserved.`,
+        description: `${res.objects} file${res.objects === 1 ? "" : "s"} removed, ${formatBytes(res.bytes)} freed, from ${res.sessions} session${res.sessions === 1 ? "" : "s"}. Candidate scores were preserved.`,
       });
       setDeleteOpen(false);
       setOrgIds([]);
       setProjectIds([]);
       filesQuery.refetch();
       statsQuery.refetch();
+      usageQuery.refetch();
     },
     onError: (err) =>
       toast({
@@ -215,6 +230,28 @@ export default function AdminStoragePage() {
     scope === "all" ||
     (scope === "organizations" && orgIds.length > 0) ||
     (scope === "projects" && projectIds.length > 0);
+
+  // How much space the current selection will free (shown before confirming)
+  const previewInput = {
+    scope,
+    organizationIds: scope === "organizations" ? orgIds : undefined,
+    projectIds: scope === "projects" ? projectIds : undefined,
+  } as const;
+  const deletePreview = trpc.platform.storageDeletePreview.useQuery(previewInput, {
+    enabled: activeTab === "retention" && canDelete,
+    staleTime: 10_000,
+  });
+  const orgSizeMap = useMemo(
+    () => new Map((usageQuery.data?.organizations ?? []).map((o) => [o.id, o])),
+    [usageQuery.data?.organizations],
+  );
+  const projectSizeMap = useMemo(() => {
+    const m = new Map<string, { bytes: number; files: number }>();
+    for (const o of usageQuery.data?.organizations ?? []) {
+      for (const p of o.projects) m.set(p.id, p);
+    }
+    return m;
+  }, [usageQuery.data?.organizations]);
 
   const allOrgIds = useMemo(
     () => (index.data?.organizations ?? []).map((o) => o.id),
@@ -242,8 +279,7 @@ export default function AdminStoragePage() {
     if (!selectedCandidateKey) return null;
     return candidateFolders.find(
       (c) =>
-        c.candidateId === selectedCandidateKey ||
-        c.candidateName === selectedCandidateKey,
+        c.groupKey === selectedCandidateKey,
     );
   }, [candidateFolders, selectedCandidateKey]);
 
@@ -331,7 +367,7 @@ export default function AdminStoragePage() {
         <StatCard
           title="Candidate Audio / Video"
           value={counts.recordings}
-          subtitle="candidateName/recordings"
+          subtitle={`${formatBytes(filesQuery.data?.bytes.recordings)} • candidateName/recordings`}
           trend="Streamable"
           trendDirection="neutral"
           icon={Mic}
@@ -339,7 +375,7 @@ export default function AdminStoragePage() {
         <StatCard
           title="Proctoring Images"
           value={counts.screenshots}
-          subtitle="candidateName/images"
+          subtitle={`${formatBytes(filesQuery.data?.bytes.screenshots)} • candidateName/images`}
           trend="Indexed"
           trendDirection="neutral"
           icon={ImageIcon}
@@ -347,12 +383,14 @@ export default function AdminStoragePage() {
         <StatCard
           title="Candidate Resumes & CVs"
           value={counts.resumes}
-          subtitle="candidateName/CV"
+          subtitle={`${formatBytes(filesQuery.data?.bytes.resumes)} • candidateName/CV`}
           trend="Structured"
           trendDirection="neutral"
           icon={FileText}
         />
       </div>
+
+      <CapacityOverview usage={usageQuery.data} loading={usageQuery.isLoading} />
 
       {/* Main Mode Navigation Strip */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-3 dark:border-white/[0.08]">
@@ -375,6 +413,19 @@ export default function AdminStoragePage() {
             <span className="rounded-full bg-white/20 px-1.5 py-0.2 text-[10px] font-mono">
               {candidateFolders.length} Folders
             </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("usage")}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all duration-150 active:scale-95",
+              activeTab === "usage"
+                ? "bg-primary text-white shadow-sm dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.2)]"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <HardDrive className="h-3.5 w-3.5" />
+            <span>Usage by Org & Candidate</span>
           </button>
           <button
             type="button"
@@ -978,9 +1029,9 @@ export default function AdminStoragePage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {candidateFolders.map((cand) => (
                 <div
-                  key={cand.candidateId}
+                  key={cand.groupKey}
                   className="group relative flex flex-col justify-between rounded-xl border border-border/70 bg-card p-4 shadow-sm hover:border-primary/60 transition-all duration-200 dark:border-white/[0.08] dark:bg-zinc-950/70 hover:shadow-md cursor-pointer"
-                  onClick={() => setSelectedCandidateKey(cand.candidateId)}
+                  onClick={() => setSelectedCandidateKey(cand.groupKey)}
                 >
                   <div className="space-y-3">
                     {/* Header */}
@@ -998,9 +1049,19 @@ export default function AdminStoragePage() {
                           </p>
                         </div>
                       </div>
-                      <span className="rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-semibold">
-                        {cand.totalFiles} files
-                      </span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-semibold">
+                          {cand.totalFiles} files
+                        </span>
+                        {cand.duplicateFolders > 0 && (
+                          <span
+                            className="rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 px-2 py-0.5 text-[10px] font-semibold"
+                            title={cand.folderPaths.join("\n")}
+                          >
+                            {cand.folderPaths.length} folders — merge
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Subfolder pills inside the card */}
@@ -1008,7 +1069,7 @@ export default function AdminStoragePage() {
                       <div
                         onClick={(e) => {
                           e.stopPropagation();
-                          setSelectedCandidateKey(cand.candidateId);
+                          setSelectedCandidateKey(cand.groupKey);
                           setSelectedSubfolder("recordings");
                         }}
                         className="rounded-lg border border-border/60 bg-muted/30 p-2 text-center hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-colors dark:border-white/[0.06]"
@@ -1018,14 +1079,14 @@ export default function AdminStoragePage() {
                           recordings/
                         </p>
                         <p className="text-[10px] text-muted-foreground font-mono">
-                          {cand.recordings.length}
+                          {cand.recordings.length} • {formatBytes(cand.recordingsBytes)}
                         </p>
                       </div>
 
                       <div
                         onClick={(e) => {
                           e.stopPropagation();
-                          setSelectedCandidateKey(cand.candidateId);
+                          setSelectedCandidateKey(cand.groupKey);
                           setSelectedSubfolder("images");
                         }}
                         className="rounded-lg border border-border/60 bg-muted/30 p-2 text-center hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-colors dark:border-white/[0.06]"
@@ -1035,14 +1096,14 @@ export default function AdminStoragePage() {
                           images/
                         </p>
                         <p className="text-[10px] text-muted-foreground font-mono">
-                          {cand.images.length}
+                          {cand.images.length} • {formatBytes(cand.imagesBytes)}
                         </p>
                       </div>
 
                       <div
                         onClick={(e) => {
                           e.stopPropagation();
-                          setSelectedCandidateKey(cand.candidateId);
+                          setSelectedCandidateKey(cand.groupKey);
                           setSelectedSubfolder("cv");
                         }}
                         className="rounded-lg border border-border/60 bg-muted/30 p-2 text-center hover:border-blue-500/50 hover:bg-blue-500/5 transition-colors dark:border-white/[0.06]"
@@ -1052,7 +1113,7 @@ export default function AdminStoragePage() {
                           CV/
                         </p>
                         <p className="text-[10px] text-muted-foreground font-mono">
-                          {cand.cv.length}
+                          {cand.cv.length} • {formatBytes(cand.cvBytes)}
                         </p>
                       </div>
                     </div>
@@ -1095,7 +1156,7 @@ export default function AdminStoragePage() {
             <div className="space-y-4">
               {candidateFolders.map((cand) => (
                 <div
-                  key={cand.candidateId}
+                  key={cand.groupKey}
                   className="rounded-xl border border-border/70 bg-card p-5 shadow-sm dark:border-white/[0.08] dark:bg-zinc-950/70 space-y-4"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 pb-3 dark:border-white/[0.06]">
@@ -1108,7 +1169,10 @@ export default function AdminStoragePage() {
                           {cand.candidateName}
                         </h4>
                         <p className="text-[11px] text-muted-foreground font-mono">
-                          {cand.folderPath}
+                          {cand.folderPath} • {formatBytes(cand.totalSizeBytes)}
+                          {cand.duplicateFolders > 0
+                            ? ` • ${cand.folderPaths.length} physical folders`
+                            : ""}
                         </p>
                       </div>
                     </div>
@@ -1357,7 +1421,12 @@ export default function AdminStoragePage() {
         </div>
       )}
 
-      {/* TAB 2: RETENTION & PRUNING */}
+      {/* TAB 2: USAGE BREAKDOWN */}
+      {activeTab === "usage" && (
+        <UsageBreakdown usage={usageQuery.data} loading={usageQuery.isLoading} />
+      )}
+
+      {/* TAB 3: RETENTION & PRUNING */}
       {activeTab === "retention" && (
         <div className="space-y-6">
           {/* Scope Selector */}
@@ -1476,6 +1545,12 @@ export default function AdminStoragePage() {
                             {org.name}
                           </span>
                         </div>
+                        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                          {orgSizeMap.get(org.id)?.files ?? 0} files •{" "}
+                          <b className="text-foreground">
+                            {formatBytes(orgSizeMap.get(org.id)?.bytes ?? 0)}
+                          </b>
+                        </span>
                       </li>
                     );
                   })}
@@ -1517,6 +1592,12 @@ export default function AdminStoragePage() {
                             ({orgNameMap.get(project.organizationId) ?? "Organization"})
                           </span>
                         </div>
+                        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                          {projectSizeMap.get(project.id)?.files ?? 0} files •{" "}
+                          <b className="text-foreground">
+                            {formatBytes(projectSizeMap.get(project.id)?.bytes ?? 0)}
+                          </b>
+                        </span>
                       </li>
                     );
                   })}
@@ -1535,7 +1616,21 @@ export default function AdminStoragePage() {
             )}
 
             {/* Delete Trigger Button */}
-            <div className="pt-4 border-t border-border/50 dark:border-white/[0.06] mt-4 flex justify-end">
+            <div className="pt-4 border-t border-border/50 dark:border-white/[0.06] mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                {!canDelete ? (
+                  "Select what to delete to see how much space will be freed."
+                ) : deletePreview.isLoading ? (
+                  "Calculating space to free…"
+                ) : deletePreview.data ? (
+                  <>
+                    This will free{" "}
+                    <b className="text-foreground text-sm">{formatBytes(deletePreview.data.bytes)}</b>{" "}
+                    ({deletePreview.data.objects.toLocaleString()} file
+                    {deletePreview.data.objects === 1 ? "" : "s"}).
+                  </>
+                ) : null}
+              </p>
               <TacticalButton
                 variant="destructive"
                 disabled={!canDelete}
@@ -1647,11 +1742,14 @@ export default function AdminStoragePage() {
         onOpenChange={setDeleteOpen}
         title="Delete stored media files?"
         description={
-          scope === "all"
+          (deletePreview.data
+            ? `This will free ${formatBytes(deletePreview.data.bytes)} (${deletePreview.data.objects.toLocaleString()} files). `
+            : "") +
+          (scope === "all"
             ? "Every audio/video recording and file stored in Backblaze B2 for this instance will be permanently erased. Interview scores and transcripts remain in the database."
             : scope === "organizations"
               ? `Files for ${orgIds.length} organization${orgIds.length === 1 ? "" : "s"} will be deleted. Transcripts and scores stay preserved.`
-              : `Files for ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} will be deleted. Transcripts and scores stay preserved.`
+              : `Files for ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} will be deleted. Transcripts and scores stay preserved.`)
         }
         confirmLabel="Confirm & Delete Files"
         confirmText="delete files"
