@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { countStrikes, MAX_STRIKES } from "@/lib/head-movement";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { interviewLanguageLabel } from "@/lib/interview-language";
 
 export type Recommendation = "hire" | "maybe" | "no";
 
@@ -22,6 +23,8 @@ export interface ReportData {
   status: string | null;
   createdAt: string | null;
   objective: string | null;
+  /** e.g. "Hindi" or "Multi-language (Hindi + English), Hindi chosen"; null when unknown. */
+  language: string | null;
   durationMinutes: number | null;
   overallScore: number | null;
   recommendation: Recommendation | null;
@@ -170,6 +173,7 @@ export function buildReportData(d: any): ReportData {
     status: d?.status ?? null,
     createdAt: d?.createdAt ?? null,
     objective: d?.interviewObjective ?? null,
+    language: d?.interviewLanguage ? interviewLanguageLabel(d.interviewLanguage, d?.language) : null,
     durationMinutes: d?.totalDurationSeconds != null ? Math.max(1, Math.round(d.totalDurationSeconds / 60)) : null,
     overallScore: overall,
     recommendation: recommendationFor(overall, disqualified),

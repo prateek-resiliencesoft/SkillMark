@@ -122,7 +122,7 @@ const CANDIDATE_STATUS: Record<string, "in_progress" | "completed" | "abandoned"
 
 async function scopedInterviews(ctx: ApiCtx, onlyId?: string) {
   if (!ctx.auth.projectIds.length) return [] as Record<string, any>[];
-  let q = ctx.db.from("interviews").select("id, title, projectId").in("projectId", ctx.auth.projectIds);
+  let q = ctx.db.from("interviews").select("id, title, language, projectId").in("projectId", ctx.auth.projectIds);
   if (onlyId) q = q.eq("id", onlyId);
   const { data, error } = await q;
   if (error) throw new ApiProblem("INTERNAL_ERROR", "Could not load interviews", 500);
@@ -210,7 +210,7 @@ async function loadMessages(ctx: ApiCtx, sessionId: string) {
 export async function getResult(ctx: ApiCtx, id: string) {
   const { session, interview } = await loadScopedSession(ctx, id);
   const messages = await loadMessages(ctx, id);
-  const r = buildReportData({ ...session, interviewTitle: interview.title, messages });
+  const r = buildReportData({ ...session, interviewTitle: interview.title, interviewLanguage: interview.language, messages });
   const status = reportStatusOf(session);
   const ready = status === "ready";
   return {

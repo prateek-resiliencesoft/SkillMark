@@ -72,6 +72,9 @@ export function ReportHero({ data }: { data: ReportData }) {
                   {data.status && (
                     <Badge variant={data.status === "COMPLETED" ? "default" : "secondary"}>{data.status}</Badge>
                   )}
+                  {data.language && data.language !== "English" && (
+                    <Badge variant="outline">Language: {data.language}</Badge>
+                  )}
                 </div>
                 {data.objective && (
                   <ExpandableText text={`Objective: ${data.objective}`} lines={1} className="text-xs text-muted-foreground" />

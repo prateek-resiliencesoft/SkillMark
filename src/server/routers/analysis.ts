@@ -49,7 +49,7 @@ export const analysisRouter = router({
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select(
-          `*, interview:interviews!inner(userId, title, objective, projectId, project:projects!inner(organizationId)), messages(*)`,
+          `*, interview:interviews!inner(userId, title, objective, language, projectId, project:projects!inner(organizationId)), messages(*)`,
         )
         .eq("id", input.sessionId)
         .order("timestamp", { referencedTable: "messages", ascending: true })
@@ -64,6 +64,7 @@ export const analysisRouter = router({
         userId: string;
         title: string;
         objective: string | null;
+        language?: string | null;
         projectId: string;
         project: { organizationId: string };
       };
@@ -167,6 +168,7 @@ export const analysisRouter = router({
         organizationId,
         interviewTitle: interview.title,
         interviewObjective: interview.objective,
+        interviewLanguage: interview.language ?? null,
         participantName: session.participantName,
         participantEmail: session.participantEmail,
         status: session.status,
