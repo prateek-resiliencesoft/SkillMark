@@ -350,6 +350,21 @@ export default function AdminStoragePage() {
         }
       />
 
+      {(filesQuery.error || statsQuery.error || usageQuery.error) && (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+        >
+          <AlertOctagon className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="space-y-0.5">
+            <p className="font-medium">Could not read the object store, so files are not listed.</p>
+            <p className="text-xs opacity-90">
+              {(filesQuery.error ?? statsQuery.error ?? usageQuery.error)?.message}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Telemetry Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <StatCard
