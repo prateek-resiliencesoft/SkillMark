@@ -2,20 +2,23 @@ import "server-only";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createLogger } from "@/lib/logger";
 import { sendResilioTemplate } from "@/lib/messaging/providers";
-import { followupBodyVariables, WHATSAPP_FOLLOWUP_META_TEMPLATE } from "@/lib/messaging/templates";
+import { followupBodyVariables, normalizeWhatsappPhone, WHATSAPP_FOLLOWUP_META_TEMPLATE } from "@/lib/messaging/templates";
 import { inviteLink } from "./batch-access";
 import { loadDeliveryConfig } from "./invite-delivery";
+import { claimFollowup, releaseFollowup } from "./followup-claim";
 
 const log = createLogger("left-interview-followup");
 
 /**
  * WhatsApp follow-up when a candidate leaves a live interview (session → ABANDONED).
- * Called once per ABANDONED transition. Skipped (logged) when:
- *  - the project has no contact number (the template needs it),
- *  - the candidate has no phone with a country code,
+ * Called on each ABANDONED transition; sent at most once per candidate per invite
+ * link (atomic claim on candidates.followupSentToken, migration 37). Skipped (logged) when:
+ *  - the project has no valid contact number (the template needs it),
+ *  - the candidate has no valid phone (normalised to E.164),
  *  - the invite link has no expiry or already expired,
- *  - ResilioHub WhatsApp is not configured.
- * Never throws.
+ *  - ResilioHub WhatsApp is not configured,
+ *  - already sent for this invite, or migration 37 is missing.
+ * A failed send releases the claim so it can retry. Never throws.
  */
 export async function notifyCandidateLeftInterview(sessionId: string): Promise<void> {
   try {
@@ -38,7 +41,7 @@ export async function notifyCandidateLeftInterview(sessionId: string): Promise<v
       .select("organizationId, supportPhone")
       .eq("id", interview.projectId)
       .maybeSingle();
-    const supportPhone = String(project?.supportPhone ?? "").trim();
+    const supportPhone = normalizeWhatsappPhone(project?.supportPhone);
     if (!project?.organizationId || !supportPhone) {
       log.info("skip — project has no contact number", sessionId);
       return;
@@ -49,9 +52,9 @@ export async function notifyCandidateLeftInterview(sessionId: string): Promise<v
       .select("name, phone, inviteToken, expiresAt")
       .eq("id", session.candidateId)
       .maybeSingle();
-    const phone = String(candidate?.phone ?? "").replace(/[\s()-]/g, "");
-    if (!candidate?.inviteToken || !phone.startsWith("+")) {
-      log.info("skip — candidate has no WhatsApp number with country code", sessionId);
+    const phone = normalizeWhatsappPhone(candidate?.phone);
+    if (!candidate?.inviteToken || !phone) {
+      log.info("skip — candidate has no valid WhatsApp number", sessionId);
       return;
     }
     const expiresAt = candidate.expiresAt ? String(candidate.expiresAt) : "";
@@ -67,20 +70,41 @@ export async function notifyCandidateLeftInterview(sessionId: string): Promise<v
       return;
     }
 
-    const r = await sendResilioTemplate({
-      apiKey: cfg.resilio.apiKey,
-      baseUrl: cfg.resilio.baseUrl,
-      to: phone,
-      templateName: WHATSAPP_FOLLOWUP_META_TEMPLATE.name,
-      bodyVariables: followupBodyVariables({
-        name: String(candidate.name ?? ""),
-        supportPhone,
-        link: inviteLink(candidate.inviteToken),
-        expiresAt,
-        organization: cfg.organizationName,
-      }),
-    });
-    if (!r.ok) log.error("left-interview follow-up failed", sessionId, r.error);
+    const claim = await claimFollowup(supabaseAdmin, String(session.candidateId), candidate.inviteToken);
+    if (claim === "already-sent") {
+      log.info("skip — follow-up already sent for this invite", sessionId);
+      return;
+    }
+    if (claim !== "claimed") {
+      log.error(
+        claim === "unsupported"
+          ? "skip — candidates.followupSentAt/followupSentToken missing; apply db/init/37-followup-sent.sql"
+          : "skip — could not claim follow-up",
+        sessionId,
+      );
+      return;
+    }
+
+    let ok = false;
+    try {
+      const r = await sendResilioTemplate({
+        apiKey: cfg.resilio.apiKey,
+        baseUrl: cfg.resilio.baseUrl,
+        to: phone,
+        templateName: WHATSAPP_FOLLOWUP_META_TEMPLATE.name,
+        bodyVariables: followupBodyVariables({
+          name: String(candidate.name ?? ""),
+          supportPhone,
+          link: inviteLink(candidate.inviteToken),
+          expiresAt,
+          organization: cfg.organizationName,
+        }),
+      });
+      ok = r.ok;
+      if (!r.ok) log.error("left-interview follow-up failed", sessionId, r.error);
+    } finally {
+      if (!ok) await releaseFollowup(supabaseAdmin, String(session.candidateId), candidate.inviteToken).catch(() => undefined);
+    }
   } catch (err) {
     log.error("notifyCandidateLeftInterview", err instanceof Error ? err.message : err);
   }

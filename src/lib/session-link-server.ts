@@ -77,7 +77,7 @@ export async function abandonSession(
       .then(({ scheduleSessionReport }) =>
         scheduleSessionReport(sessionId, `abandoned:${reason}`, REPORT_DELAY_AFTER_ABANDON_MS),
       )
-    .catch(() => undefined);
+      .catch(() => undefined);
     void import("@/server/left-interview-followup")
       .then(({ notifyCandidateLeftInterview }) => notifyCandidateLeftInterview(sessionId))
       .catch(() => undefined);
