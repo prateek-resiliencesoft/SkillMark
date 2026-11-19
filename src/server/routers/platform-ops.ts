@@ -325,43 +325,6 @@ export const platformOpsRouter = router({
       return { temporaryPassword: temp };
     }),
 
-  /** Recent errors recorded by the app itself (works without Grafana). */
-  appErrors: platformProcedure
-    .input(
-      z.object({
-        minutes: z.number().int().min(5).max(10_080).default(1440),
-        limit: z.number().int().min(1).max(300).default(100),
-        search: z.string().max(200).optional(),
-      }),
-    )
-    .query(async ({ ctx, input }) => {
-      const since = new Date(Date.now() - input.minutes * 60_000).toISOString();
-      let q = ctx.supabase
-        .from("session_error_logs")
-        .select("id, sessionId, createdAt, category, severity, source, message, status, code")
-        .gte("createdAt", since)
-        .order("createdAt", { ascending: false })
-        .limit(input.limit);
-      const term = input.search?.trim();
-      if (term) q = q.ilike("message", `%${term.replace(/[%_,()]/g, " ")}%`);
-      const { data, error } = await q;
-      if (error) return { entries: [], error: error.message };
-      return {
-        entries: (data ?? []).map((r) => ({
-          id: r.id as string,
-          sessionId: r.sessionId as string,
-          createdAt: r.createdAt as string,
-          category: r.category as string,
-          severity: r.severity as string,
-          source: r.source as string,
-          message: r.message as string,
-          status: (r.status as number | null) ?? null,
-          code: (r.code as string | null) ?? null,
-        })),
-        error: null as string | null,
-      };
-    }),
-
   /** Live condition of the server this app runs on, plus interview load. */
   hostHealth: platformProcedure.query(async ({ ctx }) => {
     const liveSince = new Date(Date.now() - LIVE_HEARTBEAT_MS).toISOString();
