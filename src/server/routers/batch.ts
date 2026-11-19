@@ -172,6 +172,9 @@ export const batchRouter = router({
       emailProvider: (c.emailProvider as string | null) ?? null,
       whatsappProvider: (c.whatsappProvider as string | null) ?? null,
       lastSendError: (c.lastSendError as string | null) ?? null,
+      followupSentAt: (c.followupSentAt as string | null) ?? null,
+      followupSentToken: (c.followupSentToken as string | null) ?? null,
+      followupError: (c.followupError as string | null) ?? null,
       status: candidateStatus(c),
       sessionId: (c.session?.id as string | undefined) ?? null,
       session: c.session
@@ -556,6 +559,37 @@ export const batchRouter = router({
       const { error } = await ctx.supabase.from("candidates").update(patch).eq("id", input.candidateId);
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       return { ok: true };
+    }),
+
+  /**
+   * Send the "you left your interview" WhatsApp follow-up to every left-early candidate in the
+   * batch it has not reached (optionally limited to candidateIds). Sequential: each send is
+   * deduped and reports its own reason when skipped or failed.
+   */
+  sendLeftFollowups: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).max(500).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+      let q = ctx.supabase
+        .from("candidates")
+        .select("id, sessionId, session:sessions!candidates_sessionId_fkey(status)")
+        .eq("batchId", input.batchId);
+      if (input.candidateIds?.length) q = q.in("id", input.candidateIds);
+      const { data, error } = await q;
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+
+      const { sendLeftInterviewFollowup } = await import("../left-interview-followup");
+      const out = { sent: 0, failed: 0, skipped: 0, firstError: null as string | null };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const row of (data ?? []) as any[]) {
+        const session = Array.isArray(row.session) ? row.session[0] : row.session;
+        if (!row.sessionId || session?.status !== "ABANDONED") continue;
+        const r = await sendLeftInterviewFollowup(String(row.sessionId), { manual: true });
+        out[r.status]++;
+        if (r.status !== "sent" && r.error && !out.firstError) out.firstError = r.error;
+      }
+      return out;
     }),
 
   /** Sends invite links. Omit candidateIds to send to the whole batch. */
