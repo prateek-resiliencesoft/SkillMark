@@ -3,7 +3,11 @@ import { candidateMediaPrefix, mediaObjectKey } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
 import { recordingExtForMime, recordingPartFileName } from "@/lib/recording-parts";
-import { linkRecordingToSession } from "@/lib/recording-parts-server";
+import {
+  linkRecordingToSession,
+  linkScreenshotToSession,
+  periodicScreenshotType,
+} from "@/lib/recording-parts-server";
 import { recordSessionError } from "@/lib/session-error-log-server";
 
 const log = createLogger("api/session/upload");
@@ -221,6 +225,20 @@ export async function POST(req: Request) {
     if (signedError || !signedData?.signedUrl) {
       log.error("Signed URL error:", kind, signedError);
       return NextResponse.json({ error: "Failed to generate signed URL" }, { status: 500 });
+    }
+
+    // Periodic proctoring captures: link on the server so they show in the report
+    // even if the browser's end-of-interview save never lands.
+    if (type === "screenshot") {
+      const shotType = periodicScreenshotType(cleanFilename);
+      if (shotType) {
+        await linkScreenshotToSession(sessionId, {
+          url: signedData.signedUrl,
+          path: storagePath,
+          timestamp: new Date().toISOString(),
+          type: shotType,
+        });
+      }
     }
 
     return NextResponse.json({

@@ -108,6 +108,58 @@ export async function linkRecordingToSession(
   return true;
 }
 
+/** Periodic proctoring captures are named `<iso>-camera.jpg` / `<iso>-screen.jpg`. */
+export function periodicScreenshotType(fileName: string): "camera" | "screen" | null {
+  const m = /-(camera|screen)\.jpg$/.exec(fileName);
+  return m ? (m[1] as "camera" | "screen") : null;
+}
+
+const screenshotLinkQueue = new Map<string, Promise<unknown>>();
+
+/**
+ * Append a periodic screenshot to sessions.screenshots at upload time. The
+ * browser used to be the only one saving this list (once, at the end), so a
+ * slow or failed final save lost every capture even though the files were stored.
+ * Serialized per session so camera + screen uploads don't overwrite each other.
+ */
+export function linkScreenshotToSession(
+  sessionId: string,
+  entry: { url: string; path: string; timestamp: string; type: "camera" | "screen" },
+): Promise<boolean> {
+  const prev = screenshotLinkQueue.get(sessionId) ?? Promise.resolve();
+  const run = prev
+    .catch(() => undefined)
+    .then(async () => {
+      const { data, error } = await supabaseAdmin
+        .from("sessions")
+        .select("screenshots")
+        .eq("id", sessionId)
+        .is("mediaClearedAt", null)
+        .maybeSingle();
+      if (error || !data) {
+        if (error) log.error(`Could not read screenshots for ${sessionId}: ${error.message}`);
+        return false;
+      }
+      const existing = Array.isArray(data.screenshots) ? (data.screenshots as { path?: string }[]) : [];
+      if (existing.some((s) => s.path === entry.path)) return true;
+      const { error: upErr } = await supabaseAdmin
+        .from("sessions")
+        .update({ screenshots: [...existing, entry] })
+        .eq("id", sessionId)
+        .is("mediaClearedAt", null);
+      if (upErr) {
+        log.error(`Could not link screenshot to session ${sessionId}: ${upErr.message}`);
+        return false;
+      }
+      return true;
+    });
+  screenshotLinkQueue.set(sessionId, run);
+  void run.finally(() => {
+    if (screenshotLinkQueue.get(sessionId) === run) screenshotLinkQueue.delete(sessionId);
+  });
+  return run;
+}
+
 let ffmpegOk: boolean | null = null;
 function hasFfmpeg(): boolean {
   if (ffmpegOk == null) {
