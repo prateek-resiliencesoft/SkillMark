@@ -1,6 +1,6 @@
 import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
 import { recordPreflightEvent } from "@/lib/preflight-server";
-import { applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
+import { MAX_STRIKES, applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
 import { INTEGRITY_SIGNAL_TYPES } from "@/lib/integrity/signals";
 import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { createLogger } from "@/lib/logger";
@@ -840,6 +840,24 @@ export const sessionRouter = router({
 
       // headViolations kept for older clients; it now carries the shared strike count.
       return { success: true, strikes: result.strikes, headViolations: result.strikes, disqualified: disqualify };
+    }),
+
+  /** Current strike count for the candidate's on-screen badge (shown after a reload). */
+  getStrikes: publicProcedure
+    .input(z.object({ sessionId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select("antiCheatingLog, status")
+        .eq("id", input.sessionId)
+        .maybeSingle();
+      if (!session) throw new TRPCError({ code: "NOT_FOUND", message: "Session not found" });
+      const log = Array.isArray(session.antiCheatingLog) ? session.antiCheatingLog : [];
+      return {
+        count: countStrikes(log),
+        max: MAX_STRIKES,
+        disqualified: session.status === "DISQUALIFIED",
+      };
     }),
 
   /** Silent integrity signals (reviewer-only, never strikes), batched by the browser. */

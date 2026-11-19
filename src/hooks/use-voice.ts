@@ -1700,6 +1700,16 @@ export function useVoice({
     [trackMessage],
   );
 
+  /**
+   * Make the AI say `text` aloud verbatim (e.g. an anti-cheating warning). Not a
+   * candidate utterance: it is not stored in the transcript or the silence checks.
+   */
+  const announceToAi = useCallback((text: string) => {
+    const connector = relayConnectorRef.current;
+    if (!connector?.isReady) return;
+    connector.sendJson({ type: "text", content: text });
+  }, []);
+
   /** Send code editor content to the relay for agent context */
   const sendCodeUpdate = useCallback((content: string, language: string) => {
     latestCodeUpdateRef.current = { content, language };
@@ -1957,6 +1967,7 @@ export function useVoice({
     nextQuestion,
     previousQuestion,
     sendTextMessage,
+    announceToAi,
     sendCodeUpdate,
     sendWhiteboardUpdate,
     interruptPlayback,
