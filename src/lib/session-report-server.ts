@@ -22,6 +22,7 @@ import {
   decideReport,
   hasReport,
   retryDelayMs,
+  withReportTimeout,
   type ReportSessionState,
   type ReportStatus,
 } from "@/lib/session-report-policy";
@@ -163,7 +164,7 @@ export async function ensureSessionReport(
   if (reportColumnsMissing) memAttempts.set(sessionId, attempt);
   try {
     log.info(`Generating report for ${sessionId} (${opts.reason}, attempt ${attempt})`);
-    const outcome = await generateSummaryForSession(sessionId);
+    const outcome = await withReportTimeout(generateSummaryForSession(sessionId));
     if (outcome === "no_messages") {
       await setReportStatus(sessionId, "SKIPPED", { reportError: "No transcript" });
       return "no_messages";
