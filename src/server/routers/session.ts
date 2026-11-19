@@ -1,6 +1,6 @@
 import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
 import { recordPreflightEvent } from "@/lib/preflight-server";
-import { MAX_STRIKES, applyAntiCheatingViolation, countStrikes } from "@/lib/head-movement";
+import { MAX_STRIKES, applyAntiCheatingViolation, countStrikes, disqualificationRemark } from "@/lib/head-movement";
 import { INTEGRITY_SIGNAL_TYPES } from "@/lib/integrity/signals";
 import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { createLogger } from "@/lib/logger";
@@ -769,7 +769,7 @@ export const sessionRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: session } = await ctx.supabase
         .from("sessions")
-        .select("antiCheatingLog, status, interviewId")
+        .select("antiCheatingLog, status, interviewId, integrityDoubtfulAt")
         .eq("id", input.sessionId)
         .single();
 
@@ -831,6 +831,12 @@ export const sessionRouter = router({
         });
         update.status = "DISQUALIFIED";
         update.completedAt = new Date().toISOString();
+        // Flag for reviewers with the reason, unless a teammate already marked it doubtful.
+        if (!session.integrityDoubtfulAt) {
+          update.integrityDoubtfulAt = new Date().toISOString();
+          update.integrityDoubtfulRemark = disqualificationRemark(result.log);
+          update.integrityDoubtfulBy = "System (automatic)";
+        }
       }
 
       await ctx.supabase
