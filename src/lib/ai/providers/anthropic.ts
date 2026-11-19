@@ -57,6 +57,7 @@ export class AnthropicProvider implements LLMProvider {
         ...(system ? { system } : {}),
         messages,
       }),
+      signal: params.signal,
     });
     if (!res.ok) {
       const err = await res.text().catch(() => res.statusText);

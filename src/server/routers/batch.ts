@@ -2,6 +2,7 @@ import { extractJson } from "@/lib/ai/extract-json";
 import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import { resolveTaskModels } from "@/lib/ai/registry";
+import { classifyAiFailure } from "@/lib/ai/key-chain";
 import type { GeneratedInterview } from "@/lib/ai/types";
 import { LANGUAGES } from "@/lib/constants";
 import { experienceBucket, profileToResumeText, type CandidateProfile } from "@/lib/documents/cv-profile";
@@ -255,6 +256,8 @@ export const batchRouter = router({
         } catch (err) {
           lastError = err;
           log.warn(`Batch generation attempt ${attempt + 1} failed`, err);
+          // Quota/auth on every key: more attempts hit the same wall and just burn time.
+          if (classifyAiFailure(err)) break;
         }
       }
       if (!generated) {

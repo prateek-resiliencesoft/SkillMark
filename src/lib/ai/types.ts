@@ -14,6 +14,10 @@ export interface GenerationParams {
   stream?: boolean;
   /** Ask for a JSON object response (OpenAI-compatible response_format). Ignored by providers without support. */
   jsonMode?: boolean;
+  /** Abort the call (time budget / client gone). Honoured by the OpenAI-compatible providers. */
+  signal?: AbortSignal;
+  /** SDK-level retries on 429/5xx (default 2). Set 0 when the caller fails over itself. */
+  maxRetries?: number;
 }
 
 export interface LLMResponse {
