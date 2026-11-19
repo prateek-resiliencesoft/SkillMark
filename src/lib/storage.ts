@@ -106,7 +106,7 @@ export async function readFile(bucket: string, p: string) {
   if (isObjectStorageEnabled()) {
     const ok = objectKey(bucket, p);
     const res = await s3Client().fetch(objectUrl(ok));
-    if (!res.ok) throw new Error(`S3 read failed: ${res.status}`);
+    if (!res.ok) throw new Error(await s3FailureMessage("read", res));
     const data = Buffer.from(await res.arrayBuffer());
     const contentType = res.headers.get("content-type") || "application/octet-stream";
     return { data, contentType };
@@ -123,6 +123,21 @@ export async function readFile(bucket: string, p: string) {
 }
 
 type Err = { message: string } | null;
+
+/**
+ * Readable message for a failed S3/B2 response, e.g. B2's
+ * "AccessDenied — Cannot download file, download bandwidth or transaction (Class B) cap exceeded".
+ */
+async function s3FailureMessage(action: string, res: Response): Promise<string> {
+  const t = (await res.text().catch(() => "")).slice(0, 600);
+  const code = t.match(/<Code>([^<]+)<\/Code>/)?.[1];
+  const msg = t.match(/<Message>([^<]+)<\/Message>/)?.[1];
+  const capHit = /cap exceeded/i.test(msg ?? "");
+  const hint = capHit ? " Raise the cap under Backblaze → Caps & Alerts." : "";
+  return code || msg
+    ? `S3 ${action} failed (${res.status}): ${code ?? "error"}${msg ? ` — ${msg}` : ""}.${hint}`
+    : `S3 ${action} failed: ${res.status}`;
+}
 
 async function s3Put(ok: string, body: Buffer, contentType?: string) {
   // B2 requires Content-Length. aws4fetch hashes/streams the body and undici then
@@ -213,7 +228,7 @@ export async function listObjectKeys(prefix: string): Promise<string[]> {
       url.searchParams.set("prefix", clean);
       if (token) url.searchParams.set("continuation-token", token);
       const res = await s3Client().fetch(url.toString());
-      if (!res.ok) throw new Error(`S3 list failed: ${res.status}`);
+      if (!res.ok) throw new Error(await s3FailureMessage("list", res));
       const xml = await res.text();
       for (const m of xml.matchAll(/<Key>([^<]+)<\/Key>/g)) keys.push(m[1]);
       const truncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
@@ -252,7 +267,7 @@ export async function listObjectsWithMetadata(
   if (isObjectStorageEnabled()) {
     const items: StorageObjectMeta[] = [];
     let token: string | undefined;
-    try {
+    {
       do {
         const url = new URL(`${S3_ENDPOINT}/${S3_BUCKET}`);
         url.searchParams.set("list-type", "2");
@@ -260,7 +275,9 @@ export async function listObjectsWithMetadata(
         url.searchParams.set("max-keys", String(Math.min(maxItems, 500)));
         if (token) url.searchParams.set("continuation-token", token);
         const res = await s3Client().fetch(url.toString());
-        if (!res.ok) break;
+        // Throw (don't return a partial/empty list): an empty list made the admin
+        // panel show "no media" and let deletes/measurements think nothing exists.
+        if (!res.ok) throw new Error(await s3FailureMessage("list", res));
         const xml = await res.text();
         const contentMatches = xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g);
         for (const block of contentMatches) {
@@ -283,8 +300,6 @@ export async function listObjectsWithMetadata(
         const next = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/);
         token = truncated && next ? next[1] : undefined;
       } while (token && items.length < maxItems);
-    } catch {
-      // Gracefully return whatever items were parsed
     }
     return items;
   }
