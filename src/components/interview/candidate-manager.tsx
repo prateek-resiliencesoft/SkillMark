@@ -998,6 +998,7 @@ export function CandidateManager({
             <SelectItem value="ALL">All Status</SelectItem>
             <SelectItem value="COMPLETED">Completed</SelectItem>
             <SelectItem value="IN_PROGRESS">In Progress</SelectItem>
+            <SelectItem value="DISQUALIFIED">Disqualified</SelectItem>
             <SelectItem value="NOT_STARTED">Not Started</SelectItem>
           </SelectContent>
         </Select>

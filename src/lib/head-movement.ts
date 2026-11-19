@@ -195,6 +195,20 @@ export class PoseSmoother {
 }
 
 /**
+ * Reviewer-facing reason saved as the automatic "doubtful" remark when a session
+ * is disqualified: how many strikes, and what each one was.
+ */
+export function disqualificationRemark(log: unknown[]): string {
+  const reasons = log
+    .filter((v) => STRIKE_TYPES.has(String((v as { type?: string })?.type)))
+    .map((v, i) => {
+      const type = String((v as { type: string }).type);
+      return `${i + 1}. ${STRIKE_LABEL[type] ?? type}`;
+    });
+  return `Disqualified automatically after ${reasons.length} anti-cheating strikes. Reasons: ${reasons.join("; ")}.`.slice(0, 1000);
+}
+
+/**
  * What the AI says aloud on the third strike (the last warning). Returns null for
  * every other strike count. `reason` is the human label of the violation.
  */

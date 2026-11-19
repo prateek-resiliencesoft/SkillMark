@@ -6,6 +6,7 @@ import {
   applyAntiCheatingViolation,
   countStrikes,
   classifyFrame,
+  disqualificationRemark,
   headWarningMessage,
   matrixToYawPitch,
 } from "../src/lib/head-movement";
@@ -82,6 +83,21 @@ test("AI announces only the third strike, with the violation reason", () => {
   assert.match(notice, /third strike, because you looked away from the screen/);
   assert.match(notice, /next strike will disqualify you/);
   assert.match(notice, /continue with the interview/);
+});
+
+test("disqualification remark lists every strike reason and ignores non-strike entries", () => {
+  const log = [
+    { type: "tab_switch", timestamp: 1 },
+    { type: "note", timestamp: 2 },
+    { type: "head_movement", timestamp: 3 },
+    { type: "paste", timestamp: 4 },
+    { type: "page_departure", timestamp: 5 },
+    { type: "disqualified", timestamp: 5 },
+  ];
+  assert.equal(
+    disqualificationRemark(log),
+    "Disqualified automatically after 4 anti-cheating strikes. Reasons: 1. Switched tabs; 2. Looked away from the screen; 3. Pasted external content; 4. Left the interview page.",
+  );
 });
 
 test("non-strike log entries don't count", () => {

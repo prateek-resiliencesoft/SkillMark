@@ -1089,6 +1089,9 @@ export default function CandidatesPage() {
             <SelectItem value="ABANDONED">
               {isZh ? "已放弃" : "Abandoned"}
             </SelectItem>
+            <SelectItem value="DISQUALIFIED">
+              {isZh ? "已取消资格" : "Disqualified"}
+            </SelectItem>
             <SelectItem value="NOT_STARTED">
               {isZh ? "未开始" : "Not Started"}
             </SelectItem>
