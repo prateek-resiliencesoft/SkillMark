@@ -671,6 +671,8 @@ export const candidateRouter = router({
           "*, messages(id), interview:interviews!inner(id, title)",
         )
         .in("interviewId", interviewIds)
+        // Earlier attempts of invited candidates (retakes / new links) are not walk-ins.
+        .is("candidateId", null)
         .order("createdAt", { ascending: false })
         .limit(input.limit);
 

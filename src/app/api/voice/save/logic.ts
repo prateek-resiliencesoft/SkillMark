@@ -1,5 +1,6 @@
 import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
 import { canMarkCompleted } from "@/lib/session-report-policy";
+import { completionEndReason, QUIT_REQUEST_REASON } from "@/lib/session-link";
 import { stripToolCallText } from "@/lib/transcript/sanitize";
 import { devanagariToRoman } from "@/lib/transcript/transliterate";
 import { normalizeCandidateLanguage } from "@/lib/interview-language";
@@ -19,6 +20,8 @@ export type VoiceSavePayload = {
     seq?: number;
   }>;
   complete?: boolean;
+  /** "quit": the candidate ended the interview on purpose (End interview button). */
+  reason?: string;
   currentQuestionIndex?: number;
   /** Candidate chose / switched language in a multi-language interview ("en" | "hi"). */
   language?: string;
@@ -144,6 +147,8 @@ export type VoiceSaveOps = {
    * session that was marked ABANDONED turns out to have completed.
    */
   scheduleReport?: (sessionId: string, opts: { force: boolean }) => void;
+  /** Interviewer already said goodbye: a "quit" request then counts as a normal completion. */
+  interviewFinished?: (sessionId: string) => Promise<boolean>;
   /** Optional hook after status → COMPLETED (e.g. WhatsApp team notify). */
   onCompleted?: (sessionId: string) => void;
   /** Newest saved message for the session (used to drop repeated candidate lines). */
@@ -232,12 +237,17 @@ export async function handleVoiceSave(
         const now = ops.now();
         const duration = Math.round((now.getTime() - actualStart) / 1000);
 
+        const endReason = completionEndReason(
+          payload.reason,
+          payload.reason === QUIT_REQUEST_REASON ? !!(await ops.interviewFinished?.(sessionId)) : false,
+        );
+
         await ops.updateSession(sessionId, {
           status: "COMPLETED" as const,
           completedAt: now.toISOString(),
           startedAt: new Date(actualStart).toISOString(),
           totalDurationSeconds: duration,
-          endReason: "COMPLETED",
+          endReason,
         });
 
         ops.log.info(

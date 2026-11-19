@@ -4,6 +4,7 @@ if (typeof window !== "undefined") {
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import type { Context } from "@/server/context";
 import { checkVoiceModel, isVoiceCapableProvider } from "./capabilities";
+import { splitKeyList } from "./key-chain";
 
 export const AI_PROVIDER_IDS = ["openai", "gemini", "nvidia", "anthropic", "custom"] as const;
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
@@ -54,12 +55,13 @@ const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
 
 type Db = Context["supabase"];
 
-function envKey(...names: string[]): string {
+/** Keys from the first set env var; a value may hold several comma-separated keys. */
+export function envKeys(...names: string[]): string[] {
   for (const n of names) {
-    const v = process.env[n]?.trim();
-    if (v) return v;
+    const keys = splitKeyList(process.env[n]);
+    if (keys.length) return keys;
   }
-  return "";
+  return [];
 }
 
 function normalizeKeyList(row: AiProviderStored | undefined): string[] {
@@ -321,7 +323,7 @@ export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCrede
   const pick = (
     orgKeys: string[],
     orgBase: string | null | undefined,
-    envKeys: string[],
+    envNames: string[],
     envBase?: string,
     defaultBase?: string,
   ): ResolvedProviderCreds => {
@@ -332,10 +334,10 @@ export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCrede
         from: "org",
       };
     }
-    const ek = envKey(...envKeys);
-    if (ek) {
+    const ek = envKeys(...envNames);
+    if (ek.length) {
       return {
-        apiKeys: [ek],
+        apiKeys: ek,
         baseUrl: orgBase || envBase || defaultBase,
         from: "env",
       };
@@ -348,12 +350,11 @@ export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCrede
 
   const customKeys = keysOf("custom");
   const customOrgBase = orgPlain.custom?.baseUrl;
+  const customEnvKeys = envKeys("CUSTOM_LLM_API_KEY", "OPENAI_API_KEY");
   const customResolved: ResolvedProviderCreds =
     customKeys.length || customOrgBase
       ? {
-          apiKeys: customKeys.length
-            ? customKeys
-            : [envKey("CUSTOM_LLM_API_KEY", "OPENAI_API_KEY") || "ollama"],
+          apiKeys: customKeys.length ? customKeys : customEnvKeys.length ? customEnvKeys : ["ollama"],
           baseUrl: customOrgBase || process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL,
           from: "org",
         }

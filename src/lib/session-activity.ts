@@ -74,7 +74,10 @@ export function lastMessageAt(messages: ActivityMessage[]): string | null {
 }
 
 /** Short recruiter-facing note for sessions that aren't a normal completion. */
-export function sessionStatusNote(status: string | null | undefined): string | null {
+export function sessionStatusNote(status: string | null | undefined, endReason?: string | null): string | null {
+  if (status === "COMPLETED" && endReason === "QUIT") {
+    return "Quit early. The candidate ended the interview on purpose. Showing what they answered before leaving.";
+  }
   switch (status) {
     case "IN_PROGRESS":
       return "Interview still in progress (or the tab was left open). Showing what has been saved so far.";

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
@@ -695,7 +696,7 @@ function SessionDetail({
   const transcriptFromRecording =
     !Array.isArray(insightsData) && insightsData?.transcriptSource === "recording";
   const canRetranscribe = !!summary.data?.audioRecordingUrl;
-  const statusNote = sessionStatusNote(summary.data?.status);
+  const statusNote = sessionStatusNote(summary.data?.status, (summary.data as { endReason?: string | null } | undefined)?.endReason);
 
   const sentimentData = summary.data?.sentiment as {
     overall?: string;
@@ -774,7 +775,8 @@ function SessionDetail({
   return (
     <div className="space-y-6">
       {statusNote && (
-        <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+        <p className="flex flex-wrap items-center gap-2 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+          <QuitEarlyBadge session={summary.data as { status?: string | null; endReason?: string | null } | undefined} />
           {statusNote}
         </p>
       )}
