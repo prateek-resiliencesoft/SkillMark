@@ -12,6 +12,7 @@ import { createLogger } from "@/lib/logger";
 import {
   getLocalDiskSpace,
   hasS3Bucket,
+  isLegacyS3ReadEnabled,
   isS3CapExceededMessage,
   listLegacyS3Objects,
   readLegacyS3Object,
@@ -300,17 +301,21 @@ export async function loadLastVerify(): Promise<MigrationVerifyResult | null> {
   return (data?.value as MigrationVerifyResult | null) ?? null;
 }
 
-let activeRun: Promise<MigrationState> | null = null;
+// Process-wide: the startup hook and API routes may load separate copies of this module.
+const shared = globalThis as unknown as {
+  __storageMigrationRun?: Promise<MigrationState> | null;
+  __storageMigrationAutoStarted?: boolean;
+};
 
 export function isMigrationRunning(): boolean {
-  return activeRun !== null;
+  return !!shared.__storageMigrationRun;
 }
 
 /** Start (or resume) in the background. Returns false when a run is already going. */
 export function startMigration(deps: MigrationDeps = defaultMigrationDeps()): boolean {
   if (!hasS3Bucket()) throw new Error("No Backblaze/S3 bucket is configured, so there is nothing to copy.");
-  if (activeRun) return false;
-  activeRun = runMigration(deps)
+  if (shared.__storageMigrationRun) return false;
+  shared.__storageMigrationRun = runMigration(deps)
     .then(async (state) => {
       // Usage now includes the copied files.
       const { getLocalUsedBytes } = await import("@/lib/storage-usage");
@@ -322,9 +327,34 @@ export function startMigration(deps: MigrationDeps = defaultMigrationDeps()): bo
       return { ...emptyMigrationState(), state: "failed" as const, message: String(err) };
     })
     .finally(() => {
-      activeRun = null;
+      shared.__storageMigrationRun = null;
     });
   return true;
+}
+
+const AUTO_RESUME_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * While new files go to the server but old ones are still in the bucket,
+ * retry the copy every hour (it pauses on the bucket's daily cap and skips
+ * files already copied) until a run finishes with every file on disk.
+ */
+export function startMigrationAutoResume(): void {
+  if (shared.__storageMigrationAutoStarted) return;
+  shared.__storageMigrationAutoStarted = true;
+  const tick = async () => {
+    try {
+      if (!isLegacyS3ReadEnabled() || isMigrationRunning()) return;
+      const status = await getMigrationStatus();
+      if (status.state === "done" || status.state === "blocked") return;
+      log.info(`Auto-resuming bucket → server copy (last state: ${status.state})`);
+      startMigration();
+    } catch (err) {
+      log.warn("Auto-resume check failed:", err);
+    }
+  };
+  setTimeout(tick, 2 * 60 * 1000).unref?.();
+  setInterval(tick, AUTO_RESUME_INTERVAL_MS).unref?.();
 }
 
 /** Saved progress; a "running" row with no run in this process means the server restarted mid-copy. */
@@ -332,7 +362,7 @@ export async function getMigrationStatus(deps: MigrationDeps = defaultMigrationD
   inProcess: boolean;
 }> {
   const saved = (await deps.loadState().catch(() => null)) ?? emptyMigrationState();
-  if (saved.state === "running" && !activeRun) {
+  if (saved.state === "running" && !shared.__storageMigrationRun) {
     return {
       ...saved,
       state: "paused",
@@ -340,5 +370,5 @@ export async function getMigrationStatus(deps: MigrationDeps = defaultMigrationD
       inProcess: false,
     };
   }
-  return { ...saved, inProcess: !!activeRun };
+  return { ...saved, inProcess: !!shared.__storageMigrationRun };
 }
