@@ -11,9 +11,11 @@ import { useToast } from "@/hooks/use-toast";
 import {
   TEMPLATE_PLACEHOLDERS,
   WHATSAPP_COMPLETION_META_TEMPLATE,
+  WHATSAPP_FOLLOWUP_META_TEMPLATE,
   WHATSAPP_META_TEMPLATE,
   renderTemplate,
   renderWhatsappCompletionPreview,
+  renderWhatsappFollowupPreview,
   renderWhatsappPreview,
   type TemplateVars,
 } from "@/lib/messaging/templates";
@@ -352,6 +354,7 @@ export default function IntegrationsSettingsPage() {
   );
   const [copiedMeta, setCopiedMeta] = useState(false);
   const [copiedCompletionMeta, setCopiedCompletionMeta] = useState(false);
+  const [copiedFollowupMeta, setCopiedFollowupMeta] = useState(false);
   const [copiedInboundUrl, setCopiedInboundUrl] = useState(false);
   const [copiedInboundCurl, setCopiedInboundCurl] = useState(false);
 
@@ -428,6 +431,13 @@ export default function IntegrationsSettingsPage() {
     setCopiedMeta(true);
     toast({ title: "Template body copied" });
     setTimeout(() => setCopiedMeta(false), 2000);
+  };
+
+  const copyFollowupMetaTemplate = async () => {
+    await navigator.clipboard.writeText(WHATSAPP_FOLLOWUP_META_TEMPLATE.body);
+    setCopiedFollowupMeta(true);
+    toast({ title: "Follow-up template copied" });
+    setTimeout(() => setCopiedFollowupMeta(false), 2000);
   };
 
   const copyCompletionMetaTemplate = async () => {
@@ -954,6 +964,55 @@ export default function IntegrationsSettingsPage() {
                         <div className="whitespace-pre-wrap">
                           {renderWhatsappCompletionPreview(completionSample)}
                         </div>
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
+                          <span>10:00 AM</span>
+                          <Check className="h-3 w-3 stroke-[3]" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">Left-interview follow-up body</p>
+                    <p className="text-xs text-muted-foreground">
+                      UTILITY · en_US ·{" "}
+                      <code>{WHATSAPP_FOLLOWUP_META_TEMPLATE.name}</code>
+                      {" · "}sent automatically when a candidate leaves an interview midway
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={copyFollowupMetaTemplate} className="h-8">
+                    {copiedFollowupMeta ? (
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {copiedFollowupMeta ? "Copied" : "Copy for ResilioHub"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Vars: {"{{1}}"} candidate · {"{{2}}"} project contact number (Project → General) ·{" "}
+                  {"{{3}}"} invite link · {"{{4}}"} expiry date · {"{{5}}"} expiry time · {"{{6}}"} organization.
+                  Not editable here; the message is skipped if the project has no contact number.
+                </p>
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Meta body (fixed — submit in ResilioHub)</Label>
+                    <Textarea
+                      rows={8}
+                      value={WHATSAPP_FOLLOWUP_META_TEMPLATE.body}
+                      readOnly
+                      className="font-mono text-xs leading-relaxed"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Bubble preview</Label>
+                    <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
+                      <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
+                        <div className="whitespace-pre-wrap">{renderWhatsappFollowupPreview()}</div>
                         <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
                           <span>10:00 AM</span>
                           <Check className="h-3 w-3 stroke-[3]" />

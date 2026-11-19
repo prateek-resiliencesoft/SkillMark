@@ -129,6 +129,12 @@ export const projectRouter = router({
         id: z.string(),
         name: z.string().min(1).max(100).optional(),
         description: z.string().max(500).optional(),
+        supportPhone: z
+          .string()
+          .trim()
+          .max(30)
+          .refine((v) => v === "" || /^\+\d[\d\s()-]{5,28}$/.test(v), "Use the international format with country code, e.g. +919876543210")
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -152,7 +158,11 @@ export const projectRouter = router({
       }
       assertMinRole(membership.role, "ADMIN");
 
-      const { id, ...data } = input;
+      const { id, supportPhone, ...rest } = input;
+      const data = {
+        ...rest,
+        ...(supportPhone !== undefined ? { supportPhone: supportPhone || null } : {}),
+      };
       const { data: updated, error } = await ctx.supabase
         .from("projects")
         .update(data)
