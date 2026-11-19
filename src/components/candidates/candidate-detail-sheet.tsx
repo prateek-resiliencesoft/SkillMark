@@ -24,6 +24,7 @@ import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFir
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -550,6 +551,14 @@ export function CandidateDetailSheet({
                   )}
                   {c.lastSendError && <p className="mt-2 text-xs text-destructive">Last send error: {c.lastSendError}</p>}
                 </section>
+
+                <LeftFollowupAction
+                  candidateId={c.id}
+                  candidate={c}
+                  session={c.session}
+                  variant="card"
+                  onDone={onSaved}
+                />
 
                 <InviteMessagesSection views={c.inviteMessageViews} />
 

@@ -68,6 +68,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -1007,6 +1008,14 @@ export default function CandidatesPage() {
               {statusLabel(row)}
             </Badge>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
+            {getCandidateField(row) ? (
+              <LeftFollowupAction
+                candidateId={getCandidateField(row)!.id}
+                candidate={getCandidateField(row)}
+                session={row.session}
+                variant="compact"
+              />
+            ) : null}
           </div>
         );
       default:
