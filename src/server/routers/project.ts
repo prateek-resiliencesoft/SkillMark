@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { router, protectedProcedure } from "../trpc";
 import { TRPCError } from "@trpc/server";
+import { normalizeWhatsappPhone } from "@/lib/messaging/templates";
 import { getOrgMembership, assertMinRole, filterAccessibleProjectIds } from "../trpc";
 
 export const projectRouter = router({
@@ -133,7 +134,7 @@ export const projectRouter = router({
           .string()
           .trim()
           .max(30)
-          .refine((v) => v === "" || /^\+\d[\d\s()-]{5,28}$/.test(v), "Use the international format with country code, e.g. +919876543210")
+          .refine((v) => v === "" || normalizeWhatsappPhone(v) !== null, "Enter a valid phone number, e.g. +919876543210")
           .optional(),
       }),
     )
@@ -161,7 +162,7 @@ export const projectRouter = router({
       const { id, supportPhone, ...rest } = input;
       const data = {
         ...rest,
-        ...(supportPhone !== undefined ? { supportPhone: supportPhone || null } : {}),
+        ...(supportPhone !== undefined ? { supportPhone: supportPhone ? normalizeWhatsappPhone(supportPhone) : null } : {}),
       };
       const { data: updated, error } = await ctx.supabase
         .from("projects")

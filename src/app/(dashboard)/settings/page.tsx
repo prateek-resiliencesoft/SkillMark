@@ -149,8 +149,8 @@ export default function ProjectSettingsGeneralPage() {
             />
             <p className="text-xs text-muted-foreground">
               {isZh
-                ? "用于“中途离开面试”的跟进消息，需包含国家代码。留空则不发送该消息。"
-                : "Shown in the follow-up WhatsApp sent to candidates who leave an interview midway. Include the country code. If empty, no follow-up is sent."}
+                ? "仅在设置了联系电话时，才会向中途离开面试的候选人发送 WhatsApp 跟进消息。请包含国家代码（10 位印度手机号会自动加 +91）。"
+                : "The WhatsApp left-interview follow-up is only sent when a contact number is set. Include the country code (10-digit Indian mobiles get +91 automatically)."}
             </p>
           </div>
           {isAdmin && (

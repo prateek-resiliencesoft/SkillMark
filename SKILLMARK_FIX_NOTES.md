@@ -200,3 +200,30 @@ Still nothing committed, pushed or deployed; `.env*` untouched.
    - The candidates list, drawer, report header and admin org activity show a "Quit early" badge.
    - A report is generated if there are answers.
 5. **Not a quit:** let the interviewer finish or the timer run out. `endReason = 'COMPLETED'`, no badge. Close the tab mid-interview. `ABANDONED`, no badge.
+
+---
+
+# Pass 3: left-interview WhatsApp follow-up review fixes (commit 9a3411e)
+
+## Changes
+1. **Timezone** — `followupExpiryParts(expiresAt, timeZone = "Asia/Kolkata")` in `src/lib/messaging/templates.ts`. No org/project timezone setting exists in DB or code (only per-request admin chart zones), so the default is `Asia/Kolkata`. Invalid zone falls back to the default. Narrow no-break space (U+202F) before AM/PM is replaced with a plain space. `followupBodyVariables(v, timeZone?)` passes it through. `2026-11-26T18:29:00Z` → `Nov 26, 2026` / `11:59 PM`.
+2. **Wording** — body now says "Or you can restart your interview using this link: {{3}}". Same six variables, same order. **Template renamed to `left_interview_followup_v2`**: Meta delivers the text stored under the approved name, so sending the old name would still show "continue … where you left off". **Action: submit the new body to ResilioHub/Meta under `left_interview_followup_v2` and wait for approval before relying on the follow-up.** The Integrations page preview/copy text reads the constant, so it updates automatically.
+3. **Dedupe** — new migration `db/init/37-followup-sent.sql` adds `candidates."followupSentAt"` and `"followupSentToken"`. New `src/server/followup-claim.ts`:
+   - `claimFollowup`: one conditional `UPDATE … WHERE id AND inviteToken AND (followupSentToken IS NULL OR followupSentToken <> inviteToken) RETURNING id`. Only a returned row means "send". A rotated invite link has a new token, so it can get one more follow-up.
+   - `releaseFollowup`: clears our claim when the send fails or throws, so a later abandon retries.
+   - Old DB without the columns (`42703` / `PGRST204`): logs "apply 37-followup-sent.sql" and **skips the send** (chosen over sending un-deduped paid messages).
+   - Claim runs after every other skip check (phone, contact number, expiry, ResilioHub config), so skipped cases never burn the claim.
+4. **Phone normalisation** — `normalizeWhatsappPhone` in `templates.ts`: strip spaces/()/-; `00…` → `+…`; 10-digit `[6-9]…` → `+91…`; 12 digits starting `91` → `+…`; must end up `+` and 8-15 digits, else null (skip). Applied to candidate phone and `supportPhone` in the follow-up. `project.update` now validates and stores the normalised `supportPhone` (accepts e.g. `9876543210`). Settings page helper text: the follow-up is only sent when a contact number is set.
+5. **Indentation** — fixed the misleading `.catch` in `abandonSession` (`src/lib/session-link-server.ts`).
+
+## Migration
+- Apply `db/init/37-followup-sent.sql` (idempotent, ends with `NOTIFY pgrst, 'reload schema'`). Not run by me.
+- Until applied, the follow-up is skipped (logged), not sent.
+
+## Tests and checks
+- `tests/left-interview-followup.test.ts` updated: v2 name, restart wording (no "continue / left off"), Asia/Kolkata default, explicit/invalid zone, date rollover, `normalizeWhatsappPhone` cases.
+- New `tests/left-interview-followup-claim.test.ts` (added to `test:web`): claim once, rotated token reclaim, release then retry, missing-column → unsupported, unsafe token refused.
+- `npm run test:web` (run with `TZ=UTC`): **453 pass, 0 fail**.
+- `npx tsc --noEmit`: **clean**.
+- `npm run lint`: **0 errors**, only pre-existing warnings.
+- Not covered: the DB-touching `notifyCandidateLeftInterview` itself (no DB harness); claim SQL semantics verified against a fake client only.
