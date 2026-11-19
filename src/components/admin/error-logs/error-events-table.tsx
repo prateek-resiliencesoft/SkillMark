@@ -33,27 +33,43 @@ export function ErrorEventsTable({
 
   return (
     <div className="space-y-3">
-      <DataTableWrapper>
-        <thead>
-          <TableHeadRow>
-            <th className="px-3 py-2 font-semibold">Time</th>
-            <th className="px-3 py-2 font-semibold">Severity</th>
-            <th className="px-3 py-2 font-semibold">Category</th>
-            <th className="px-3 py-2 font-semibold">Organization</th>
-            <th className="px-3 py-2 font-semibold">Candidate</th>
-            <th className="px-3 py-2 font-semibold">Interview</th>
-            <th className="px-3 py-2 font-semibold">Message</th>
-          </TableHeadRow>
-        </thead>
+      <DataTableWrapper tableClassName="table-fixed min-w-[980px]">
+        <colgroup>
+          <col className="w-[128px]" />
+          <col className="w-[88px]" />
+          <col className="w-[132px]" />
+          <col className="w-[150px]" />
+          <col className="w-[140px]" />
+          <col className="w-[150px]" />
+          <col />
+        </colgroup>
+        <TableHeadRow>
+          <th className="px-3 py-2.5 font-semibold">Time</th>
+          <th className="px-3 py-2.5 font-semibold">Severity</th>
+          <th className="px-3 py-2.5 font-semibold">Category</th>
+          <th className="px-3 py-2.5 font-semibold">Organization</th>
+          <th className="px-3 py-2.5 font-semibold">Candidate</th>
+          <th className="px-3 py-2.5 font-semibold">Interview</th>
+          <th className="px-3 py-2.5 font-semibold">Message</th>
+        </TableHeadRow>
         <tbody>
           {events.items.map((e) => (
             <TableRow key={e.id}>
-              <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{formatWhen(e.createdAt)}</td>
-              <td className="px-3 py-2">
-                <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium uppercase", SEVERITY_STYLES[e.severity])}>{e.severity}</span>
+              <td className="whitespace-nowrap px-3 py-2.5 align-middle text-muted-foreground">{formatWhen(e.createdAt)}</td>
+              <td className="px-3 py-2.5 align-middle">
+                <span
+                  className={cn(
+                    "inline-flex w-[68px] justify-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase",
+                    SEVERITY_STYLES[e.severity],
+                  )}
+                >
+                  {e.severity}
+                </span>
               </td>
-              <td className="px-3 py-2 text-muted-foreground">{CATEGORY_LABELS[e.category] ?? e.category}</td>
-              <td className="px-3 py-2">
+              <td className="truncate px-3 py-2.5 align-middle text-muted-foreground" title={CATEGORY_LABELS[e.category] ?? e.category}>
+                {CATEGORY_LABELS[e.category] ?? e.category}
+              </td>
+              <td className="truncate px-3 py-2.5 align-middle" title={e.organizationName ?? undefined}>
                 {e.organizationId ? (
                   <Link href={`/admin/organizations/${e.organizationId}`} className="text-primary hover:underline">
                     {e.organizationName}
@@ -62,12 +78,14 @@ export function ErrorEventsTable({
                   <span className="text-muted-foreground">Unknown</span>
                 )}
               </td>
-              <td className="px-3 py-2">{e.candidateName ?? "Unnamed"}</td>
-              <td className="max-w-[160px] truncate px-3 py-2 text-muted-foreground" title={e.interviewTitle ?? undefined}>
+              <td className="truncate px-3 py-2.5 align-middle" title={e.candidateName ?? undefined}>
+                {e.candidateName ?? <span className="text-muted-foreground">Unnamed</span>}
+              </td>
+              <td className="truncate px-3 py-2.5 align-middle text-muted-foreground" title={e.interviewTitle ?? undefined}>
                 {e.interviewTitle ?? "—"}
               </td>
-              <td className="max-w-[360px] px-3 py-2">
-                <p className="line-clamp-2 break-words font-mono text-[11px]" title={`session ${e.sessionId}`}>
+              <td className="px-3 py-2.5 align-middle">
+                <p className="line-clamp-2 break-words font-mono text-[11px] leading-snug" title={e.message}>
                   {e.message}
                 </p>
               </td>
