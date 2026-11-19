@@ -74,3 +74,38 @@ test("normalizeWhatsappPhone", () => {
   assert.equal(n(null), null);
   assert.equal(n(undefined), null);
 });
+
+import { leftFollowupState, needsLeftFollowup } from "../src/lib/left-followup";
+
+test("follow-up option shows only for abandoned candidates it has not reached", () => {
+  const abandoned = { status: "ABANDONED" };
+  const base = { inviteToken: "tok1", followupSentAt: null, followupSentToken: null };
+  assert.equal(needsLeftFollowup(base, abandoned), true);
+  assert.equal(needsLeftFollowup(base, { status: "IN_PROGRESS" }), false);
+  assert.equal(needsLeftFollowup(base, { status: "COMPLETED" }), false);
+  assert.equal(needsLeftFollowup(base, { status: "DISQUALIFIED" }), false);
+  assert.equal(needsLeftFollowup(base, null), false);
+  assert.equal(needsLeftFollowup({ ...base, inviteToken: null }, abandoned), false);
+});
+
+test("follow-up counts as sent only for the current invite link", () => {
+  const abandoned = { status: "ABANDONED" };
+  const sent = { inviteToken: "tok1", followupSentAt: "2026-11-19T10:00:00.000Z", followupSentToken: "tok1" };
+  const s = leftFollowupState(sent, abandoned);
+  assert.equal(s.sent, true);
+  assert.equal(s.sentAt, "2026-11-19T10:00:00.000Z");
+  assert.equal(needsLeftFollowup(sent, abandoned), false);
+  // A re-issued link (new token) is not covered by the earlier send.
+  assert.equal(needsLeftFollowup({ ...sent, inviteToken: "tok2" }, abandoned), true);
+});
+
+test("the reason a follow-up was not sent is surfaced, and hidden once sent", () => {
+  const abandoned = { status: "ABANDONED" };
+  const why = "Add a contact number in Project settings → General first.";
+  assert.equal(leftFollowupState({ inviteToken: "t", followupError: why }, abandoned).error, why);
+  assert.equal(leftFollowupState({ inviteToken: "t", followupError: "  " }, abandoned).error, null);
+  assert.equal(
+    leftFollowupState({ inviteToken: "t", followupSentAt: "x", followupSentToken: "t", followupError: why }, abandoned).error,
+    null,
+  );
+});
