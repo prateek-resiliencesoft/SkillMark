@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
 import {
   Activity,
+  AlertTriangle,
   ArrowUpRight,
   BarChart3,
   Gauge,
@@ -72,6 +73,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/admin/server-health", label: "Server Health", icon: Gauge },
       { href: "/admin/status", label: "Status Checks", icon: HeartPulse },
       { href: "/admin/server-logs", label: "Server Logs", icon: ScrollText },
+      { href: "/admin/error-logs", label: "Error Logs", icon: AlertTriangle },
       { href: "/admin/server-activity", label: "Server Activity", icon: BarChart3 },
     ],
   },
