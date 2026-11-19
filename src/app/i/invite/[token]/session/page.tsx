@@ -17,7 +17,7 @@ import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useCandidateLanguage } from "@/hooks/use-candidate-language";
-import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
+import { EXPIRED_INVITE_MESSAGE, canRestartFromLink, startSessionWithRetry } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
   () => import("@/components/session/chat-interface").then((m) => m.ChatInterface),
@@ -42,6 +42,8 @@ export default function InviteSessionPage() {
   const [linkExpired, setLinkExpired] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  /** A start request was sent for this session (it may have landed even if it errored). */
+  const [startRequested, setStartRequested] = useState(false);
 
   const handleComplete = (reason?: string) => {
     setCompletionReason(reason);
@@ -65,49 +67,45 @@ export default function InviteSessionPage() {
     }
     if (!candidate.data || candidate.isFetching) return;
     const session = (candidate.data as any).session;
-    // Only bounce after a fresh fetch confirms there is still no session.
-    if (!session) {
+    // Only bounce after a fresh fetch confirms there is still no session. An
+    // abandoned attempt goes back too: the invite page starts a fresh one.
+    if (!session || (canRestartFromLink(session.status) && !startRequested)) {
       router.replace(`/i/invite/${token}`);
     }
-  }, [candidate.data, candidate.isError, candidate.isFetching, token, router]);
+  }, [candidate.data, candidate.isError, candidate.isFetching, token, router, startRequested]);
 
   const session = (candidate.data as any)?.session ?? null;
   const interview = (candidate.data as any)?.interview;
   const { candidateLanguage, chooseLanguage } = useCandidateLanguage(session?.id, interview?.language, session?.language);
 
-  // Interview is live once onboarding is accepted: keep the one-time link alive.
+  // Heartbeats from the first start request: a start that landed but whose
+  // response was lost must not go stale while the candidate retries.
   useInterviewLinkGuard({
     sessionId: session?.id,
-    active: onboardingDone && !completed && !disqualified && !linkExpired,
+    active: (onboardingDone || startRequested) && !completed && !disqualified && !linkExpired,
     onExpired: () => setLinkExpired(true),
-    isEnding: () => endingRef.current,
+    // Until the start is confirmed the interview has not begun: no local cut-off and no
+    // abandon beacon (a start that landed anyway goes stale server-side and restarts cleanly).
+    isEnding: () => endingRef.current || !onboardingDone,
   });
 
-  // Onboarding accepted → mark the interview as begun (link becomes single-use).
-  const handleOnboardingComplete = async () => {
+  // Onboarding accepted → mark the interview as begun. Retries reuse the same session.
+  const startInterview = async () => {
     if (starting || !session?.id) return;
+    const isRetry = startRequested;
     setStarting(true);
+    setStartRequested(true);
     try {
-      const res = await fetch("/api/session/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.id }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { expired?: boolean; error?: string };
-      // Only this candidate's own finished session is expired. A new person
-      // on the same interview has a different session and must still start.
-      if (body.expired) {
-        setLinkExpired(true);
-        return;
+      const result = await startSessionWithRetry(session.id, { retry: isRetry });
+      if (result.ok) {
+        setStartError(null);
+        setOnboardingDone(true);
+      } else if (result.expired) {
+        if (canRestartFromLink(result.status)) router.replace(`/i/invite/${token}`);
+        else setLinkExpired(true);
+      } else {
+        setStartError(result.error);
       }
-      if (!res.ok) {
-        setStartError(body.error || "Could not start this interview. Try again.");
-        return;
-      }
-      setStartError(null);
-      setOnboardingDone(true);
-    } catch {
-      setStartError("Could not start this interview. Try again.");
     } finally {
       setStarting(false);
     }
@@ -162,7 +160,16 @@ export default function InviteSessionPage() {
   }
 
   if (linkExpired || session.status === "ABANDONED") {
-    return <LinkExpiredScreen reason="interrupted" sessionId={session.id} inviteToken={token} />;
+    // Opened on an abandoned attempt: the effect above sends it back for a fresh one.
+    if (!linkExpired && !startRequested) return <PreparingScreen />;
+    return (
+      <LinkExpiredScreen
+        reason="interrupted"
+        sessionId={session.id}
+        inviteToken={token}
+        onRestart={() => window.location.assign(`/i/invite/${token}`)}
+      />
+    );
   }
 
   if (session.status === "COMPLETED") {
@@ -179,13 +186,11 @@ export default function InviteSessionPage() {
             <p className="mt-2 text-sm text-muted-foreground">{startError}</p>
             <button
               type="button"
-              className="mt-4 text-sm font-medium text-primary hover:underline"
-              onClick={() => {
-                setStartError(null);
-                setStarting(false);
-              }}
+              className="mt-4 text-sm font-medium text-primary hover:underline disabled:opacity-60"
+              disabled={starting}
+              onClick={() => void startInterview()}
             >
-              Try again
+              {starting ? "Retrying…" : "Try again"}
             </button>
           </CardContent>
         </Card>
@@ -213,7 +218,7 @@ export default function InviteSessionPage() {
         scheduledAt={candidate.data.scheduledAt}
         expiresAt={candidate.data.expiresAt}
         oneTimeLink
-        onComplete={handleOnboardingComplete}
+        onComplete={() => void startInterview()}
       />
     );
   }

@@ -5,6 +5,7 @@ import { REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { finalizeRecordingParts } from "@/lib/recording-parts-server";
+import { interviewReachedClosing } from "@/lib/session-link-server";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { handleVoiceSave, messageRowId, type CompletionSession, type ProgressSession, type VoiceSaveOps, type VoiceSavePayload } from "./logic";
@@ -15,6 +16,7 @@ const voiceSaveOps: VoiceSaveOps = {
     // Short delay so the final transcript batch (disconnect flush) lands first.
     scheduleSessionReport(sessionId, "completed", REPORT_DELAY_AFTER_COMPLETE_MS, { force });
   },
+  interviewFinished: interviewReachedClosing,
   onCompleted(sessionId) {
     void notifySessionCompleted(supabaseAdmin, sessionId);
     // Fallback: if the browser never linked a recording (closed tab, slow final

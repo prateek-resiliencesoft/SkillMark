@@ -71,19 +71,19 @@ describe("formatSessionStatusLabel", () => {
     );
   });
 
-  it("labels a stale setup session Abandoned so a new link can be sent", () => {
+  it("labels a stale setup session Not Started (never Abandoned)", () => {
     assert.equal(
       formatSessionStatusLabel(
         { status: "IN_PROGRESS", interviewBeganAt: null, preflightStep: "mic_check", lastActivityAt: ago(DEFAULT_PREFLIGHT_STALE_MS + 5_000) },
         NOW,
       ),
-      "Abandoned",
+      "Not Started",
     );
   });
 });
 
 describe("needsFreshInviteLink", () => {
-  it("is true when pre-interview activity has gone stale", () => {
+  it("is false when pre-interview activity has gone stale: the same link keeps working", () => {
     assert.equal(
       needsFreshInviteLink({
         session: {
@@ -93,7 +93,7 @@ describe("needsFreshInviteLink", () => {
         },
         nowMs: NOW,
       }),
-      true,
+      false,
     );
   });
 

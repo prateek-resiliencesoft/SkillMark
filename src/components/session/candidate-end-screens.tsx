@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CheckCircle2, Clock, WifiOff } from "lucide-react";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
@@ -51,12 +52,31 @@ export function LinkExpiredScreen({
   reason = "used",
   sessionId,
   inviteToken,
+  onRestart,
 }: {
   reason?: "used" | "interrupted" | "expired";
   /** Interview ended early: still let the candidate leave feedback. */
   sessionId?: string | null;
   inviteToken?: string | null;
+  /** Interrupted attempts can be retaken from the same link. */
+  onRestart?: () => void;
 }) {
+  if (reason === "interrupted" && onRestart) {
+    return (
+      <Shell>
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
+          <WifiOff className="h-7 w-7" />
+        </div>
+        <h2 className="text-xl font-semibold">Your interview was interrupted</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          The connection to this interview was lost. You can start it again from this link.
+        </p>
+        <Button className="mt-6" onClick={onRestart}>
+          Start the interview again
+        </Button>
+      </Shell>
+    );
+  }
   return (
     <Shell>
       <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">

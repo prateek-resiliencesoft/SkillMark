@@ -1714,7 +1714,10 @@ export function useVoice({
 
   /** Save remaining tracked messages and complete the session */
   const completedOnServerRef = useRef(false);
-  const saveAndComplete = useCallback(async (): Promise<boolean> => {
+  /** Set once the candidate explicitly quits; every completion call after that carries it. */
+  const endReasonRef = useRef<string | undefined>(undefined);
+  const saveAndComplete = useCallback(async (reason?: "quit"): Promise<boolean> => {
+    if (reason) endReasonRef.current = reason;
     // Wait for in-flight question progress saves first (bounded: a hung save
     // must never block the completion write).
     try {
@@ -1761,7 +1764,7 @@ export function useVoice({
         const res = await fetch("/api/voice/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, messages, complete: true }),
+          body: JSON.stringify({ sessionId, messages, complete: true, ...(endReasonRef.current ? { reason: endReasonRef.current } : {}) }),
           keepalive: JSON.stringify(messages).length < 60_000,
           signal: ctrl.signal,
         });
@@ -1794,7 +1797,7 @@ export function useVoice({
       const res = await fetch("/api/session/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId, ...(endReasonRef.current ? { reason: endReasonRef.current } : {}) }),
         keepalive: true,
       });
       if (res.ok) {
@@ -1805,7 +1808,7 @@ export function useVoice({
       /* fall through to beacon */
     }
     if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-      const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+      const blob = new Blob([JSON.stringify({ sessionId, ...(endReasonRef.current ? { reason: endReasonRef.current } : {}) })], { type: "application/json" });
       navigator.sendBeacon("/api/session/complete", blob);
     }
     return false;
@@ -1837,7 +1840,7 @@ export function useVoice({
       const messages = unsentMessages(inFlightRef.current.values(), trackedMessagesRef.current);
       if (!complete && messages.length === 0) return true;
       let sent = true;
-      for (const body of beaconBodies(sessionId, messages, complete)) {
+      for (const body of beaconBodies(sessionId, messages, complete, undefined, endReasonRef.current)) {
         const blob = new Blob([body], { type: "application/json" });
         let ok = navigator.sendBeacon("/api/voice/save", blob);
         if (!ok) {
