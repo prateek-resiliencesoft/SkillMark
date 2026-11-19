@@ -30,6 +30,7 @@ import {
   type CandidateLanguage,
 } from "../src/lib/interview-language";
 import { devanagariToRoman } from "../src/lib/transcript/transliterate";
+import { isQuotaError, keyChainExhaustedError, splitKeyList } from "../src/lib/ai/key-chain";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
 import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "../src/lib/transcript/sanitize";
@@ -56,13 +57,13 @@ config({ path: ".env" });
 
 const RELAY_PORT =
   Number(process.env.GEMINI_VOICE_RELAY_PORT || process.env.OPENAI_VOICE_RELAY_PORT) || 8082;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+const GEMINI_ENV_KEYS = splitKeyList(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || "gemini-3.1-flash-live-preview";
 const GEMINI_VOICE = process.env.GEMINI_LIVE_VOICE || "Kore";
 const GEMINI_WS_URL =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
-if (!GEMINI_API_KEY) {
+if (!GEMINI_ENV_KEYS.length) {
   log.warn("No GEMINI_API_KEY in .env — relying on organization keys from Settings → AI Providers");
 }
 
@@ -99,7 +100,7 @@ async function resolveGeminiKeys(sessionId?: string | null): Promise<{ key: stri
       log.warn(`Could not load org Gemini key: ${err instanceof Error ? err.message : err}`);
     }
   }
-  if (GEMINI_API_KEY) push(GEMINI_API_KEY, "env");
+  for (const k of GEMINI_ENV_KEYS) push(k, "env");
   return out;
 }
 
@@ -557,9 +558,10 @@ interface GeminiConnectOpts {
 }
 
 async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
-  const keys = opts.apiKeys?.length ? opts.apiKeys : GEMINI_API_KEY ? [{ key: GEMINI_API_KEY, source: "env" as const }] : [];
+  const keys = opts.apiKeys?.length ? opts.apiKeys : GEMINI_ENV_KEYS.map((key) => ({ key, source: "env" as const }));
   if (!keys.length) throw new Error("No Gemini API key configured (Settings → AI Providers or GEMINI_API_KEY)");
   let lastErr: unknown;
+  let sawQuota = false;
   for (let i = 0; i < keys.length; i++) {
     try {
       const ws = await connectGeminiWithKey(opts, keys[i].key);
@@ -567,6 +569,7 @@ async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
       return ws;
     } catch (err) {
       lastErr = err;
+      sawQuota ||= isQuotaError(err);
       logSessionError(opts.sessionId, err, i < keys.length - 1 ? "warning" : "error", {
         stage: opts.stage ?? "connect",
         keySource: keys[i].source,
@@ -576,7 +579,8 @@ async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
       log.warn(`Gemini Live (${keys[i].source} key) failed: ${err instanceof Error ? err.message.slice(0, 200) : err}${i < keys.length - 1 ? " — trying next key" : ""}`);
     }
   }
-  throw lastErr;
+  if (keys.length === 1 && !sawQuota) throw lastErr;
+  throw keyChainExhaustedError(keys.map((k, i) => `gemini/${k.source}#${i + 1}`).join(", "), lastErr, sawQuota);
 }
 
 function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<WebSocket> {

@@ -42,11 +42,13 @@ export default function ProjectSettingsGeneralPage() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [supportPhone, setSupportPhone] = useState("");
 
   useEffect(() => {
     if (currentProject) {
       setName(currentProject.name);
       setDescription(currentProject.description ?? "");
+      setSupportPhone(currentProject.supportPhone ?? "");
     }
   }, [currentProject]);
 
@@ -134,6 +136,23 @@ export default function ProjectSettingsGeneralPage() {
               disabled={!isAdmin}
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="projectContactPhone">
+              {isZh ? "联系电话（WhatsApp）" : "Contact number (WhatsApp)"}
+            </Label>
+            <Input
+              id="projectContactPhone"
+              value={supportPhone}
+              onChange={(e) => setSupportPhone(e.target.value)}
+              placeholder="+919876543210"
+              disabled={!isAdmin}
+            />
+            <p className="text-xs text-muted-foreground">
+              {isZh
+                ? "仅在设置了联系电话时，才会向中途离开面试的候选人发送 WhatsApp 跟进消息。请包含国家代码（10 位印度手机号会自动加 +91）。"
+                : "The WhatsApp left-interview follow-up is only sent when a contact number is set. Include the country code (10-digit Indian mobiles get +91 automatically)."}
+            </p>
+          </div>
           {isAdmin && (
             <Button
               size="sm"
@@ -142,13 +161,15 @@ export default function ProjectSettingsGeneralPage() {
                   id: currentProject.id,
                   name,
                   description: description || undefined,
+                  supportPhone: supportPhone.trim(),
                 })
               }
               disabled={
                 updateMutation.isPending ||
                 !name.trim() ||
                 (name === currentProject.name &&
-                  description === (currentProject.description ?? ""))
+                  description === (currentProject.description ?? "") &&
+                  supportPhone.trim() === (currentProject.supportPhone ?? ""))
               }
             >
               {updateMutation.isPending && (

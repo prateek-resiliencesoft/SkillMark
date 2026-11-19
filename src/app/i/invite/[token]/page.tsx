@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Link2Off, Clock } from "lucide-react";
 import { PreparingScreen } from "@/components/session/preparing-screen";
 import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
-import { isLinkConsumed } from "@/lib/session-link";
+import { canRestartFromLink, isLinkConsumed } from "@/lib/session-link";
 import { formatDateTime } from "@/lib/messaging/templates";
 import { EXPIRED_INVITE_MESSAGE } from "@/lib/session-link";
 import { collectDeviceInfo } from "@/lib/preflight";
@@ -75,11 +75,11 @@ export default function InvitePage() {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const session = (candidate.data as any).session;
-    if (session) {
-      // One-time link: finished / interrupted / already-running interviews never reopen here.
+    // Abandoned attempt: fall through and create a fresh one (server supersedes the old).
+    if (session && !canRestartFromLink(session.status)) {
+      // One-time link: finished / already-running interviews never reopen here.
       if (
         session.status === "COMPLETED" ||
-        session.status === "ABANDONED" ||
         (session.status === "IN_PROGRESS" && session.interviewBeganAt)
       ) {
         setCompleted(true);
@@ -148,7 +148,7 @@ export default function InvitePage() {
     new Date(candidate.data.expiresAt).getTime() < Date.now()
   );
 
-  if (isExpired && !isLinkConsumed(session?.status)) {
+  if (isExpired && (!isLinkConsumed(session?.status) || canRestartFromLink(session?.status))) {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md border-amber-200/50 shadow-sm">
@@ -177,18 +177,13 @@ export default function InvitePage() {
     return <CandidateThankYou sessionId={session?.id ?? null} inviteToken={token} />;
   }
 
-  // One-time link already used (finished, interrupted, or running in another tab)
+  // One-time link already used (finished, or running in another tab)
   if (
     completed ||
     session?.status === "COMPLETED" ||
-    session?.status === "ABANDONED" ||
     (session?.status === "IN_PROGRESS" && session?.interviewBeganAt)
   ) {
-    return (
-      <LinkExpiredScreen
-        reason={session?.status === "ABANDONED" ? "interrupted" : "used"}
-      />
-    );
+    return <LinkExpiredScreen reason="used" />;
   }
 
   if (createSession.isError) {

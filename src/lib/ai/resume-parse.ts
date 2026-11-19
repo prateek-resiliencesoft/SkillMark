@@ -1,4 +1,5 @@
 import { createLogger } from "@/lib/logger";
+import { AI_QUOTA_EXHAUSTED, AI_QUOTA_MESSAGE } from "./key-chain";
 import type { LLMProvider } from "./types";
 
 const log = createLogger("ai/resume-parse");
@@ -146,6 +147,8 @@ async function generateWithBackoff(
       return await provider.generateResponse(params);
     } catch (err) {
       const status = errStatus(err);
+      // Key chain already tried every key and all hit quota: backing off cannot help.
+      if ((err as { code?: string } | null)?.code === AI_QUOTA_EXHAUSTED) throw new AiRateLimitError(AI_QUOTA_MESSAGE);
       if (status !== 429 && status !== 503) throw err;
       if (isDailyQuota(err)) throw new AiRateLimitError("daily quota exhausted", true);
       if (attempt === 0 && status === 429 && provider.id === "gemini") {
@@ -222,6 +225,7 @@ export async function parseResumeText(
     }
   }
   if (rateLimited) {
+    if (rateLimited.message === AI_QUOTA_MESSAGE) throw rateLimited;
     throw new AiRateLimitError(
       rateLimited.daily
         ? "AI daily quota exhausted for this key (free tier). Try again tomorrow, or add a paid Gemini key / another AI provider in Settings → AI."

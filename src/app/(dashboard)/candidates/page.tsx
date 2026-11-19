@@ -45,6 +45,7 @@ import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { formatSessionStatusLabel } from "@/lib/preflight";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { trpc } from "@/lib/trpc/client";
 import {
     ArrowDown,
@@ -642,11 +643,11 @@ export default function CandidatesPage() {
     if (statusFilter !== "ALL") {
       result = result.filter((row) => {
         const s = getSessionStatus(row);
-        if (statusFilter === "NOT_STARTED") return s === "Not Started";
-        // Stale IN_PROGRESS sessions are shown as "Abandoned", so filter on the displayed label.
-        const abandoned = formatSessionStatusLabel(row.session) === "Abandoned";
-        if (statusFilter === "ABANDONED") return abandoned;
-        if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && !abandoned;
+        // Filter on the displayed label: quiet pre-flight sessions read "Not Started" (never abandoned).
+        const label = formatSessionStatusLabel(row.session);
+        if (statusFilter === "NOT_STARTED") return label === "Not Started";
+        if (statusFilter === "ABANDONED") return label === "Abandoned";
+        if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && label !== "Not Started";
         return s === statusFilter;
       });
     }
@@ -998,12 +999,15 @@ export default function CandidatesPage() {
         );
       case "status":
         return (
-          <Badge
-            variant={getSessionBadgeVariant(statusLabel(row))}
-            className="whitespace-nowrap"
-          >
-            {statusLabel(row)}
-          </Badge>
+          <div className="flex flex-col items-start gap-0.5">
+            <Badge
+              variant={getSessionBadgeVariant(statusLabel(row))}
+              className="whitespace-nowrap"
+            >
+              {statusLabel(row)}
+            </Badge>
+            <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
+          </div>
         );
       default:
         return "-";

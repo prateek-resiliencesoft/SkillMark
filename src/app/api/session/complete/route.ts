@@ -12,6 +12,8 @@ import { notifySessionCompleted } from "@/server/completion-notify";
 import { NextResponse } from "next/server";
 import { canMarkCompleted, REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { scheduleSessionReport } from "@/lib/session-report-server";
+import { completionEndReason } from "@/lib/session-link";
+import { interviewReachedClosing } from "@/lib/session-link-server";
 
 const log = createLogger("api/session/complete");
 
@@ -41,6 +43,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, alreadyCompleted: session.status === "COMPLETED" });
     }
     const wasAbandoned = session.status === "ABANDONED";
+    // Explicit quit (End interview button) → COMPLETED + endReason QUIT, unless the interview had already finished.
+    const endReason = completionEndReason(body?.reason, body?.reason === "quit" ? await interviewReachedClosing(sessionId) : false);
 
     const now = new Date();
     const cappedNowMs = effectiveNowForSession(session.lastActivityAt as string | null, now.getTime());
@@ -75,7 +79,7 @@ export async function POST(req: Request) {
         completedAt: now.toISOString(),
         activitySegments: closed,
         totalDurationSeconds: duration,
-        ...(withReason ? { endReason: "COMPLETED" } : {}),
+        ...(withReason ? { endReason } : {}),
       })
       .eq("id", sessionId)
       .in("status", ["IN_PROGRESS", "ABANDONED", "NOT_STARTED"]);

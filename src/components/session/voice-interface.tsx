@@ -1205,6 +1205,8 @@ export function VoiceInterface({
 
   // ── Common save-and-end logic ───────────────────────────────────
   const endingRef = useRef(false);
+  /** The candidate pressed End Interview (explicit quit), as opposed to the timer / interviewer's goodbye. */
+  const quitRef = useRef(false);
   const onEndingRef = useRef(onEnding);
   onEndingRef.current = onEnding;
   const voiceRef = useRef(voice);
@@ -1227,7 +1229,7 @@ export function VoiceInterface({
       if (finishing) onEndingRef.current?.();
       v.beaconFlush(finishing);
       if (finishing && sessionId && navigator.sendBeacon) {
-        const blob = new Blob([JSON.stringify({ sessionId })], { type: "application/json" });
+        const blob = new Blob([JSON.stringify({ sessionId, ...(quitRef.current ? { reason: "quit" } : {}) })], { type: "application/json" });
         navigator.sendBeacon("/api/session/complete", blob);
       }
     };
@@ -1242,9 +1244,11 @@ export function VoiceInterface({
     };
   }, [preview, sessionId]);
 
-  const handleEndInterview = useCallback(async () => {
+  /** `reason: "quit"` only from the candidate's own End Interview button. */
+  const handleEndInterview = useCallback(async (reason?: "quit") => {
     if (endingRef.current) return;
     endingRef.current = true;
+    if (reason === "quit") quitRef.current = true;
     onEndingRef.current?.();
     // Thank-you screen shows right away; saving below runs in the background
     // and does not need the tab (keepalive fetch + tab-close beacons).
@@ -1262,7 +1266,7 @@ export function VoiceInterface({
       // up to ~40s; if the candidate closes the tab on the thank-you screen
       // meanwhile, the session must already be complete (not Abandoned).
       try {
-        await withTimeout(voice.completeSession(), 10_000, "complete session");
+        await withTimeout(voice.completeSession(quitRef.current ? "quit" : undefined), 10_000, "complete session");
       } catch (err) {
         console.error("[voice] Early completion save failed (retried on disconnect):", err);
       }
@@ -2638,7 +2642,7 @@ export function VoiceInterface({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={handleEndInterview}
+              onClick={() => void handleEndInterview("quit")}
             >
               End Interview
             </AlertDialogAction>

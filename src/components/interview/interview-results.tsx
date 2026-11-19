@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
@@ -67,6 +68,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
+import { responseErrorMessage } from "@/lib/fetch-json";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 interface QuestionEvaluation {
   question: string;
@@ -421,8 +423,11 @@ function SessionDetail({
         body: JSON.stringify({ sessionId, organizationId: currentOrg?.id }),
       });
       if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || "Failed to generate summary");
+        throw new Error(
+          await responseErrorMessage(res, {
+            timeoutMessage: "Report generation is taking too long. It may still finish — refresh in a minute.",
+          }),
+        );
       }
       await summary.refetch();
     } catch (err) {
@@ -695,7 +700,7 @@ function SessionDetail({
   const transcriptFromRecording =
     !Array.isArray(insightsData) && insightsData?.transcriptSource === "recording";
   const canRetranscribe = !!summary.data?.audioRecordingUrl;
-  const statusNote = sessionStatusNote(summary.data?.status);
+  const statusNote = sessionStatusNote(summary.data?.status, (summary.data as { endReason?: string | null } | undefined)?.endReason);
 
   const sentimentData = summary.data?.sentiment as {
     overall?: string;
@@ -774,7 +779,8 @@ function SessionDetail({
   return (
     <div className="space-y-6">
       {statusNote && (
-        <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+        <p className="flex flex-wrap items-center gap-2 rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground no-print">
+          <QuitEarlyBadge session={summary.data as { status?: string | null; endReason?: string | null } | undefined} />
           {statusNote}
         </p>
       )}
