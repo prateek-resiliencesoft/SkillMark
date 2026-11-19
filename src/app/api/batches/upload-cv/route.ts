@@ -1,5 +1,6 @@
 import { getAuthUser } from "@/lib/auth";
 import { createLogger } from "@/lib/logger";
+import { isStorageCapError } from "@/lib/storage-cap";
 import { cvObjectName, mediaObjectKey } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { FILES_BUCKET } from "@/server/integrations/applications";
@@ -63,7 +64,7 @@ export async function POST(req: Request) {
     });
   if (uploadError) {
     log.error("CV upload failed:", uploadError);
-    return Response.json({ error: uploadError.message }, { status: 500 });
+    return Response.json({ error: uploadError.message }, { status: isStorageCapError(uploadError.message) ? 507 : 500 });
   }
 
   const prev =

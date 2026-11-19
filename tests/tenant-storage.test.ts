@@ -130,6 +130,22 @@ describe("objectPathFromSignedUrl", () => {
     assert.equal(objectPathFromSignedUrl("recordings", url), path);
   });
 
+  it("parses /api/files URLs whose path is the full `<bucket>/<path>` key", () => {
+    const url = `https://app.example/api/files/recordings/recordings/${SESSION}/clip.webm?token=abc`;
+    assert.equal(objectPathFromSignedUrl("recordings", url), `${SESSION}/clip.webm`);
+  });
+
+  it("parses Backblaze URLs for orgs/ keys that contain a folder named like the bucket", () => {
+    const key = "orgs/o1/projects/p1/candidates/Jane_1234abcd/recordings/interview.webm";
+    const url = `https://s3.us-west-004.backblazeb2.com/skillmark-media/${key}?X-Amz-Signature=x`;
+    assert.equal(objectPathFromSignedUrl("recordings", url), key);
+  });
+
+  it("parses Backblaze URLs for legacy `<bucket>/<path>` keys", () => {
+    const url = `https://s3.us-west-004.backblazeb2.com/skillmark-media/screenshots/${SESSION}/cam.jpg?X-Amz-Signature=x`;
+    assert.equal(objectPathFromSignedUrl("screenshots", url), `${SESSION}/cam.jpg`);
+  });
+
   it("returns bare paths unchanged", () => {
     assert.equal(
       objectPathFromSignedUrl("screenshots", `${SESSION}/cam.jpg`),
