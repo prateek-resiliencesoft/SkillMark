@@ -62,7 +62,7 @@ export async function issueNewInviteLink(
       .update({
         candidateId: c.id,
         supersededAt: now,
-        ...(session.status === "IN_PROGRESS" ? { status: "ABANDONED", endReason: "DISCONNECTED" } : {}),
+        ...(session.status === "IN_PROGRESS" && session.interviewBeganAt ? { status: "ABANDONED", endReason: "DISCONNECTED" } : {}),
       })
       .eq("id", session.id);
   }

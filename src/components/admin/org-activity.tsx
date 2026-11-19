@@ -1,6 +1,7 @@
 "use client";
 
 import { ConfirmAction } from "@/components/admin/confirm-action";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import {
   EmptyState,
   Panel,
@@ -254,6 +255,7 @@ export function OrgActivity({ orgId }: { orgId: string }) {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
                         <StatusPill status={s.status} />
+                        <QuitEarlyBadge session={s} />
                         {s.live ? (
                           <span className="inline-flex items-center gap-1 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.2 text-[9px] font-bold text-emerald-500 uppercase animate-pulse">
                             Live
@@ -433,6 +435,7 @@ export function OrgActivity({ orgId }: { orgId: string }) {
             <div className="space-y-5 text-xs">
               <div className="flex flex-wrap items-center gap-2">
                 <StatusPill status={detail.data.status} />
+                <QuitEarlyBadge session={detail.data} />
                 <span className="font-mono text-muted-foreground text-[11px]">
                   {minutes(detail.data.durationSeconds)} duration · {detail.data.messages.length} messages exchanged
                 </span>

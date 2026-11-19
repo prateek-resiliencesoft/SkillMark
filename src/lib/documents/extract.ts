@@ -18,6 +18,8 @@ import { parseDocument } from "htmlparser2";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
+import { budgetSignal, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
+import { classifyAiFailure, isAuthError, isQuotaError, keyChainExhaustedError } from "@/lib/ai/key-chain";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -76,7 +78,7 @@ export async function extractDocument(
   buffer: Buffer,
   fileName: string,
   mime: string,
-  options?: { organizationId?: string | null },
+  options?: { organizationId?: string | null; signal?: AbortSignal },
 ): Promise<ExtractedDocument> {
   if (buffer.byteLength > MAX_DOCUMENT_BYTES) {
     throw new Error(`File is larger than ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`);
@@ -90,25 +92,26 @@ export async function extractDocument(
 
   if (process.env.DOCLING_SERVE_URL) {
     try {
-      const md = await extractWithDocling(buffer, fileName);
+      const md = await extractWithDocling(buffer, fileName, options?.signal);
       if (md.trim().length >= MIN_CHARS_PER_PAGE) {
         return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
       }
     } catch (err) {
+      if (options?.signal?.aborted) throw err;
       log.warn("Docling failed, falling back to native extraction:", err);
     }
   }
 
   if (kind === "docx") return extractDocx(buffer);
-  if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId);
-  return extractImage(buffer, options?.organizationId);
+  if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
+  return extractImage(buffer, options?.organizationId, options?.signal);
 }
 
 /* ------------------------------------------------------------------ */
 /*  Docling Serve                                                      */
 /* ------------------------------------------------------------------ */
 
-async function extractWithDocling(buffer: Buffer, fileName: string): Promise<string> {
+async function extractWithDocling(buffer: Buffer, fileName: string, signal?: AbortSignal): Promise<string> {
   const base = process.env.DOCLING_SERVE_URL!.replace(/\/$/, "");
   const form = new FormData();
   form.append("files", new Blob([new Uint8Array(buffer)]), fileName);
@@ -121,7 +124,7 @@ async function extractWithDocling(buffer: Buffer, fileName: string): Promise<str
     method: "POST",
     body: form,
     headers: process.env.DOCLING_SERVE_API_KEY ? { "X-Api-Key": process.env.DOCLING_SERVE_API_KEY } : undefined,
-    signal: AbortSignal.timeout(120_000),
+    signal: budgetSignal(120_000, signal),
   });
   if (!res.ok) throw new Error(`Docling HTTP ${res.status}`);
   const json = (await res.json()) as { document?: { md_content?: string }; status?: string };
@@ -232,6 +235,7 @@ async function extractPdf(
   buffer: Buffer,
   fileName: string,
   organizationId?: string | null,
+  signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
   const warnings: string[] = [];
   let pages: string[] = [];
@@ -270,10 +274,10 @@ async function extractPdf(
 
   try {
     // Gemini's OpenAI-compat rejects `type:file`; use native generateContent + inline PDF.
-    const md = await withVisionFailover(visions, async (vision) =>
+    const md = await withVisionFailover(visions, signal, async (vision, callSignal) =>
       vision.kind === "gemini"
-        ? geminiPdfToMarkdown(vision.apiKey, vision.model, buffer)
-        : visionToMarkdown(vision, [
+        ? geminiPdfToMarkdown(vision.apiKey, vision.model, buffer, callSignal)
+        : visionToMarkdown(vision, callSignal, [
             {
               type: "file",
               file: {
@@ -288,6 +292,8 @@ async function extractPdf(
       return { markdown: md, method: "vision", pages: numPages, warnings };
     }
   } catch (err) {
+    // Budget spent, or no key can serve vision and there is no text layer to fall back on.
+    if (signal?.aborted || (classifyAiFailure(err) && !textChars)) throw err;
     log.warn("Vision PDF extraction failed:", err);
     warnings.push("Scanned pages could not be read by the vision model — review manually.");
   }
@@ -299,7 +305,11 @@ async function extractPdf(
 /*  Images                                                             */
 /* ------------------------------------------------------------------ */
 
-async function extractImage(buffer: Buffer, organizationId?: string | null): Promise<ExtractedDocument> {
+async function extractImage(
+  buffer: Buffer,
+  organizationId?: string | null,
+  signal?: AbortSignal,
+): Promise<ExtractedDocument> {
   const visions = await getVisionClients(organizationId);
   if (!visions.length) {
     return {
@@ -318,8 +328,8 @@ async function extractImage(buffer: Buffer, organizationId?: string | null): Pro
     .resize({ width: MAX_VISION_IMAGE_PX, height: MAX_VISION_IMAGE_PX, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer();
-  const md = await withVisionFailover(visions, (vision) =>
-    visionToMarkdown(vision, [
+  const md = await withVisionFailover(visions, signal, (vision, callSignal) =>
+    visionToMarkdown(vision, callSignal, [
       { type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpeg.toString("base64")}`, detail: "high" } },
     ]),
   );
@@ -355,7 +365,8 @@ async function getVisionClients(organizationId?: string | null): Promise<VisionC
     for (const apiKey of c.apiKeys) {
       out.push({
         kind: id,
-        client: new OpenAI({ apiKey, baseURL: c.baseUrl }),
+        // maxRetries 0: we fail over across keys ourselves; SDK 429 backoff only burns the time budget.
+        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0 }),
         model,
         apiKey,
       });
@@ -364,16 +375,27 @@ async function getVisionClients(organizationId?: string | null): Promise<VisionC
   return out;
 }
 
+/**
+ * One attempt per key. Quota/auth on every key throws a tagged error (see `classifyAiFailure`)
+ * so callers stop instead of retrying more passes.
+ */
 async function withVisionFailover(
   clients: VisionClient[],
-  run: (c: VisionClient) => Promise<string>,
+  signal: AbortSignal | undefined,
+  run: (c: VisionClient, callSignal: AbortSignal) => Promise<string>,
 ): Promise<string> {
   let lastErr: unknown;
+  let sawQuota = false;
+  let onlyQuotaOrAuth = true;
   for (let i = 0; i < clients.length; i++) {
+    signal?.throwIfAborted();
     try {
-      return await run(clients[i]);
+      return await run(clients[i], budgetSignal(VISION_CALL_TIMEOUT_MS, signal));
     } catch (err) {
+      if (signal?.aborted) throw err;
       lastErr = err;
+      sawQuota ||= isQuotaError(err);
+      onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
       if (i < clients.length - 1) {
         log.warn(
           `Vision ${clients[i].kind} key #${i + 1} failed — trying next`,
@@ -381,6 +403,9 @@ async function withVisionFailover(
         );
       }
     }
+  }
+  if (onlyQuotaOrAuth && clients.length) {
+    throw keyChainExhaustedError(clients.map((c, i) => `${c.kind}#${i + 1}`).join(", "), lastErr, sawQuota, true);
   }
   throw lastErr;
 }
@@ -397,6 +422,7 @@ Return only the Markdown.`;
 
 async function visionToMarkdown(
   vision: { client: OpenAI; model: string },
+  signal: AbortSignal,
   parts: OpenAI.Chat.Completions.ChatCompletionContentPart[],
 ): Promise<string> {
   const res = await vision.client.chat.completions.create({
@@ -404,14 +430,19 @@ async function visionToMarkdown(
     temperature: 0,
     max_tokens: 6000,
     messages: [{ role: "user", content: [{ type: "text", text: VISION_PROMPT }, ...parts] }],
-  });
+  }, { signal });
   return normalise(
     (res.choices[0]?.message?.content ?? "").replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""),
   );
 }
 
 /** Native Gemini path — OpenAI-compat rejects PDF `type:file` parts. */
-async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer): Promise<string> {
+async function geminiPdfToMarkdown(
+  apiKey: string,
+  model: string,
+  buffer: Buffer,
+  signal: AbortSignal,
+): Promise<string> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -428,12 +459,13 @@ async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer
         ],
         generationConfig: { temperature: 0, maxOutputTokens: 6000 },
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal,
     },
   );
   if (!res.ok) {
     const body = (await res.text()).slice(0, 300);
-    throw new Error(body || `${res.status} status code (no body)`);
+    // Keep the HTTP status so quota (429) / auth (401, 403) are recognised by classifyAiFailure.
+    throw Object.assign(new Error(body || `${res.status} status code (no body)`), { status: res.status });
   }
   const json = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];

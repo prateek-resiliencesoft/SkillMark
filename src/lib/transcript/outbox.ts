@@ -39,11 +39,13 @@ export function beaconBodies(
   messages: readonly OutboxMessage[],
   complete: boolean,
   maxBytes = 48_000,
+  /** "quit" when the candidate ended the interview on purpose. */
+  reason?: string,
 ): string[] {
   const size = (s: string) => new TextEncoder().encode(s).length;
   const bodies: string[] = [];
   let batch: OutboxMessage[] = [];
-  const body = (msgs: OutboxMessage[], last: boolean) => JSON.stringify({ sessionId, messages: msgs, ...(last && complete ? { complete: true } : {}) });
+  const body = (msgs: OutboxMessage[], last: boolean) => JSON.stringify({ sessionId, messages: msgs, ...(last && complete ? { complete: true, ...(reason ? { reason } : {}) } : {}) });
   for (const m of messages) {
     const next = [...batch, m];
     if (batch.length && size(body(next, true)) > maxBytes) {

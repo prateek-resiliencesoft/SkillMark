@@ -7,6 +7,7 @@ import {
   routingForTask,
 } from "./credentials";
 import { createLogger } from "@/lib/logger";
+import { isAuthError, isQuotaError, keyChainExhaustedError, splitKeyList } from "./key-chain";
 import { AnthropicProvider } from "./providers/anthropic";
 import { CompatibleOpenAIProvider } from "./providers/compatible";
 import { KimiProvider } from "./providers/kimi";
@@ -203,11 +204,7 @@ export async function resolveProviderChain(
   return chain;
 }
 
-export function isQuotaError(err: unknown): boolean {
-  const e = err as { status?: number; message?: string; code?: string };
-  if (e?.status === 429) return true;
-  return /\b429\b|quota|RESOURCE_EXHAUSTED|rate.?limit/i.test(e?.message ?? "");
-}
+export { isQuotaError };
 
 /** Transient / auth / quota / dead model → try next key or provider. Client only sees error after chain exhausted. */
 export function shouldFailover(err: unknown): boolean {
@@ -288,16 +285,11 @@ export class FailoverProvider implements LLMProvider {
   get lastProviderLabel(): string {
     return `${this.last.provider.id}/${this.last.source}`;
   }
-  /** Clear error once every key has failed; keeps .status so callers can detect 429. */
-  private allFailed(err: unknown): Error {
-    const e = err as { status?: number; message?: string };
+  /** Clear error once every key has failed; status is 429 when any key was out of quota. */
+  private allFailed(err: unknown, sawQuota: boolean, onlyQuotaOrAuth: boolean): Error {
     const tried = this.chain.map((c) => `${c.provider.id}/${c.source}#${c.keyIndex + 1}`).join(", ");
-    const out = new Error(
-      `All AI keys failed (${tried}). Last error: ${e?.message ?? String(err)}. Add or check keys in Settings → AI Providers.`,
-    ) as Error & { status?: number };
-    out.status = e?.status;
-    log.error(`All AI keys failed: ${tried}`);
-    return out;
+    log.error(`All AI keys failed${sawQuota ? " (quota)" : ""}: ${tried}`);
+    return keyChainExhaustedError(tried, err, sawQuota, onlyQuotaOrAuth);
   }
   /**
    * Per-entry model: use requested only if it belongs to THIS provider.
@@ -310,7 +302,10 @@ export class FailoverProvider implements LLMProvider {
   }
   async generateResponse(params: Parameters<LLMProvider["generateResponse"]>[0]) {
     let lastErr: unknown;
+    let sawQuota = false;
+    let onlyQuotaOrAuth = true;
     for (let i = 0; i < this.chain.length; i++) {
+      params.signal?.throwIfAborted(); // budget spent: don't start another key
       const e = this.chain[i];
       this.last = e;
       try {
@@ -323,8 +318,11 @@ export class FailoverProvider implements LLMProvider {
       } catch (err) {
         lastErr = err;
         this.noteFailure(e, err);
+        if (params.signal?.aborted) throw err;
+        sawQuota ||= isQuotaError(err);
+        onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
         if (!shouldFailover(err)) throw err;
-        if (i === this.chain.length - 1) throw this.allFailed(err);
+        if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
         log.warn(
           `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}) — trying next`,
         );
@@ -334,7 +332,10 @@ export class FailoverProvider implements LLMProvider {
   }
   async *streamResponse(params: Parameters<LLMProvider["streamResponse"]>[0]) {
     let lastErr: unknown;
+    let sawQuota = false;
+    let onlyQuotaOrAuth = true;
     for (let i = 0; i < this.chain.length; i++) {
+      params.signal?.throwIfAborted();
       const e = this.chain[i];
       this.last = e;
       let yielded = false;
@@ -348,9 +349,12 @@ export class FailoverProvider implements LLMProvider {
       } catch (err) {
         lastErr = err;
         this.noteFailure(e, err);
+        if (params.signal?.aborted) throw err;
+        sawQuota ||= isQuotaError(err);
+        onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
         // Mid-stream failure after tokens were sent cannot silently switch providers.
         if (yielded || !shouldFailover(err)) throw err;
-        if (i === this.chain.length - 1) throw this.allFailed(err);
+        if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
         log.warn(
           `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}) — trying next`,
         );
@@ -433,9 +437,7 @@ function matchProvider(map: Map<string, LLMProvider>, idOrModel?: string | null)
   return null;
 }
 
-function keyOrEmpty(v: string | undefined): string[] {
-  return v ? [v] : [];
-}
+const keyOrEmpty = splitKeyList;
 
 /** Sync env-only resolver (tests / callers without org context). */
 export function getProvider(idOrModel?: string | null): LLMProvider {

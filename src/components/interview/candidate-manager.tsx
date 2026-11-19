@@ -48,6 +48,8 @@ import { useToast } from "@/hooks/use-toast";
 import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { needsFreshInviteLink } from "@/lib/session-link";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { trpc } from "@/lib/trpc/client";
@@ -1339,8 +1341,12 @@ export function CandidateManager({
                           >
                             {statusLabel}
                           </Badge>
+                          <QuitEarlyBadge session={row.session} />
                           {neverReachedFirstQuestion(row.session) ? (
                             <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
+                          ) : null}
+                          {row.type === "candidate" ? (
+                            <LeftFollowupAction candidateId={row.id} candidate={row} session={row.session} variant="compact" />
                           ) : null}
                         </div>
                       ),

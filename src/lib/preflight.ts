@@ -98,7 +98,11 @@ export function preflightLastActivityAt(s: PreflightSessionFields): string | nul
   return s.lastActivityAt ?? s.startedAt ?? s.createdAt ?? null;
 }
 
-/** True when the candidate opened the link / started setup but then went quiet. */
+/**
+ * True when the candidate opened the link / started setup but then went quiet.
+ * Display only: pre-flight is never auto-abandoned, the link keeps working and
+ * the session stays pending (the interview has not begun: no interviewBeganAt).
+ */
 export function isPreflightStale(
   s: PreflightSessionFields,
   nowMs: number = Date.now(),
@@ -229,7 +233,8 @@ export function formatSessionStatusLabel(
   if (status === "ABANDONED") return "Abandoned";
   if (status === "DISQUALIFIED") return "Disqualified";
   if (status === "IN_PROGRESS") {
-    if (isPreflightStale(session, nowMs)) return "Abandoned";
+    // Went quiet during setup: not started yet (never "Abandoned"); same link still works.
+    if (isPreflightStale(session, nowMs)) return "Not Started";
     if (!session.interviewBeganAt) {
       const step = session.preflightStep;
       if (!step || step === "link_opened") return "Opened link";

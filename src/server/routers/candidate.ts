@@ -314,6 +314,29 @@ export const candidateRouter = router({
       return issueNewInviteLink(ctx.supabase, c, organizationId, input.channels);
     }),
 
+  /**
+   * Manually send the "you left your interview" WhatsApp follow-up to a candidate whose
+   * session was abandoned and who has not received it (automatic send was skipped or failed).
+   * Returns the outcome; a skip / failure carries a human-readable reason.
+   */
+  sendLeftFollowup: protectedProcedure
+    .input(z.object({ candidateId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("id, interviewId, sessionId")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+      const { role } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+      if (!c.sessionId) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This candidate has no interview session to follow up on." });
+      }
+      const { sendLeftInterviewFollowup } = await import("../left-interview-followup");
+      return sendLeftInterviewFollowup(String(c.sessionId), { manual: true });
+    }),
+
   bulkCreate: protectedProcedure
     .input(
       z.object({
@@ -671,6 +694,8 @@ export const candidateRouter = router({
           "*, messages(id), interview:interviews!inner(id, title)",
         )
         .in("interviewId", interviewIds)
+        // Earlier attempts of invited candidates (retakes / new links) are not walk-ins.
+        .is("candidateId", null)
         .order("createdAt", { ascending: false })
         .limit(input.limit);
 
