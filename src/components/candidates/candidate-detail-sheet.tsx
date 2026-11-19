@@ -23,6 +23,7 @@ import { needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
 import { sessionStatusNote } from "@/lib/session-activity";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -294,7 +295,7 @@ export function CandidateDetailSheet({
     (activity?.messageCount ?? 0) > 0 ||
     activity?.hasRecording
   );
-  const statusNote = interviewBegun ? sessionStatusNote(sessionStatus) : null;
+  const statusNote = interviewBegun ? sessionStatusNote(sessionStatus, c?.session?.endReason) : null;
   const fmtDur = (s: number | null | undefined) =>
     s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
@@ -403,6 +404,7 @@ export function CandidateDetailSheet({
                     <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
                       {sessionLabel}
                     </span>
+                    <QuitEarlyBadge session={c?.session} />
                     {neverReachedFirstQuestion(c?.session ?? null) ? (
                       <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
                     ) : null}

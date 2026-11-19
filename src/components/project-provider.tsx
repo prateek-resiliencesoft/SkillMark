@@ -18,6 +18,8 @@ export interface ProjectInfo {
   id: string;
   name: string;
   description: string | null;
+  /** Contact number for candidate WhatsApp follow-ups (international format). */
+  supportPhone?: string | null;
   organizationId: string;
   createdBy: string | null;
   _count: { interviews: number; sessions?: number };

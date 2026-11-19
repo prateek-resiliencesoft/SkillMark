@@ -10,6 +10,7 @@ import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { redactSessionForCandidate } from "@/lib/session-redact";
+import { inviteSessionAction } from "@/lib/session-link";
 import { ERROR_CATEGORIES, ERROR_SEVERITIES, createClientErrorLimiter, summarizeErrorLog, type SessionErrorEntry } from "@/lib/session-error-log";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { filterAccessibleProjectIds, getOrgMembership, hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
@@ -29,6 +30,27 @@ async function assertNotDisqualified(
 }
 
 const allowClientErrorReport = createClientErrorLimiter();
+
+/**
+ * Detach an abandoned attempt so create_invite_session makes a fresh one for the
+ * same candidate. The old session keeps candidateId (+ supersededAt) for audit.
+ */
+async function supersedeAbandonedAttempt(
+  supabase: { from: (t: string) => any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+  candidateId: string,
+  sessionId: string,
+) {
+  const now = new Date().toISOString();
+  await supabase.from("sessions").update({ candidateId, supersededAt: now }).eq("id", sessionId);
+  // ponytail: conditional on sessionId so two tabs can't both detach; the RPC's
+  // read-then-insert can still race into two sessions (same as first-open today).
+  const { error } = await supabase
+    .from("candidates")
+    .update({ sessionId: null, updatedAt: now })
+    .eq("id", candidateId)
+    .eq("sessionId", sessionId);
+  if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not restart this interview. Try again." });
+}
 
 export const sessionRouter = router({
   /** Candidate browser reports an error (voice WS drop, TTS/STT failure, JS error). */
@@ -285,15 +307,19 @@ export const sessionRouter = router({
         }
       }
 
-      // If session already exists, return it
+      // If session already exists, return it — unless it was abandoned: then the
+      // same link starts a fresh attempt (old one kept for audit, like "Send new link").
       if (candidate.sessionId) {
-        const { data: existingSession } = await ctx.supabase
+        const { data: linked } = await ctx.supabase
           .from("sessions")
           .select("*")
           .eq("id", candidate.sessionId)
           .single();
+        const existingSession = linked ? await expireIfStale(linked) : null;
 
-        if (existingSession) {
+        if (existingSession && inviteSessionAction(existingSession.status) === "restart") {
+          await supersedeAbandonedAttempt(ctx.supabase, candidate.id as string, existingSession.id as string);
+        } else if (existingSession) {
           void recordPreflightEvent({
             candidateId: candidate.id as string,
             sessionId: existingSession.id,

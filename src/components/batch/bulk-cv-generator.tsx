@@ -38,6 +38,7 @@ import {
   normalizeInterviewerGender,
   type InterviewerGender,
 } from "@/lib/interviewer-persona";
+import { fetchJson } from "@/lib/fetch-json";
 import { flattenEnabledBankList } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
@@ -68,6 +69,13 @@ const INTERVIEW_TYPES = [
 ] as const;
 
 type RowStatus = "queued" | "parsing" | "parsed" | "parse_error" | "generating" | "generated" | "generate_error";
+
+interface ParseCvResponse {
+  profile: CandidateProfile;
+  reviewFlags?: ReviewFlag[];
+  markdown?: string;
+  extraction?: { method?: string };
+}
 
 interface CvRow {
   key: string;
@@ -213,10 +221,12 @@ export function BulkCvGenerator({
         form.append("file", row.file);
         if (countryCode) form.append("defaultCountryCode", countryCode);
         if (currentOrg?.id) form.append("organizationId", currentOrg.id);
-        const res = await fetch("/api/batches/parse-cv", { method: "POST", body: form });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
-        const p = json.profile as CandidateProfile;
+        const json = await fetchJson<ParseCvResponse>(
+          "/api/batches/parse-cv",
+          { method: "POST", body: form },
+          { timeoutMessage: "The server took too long to process the CVs. Please try again with fewer files." },
+        );
+        const p = json.profile;
         patchRow(row.key, {
           status: "parsed",
           profile: p,

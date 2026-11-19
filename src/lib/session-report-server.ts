@@ -27,6 +27,7 @@ import {
   type ReportStatus,
 } from "@/lib/session-report-policy";
 import { effectiveDurationSeconds, lastMessageAt, reachedClosing } from "@/lib/session-activity";
+import { isInterviewBegun } from "@/lib/session-link";
 
 const log = createLogger("session-report");
 
@@ -369,7 +370,8 @@ async function latestPreflightEvents(ids: string[]): Promise<Map<string, string>
 /**
  * Quiet IN_PROGRESS sessions (any age): close them from their saved activity so
  * the panel shows the right status and "Send new link" without a manual UPDATE.
- *  - Never reached the first question (no messages, no heartbeat) → ABANDONED
+ *  - Only sessions whose interview began (interviewBeganAt). Pre-flight stays pending.
+ *  - Began but never reached the first question (no messages, no heartbeat) → ABANDONED
  *    after 15 min, endReason NEVER_STARTED, report SKIPPED (nothing to report).
  *  - With messages → after 30 min: COMPLETED if the interviewer said goodbye,
  *    else ABANDONED; the report is scheduled.
@@ -384,13 +386,15 @@ export async function closeIdleSessions(
   const cutoff = new Date(nowMs - EMPTY_SESSION_IDLE_MS).toISOString();
   const base = "id, status, startedAt, createdAt, lastActivityAt, activitySegments";
   const fetchIdle = async (cols: string): Promise<{ data: unknown[] | null; error: { code?: string; message: string } | null }> => {
-    const r = await supabaseAdmin
+    let query = supabaseAdmin
       .from("sessions")
       .select(cols)
       .eq("status", "IN_PROGRESS")
-      .lt("lastActivityAt", cutoff)
-      .order("createdAt", { ascending: true })
-      .limit(50);
+      .lt("lastActivityAt", cutoff);
+    // Pre-flight sessions (interview not begun) are never abandoned; also keeps them
+    // from filling the batch. Without the column (old DB) the per-row check below applies.
+    if (cols.includes("interviewBeganAt")) query = query.not("interviewBeganAt", "is", null);
+    const r = await query.order("createdAt", { ascending: true }).limit(50);
     return { data: (r.data as unknown[] | null) ?? null, error: r.error };
   };
   let q = await fetchIdle(heartbeatColumnsMissing ? base : `${base}, interviewBeganAt, lastHeartbeatAt`);
@@ -406,12 +410,15 @@ export async function closeIdleSessions(
   const preflight = await latestPreflightEvents(rows.map((r) => r.id));
 
   for (const s of rows) {
+    // Pre-flight: never abandon. (Old DB without interviewBeganAt: decided by messages below.)
+    if (!isInterviewBegun(s) && !heartbeatColumnsMissing) continue;
     const { data: msgs } = await supabaseAdmin
       .from("messages")
       .select("role, content, contentType, timestamp")
       .eq("sessionId", s.id)
       .order("timestamp", { ascending: true });
     const messages = (msgs ?? []) as { role: string; content: string; contentType?: string; timestamp?: string }[];
+    if (!isInterviewBegun(s) && messages.length === 0) continue;
     const lastAt = lastMessageAt(messages);
     const d = idleCloseDecision({
       nowMs,
@@ -450,7 +457,15 @@ export async function closeIdleSessions(
     if (finished) counts.completed++;
     else counts.abandoned++;
     // Old sessions (outside the report look-back) are closed without a new report run.
-    if (nowMs - d.lastSeenMs < REPORT_SWEEP_LOOKBACK_MS) scheduleSessionReport(s.id, `idle:${d.status.toLowerCase()}`, 0);
+    if (nowMs - d.lastSeenMs < REPORT_SWEEP_LOOKBACK_MS) {
+      scheduleSessionReport(s.id, `idle:${d.status.toLowerCase()}`, 0);
+      // Left midway (not completed): send the candidate the WhatsApp follow-up.
+      if (!finished) {
+        void import("@/server/left-interview-followup")
+          .then(({ notifyCandidateLeftInterview }) => notifyCandidateLeftInterview(s.id))
+          .catch(() => undefined);
+      }
+    }
   }
   return counts;
 }

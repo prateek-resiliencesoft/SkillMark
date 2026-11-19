@@ -1,9 +1,23 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { ActivitySegment } from "@/app/api/voice/save/logic";
-import { isPreflightStale } from "@/lib/preflight";
-import { isHeartbeatStale, type EndReason } from "@/lib/session-link";
+import { canAbandon, isHeartbeatStale, type EndReason } from "@/lib/session-link";
 import { REPORT_DELAY_AFTER_ABANDON_MS, REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { reachedClosing } from "@/lib/session-activity";
+
+/** The interviewer already said goodbye (last few saved lines). False on any read error. */
+export async function interviewReachedClosing(sessionId: string): Promise<boolean> {
+  try {
+    const { data: msgs } = await supabaseAdmin
+      .from("messages")
+      .select("role, content, timestamp")
+      .eq("sessionId", sessionId)
+      .order("timestamp", { ascending: false })
+      .limit(6);
+    return reachedClosing(((msgs ?? []) as { role: string; content: string }[]).reverse());
+  } catch {
+    return false;
+  }
+}
 
 /**
  * End an in-progress session (link becomes unusable). ABANDONED normally; if
@@ -17,10 +31,13 @@ export async function abandonSession(
 ): Promise<false | "ABANDONED" | "COMPLETED"> {
   const { data: session } = await supabaseAdmin
     .from("sessions")
-    .select("id, status, activitySegments, lastHeartbeatAt")
+    .select("id, status, activitySegments, lastHeartbeatAt, interviewBeganAt")
     .eq("id", sessionId)
     .maybeSingle();
-  if (!session || session.status !== "IN_PROGRESS") return false;
+  // Pre-flight (info, photo, mic / screen checks): the interview has not started,
+  // so leaving, reloading or losing network never abandons it. Same link keeps working.
+  if (!canAbandon(session as { status?: string; interviewBeganAt?: string | null } | null)) return false;
+  if (!session) return false;
 
   // Close open activity at the last moment we knew the candidate was there.
   const leftAt = (session.lastHeartbeatAt as string | null) ?? new Date().toISOString();
@@ -28,18 +45,7 @@ export async function abandonSession(
     s.leftAt === null ? { ...s, leftAt } : s,
   );
 
-  let finished = false;
-  try {
-    const { data: msgs } = await supabaseAdmin
-      .from("messages")
-      .select("role, content, timestamp")
-      .eq("sessionId", sessionId)
-      .order("timestamp", { ascending: false })
-      .limit(6);
-    finished = reachedClosing(((msgs ?? []) as { role: string; content: string }[]).reverse());
-  } catch {
-    finished = false;
-  }
+  const finished = await interviewReachedClosing(sessionId);
 
   const write = (withReason: boolean) =>
     supabaseAdmin
@@ -72,6 +78,9 @@ export async function abandonSession(
         scheduleSessionReport(sessionId, `abandoned:${reason}`, REPORT_DELAY_AFTER_ABANDON_MS),
       )
       .catch(() => undefined);
+    void import("@/server/left-interview-followup")
+      .then(({ notifyCandidateLeftInterview }) => notifyCandidateLeftInterview(sessionId))
+      .catch(() => undefined);
   }
   return ended ? "ABANDONED" : false;
 }
@@ -91,7 +100,8 @@ export async function expireIfStale<
     createdAt?: string | null;
   },
 >(session: T): Promise<T> {
-  if (isHeartbeatStale(session) || isPreflightStale(session)) {
+  // Pre-flight sessions are never stale-abandoned (isHeartbeatStale needs interviewBeganAt).
+  if (isHeartbeatStale(session)) {
     const ended = await abandonSession(session.id, "DISCONNECTED");
     return { ...session, status: ended || "ABANDONED" };
   }

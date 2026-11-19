@@ -21,6 +21,7 @@ import {
     Upload,
     X,
 } from "lucide-react";
+import { responseErrorMessage } from "@/lib/fetch-json";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
     CandidateFormFields,
@@ -159,8 +160,7 @@ export function CandidateCreateDialog({
         });
 
         if (!res.ok) {
-          const errData = await res.json();
-          toast({ title: "Failed to parse resume", description: errData.error, variant: "destructive" });
+          toast({ title: "Failed to parse resume", description: await responseErrorMessage(res), variant: "destructive" });
           setParsingResume(false);
           return;
         }
