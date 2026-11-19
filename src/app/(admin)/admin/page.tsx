@@ -11,6 +11,7 @@ import {
   TacticalButton,
   formatWhen,
 } from "@/components/admin/admin-ui";
+import { StorageCapAlert } from "@/components/admin/storage-usage-panel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
@@ -117,6 +118,8 @@ export default function AdminOverviewPage() {
           </div>
         }
       />
+
+      <StorageCapAlert />
 
       {/* KPI Stat Cards Grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

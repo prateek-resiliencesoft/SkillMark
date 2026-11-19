@@ -9,6 +9,7 @@ import {
   periodicScreenshotType,
 } from "@/lib/recording-parts-server";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { isLiveInterviewUpload, isStorageCapError } from "@/lib/storage-cap";
 
 const log = createLogger("api/session/upload");
 
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
     const { data: session } = await supabaseAdmin
       .from("sessions")
       .select(
-        `id, status, mediaStoragePrefix, participantEmail,
+        `id, status, completedAt, mediaStoragePrefix, participantEmail,
          interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
       )
       .eq("id", sessionId)
@@ -61,6 +62,9 @@ export async function POST(req: Request) {
       projectId: string;
       project: { id: string; organizationId: string };
     };
+    const liveSession = isLiveInterviewUpload(
+      session as { status?: string | null; completedAt?: string | null },
+    );
 
     const { data: candidate } = await supabaseAdmin
       .from("candidates")
@@ -118,10 +122,11 @@ export async function POST(req: Request) {
         .upload(partKey, Buffer.from(await file.arrayBuffer()), {
           contentType: file.type || "application/octet-stream",
           upsert: true, // retries of the same part are safe
+          liveSession,
         });
       if (partErr) {
         log.error("Storage error: recording part", partErr);
-        return NextResponse.json({ error: partErr.message }, { status: 500 });
+        return NextResponse.json({ error: partErr.message }, { status: isStorageCapError(partErr.message) ? 507 : 500 });
       }
       if (!session.mediaStoragePrefix) {
         await supabaseAdmin
@@ -184,6 +189,7 @@ export async function POST(req: Request) {
       .upload(storagePath, buffer, {
         contentType: file.type || defaultContentType,
         upsert: false,
+        liveSession,
       });
 
     if (uploadError) {
@@ -198,7 +204,10 @@ export async function POST(req: Request) {
           context: { stage: "recording_upload", bytes: file.size },
         });
       }
-      return NextResponse.json({ error: uploadError.message }, { status: 500 });
+      return NextResponse.json(
+        { error: uploadError.message },
+        { status: isStorageCapError(uploadError.message) ? 507 : 500 },
+      );
     }
 
     if (!session.mediaStoragePrefix) {
