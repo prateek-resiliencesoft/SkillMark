@@ -3,7 +3,7 @@
  * so logging can't break the interview it is describing.
  */
 import { createLogger } from "@/lib/logger";
-import { sanitizeContext, redactSecrets, type SessionErrorEntry } from "@/lib/session-error-log";
+import { errorSignature, sanitizeContext, redactSecrets, type SessionErrorEntry } from "@/lib/session-error-log";
 
 const log = createLogger("session-error-log");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -11,21 +11,37 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function recordSessionErrors(entries: SessionErrorEntry[]): Promise<void> {
   const rows = entries
     .filter((e) => e.sessionId && UUID_RE.test(e.sessionId))
-    .map((e) => ({
-      sessionId: e.sessionId,
-      category: e.category,
-      severity: e.severity,
-      source: e.source.slice(0, 100),
-      message: redactSecrets(e.message, 1000),
-      status: e.status ?? null,
-      code: e.code ? String(e.code).slice(0, 64) : null,
-      context: sanitizeContext(e.context ?? {}),
-    }));
+    .map((e) => {
+      const message = redactSecrets(e.message, 1000);
+      const source = e.source.slice(0, 100);
+      return {
+        sessionId: e.sessionId,
+        category: e.category,
+        severity: e.severity,
+        source,
+        message,
+        signature: errorSignature({ category: e.category, source, message }),
+        status: e.status ?? null,
+        code: e.code ? String(e.code).slice(0, 64) : null,
+        context: sanitizeContext(e.context ?? {}),
+      };
+    });
   if (!rows.length) return;
   try {
     const { supabaseAdmin } = await import("@/lib/supabase/admin");
     const { error } = await supabaseAdmin.from("session_error_logs").insert(rows);
-    if (error) log.warn(`Could not store session error log: ${error.message}`);
+    if (error) {
+      log.warn(`Could not store session error log: ${error.message}`);
+      return;
+    }
+    // A group marked resolved that errors again goes back to open.
+    const signatures = Array.from(new Set(rows.map((r) => r.signature)));
+    const { error: reopenError } = await supabaseAdmin
+      .from("error_log_groups")
+      .update({ status: "open", resolvedAt: null, updatedAt: new Date().toISOString() })
+      .in("signature", signatures)
+      .eq("status", "resolved");
+    if (reopenError) log.warn(`Could not reopen error groups: ${reopenError.message}`);
   } catch (err) {
     log.warn(`Could not store session error log: ${err instanceof Error ? err.message : String(err)}`);
   }

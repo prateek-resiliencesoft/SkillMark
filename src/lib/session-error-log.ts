@@ -171,6 +171,39 @@ export function errorLogToCsv(entries: SessionErrorEntry[]): string {
   return [head.join(","), ...rows].join("\n");
 }
 
+/**
+ * Collapse the parts of a message that change between occurrences (URLs, UUIDs,
+ * long tokens, numbers) so the same error groups together.
+ * "gemini-3.5-flash" keeps its version digits; "timed out after 30000ms" → "<n>ms".
+ */
+export function normalizeErrorMessage(message: string): string {
+  return message
+    .toLowerCase()
+    .replace(/\b(?:https?|wss?):\/\/([^/\s"'?#]+)[^\s"']*/g, "<url:$1>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, "<uuid>")
+    .replace(/\b(?=[a-z0-9_-]*\d)(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{20,}\b/g, "<token>")
+    .replace(/(?<![a-z0-9_.-])(\d+(?:\.\d+)?)(ms|s)?(?![a-z0-9_])/g, "<n>$2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
+/** 32-bit FNV-1a. Pure JS so the same code runs in the browser and on the server. */
+function fnv1a(input: string, seed: number): string {
+  let h = seed >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** Stable 16-hex-char id for an error group: category + source + normalized message. */
+export function errorSignature(e: { category: string; source: string; message: string }): string {
+  const base = `${e.category}|${e.source}|${normalizeErrorMessage(e.message)}`;
+  return fnv1a(base, 0x811c9dc5) + fnv1a(base, 0x9747b28c);
+}
+
 /** In-memory limiter for anonymous client error reports: per session, 30/min and 300 total. */
 export function createClientErrorLimiter(perMinute = 30, total = 300) {
   const hits = new Map<string, { windowStart: number; inWindow: number; total: number }>();

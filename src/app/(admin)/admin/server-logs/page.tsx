@@ -1,6 +1,5 @@
 "use client";
 
-import { AppErrors } from "@/components/admin/app-errors";
 import { usePollInterval } from "@/components/admin/poll-interval-control";
 import {
   EmptyState,
@@ -19,6 +18,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc/client";
+import Link from "next/link";
 import {
   AlertTriangle,
   ChevronLeft,
@@ -402,10 +402,13 @@ export default function AdminServerLogsPage() {
                 {logs.data.error}
               </p>
               <p className="text-[11px] text-muted-foreground">
-                Displaying internal database application exceptions as fallback:
+                App errors are recorded in the database. See them grouped by organization and candidate on the{" "}
+                <Link href="/admin/error-logs" className="font-medium text-primary underline underline-offset-2">
+                  Error Logs
+                </Link>{" "}
+                page.
               </p>
             </div>
-            <AppErrors minutes={minutes} search={deferredSearch} />
           </div>
         ) : !entries.length ? (
           <EmptyState
