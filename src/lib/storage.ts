@@ -200,6 +200,29 @@ async function readFromS3(ok: string) {
   return { data, contentType };
 }
 
+const legacyCopies = ((globalThis as unknown as { __legacyCopies?: Map<string, Promise<{ data: Buffer; contentType: string }>> })
+  .__legacyCopies ??= new Map());
+
+/**
+ * File not copied to the server yet: fetch it from the old bucket once, keep
+ * it on disk, and return it. Later reads never touch the bucket again.
+ */
+export function copyLegacyObjectToLocal(objKey: string): Promise<{ data: Buffer; contentType: string }> {
+  const pending = legacyCopies.get(objKey);
+  if (pending) return pending;
+  const job = (async () => {
+    const got = await readFromS3(objKey);
+    const before = await statLocalObject(objKey);
+    if (!before) {
+      await writeLocalObject(objKey, got.data, got.contentType);
+      notifyLocalUsageChanged(got.data.byteLength);
+    }
+    return got;
+  })().finally(() => legacyCopies.delete(objKey));
+  legacyCopies.set(objKey, job);
+  return job;
+}
+
 export async function readFile(bucket: string, p: string) {
   const ok = objectKey(bucket, p);
   if (isObjectStorageEnabled()) return readFromS3(ok);
@@ -208,7 +231,7 @@ export async function readFile(bucket: string, p: string) {
   try {
     data = await fs.readFile(full);
   } catch (e) {
-    if (isMissing(e) && isLegacyS3ReadEnabled()) return readFromS3(ok);
+    if (isMissing(e) && isLegacyS3ReadEnabled()) return copyLegacyObjectToLocal(ok);
     throw e;
   }
   let contentType = "application/octet-stream";
@@ -240,7 +263,10 @@ export function isS3CapExceededMessage(message: string): boolean {
 async function s3FailureMessage(action: string, res: Response): Promise<string> {
   const t = (await res.text().catch(() => "")).slice(0, 600);
   const code = t.match(/<Code>([^<]+)<\/Code>/)?.[1];
-  const msg = t.match(/<Message>([^<]+)<\/Message>/)?.[1];
+  const msg = t
+    .match(/<Message>([^<]+)<\/Message>/)?.[1]
+    ?.replace(/&amp;/g, "&")
+    .replace(/\.\s*$/, "");
   const capHit = isS3CapExceededMessage(msg ?? "");
   const hint = capHit ? " Raise the cap under Backblaze → Caps & Alerts." : "";
   return code || msg
@@ -755,10 +781,7 @@ export const storage = {
             return { data: { signedUrl }, error: null };
           }
           localPathForKey(ok);
-          // Not copied to the server yet: hand out the old bucket URL directly.
-          if (isLegacyS3ReadEnabled() && !(await statLocalObject(ok))) {
-            return { data: { signedUrl: await s3SignedGetUrl(ok, expiresIn) }, error: null };
-          }
+          // Files not on disk yet are copied from the old bucket by /api/files on first view.
           return { data: { signedUrl: await localFileUrl(bucket, ok, expiresIn) }, error: null };
         } catch (e) {
           return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
