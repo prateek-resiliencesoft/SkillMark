@@ -4,12 +4,13 @@ import { ErrorEventsTable } from "@/components/admin/error-logs/error-events-tab
 import { ErrorGroupsTable } from "@/components/admin/error-logs/error-groups-table";
 import { ErrorSeriesChart } from "@/components/admin/error-logs/error-series-chart";
 import { FilterBar, PageHeader, Panel, StatCard } from "@/components/admin/admin-ui";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MAX_REPORT_RANGE_MS, type GroupStatus } from "@/lib/error-log-report";
 import { CATEGORY_LABELS, ERROR_CATEGORIES, ERROR_SEVERITIES, type ErrorCategory, type ErrorSeverity } from "@/lib/session-error-log";
 import { trpc } from "@/lib/trpc/client";
-import { AlertTriangle, Building2, Layers, Users, Zap } from "lucide-react";
+import { AlertTriangle, Building2, Layers, RotateCcw, Users, Zap } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 
 const PRESETS = {
@@ -82,6 +83,20 @@ export default function AdminErrorLogsPage() {
 
   const changed = (fn: () => void) => {
     fn();
+    setPage(0);
+  };
+
+  const hasFilters =
+    preset !== "7d" || org !== "all" || category !== "all" || severity !== "all" || status !== "all" || searchInput !== "";
+  const resetFilters = () => {
+    setPreset("7d");
+    setCustomFrom(isoDay(-6));
+    setCustomTo(isoDay(0));
+    setOrg("all");
+    setCategory("all");
+    setSeverity("all");
+    setStatus("all");
+    setSearchInput("");
     setPage(0);
   };
 
@@ -174,6 +189,12 @@ export default function AdminErrorLogsPage() {
             <SelectItem value="resolved">Resolved</SelectItem>
           </SelectContent>
         </Select>
+        {hasFilters && (
+          <Button type="button" variant="ghost" size="sm" className="h-9 gap-1.5 text-xs" onClick={resetFilters}>
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset
+          </Button>
+        )}
       </FilterBar>
 
       {range.error ? (
