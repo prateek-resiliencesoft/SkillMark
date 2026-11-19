@@ -6,6 +6,8 @@
  * model can't back up are dropped and flagged rather than kept as guesses.
  */
 import { extractJson } from "@/lib/ai/extract-json";
+import { AI_CALL_TIMEOUT_MS, budgetSignal } from "@/lib/ai/fail-fast";
+import { classifyAiFailure } from "@/lib/ai/key-chain";
 import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
 import type { LLMProvider } from "@/lib/ai/types";
 
@@ -88,7 +90,7 @@ async function generateProfileJson(
   provider: LLMProvider,
   model: string,
   source: string,
-  opts: { strict?: boolean; jsonMode?: boolean } = {},
+  opts: { strict?: boolean; jsonMode?: boolean; signal?: AbortSignal } = {},
 ) {
   const { strict = false, jsonMode = false } = opts;
   // Keep maxTokens modest — Gemini/OpenAI-compat often 400 on oversized max_tokens.
@@ -97,6 +99,9 @@ async function generateProfileJson(
     temperature: 0,
     maxTokens: strict ? 2048 : 3072,
     jsonMode,
+    // The key chain already fails over; SDK-level 429 retries would only burn the time budget.
+    maxRetries: 0,
+    signal: opts.signal,
     messages: [
       { role: "system", content: strict ? `${STRICT_RETRY_PROMPT}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
       { role: "user", content: source },
@@ -120,10 +125,18 @@ function isRetryableProfileError(msg: string, err?: unknown): boolean {
 
 export async function extractCandidateProfile(
   markdown: string,
-  options: { defaultCountryCode?: string; organizationId?: string | null } = {},
+  options: {
+    defaultCountryCode?: string;
+    organizationId?: string | null;
+    /** Overall deadline: aborts in-flight calls and stops further attempts. */
+    signal?: AbortSignal;
+    /** Pre-resolved provider (tests); default resolves from Settings → AI. */
+    models?: { provider: LLMProvider; generatorModel: string };
+  } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
-  const { provider, generatorModel } = await resolveTaskModels(options.organizationId, "resume");
+  const { provider, generatorModel } =
+    options.models ?? (await resolveTaskModels(options.organizationId, "resume"));
 
   const attempts: { provider: LLMProvider; model: string }[] = [
     { provider, model: generatorModel },
@@ -145,19 +158,22 @@ export async function extractCandidateProfile(
 
   for (const attempt of attempts) {
     for (const variant of variants) {
+      options.signal?.throwIfAborted();
       try {
-        const res = await generateProfileJson(
-          attempt.provider,
-          attempt.model,
-          source,
-          variant,
-        );
+        const res = await generateProfileJson(attempt.provider, attempt.model, source, {
+          ...variant,
+          // Per call cap, never beyond the overall deadline.
+          signal: budgetSignal(AI_CALL_TIMEOUT_MS, options.signal),
+        });
         const raw = extractJson<Record<string, unknown>>(
           res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
         );
         return validateProfile(raw, source, options.defaultCountryCode);
       } catch (err) {
         lastErr = err;
+        if (options.signal?.aborted) throw err;
+        // Every key already failed with quota/auth: other models/variants hit the same wall.
+        if (classifyAiFailure(err)) throw err;
         const msg = err instanceof Error ? err.message : String(err);
         if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
           throw new Error(

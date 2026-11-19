@@ -68,6 +68,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
+import { responseErrorMessage } from "@/lib/fetch-json";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 interface QuestionEvaluation {
   question: string;
@@ -422,8 +423,11 @@ function SessionDetail({
         body: JSON.stringify({ sessionId, organizationId: currentOrg?.id }),
       });
       if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || "Failed to generate summary");
+        throw new Error(
+          await responseErrorMessage(res, {
+            timeoutMessage: "Report generation is taking too long. It may still finish — refresh in a minute.",
+          }),
+        );
       }
       await summary.refetch();
     } catch (err) {

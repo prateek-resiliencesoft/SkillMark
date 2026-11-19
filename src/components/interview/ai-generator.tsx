@@ -95,6 +95,7 @@ import {
     Video,
     X,
 } from "lucide-react";
+import { readJsonResponse } from "@/lib/fetch-json";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -403,9 +404,8 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     if (source.file) formData.append("file", source.file);
     if (source.url) formData.append("url", source.url);
     const res = await fetch("/api/ai/extract-text", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Extraction failed");
-    return data.text as string;
+    const data = await readJsonResponse<{ text: string }>(res);
+    return data.text;
   }, []);
 
   const handleJdFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {

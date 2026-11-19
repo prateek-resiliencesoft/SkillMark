@@ -227,3 +227,41 @@ Still nothing committed, pushed or deployed; `.env*` untouched.
 - `npx tsc --noEmit`: **clean**.
 - `npm run lint`: **0 errors**, only pre-existing warnings.
 - Not covered: the DB-touching `notifyCandidateLeftInterview` itself (no DB harness); claim SQL semantics verified against a fake client only.
+
+---
+
+# Pass 4: parse-cv 504 / "Unexpected end of JSON input" (quota-exhausted AI keys)
+
+## Root cause
+- `extractCandidateProfile` looped **models × 3 prompt variants**, and every attempt was a `FailoverProvider` call that itself walked **every key**. With all Gemini keys at 429 that is keys × models × 3 calls, plus the OpenAI SDK's own 429 retries/backoff (default 2, honours `retry-after` up to 60s).
+- Vision PDF extraction had a 120s fetch timeout per key, and the SDK clients had no timeout/`maxRetries` cap.
+- Route `maxDuration = 120` > Caddy `response_header_timeout 90s` → Caddy sent an empty 504 → client `res.json()` threw.
+
+## Changes
+1. **Fail fast on quota/auth**
+   - `src/lib/ai/key-chain.ts`: `isAuthError`, `classifyAiFailure` (→ `"quota" | "auth" | null`), `AI_QUOTA_MESSAGE` / `AI_AUTH_MESSAGE`. `keyChainExhaustedError(..., onlyQuotaOrAuth)` tags `code = AI_QUOTA_EXHAUSTED | AI_AUTH_FAILED` when **every** key failed with quota/auth (a mix with e.g. a 400 stays untagged, so retries that could help still happen).
+   - `FailoverProvider` (`registry.ts`) computes that flag for `generateResponse` and `streamResponse`, and stops walking keys once the call's `signal` aborted.
+   - `cv-profile.ts`: a classified quota/auth error is thrown immediately (no extra models/variants); calls pass `maxRetries: 0` + a per-call 40s signal.
+   - `extract.ts`: vision clients use `maxRetries: 0`; one attempt per key; if every key was quota/auth it throws a tagged error. If a PDF has a text layer it still degrades to text + warning; with no text it throws so the route can report the real cause.
+   - `resume-parse.ts` (`/api/ai/parse-resume`): a tagged exhausted chain skips the 2s/5s/10s backoff and reports `AI_QUOTA_MESSAGE`.
+   - `batch.generateCandidate` (tRPC): stops its 3-attempt loop on quota/auth.
+   - `GenerationParams` got `signal` and `maxRetries`; honoured by `CompatibleOpenAIProvider` and Anthropic (others ignore them, still bounded by between-attempt checks).
+2. **Time budget**
+   - `src/lib/ai/fail-fast.ts`: `PARSE_CV_BUDGET_MS = 75_000`, `AI_CALL_TIMEOUT_MS = 40_000`, `VISION_CALL_TIMEOUT_MS = 45_000`, `budgetSignal` (timeout + client-disconnect), `raceAbort` (response is sent at the budget even if something ignores the signal, e.g. pdf-parse), `describeAiFailure` (quota → **429**, auth → **503**, timeout → **504**, all JSON with `{ error, code, fileName }`).
+   - `parse-cv/route.ts`: `maxDuration = 85`; whole file wrapped in the budget; unknown errors keep the old 502 JSON. The route takes **one file per request** (client pool = per-file isolation), so "partial results" = the other files' requests succeed independently and failed ones show their own error row.
+3. **Client**: new `src/lib/fetch-json.ts` (`fetchJson`, `readJsonResponse`, `responseErrorMessage`, `HttpError`). Reads text first, tolerates empty/HTML bodies; 502/504/408 → "The server took too long…". Used in `bulk-cv-generator.tsx` (parse-cv, with "…process the CVs. Please try again with fewer files."), plus low-risk spots that did a bare `res.json()`: `ai-generator.tsx` (extract-text), `candidate-create-dialog.tsx` (parse-resume error path), `interview-results.tsx` (summarize error path).
+
+## Other long routes behind the same proxy (noted)
+- Caddy: only the `dev.` vhost sets `response_header_timeout 90s`; the main app block has no header timeout. Dev is where this showed.
+- `/api/ai/generate`, `/api/ai/refine`, `/api/ai/parse-resume`: SSE, headers go out immediately → no proxy header timeout; no `maxDuration` set. Left as is.
+- `/api/ai/summarize`: **mismatch remains** (`maxDuration = 300`, non-streaming JSON; `withReportTimeout` 5 min). On dev Caddy it would 504 after 90s while the report keeps generating (status polling already covers the UI; client now shows a readable message). Real fix = return 202 and generate in the background — not trivial, not done.
+- `batch.generateCandidate` (tRPC, up to 3 generations of 8192 tokens): can also exceed 90s on slow providers; only the quota/auth fast-fail was added. Same for `session/retranscribe`, `storage/migration` (300).
+
+## Tests / checks
+- New `tests/ai-fail-fast.test.ts` (quota/auth classification, chain tagging incl. mixed cases, one-pass-over-chain with call counts, hung provider cut at budget → 504, signal-ignoring provider via `raceAbort`, parent abort, resume-parse no backoff) and `tests/fetch-json.test.ts` (empty 504, HTML 502, empty/non-JSON 200, server error/code, network failure). Both added to `test:web`.
+- `npx tsc --noEmit`: clean. `npm run lint`: 0 errors (pre-existing warnings). `TZ=UTC npm run test:web`: 499 pass, 0 fail.
+- Not covered automatically: `extractDocument` vision failover (`server-only` + sharp/pdf-parse imports) and the route itself (auth + DB).
+
+## Known trade-offs
+- Gemini quota is per model; the chain only tries the first model per key, so a key out of quota for `gemini-3.5-flash` is not retried on another Gemini model for this route (that retry was the main time sink).
+- Vision quota/auth on a PDF with a text layer still returns text + warning, then profile extraction reports the quota error if it also fails.
