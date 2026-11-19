@@ -457,7 +457,15 @@ export async function closeIdleSessions(
     if (finished) counts.completed++;
     else counts.abandoned++;
     // Old sessions (outside the report look-back) are closed without a new report run.
-    if (nowMs - d.lastSeenMs < REPORT_SWEEP_LOOKBACK_MS) scheduleSessionReport(s.id, `idle:${d.status.toLowerCase()}`, 0);
+    if (nowMs - d.lastSeenMs < REPORT_SWEEP_LOOKBACK_MS) {
+      scheduleSessionReport(s.id, `idle:${d.status.toLowerCase()}`, 0);
+      // Left midway (not completed): send the candidate the WhatsApp follow-up.
+      if (!finished) {
+        void import("@/server/left-interview-followup")
+          .then(({ notifyCandidateLeftInterview }) => notifyCandidateLeftInterview(s.id))
+          .catch(() => undefined);
+      }
+    }
   }
   return counts;
 }

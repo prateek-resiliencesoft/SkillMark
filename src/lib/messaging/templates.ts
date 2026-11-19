@@ -160,6 +160,53 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
   return text;
 }
 
+/**
+ * Meta UTILITY template sent automatically when a candidate leaves a live
+ * interview midway (session → ABANDONED). Body must match the approved template.
+ * {{1}} candidate name, {{2}} project contact number, {{3}} invite link,
+ * {{4}} link expiry date, {{5}} link expiry time, {{6}} organization name.
+ */
+export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
+  name: "left_interview_followup",
+  category: "UTILITY",
+  language: "en_US",
+  body: `Hi {{1}}, You left your interview in the middle. Is there any issue? If so, please contact us directly at {{2}}. Or you can continue your interview from where you left off using this link: {{3}} This link is valid until your original interview link expires on {{4}} at {{5}}. Team {{6}}©`,
+  example: [
+    "Priya Sharma",
+    "+919876543210",
+    "https://app.example.com/i/invite/abc123xyz789",
+    "Nov 26, 2026",
+    "11:59 PM",
+    "Acme Corp",
+  ],
+};
+
+export interface FollowupTemplateVars {
+  name: string;
+  supportPhone: string;
+  link: string;
+  expiresAt: string | Date;
+  organization: string;
+}
+
+export function followupExpiryParts(expiresAt: string | Date): { date: string; time: string } {
+  const date = typeof expiresAt === "string" ? new Date(expiresAt) : expiresAt;
+  return {
+    date: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date),
+    time: new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(date),
+  };
+}
+
+export function followupBodyVariables(v: FollowupTemplateVars): string[] {
+  const { date, time } = followupExpiryParts(v.expiresAt);
+  return [v.name, v.supportPhone, v.link, date, time, v.organization];
+}
+
+/** Preview of the follow-up body with the given values (defaults to the Meta example). */
+export function renderWhatsappFollowupPreview(values: string[] = WHATSAPP_FOLLOWUP_META_TEMPLATE.example): string {
+  return WHATSAPP_FOLLOWUP_META_TEMPLATE.body.replace(/\{\{(\d)\}\}/g, (m, i: string) => values[Number(i) - 1] ?? m);
+}
+
 export function renderWhatsappCompletionPreview(
   v: CompletionTemplateVars,
   customBody?: string,
