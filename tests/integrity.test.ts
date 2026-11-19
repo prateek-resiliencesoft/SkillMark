@@ -187,5 +187,8 @@ test("new warn-tier types count as strikes; signals never do", () => {
   ];
   assert.equal(countStrikes(log), 2);
   const r = applyAntiCheatingViolation(log, { type: "offscreen_voice", timestamp: 4 });
-  assert.equal(r.disqualify, true);
+  assert.equal(r.strikes, 3);
+  assert.equal(r.disqualify, false); // 3rd is a warning now
+  const r4 = applyAntiCheatingViolation(r.log, { type: "device_switch", timestamp: 5 });
+  assert.equal(r4.disqualify, true); // 4th disqualifies
 });

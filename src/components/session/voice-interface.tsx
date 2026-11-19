@@ -33,6 +33,7 @@ import {
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
+import { subscribeAiNotices } from "@/lib/integrity/bus";
 import { reportSessionError } from "@/lib/session-error-report-client";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVoice, type InterviewContext } from "@/hooks/use-voice";
@@ -673,6 +674,10 @@ export function VoiceInterface({
       setIsStartingInterview(false);
     }
   }, [voice.isConnected]);
+
+  // Anti-cheating warnings the AI says aloud (the 3rd strike). Stable callback, so subscribe once.
+  const { announceToAi } = voice;
+  useEffect(() => subscribeAiNotices((text) => announceToAi(text)), [announceToAi]);
 
   useEffect(() => {
     if (error) {

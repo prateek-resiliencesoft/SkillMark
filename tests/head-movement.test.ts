@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   HeadMovementMonitor,
+  aiStrikeNotice,
   applyAntiCheatingViolation,
   countStrikes,
   classifyFrame,
@@ -53,21 +54,34 @@ test("no_face needs 2.5s", () => {
   assert.equal(first, 2600);
 });
 
-test("shared 3-strike policy: any violation types count, 3rd disqualifies", () => {
+test("shared strike policy: any violation types count, 1st-3rd warn, 4th disqualifies", () => {
   let log: unknown[] = [];
   const r1 = applyAntiCheatingViolation(log, { type: "head_movement", timestamp: 2 });
   assert.equal(r1.strikes, 1); assert.equal(r1.disqualify, false); log = r1.log;
   const r2 = applyAntiCheatingViolation(log, { type: "page_departure", timestamp: 3 });
   assert.equal(r2.strikes, 2); assert.equal(r2.disqualify, false); log = r2.log;
   const r3 = applyAntiCheatingViolation(log, { type: "head_movement", timestamp: 4 });
-  assert.equal(r3.strikes, 3); assert.equal(r3.disqualify, true);
-  assert.equal(r3.headViolations, 2);
-  const last = r3.log.at(-1) as { type: string; detail: string };
+  assert.equal(r3.strikes, 3); assert.equal(r3.disqualify, false); log = r3.log;
+  const r4 = applyAntiCheatingViolation(log, { type: "paste", timestamp: 5 });
+  assert.equal(r4.strikes, 4); assert.equal(r4.disqualify, true);
+  assert.equal(r4.headViolations, 2);
+  const last = r4.log.at(-1) as { type: string; detail: string };
   assert.equal(last.type, "disqualified");
-  assert.match(last.detail, /Disqualified after 3/);
-  assert.equal(countStrikes(r3.log), 3); // the "disqualified" marker is not a strike
-  assert.equal(headWarningMessage(1), "Warning 1 of 2: please keep your face toward the screen");
-  assert.equal(headWarningMessage(2), "Warning 2 of 2: please keep your face toward the screen");
+  assert.match(last.detail, /Disqualified after 4/);
+  assert.equal(countStrikes(r4.log), 4); // the "disqualified" marker is not a strike
+  assert.equal(headWarningMessage(1), "Warning 1 of 3: please keep your face toward the screen");
+  assert.equal(headWarningMessage(3), "Warning 3 of 3: please keep your face toward the screen");
+});
+
+test("AI announces only the third strike, with the violation reason", () => {
+  assert.equal(aiStrikeNotice(1, "Looked away from the screen"), null);
+  assert.equal(aiStrikeNotice(2, "Switched tabs"), null);
+  assert.equal(aiStrikeNotice(4, "Switched tabs"), null);
+  const notice = aiStrikeNotice(3, "Looked away from the screen");
+  assert.ok(notice);
+  assert.match(notice, /third strike, because you looked away from the screen/);
+  assert.match(notice, /next strike will disqualify you/);
+  assert.match(notice, /continue with the interview/);
 });
 
 test("non-strike log entries don't count", () => {

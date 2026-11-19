@@ -5,8 +5,10 @@ import { useHeadMovementDetection } from "@/hooks/use-head-movement-detection";
 import {
   HEAD_STATE_LABEL,
   MAX_STRIKES,
+  aiStrikeNotice,
   type HeadFrameState,
 } from "@/lib/head-movement";
+import { publishAiNotice, publishStrike } from "@/lib/integrity/bus";
 import { detectionsSuppressed, markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
 import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
 import { trpc } from "@/lib/trpc/client";
@@ -84,6 +86,11 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
         } catch (err) {
           console.warn("[head-movement] report failed", err);
         }
+
+        const reason = HEAD_STATE_LABEL[kind];
+        publishStrike({ count, max: MAX_STRIKES, disqualified, lastReason: reason });
+        const notice = disqualified ? null : aiStrikeNotice(count, reason);
+        if (notice) publishAiNotice(notice);
 
         if (disqualified) {
           done.current = true;
