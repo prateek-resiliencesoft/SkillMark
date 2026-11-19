@@ -52,6 +52,7 @@ import {
     ArrowUp,
     ArrowUpDown,
     Calendar,
+    CalendarClock,
     Check,
     ChevronLeft,
     ChevronRight,
@@ -68,7 +69,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { isLinkExpired } from "@/lib/session-link";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -89,6 +92,10 @@ type CandidateRow = {
   workExperience: string | null;
   notes: string | null;
   inviteToken: string | null;
+  expiresAt: string | null;
+  followupSentAt: string | null;
+  followupSentToken: string | null;
+  followupError: string | null;
   session: any;
   createdAt: string;
   interviewTitle: string;
@@ -126,6 +133,7 @@ type SortKey =
   | "finished"
   | "source"
   | "status"
+  | "link"
   | "created"
   /** Default: newest activity first (session start, else when the row was created). */
   | "recent";
@@ -184,6 +192,7 @@ const COLUMNS: ColumnDef[] = [
   },
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
+  { key: "link", label: "Link", sortKey: "link", defaultVisible: true },
   { key: "score", label: "Score", sortKey: "score", defaultVisible: true },
   {
     key: "duration",
@@ -292,6 +301,11 @@ function getCandidateField(row: UnifiedRow): CandidateRow | null {
   return row.type === "candidate" ? (row as CandidateRow) : null;
 }
 
+function isRowLinkExpired(row: UnifiedRow): boolean {
+  const c = getCandidateField(row);
+  return !!c && isLinkExpired({ session: row.session, expiresAt: c.expiresAt });
+}
+
 function getSessionScore(row: UnifiedRow): number | null {
   const session = row.session;
   if (!session?.insights) return null;
@@ -348,6 +362,9 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return row.type === "walkin" ? "Walk-in" : "Invited";
     case "status":
       return getSessionStatus(row);
+    case "link":
+      // Expired links first (ascending), then by how soon the live ones lapse.
+      return c?.expiresAt ? new Date(c.expiresAt).getTime() : Number.MAX_SAFE_INTEGER;
   }
 }
 
@@ -474,6 +491,7 @@ export default function CandidatesPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string | null; expiresAt: string | null } | null>(null);
   const [detailEdit, setDetailEdit] = useState(false);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
@@ -604,6 +622,10 @@ export default function CandidatesPage() {
       workExperience: c.workExperience ?? null,
       notes: c.notes ?? null,
       inviteToken: c.inviteToken,
+      expiresAt: c.expiresAt ?? null,
+      followupSentAt: c.followupSentAt ?? null,
+      followupSentToken: c.followupSentToken ?? null,
+      followupError: c.followupError ?? null,
       session: c.session,
       createdAt: c.createdAt,
       interviewTitle: c.interview?.title ?? "-",
@@ -646,6 +668,7 @@ export default function CandidatesPage() {
         const s = getSessionStatus(row);
         // Filter on the displayed label: quiet pre-flight sessions read "Not Started" (never abandoned).
         const label = formatSessionStatusLabel(row.session);
+        if (statusFilter === "EXPIRED") return isRowLinkExpired(row);
         if (statusFilter === "NOT_STARTED") return label === "Not Started";
         if (statusFilter === "ABANDONED") return label === "Abandoned";
         if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && label !== "Not Started";
@@ -867,6 +890,15 @@ export default function CandidatesPage() {
           case "status":
             record[col.label] = statusLabel(row);
             break;
+          case "link": {
+            const exp = getCandidateField(row)?.expiresAt;
+            record[col.label] = isRowLinkExpired(row)
+              ? `Expired ${formatDate(exp)}`
+              : exp
+                ? `Valid until ${formatDate(exp)}`
+                : "";
+            break;
+          }
         }
       }
       return record;
@@ -1008,6 +1040,7 @@ export default function CandidatesPage() {
               {statusLabel(row)}
             </Badge>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
+            {isRowLinkExpired(row) && <ExpiredBadge />}
             {getCandidateField(row) ? (
               <LeftFollowupAction
                 candidateId={getCandidateField(row)!.id}
@@ -1018,6 +1051,35 @@ export default function CandidatesPage() {
             ) : null}
           </div>
         );
+      case "link": {
+        if (!c?.expiresAt) return <span className="text-muted-foreground">-</span>;
+        const exp = new Date(c.expiresAt);
+        const when = exp.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        if (isRowLinkExpired(row)) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <ExpiredBadge />
+              <span className="text-[10px] text-muted-foreground">Expired {when}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt });
+                }}
+                className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:underline"
+              >
+                <CalendarClock className="h-3 w-3" />
+                Extend expiry
+              </button>
+            </div>
+          );
+        }
+        return (
+          <span className="whitespace-nowrap text-muted-foreground">
+            {status === "COMPLETED" || status === "DISQUALIFIED" ? "-" : `Until ${when}`}
+          </span>
+        );
+      }
       default:
         return "-";
     }
@@ -1103,6 +1165,9 @@ export default function CandidatesPage() {
             </SelectItem>
             <SelectItem value="NOT_STARTED">
               {isZh ? "未开始" : "Not Started"}
+            </SelectItem>
+            <SelectItem value="EXPIRED">
+              {isZh ? "链接已过期" : "Link Expired"}
             </SelectItem>
           </SelectContent>
         </Select>
@@ -1458,6 +1523,22 @@ export default function CandidatesPage() {
         onOpenChange={(o) => !o && setDetailId(null)}
         onSaved={invalidateAll}
       />
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={invalidateAll}
+          sendLabel="Extend & open send options"
+          onExtendAndSend={() => {
+            // Hand over to the detail panel, whose resend / follow-up controls are live again.
+            setDetailEdit(false);
+            setDetailId(extendFor.id);
+          }}
+        />
+      )}
     </div>
   );
 }

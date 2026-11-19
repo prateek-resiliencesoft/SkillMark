@@ -337,6 +337,37 @@ export const candidateRouter = router({
       return sendLeftInterviewFollowup(String(c.sessionId), { manual: true });
     }),
 
+  /**
+   * Move a candidate's invite-link deadline to a new future time. This is how a recruiter revives
+   * an expired link: the token is unchanged, so a message already sent keeps working again.
+   */
+  extendExpiry: protectedProcedure
+    .input(z.object({ candidateId: z.string(), expiresAt: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const next = new Date(input.expiresAt);
+      if (Number.isNaN(next.getTime())) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Pick a valid expiry date and time." });
+      }
+      if (next.getTime() <= Date.now()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "The new expiry must be in the future." });
+      }
+      const { data: c } = await ctx.supabase
+        .from("candidates")
+        .select("id, interviewId")
+        .eq("id", input.candidateId)
+        .single();
+      if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+      const { role } = await verifyInterviewAccess(ctx.supabase, c.interviewId, ctx.user.id);
+      assertMinRole(role, "MEMBER");
+      const expiresAt = next.toISOString();
+      const { error } = await ctx.supabase
+        .from("candidates")
+        .update({ expiresAt, updatedAt: new Date().toISOString() })
+        .eq("id", input.candidateId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { ok: true as const, expiresAt };
+    }),
+
   bulkCreate: protectedProcedure
     .input(
       z.object({

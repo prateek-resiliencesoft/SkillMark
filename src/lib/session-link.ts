@@ -178,6 +178,22 @@ export async function startSessionWithRetry(
   return { ok: false, error };
 }
 
+/**
+ * The invite link's deadline (candidates.expiresAt) has passed and the candidate never finished.
+ * A COMPLETED / DISQUALIFIED session is done, so its link is not "expired" in any useful sense.
+ */
+export function isLinkExpired(opts: {
+  session?: { status?: string | null } | null;
+  expiresAt?: string | null;
+  nowMs?: number;
+}): boolean {
+  const status = opts.session?.status ?? null;
+  if (status === "COMPLETED" || status === "DISQUALIFIED") return false;
+  if (!opts.expiresAt) return false;
+  const t = new Date(opts.expiresAt).getTime();
+  return Number.isFinite(t) && t < (opts.nowMs ?? Date.now());
+}
+
 /** True when the recruiter should issue a new token (not merely resend the current one). */
 export function needsFreshInviteLink(opts: {
   session?: LinkSessionState | null;

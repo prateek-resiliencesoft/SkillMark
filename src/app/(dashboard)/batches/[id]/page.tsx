@@ -2,6 +2,8 @@
 
 import { BulkCvGenerator, FlagsPopover } from "@/components/batch/bulk-cv-generator";
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import {
   CompletionNotifyPicker,
   readyCompletionNotifyMembers,
@@ -35,7 +37,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
-import { needsFreshInviteLink } from "@/lib/session-link";
+import { leftFollowupState, needsLeftFollowup } from "@/lib/left-followup";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import { motion } from "motion/react";
@@ -43,6 +46,7 @@ import {
   ArrowLeft,
   BarChart3,
   Calendar,
+  CalendarClock,
   CalendarDays,
   Check,
   Clock,
@@ -71,11 +75,11 @@ const STATUS_META: Record<Status, { label: string; className: string }> = {
   DISQUALIFIED: { label: "Disqualified", className: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300" },
 };
 
-type Filter = "all" | "pending" | Status;
+type Filter = "all" | "pending" | "expired" | Status;
 
 function isInviteExpired(c: { expiresAt?: string | null; status: Status; completedAt?: string | null }): boolean {
-  if (!c.expiresAt || c.status === "COMPLETED" || c.status === "DISQUALIFIED" || c.completedAt) return false;
-  return new Date(c.expiresAt).getTime() < Date.now();
+  if (c.completedAt) return false;
+  return isLinkExpired({ session: { status: c.status }, expiresAt: c.expiresAt });
 }
 
 export default function BatchDetailPage() {
@@ -92,6 +96,7 @@ export default function BatchDetailPage() {
   const [sendTo, setSendTo] = useState<string[] | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string; name: string; email: string; phone: string } | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string; expiresAt: string | null } | null>(null);
   const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>([]);
 
   useEffect(() => {
@@ -177,12 +182,31 @@ export default function BatchDetailPage() {
       toast({ title: "Could not create a new link", description: e.message, variant: "destructive" }),
   });
 
+  const sendLeftFollowups = trpc.batch.sendLeftFollowups.useMutation({
+    onSuccess: (r) => {
+      void utils.batch.getById.invalidate({ id });
+      const parts = [
+        r.sent ? `${r.sent} sent` : null,
+        r.failed ? `${r.failed} failed` : null,
+        r.skipped ? `${r.skipped} skipped` : null,
+      ].filter(Boolean);
+      toast({
+        title: r.sent && !r.failed && !r.skipped ? "Follow-ups sent" : r.sent ? "Follow-ups partly sent" : "No follow-ups sent",
+        description: [parts.join(" · "), r.firstError].filter(Boolean).join(". ") || undefined,
+        variant: r.sent ? undefined : "destructive",
+      });
+    },
+    onError: (e) => toast({ title: "Could not send follow-ups", description: e.message, variant: "destructive" }),
+  });
+
   const candidates = useMemo(() => batch.data?.candidates ?? [], [batch.data]);
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return candidates.filter((c) => {
       if (filter === "pending" && (c.status === "COMPLETED" || c.status === "DISQUALIFIED")) return false;
-      if (filter !== "all" && filter !== "pending" && c.status !== filter) return false;
+      if (filter === "expired") {
+        if (!isInviteExpired(c)) return false;
+      } else if (filter !== "all" && filter !== "pending" && c.status !== filter) return false;
       if (!q) return true;
       return [c.name, c.email, c.phone, ...(c.profile?.techStack ?? [])].some((v) => v?.toLowerCase().includes(q));
     });
@@ -206,6 +230,9 @@ export default function BatchDetailPage() {
   const unsentIds = candidates
     .filter((c) => c.emailStatus !== "sent" && c.whatsappStatus !== "sent")
     .map((c) => c.id);
+  const expiredCount = candidates.filter((c) => isInviteExpired(c)).length;
+  // Left early, link still valid, and the WhatsApp follow-up has not gone out for the current link.
+  const followupPending = candidates.filter((c) => needsLeftFollowup(c, c.session));
   const allVisibleSelected = visible.length > 0 && visible.every((c) => selected.has(c.id));
   const recipients = (sendTo ?? [])
     .map((cid) => candidates.find((c) => c.id === cid))
@@ -224,6 +251,12 @@ export default function BatchDetailPage() {
         "WhatsApp invite": c.whatsappStatus ?? "",
         "Started at": c.startedAt ?? "",
         "Completed at": c.completedAt ?? "",
+        "Link expires": c.expiresAt ?? "",
+        "Link expired": isInviteExpired(c) ? "Yes" : "",
+        "Left-interview follow-up": (() => {
+          const f = leftFollowupState(c, c.session);
+          return f.sent ? "Sent" : c.status === "ABANDONED" ? "Not sent" : "";
+        })(),
         "Interview link": c.inviteLink,
       })),
       b.name.replace(/[^\w-]+/g, "_"),
@@ -234,7 +267,9 @@ export default function BatchDetailPage() {
     { label: "Completed", value: b.counts.completed, filter: "COMPLETED" },
     { label: "In progress", value: b.counts.inProgress, filter: "IN_PROGRESS" },
     { label: "Not started", value: b.counts.notStarted, filter: "NOT_STARTED" },
-    { label: "Left (pending)", value: b.counts.total - b.counts.completed - b.counts.disqualified, filter: "pending" },
+    { label: "Left early", value: b.counts.abandoned, filter: "ABANDONED" },
+    { label: "Link expired", value: expiredCount, filter: "expired" },
+    { label: "Not finished", value: b.counts.total - b.counts.completed - b.counts.disqualified, filter: "pending" },
   ];
 
   return (
@@ -268,6 +303,26 @@ export default function BatchDetailPage() {
               <Button variant="outline" onClick={() => setSendTo(unsentIds)}>
                 <Send className="mr-2 h-4 w-4" />
                 Send to unsent ({unsentIds.length})
+              </Button>
+            )}
+            {b.canEdit && followupPending.length > 0 && (
+              <Button
+                variant="outline"
+                disabled={sendLeftFollowups.isLoading}
+                title="Send the WhatsApp message that lets them restart the interview from where they left"
+                onClick={() => {
+                  if (
+                    !confirm(
+                      `Send the left-interview follow-up on WhatsApp to ${followupPending.length} candidate${followupPending.length === 1 ? "" : "s"} who left early?`,
+                    )
+                  ) {
+                    return;
+                  }
+                  sendLeftFollowups.mutate({ batchId: id, candidateIds: followupPending.map((c) => c.id) });
+                }}
+              >
+                <MessageCircle className="mr-2 h-4 w-4" />
+                Follow up left early ({followupPending.length})
               </Button>
             )}
             {b.canEdit && (
@@ -340,7 +395,7 @@ export default function BatchDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         {stats.map((s) => {
           const isSelected = filter === s.filter;
           return (
@@ -486,12 +541,29 @@ export default function BatchDetailPage() {
                         <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
                           {STATUS_META[c.status].label}
                         </span>
-                        {isInviteExpired(c) && (
-                          <span className="inline-block rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950/40 dark:text-red-300">
-                            Expired
-                          </span>
-                        )}
+                        {isInviteExpired(c) && <ExpiredBadge />}
                       </div>
+                      {b.canEdit && isInviteExpired(c) && (
+                        <button
+                          type="button"
+                          onClick={() => setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt })}
+                          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                        >
+                          <CalendarClock className="h-3 w-3" />
+                          Extend expiry
+                        </button>
+                      )}
+                      {b.canEdit && (
+                        <div className="mt-1">
+                          <LeftFollowupAction
+                            candidateId={c.id}
+                            candidate={c}
+                            session={c.session}
+                            variant="compact"
+                            onDone={() => void utils.batch.getById.invalidate({ id })}
+                          />
+                        </div>
+                      )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         {c.questionCount} questions
                         {c.completedAt && ` · ${new Date(c.completedAt).toLocaleDateString()}`}
@@ -515,7 +587,12 @@ export default function BatchDetailPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {b.canEdit && needsFreshInviteLink({ session: c.session, expiresAt: c.expiresAt }) ? (
+                          {b.canEdit && isInviteExpired(c) ? (
+                            <DropdownMenuItem onClick={() => setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt })}>
+                              <CalendarClock className="mr-2 h-4 w-4" />
+                              Extend expiry
+                            </DropdownMenuItem>
+                          ) : b.canEdit && needsFreshInviteLink({ session: c.session, expiresAt: c.expiresAt }) ? (
                             <DropdownMenuItem
                               disabled={sendNewLink.isLoading}
                               onClick={() => {
@@ -629,6 +706,22 @@ export default function BatchDetailPage() {
           void utils.batch.getById.invalidate({ id });
         }}
       />
+
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={() => void utils.batch.getById.invalidate({ id })}
+          onExtendAndSend={() => {
+            // Open the send dialog only once the list holds the new expiry.
+            const cid = extendFor.id;
+            void utils.batch.getById.invalidate({ id }).then(() => setSendTo([cid]));
+          }}
+        />
+      )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
