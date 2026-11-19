@@ -176,6 +176,8 @@ export const analysisRouter = router({
         summary: session.summary,
         reportStatus: (session as { reportStatus?: string | null }).reportStatus ?? null,
         reportError: (session as { reportError?: string | null }).reportError ?? null,
+        reportStartedAt: (session as { reportStartedAt?: string | null }).reportStartedAt ?? null,
+        completedAt: (session as { completedAt?: string | null }).completedAt ?? null,
         insights: session.insights,
         themes: session.themes,
         sentiment: session.sentiment,

@@ -27,6 +27,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import { buildReportData } from "@/lib/report-data";
+import { isReportStuck } from "@/lib/session-report-policy";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
 import { IntegrityAssessmentCard } from "@/components/report/integrity-assessment-card";
 import {
@@ -472,7 +473,9 @@ function SessionDetail({
     !summary.data.summary &&
     !hasCaptureFailure &&
     (summary.data.status === "COMPLETED" || summary.data.status === "ABANDONED") &&
-    (reportStatus === "PENDING" || reportStatus === "GENERATING" || autoWaitUntil > nowTick);
+    (((reportStatus === "PENDING" || reportStatus === "GENERATING") &&
+      !isReportStuck(summary.data, nowTick)) ||
+      autoWaitUntil > nowTick);
   const reportFailed = reportStatus === "FAILED" && !reportPending;
   useEffect(() => {
     if (!reportPending) return;

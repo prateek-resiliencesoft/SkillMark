@@ -110,6 +110,40 @@ export function decideReport(
   return { action: "generate" };
 }
 
+/** One report run may not hang forever (an AI call with no reply keeps the lock). */
+export const REPORT_RUN_TIMEOUT_MS = 5 * 60 * 1000;
+
+export function withReportTimeout<T>(work: Promise<T>, ms = REPORT_RUN_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Report generation timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** PENDING with no worker picking it up for this long counts as stuck. */
+export const REPORT_PENDING_STUCK_MS = 15 * 60 * 1000;
+
+/**
+ * The results page should stop showing "Generating report…" and offer the
+ * button again: the GENERATING lock is dead, or PENDING was never picked up.
+ */
+export function isReportStuck(
+  s: { reportStatus?: string | null; reportStartedAt?: string | null; completedAt?: string | null },
+  nowMs: number,
+): boolean {
+  const age = (iso?: string | null) => (iso ? nowMs - new Date(iso).getTime() : NaN);
+  if (s.reportStatus === "GENERATING") {
+    const a = age(s.reportStartedAt);
+    return Number.isFinite(a) && a >= REPORT_LOCK_STALE_MS;
+  }
+  if (s.reportStatus === "PENDING") {
+    const a = age(s.completedAt);
+    return Number.isFinite(a) && a >= REPORT_PENDING_STUCK_MS;
+  }
+  return false;
+}
+
 /** Whether a completion request may (re)mark the session COMPLETED. */
 export function canMarkCompleted(status: string | null | undefined): boolean {
   // COMPLETED is terminal (no re-run); DISQUALIFIED is never overridden.
