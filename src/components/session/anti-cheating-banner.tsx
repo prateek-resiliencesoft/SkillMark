@@ -5,7 +5,8 @@ import { useAntiCheating } from "@/hooks/use-anti-cheating";
 import { useIntegrityMonitor, type IntegrityWarnKind } from "@/hooks/use-integrity-monitor";
 import { markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
 import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
-import { MAX_STRIKES, STRIKE_LABEL } from "@/lib/head-movement";
+import { MAX_STRIKES, STRIKE_LABEL, aiStrikeNotice } from "@/lib/head-movement";
+import { publishAiNotice, publishStrike } from "@/lib/integrity/bus";
 import type { IntegritySignal } from "@/lib/integrity/signals";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban, Camera } from "lucide-react";
@@ -17,7 +18,7 @@ interface AntiCheatingGuardProps {
   /** Device guard, lip-sync, answer timing, reading pattern, extension detection. */
   integrityChecksEnabled?: boolean;
   livenessChallengesEnabled?: boolean;
-  /** Called after the candidate acknowledges the final (3rd) violation. */
+  /** Called after the candidate acknowledges the final (4th) violation. */
   onDisqualified?: () => void;
 }
 
@@ -34,8 +35,8 @@ const SIGNAL_FLUSH_MS = 10_000;
 
 /**
  * Page departure / paste / multi-screen violations. Shares one strict
- * 3-strike count (server-side) with head-movement detection: warnings 1 and 2
- * need OK, the 3rd ends and disqualifies the session.
+ * strike count (server-side) with head-movement detection: strikes 1–3 are
+ * warnings (the AI says the 3rd aloud), the 4th ends and disqualifies the session.
  */
 export function AntiCheatingGuard({
   enabled,
@@ -98,6 +99,10 @@ export function AntiCheatingGuard({
         } catch (err) {
           console.warn("[anti-cheating] report failed", err);
         }
+        publishStrike({ count, max: MAX_STRIKES, disqualified, lastReason: reason });
+        const notice = disqualified ? null : aiStrikeNotice(count, reason);
+        if (notice) publishAiNotice(notice);
+
         if (disqualified) {
           done.current = true;
           markInterviewEnded();

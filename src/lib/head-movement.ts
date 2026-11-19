@@ -4,9 +4,11 @@
  * and the server (violation counting + disqualification).
  */
 
-export const MAX_HEAD_VIOLATIONS = 3; // 1st & 2nd = warning, 3rd = disqualify
-/** Strict shared 3-strike policy: every anti-cheating violation type counts. */
+export const MAX_HEAD_VIOLATIONS = 4; // 1st–3rd = warning, 4th = disqualify
+/** Shared strike policy: every anti-cheating violation type counts. The 4th strike disqualifies. */
 export const MAX_STRIKES = MAX_HEAD_VIOLATIONS;
+/** The strike the AI announces out loud (the last warning before disqualification). */
+export const AI_WARNING_STRIKE = MAX_STRIKES - 1;
 export const STRIKE_TYPES = new Set([
   "page_departure", "tab_switch", "focus_lost", "head_movement", "multi_screen", "paste", "copy", "cut",
   "offscreen_voice", "device_switch",
@@ -160,7 +162,7 @@ export function countStrikes(log: unknown[]): number {
 
 /**
  * Server-side: append a violation and decide whether the session is
- * disqualified. All violation types share one 3-strike count.
+ * disqualified. All violation types share one strike count (4th disqualifies).
  */
 export function applyAntiCheatingViolation(prevLog: unknown[], violation: LoggedViolation) {
   let log = [...prevLog, violation];
@@ -190,6 +192,19 @@ export class PoseSmoother {
     this.pitch = this.pitch === null ? p.pitch : this.alpha * p.pitch + (1 - this.alpha) * this.pitch;
     return { yaw: this.yaw, pitch: this.pitch };
   }
+}
+
+/**
+ * What the AI says aloud on the third strike (the last warning). Returns null for
+ * every other strike count. `reason` is the human label of the violation.
+ */
+export function aiStrikeNotice(strikes: number, reason: string): string | null {
+  if (strikes !== AI_WARNING_STRIKE) return null;
+  return (
+    `This is your third strike, because you ${reason.toLowerCase()}. ` +
+    `Please do not do this again, or else we will have to disqualify you. ` +
+    `The next strike will disqualify you. Now let's continue with the interview.`
+  );
 }
 
 export function headWarningMessage(count: number): string {
