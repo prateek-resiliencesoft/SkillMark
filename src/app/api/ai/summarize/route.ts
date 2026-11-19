@@ -7,7 +7,6 @@ import { generateSummaryForSession } from "@/lib/session-summary";
 import { setReportStatus } from "@/lib/session-report-server";
 import { withReportTimeout } from "@/lib/session-report-policy";
 import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
-import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/ai/summarize");
