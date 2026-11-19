@@ -12,10 +12,27 @@ import { deleteAccount } from "@/lib/account-deletion";
 import {
   getStorageCapacity,
   getStorageConfigSummary,
+  hasS3Bucket,
   moveStoredObject,
   storage,
   storedObjectExists,
 } from "@/lib/storage";
+import { storageCapLevel } from "@/lib/storage-cap";
+import {
+  defaultMigrationDeps,
+  getMigrationStatus,
+  isMigrationRunning,
+  loadLastVerify,
+  preflightMigration,
+  startMigration,
+  verifyAndSaveMigration,
+} from "../storage-migration";
+import { fixStorageReferences } from "../storage-reference-fix";
+import {
+  getStorageCapStatus,
+  invalidateStorageQuotaCache,
+  noteStorageCapLevel,
+} from "@/lib/storage-usage";
 import {
   filterItems,
   getStorageSnapshot,
@@ -1750,10 +1767,11 @@ export const platformRouter = router({
     .input(z.object({ fresh: z.boolean().optional() }).optional())
     .query(async ({ ctx, input }) => {
       const config = getStorageConfigSummary();
-      const [snap, capacity] = await Promise.all([
+      const [snap, quotaBytes] = await Promise.all([
         getStorageSnapshot(ctx.supabase, { fresh: input?.fresh }),
-        loadStorageQuotaBytes(ctx.supabase).then((q) => getStorageCapacity(q)),
+        loadStorageQuotaBytes(ctx.supabase),
       ]);
+      const capacity = await getStorageCapacity(quotaBytes, snap.bucketBytes);
 
       const tenantBytes = sumBytes(snap.items);
       const sumOf = (cat: StoredFileItem["category"]) => {
@@ -1839,19 +1857,34 @@ export const platformRouter = router({
         .sort((a, b) => b.bytes - a.bytes);
 
       const used = snap.bucketBytes;
+      const capBytes = capacity.source === "quota" ? capacity.totalBytes : null;
+      const capLevel = storageCapLevel(used, capBytes);
+      if (!config.enabled && capBytes) {
+        void noteStorageCapLevel({
+          level: capLevel,
+          usedBytes: used,
+          quotaBytes: capBytes,
+          percent: Math.round((used / capBytes) * 1000) / 10,
+        });
+      }
       return {
         config,
         capacity: {
           source: capacity.source,
           limitFrom: capacity.limitFrom,
           totalBytes: capacity.totalBytes,
-          // Disk reports real free space; for B2 it is quota minus used (when a quota is set).
+          // Server disk: min(cap − used, disk free). Bucket: cap minus used (when a cap is set).
           freeBytes:
-            capacity.source === "disk"
+            capacity.freeBytes != null
               ? capacity.freeBytes
               : capacity.totalBytes != null
                 ? Math.max(0, capacity.totalBytes - used)
                 : null,
+          diskTotalBytes: capacity.diskTotalBytes ?? null,
+          diskFreeBytes: capacity.diskFreeBytes ?? null,
+          /** ok | warn80 | warn95 | full — uploads are refused at "full" (server disk only). */
+          level: capLevel,
+          percent: capBytes ? Math.round((used / capBytes) * 1000) / 10 : null,
         },
         usedBytes: used,
         usedObjects: snap.bucketObjects,
@@ -1884,14 +1917,15 @@ export const platformRouter = router({
     }),
 
   /**
-   * Plan size for the bucket. Backblaze/S3 cannot report it through their API, so a super admin
-   * enters the figure from their Backblaze plan once. Pass null to clear it.
+   * Maximum storage for media, set only here by a super admin. On the server disk it is
+   * enforced (warnings at 80% / 95%, new uploads refused at 100%). Pass null to clear it.
    */
   setStorageQuota: platformProcedure
     .input(z.object({ gb: z.number().positive().max(1_000_000).nullable() }))
     .mutation(async ({ ctx, input }) => {
       const bytes = input.gb == null ? null : Math.round(input.gb * 1024 ** 3);
       await upsertPlatformSetting(ctx.supabase, "storageQuota", { bytes }, ctx.user.id);
+      invalidateStorageQuotaCache();
       await writePlatformAudit(ctx.supabase, {
         actorId: ctx.user.id,
         action: "storage.set_quota",
@@ -1901,6 +1935,88 @@ export const platformRouter = router({
       });
       return { bytes };
     }),
+
+  /** Bucket → server disk copy: saved progress, last verify, and whether it can run. */
+  storageMigrationStatus: platformProcedure.query(async () => {
+    const config = getStorageConfigSummary();
+    const [status, lastVerify] = await Promise.all([getMigrationStatus(), loadLastVerify().catch(() => null)]);
+    return {
+      status,
+      lastVerify,
+      bucketConfigured: hasS3Bucket(),
+      writesToServer: !config.enabled,
+      bucketName: config.legacyBucket ?? (config.enabled ? config.bucket : null),
+    };
+  }),
+
+  /** Counts + free disk before starting (lists the bucket: one cheap Class C call per 1000 files). */
+  storageMigrationPreflight: platformProcedure.query(async () => {
+    if (!hasS3Bucket()) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No Backblaze/S3 bucket is configured." });
+    }
+    try {
+      return await preflightMigration(defaultMigrationDeps());
+    } catch (err) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err instanceof Error ? err.message : String(err) });
+    }
+  }),
+
+  startStorageMigration: platformProcedure.mutation(async ({ ctx }) => {
+    if (!hasS3Bucket()) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No Backblaze/S3 bucket is configured." });
+    }
+    const started = startMigration();
+    if (started) {
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "storage.migration_start",
+        targetType: "storage",
+      });
+    }
+    return { started, alreadyRunning: !started && isMigrationRunning() };
+  }),
+
+  verifyStorageMigration: platformProcedure.mutation(async ({ ctx }) => {
+    if (!hasS3Bucket()) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "No Backblaze/S3 bucket is configured." });
+    }
+    try {
+      const result = await verifyAndSaveMigration();
+      await writePlatformAudit(ctx.supabase, {
+        actorId: ctx.user.id,
+        action: "storage.migration_verify",
+        targetType: "storage",
+        meta: { total: result.totalObjects, ok: result.ok, missing: result.missingCount, mismatch: result.sizeMismatchCount },
+      });
+      return result;
+    } catch (err) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err instanceof Error ? err.message : String(err) });
+    }
+  }),
+
+  /** Rewrite saved full file URLs (old Backblaze / /api/files links) to bare paths. */
+  fixStorageReferences: platformProcedure
+    .input(z.object({ dryRun: z.boolean().default(true) }))
+    .mutation(async ({ ctx, input }) => {
+      const report = await fixStorageReferences({ dryRun: input.dryRun });
+      if (!input.dryRun) {
+        await writePlatformAudit(ctx.supabase, {
+          actorId: ctx.user.id,
+          action: "storage.fix_references",
+          targetType: "storage",
+          meta: { values: report.valuesToFix, rows: report.rowsToFix, errors: report.errors.length },
+        });
+      }
+      return report;
+    }),
+
+  /** Cheap cap check for banners (server disk only; cached usage). */
+  storageCapStatus: platformProcedure.query(async () => {
+    if (getStorageConfigSummary().enabled) return null;
+    const status = await getStorageCapStatus();
+    void noteStorageCapLevel(status);
+    return status;
+  }),
 
   /** How much space deleting this selection would free — shown BEFORE the user confirms. */
   storageDeletePreview: platformProcedure

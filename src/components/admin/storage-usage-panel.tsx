@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
-import { ChevronDown, ChevronRight, Pencil, Users } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Pencil, Users } from "lucide-react";
 import { EmptyState, Panel } from "@/components/admin/admin-ui";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { AppRouter } from "@/server/routers/_app";
@@ -32,6 +32,51 @@ function Bar({ pct, className }: { pct: number; className?: string }) {
   );
 }
 
+type CapLevel = "ok" | "warn80" | "warn95" | "full";
+
+/** Amber at 80%, red at 95%, blocking notice at 100% of the super-admin storage cap. */
+export function StorageCapBanner({
+  level,
+  usedBytes,
+  quotaBytes,
+  percent,
+}: {
+  level: CapLevel;
+  usedBytes: number;
+  quotaBytes: number | null;
+  percent: number | null;
+}) {
+  if (level === "ok" || !quotaBytes) return null;
+  const pct = percent != null ? `${percent}%` : "";
+  const text =
+    level === "full"
+      ? `Storage cap reached (${formatSize(usedBytes)} of ${formatSize(quotaBytes)}). New uploads such as CVs and attachments are refused; interviews already running can still save their media. Raise the cap or free up space.`
+      : level === "warn95"
+        ? `Storage is ${pct} full (${formatSize(usedBytes)} of ${formatSize(quotaBytes)}). Uploads stop at 100%.`
+        : `Storage is ${pct} full (${formatSize(usedBytes)} of ${formatSize(quotaBytes)}).`;
+  return (
+    <div
+      role="alert"
+      className={cn(
+        "flex items-start gap-2.5 rounded-lg border p-3 text-sm",
+        level === "warn80"
+          ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+          : "border-destructive/40 bg-destructive/10 text-destructive",
+      )}
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <p className={cn(level === "full" && "font-medium")}>{text}</p>
+    </div>
+  );
+}
+
+/** Self-loading cap banner for pages outside the storage explorer (super-admin dashboard). */
+export function StorageCapAlert() {
+  const q = trpc.platform.storageCapStatus.useQuery(undefined, { staleTime: 60_000 });
+  if (!q.data) return null;
+  return <StorageCapBanner {...q.data} />;
+}
+
 /** Used / free overview shown above the explorer. */
 export function CapacityOverview({
   usage,
@@ -48,7 +93,7 @@ export function CapacityOverview({
   const saveQuota = trpc.platform.setStorageQuota.useMutation({
     onSuccess: () => {
       setEditing(false);
-      toast({ title: "Storage plan limit saved" });
+      toast({ title: "Storage cap saved" });
       onQuotaSaved?.();
     },
     onError: (err) =>
@@ -67,8 +112,18 @@ export function CapacityOverview({
     ["Other", usage.byCategory.other, "bg-amber-500"],
   ] as const;
   const tenantTotal = Math.max(1, usage.tenantBytes);
+  const level = capacity.level;
 
   return (
+    <div className="space-y-3">
+    {capacity.source === "quota" && (
+      <StorageCapBanner
+        level={level}
+        usedBytes={usedBytes}
+        quotaBytes={capacity.totalBytes}
+        percent={capacity.percent}
+      />
+    )}
     <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm dark:border-white/[0.08] dark:bg-zinc-950/60 space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -84,7 +139,8 @@ export function CapacityOverview({
             ) : null}
           </p>
           <p className="text-[11px] text-muted-foreground">
-            {usage.usedObjects.toLocaleString()} objects in the bucket
+            {usage.usedObjects.toLocaleString()} files stored
+            {usage.config.enabled ? ` in ${usage.config.provider}` : " on this server"}
             {usage.outsideTenantBytes > 0
               ? ` • ${formatSize(usage.outsideTenantBytes)} outside candidate folders`
               : ""}
@@ -104,15 +160,19 @@ export function CapacityOverview({
           </p>
           <p className="text-[11px] text-muted-foreground">
             {capacity.source === "disk"
-              ? "Free space on the server disk"
+              ? "Free space on the server disk (no storage cap set)"
               : capacity.source === "quota"
-                ? `${pct.toFixed(1)}% of your ${formatSize(total)} plan used${
+                ? `${pct.toFixed(1)}% of the ${formatSize(total)} storage cap used${
                     capacity.limitFrom === "env" ? " (from server config)" : ""
                   }`
-                : "Backblaze doesn't report your plan size to apps."}
+                : "No storage cap set."}
           </p>
-          {capacity.source !== "disk" &&
-            (editing ? (
+          {capacity.diskFreeBytes != null && capacity.source === "quota" && (
+            <p className="text-[11px] text-muted-foreground">
+              Server disk: {formatSize(capacity.diskFreeBytes)} free of {formatSize(capacity.diskTotalBytes)}
+            </p>
+          )}
+          {editing ? (
               <form
                 className="mt-1.5 flex items-center justify-end gap-1.5"
                 onSubmit={(e) => {
@@ -128,7 +188,7 @@ export function CapacityOverview({
                   step="any"
                   value={gb}
                   onChange={(e) => setGb(e.target.value)}
-                  placeholder="Plan size"
+                  placeholder="Max size"
                   className="w-24 rounded-md border border-border/70 bg-background px-2 py-1 text-xs dark:border-white/[0.08] dark:bg-zinc-900"
                 />
                 <span className="text-[11px] text-muted-foreground">GB</span>
@@ -167,13 +227,21 @@ export function CapacityOverview({
                 className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
               >
                 <Pencil className="h-3 w-3" />
-                {total ? "Edit plan limit" : "Set plan limit (GB)"}
+                {capacity.limitFrom ? "Edit storage cap" : "Set storage cap (GB)"}
               </button>
-            ))}
+            )}
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            Maximum storage for media on this server. Warns at 80% and 95%, blocks new uploads at 100%.
+          </p>
         </div>
       </div>
 
-      {total ? <Bar pct={pct} className={pct > 90 ? "bg-rose-500" : pct > 75 ? "bg-amber-500" : ""} /> : null}
+      {total ? (
+        <Bar
+          pct={pct}
+          className={level === "full" || level === "warn95" ? "bg-rose-500" : level === "warn80" ? "bg-amber-500" : ""}
+        />
+      ) : null}
 
       <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted/50 dark:bg-white/[0.05]">
         {cats.map(([label, c, color]) => (
@@ -194,6 +262,7 @@ export function CapacityOverview({
           </span>
         ))}
       </div>
+    </div>
     </div>
   );
 }
@@ -220,7 +289,7 @@ export function UsageBreakdown({ usage, loading }: { usage?: StorageUsage; loadi
             <p>
               <b>{usage.duplicatePeople}</b> candidate{usage.duplicatePeople === 1 ? "" : "s"} have{" "}
               <b>{usage.duplicateFolders}</b> extra folder{usage.duplicateFolders === 1 ? "" : "s"}{" "}
-              (same email stored in several folders). Use “Organize B2 Folders” to merge them into one.
+              (same email stored in several folders). Use “Organize Folders” to merge them into one.
             </p>
           )}
           {usage.unlinkedFolders > 0 && (

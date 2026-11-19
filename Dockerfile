@@ -44,6 +44,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # Standalone tracing sometimes drops aws4fetch — copy explicitly for B2/S3 uploads.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/aws4fetch ./node_modules/aws4fetch
+# Media volume mount point; a new named volume copies this owner, so uploads can write.
+RUN mkdir -p /app/storage && chown nextjs:nodejs /app/storage
 
 USER nextjs
 EXPOSE 3000
