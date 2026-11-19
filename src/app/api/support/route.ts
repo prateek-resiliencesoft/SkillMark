@@ -1,5 +1,6 @@
 import { getAuthUser } from "@/lib/auth";
 import { createLogger } from "@/lib/logger";
+import { isStorageCapError } from "@/lib/storage-cap";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
 
   const files = formData.getAll("attachments") as File[];
   const supabase = createClient();
+  let capRefused: string | null = null;
   const uploadResults = await Promise.all(
     files
       .filter((file) => file.size > 0)
@@ -44,11 +46,15 @@ export async function POST(request: Request) {
 
         if (uploadError) {
           log.error("Failed to upload attachment:", uploadError);
+          if (isStorageCapError(uploadError.message)) capRefused = uploadError.message;
           return null;
         }
         return { name: file.name, path: storagePath, size: file.size };
       })
   );
+  if (capRefused) {
+    return NextResponse.json({ error: capRefused }, { status: 507 });
+  }
   const storedAttachments = uploadResults.filter(
     (r): r is NonNullable<typeof r> => r !== null,
   );

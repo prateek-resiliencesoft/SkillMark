@@ -24,6 +24,7 @@ import {
   CapacityOverview,
   UsageBreakdown,
 } from "@/components/admin/storage-usage-panel";
+import { StorageMigrationCard } from "@/components/admin/storage-migration-card";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -264,6 +265,11 @@ export default function AdminStoragePage() {
   );
 
   const storageConfig = statsQuery.data?.config || filesQuery.data?.config;
+  const storeName = storageConfig
+    ? storageConfig.enabled
+      ? storageConfig.provider
+      : "this server"
+    : "storage";
   const counts = filesQuery.data?.counts || {
     all: 0,
     recordings: 0,
@@ -301,9 +307,9 @@ export default function AdminStoragePage() {
     <div className="space-y-6">
       {/* Top Header */}
       <PageHeader
-        kicker="Backblaze B2 & Object Store"
+        kicker={storageConfig?.enabled ? `${storageConfig.provider} object store` : "Server storage"}
         title="Stored Files & Media Explorer"
-        description="Structured folder hierarchy (candidateName/recordings, /images, /CV). Play interview recordings, inspect proctoring captures, and view candidate resumes directly from Backblaze B2."
+        description={`Structured folder hierarchy (candidateName/recordings, /images, /CV). Play interview recordings, inspect proctoring captures, and view candidate resumes stored on ${storeName}.`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <TacticalButton
@@ -326,8 +332,8 @@ export default function AdminStoragePage() {
               />
               <span>
                 {reorganizeMutation.isPending
-                  ? "Organizing B2 Folders..."
-                  : "Organize B2 Folders"}
+                  ? "Organizing Folders..."
+                  : "Organize Folders"}
               </span>
             </TacticalButton>
 
@@ -368,16 +374,22 @@ export default function AdminStoragePage() {
       {/* Telemetry Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <StatCard
-          title="Object Store Provider"
-          value={storageConfig?.provider || "Backblaze B2"}
+          title="Storage Provider"
+          value={storageConfig?.provider || "—"}
           subtitle={
-            storageConfig?.region
-              ? `Bucket: ${storageConfig.bucket} • Region: ${storageConfig.region}`
-              : `Bucket: ${storageConfig?.bucket || "configured-bucket"}`
+            !storageConfig
+              ? "Loading…"
+              : !storageConfig.enabled
+                ? storageConfig.legacyFallback
+                  ? `Server disk • older files still read from ${storageConfig.legacyProvider} (${storageConfig.legacyBucket})`
+                  : "Files are stored on this server's disk"
+                : storageConfig.region
+                  ? `Bucket: ${storageConfig.bucket} • Region: ${storageConfig.region}`
+                  : `Bucket: ${storageConfig.bucket}`
           }
-          trend={storageConfig?.enabled ? "Connected" : "Local Disk"}
+          trend={storageConfig?.enabled ? "Connected" : "Server Disk"}
           trendDirection={storageConfig?.enabled ? "up" : "neutral"}
-          icon={Cloud}
+          icon={storageConfig && !storageConfig.enabled ? HardDrive : Cloud}
         />
         <StatCard
           title="Candidate Audio / Video"
@@ -409,6 +421,14 @@ export default function AdminStoragePage() {
         usage={usageQuery.data}
         loading={usageQuery.isLoading}
         onQuotaSaved={() => usageQuery.refetch()}
+      />
+
+      <StorageMigrationCard
+        onFinished={() => {
+          usageQuery.refetch();
+          filesQuery.refetch();
+          statsQuery.refetch();
+        }}
       />
 
       {/* Main Mode Navigation Strip */}
@@ -535,7 +555,7 @@ export default function AdminStoragePage() {
                   ["recordings", "📁 recordings/", counts.recordings],
                   ["screenshots", "📁 images/", counts.screenshots],
                   ["resumes", "📁 CV/", counts.resumes],
-                  ["raw", "📦 Raw B2 Objects", counts.raw],
+                  ["raw", "📦 Other Files", counts.raw],
                 ] as const
               ).map(([catKey, label, count]) => (
                 <button
@@ -653,7 +673,9 @@ export default function AdminStoragePage() {
                 className="flex items-center gap-1 text-primary hover:underline font-semibold"
               >
                 <HardDrive className="h-3.5 w-3.5" />
-                <span>b2://{storageConfig?.bucket || "skillmark"}</span>
+                <span>
+                  {storageConfig?.enabled ? `b2://${storageConfig.bucket}` : "server://storage"}
+                </span>
               </button>
 
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
@@ -731,7 +753,7 @@ export default function AdminStoragePage() {
                 description={
                   searchQuery || selectedOrgId || selectedProjectId || category !== "all"
                     ? "Try adjusting your category, organization, or search query to find candidate folders."
-                    : "No candidate recordings, proctoring images, or resumes are currently saved in Backblaze B2."
+                    : `No candidate recordings, proctoring images, or resumes are currently saved on ${storeName}.`
                 }
                 action={
                   searchQuery || selectedOrgId || selectedProjectId || category !== "all" ? (
@@ -1765,7 +1787,7 @@ export default function AdminStoragePage() {
             ? `This will free ${formatBytes(deletePreview.data.bytes)} (${deletePreview.data.objects.toLocaleString()} files). `
             : "") +
           (scope === "all"
-            ? "Every audio/video recording and file stored in Backblaze B2 for this instance will be permanently erased. Interview scores and transcripts remain in the database."
+            ? `Every audio/video recording and file stored on ${storeName} for this instance will be permanently erased. Interview scores and transcripts remain in the database.`
             : scope === "organizations"
               ? `Files for ${orgIds.length} organization${orgIds.length === 1 ? "" : "s"} will be deleted. Transcripts and scores stay preserved.`
               : `Files for ${projectIds.length} project${projectIds.length === 1 ? "" : "s"} will be deleted. Transcripts and scores stay preserved.`)

@@ -282,7 +282,8 @@ export async function finalizeRecordingParts(
     const finalKey = `${target.prefix}/recordings/recording-${sessionId}.${built.ext}`;
     const { error: upErr } = await supabaseAdmin.storage
       .from("recordings")
-      .upload(finalKey, built.audio, { contentType: mimeForRecordingExt(built.ext), upsert: true });
+      // Joins parts already stored for this interview, so it is never refused by the cap.
+      .upload(finalKey, built.audio, { contentType: mimeForRecordingExt(built.ext), upsert: true, liveSession: true });
     if (upErr) throw new Error(`Storage error: ${upErr.message}`);
 
     const linked = await linkRecordingToSession(
