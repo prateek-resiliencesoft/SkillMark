@@ -29,6 +29,28 @@ const STATUS_STYLES: Record<GroupStatus, string> = {
 const STATUS_LABEL: Record<GroupStatus, string> = { open: "Open", acknowledged: "Acknowledged", resolved: "Resolved" };
 
 const COLS = 8;
+/** Groups shown before the "Show all" toggle (the list is already ranked by count). */
+const INITIAL_VISIBLE = 12;
+
+/** Left accent on each row so serious groups stand out while scanning. */
+const SEVERITY_ACCENT: Record<ErrorSeverity, string> = {
+  info: "border-l-transparent",
+  warning: "border-l-amber-500/70",
+  error: "border-l-red-500/80",
+  critical: "border-l-red-600",
+};
+
+/** "just now", "5 min ago", "3 h ago", "2 d ago". */
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(diff)) return "";
+  const min = Math.round(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} h ago`;
+  return `${Math.round(h / 24)} d ago`;
+}
 
 function GroupDetail({ group }: { group: ErrorGroup }) {
   const { toast } = useToast();
@@ -132,6 +154,7 @@ function GroupDetail({ group }: { group: ErrorGroup }) {
 
 export function ErrorGroupsTable({ groups, loading }: { groups: ErrorGroup[]; loading?: boolean }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [showAll, setShowAll] = useState(false);
   const toggle = (sig: string) =>
     setOpen((prev) => {
       const next = new Set(prev);
@@ -144,66 +167,122 @@ export function ErrorGroupsTable({ groups, loading }: { groups: ErrorGroup[]; lo
     return <EmptyState icon={AlertTriangle} title="No error groups" description="Nothing matches these filters in the selected range." />;
   }
 
+  const visible = showAll ? groups : groups.slice(0, INITIAL_VISIBLE);
+  const maxCount = Math.max(1, ...groups.map((g) => g.count));
+
   return (
-    <DataTableWrapper>
-      <thead>
+    <div className="space-y-3">
+      <DataTableWrapper tableClassName="table-fixed min-w-[920px]">
+        <colgroup>
+          <col className="w-[72px]" />
+          <col />
+          <col className="w-[96px]" />
+          <col className="w-[88px]" />
+          <col className="w-[64px]" />
+          <col className="w-[104px]" />
+          <col className="w-[132px]" />
+          <col className="w-[128px]" />
+        </colgroup>
         <TableHeadRow>
-          <th className="px-3 py-2 font-semibold">#</th>
-          <th className="px-3 py-2 font-semibold">Error</th>
-          <th className="px-3 py-2 font-semibold">Severity</th>
-          <th className="px-3 py-2 text-right font-semibold">Count</th>
-          <th className="px-3 py-2 text-right font-semibold">Orgs</th>
-          <th className="px-3 py-2 text-right font-semibold">Candidates</th>
-          <th className="px-3 py-2 font-semibold">Last seen</th>
-          <th className="px-3 py-2 font-semibold">Status</th>
+          <th className="px-3 py-2.5 font-semibold">#</th>
+          <th className="px-3 py-2.5 font-semibold">Error</th>
+          <th className="px-3 py-2.5 font-semibold">Severity</th>
+          <th className="px-3 py-2.5 text-right font-semibold">Count</th>
+          <th className="px-3 py-2.5 text-right font-semibold">Orgs</th>
+          <th className="px-3 py-2.5 text-right font-semibold">Candidates</th>
+          <th className="px-3 py-2.5 font-semibold">Last seen</th>
+          <th className="px-3 py-2.5 font-semibold">Status</th>
         </TableHeadRow>
-      </thead>
-      <tbody>
-        {groups.map((g, i) => {
-          const expanded = open.has(g.signature);
-          const Chevron = expanded ? ChevronDown : ChevronRight;
-          return (
-            <Fragment key={g.signature}>
-              <TableRow onClick={() => toggle(g.signature)} className="cursor-pointer">
-                <td className="px-3 py-2 tabular-nums text-muted-foreground">{i + 1}</td>
-                <td className="max-w-[420px] px-3 py-2">
-                  <div className="flex items-start gap-2">
-                    <Chevron className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 space-y-1">
-                      <p className="line-clamp-2 break-words font-mono text-[11px]">{g.sampleMessage}</p>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Badge variant="outline" className="text-[10px] font-normal">
-                          {CATEGORY_LABELS[g.category] ?? g.category}
-                        </Badge>
-                        <span className="text-[10px] text-muted-foreground">{g.source}</span>
-                      </div>
+        <tbody>
+          {visible.map((g, i) => {
+            const expanded = open.has(g.signature);
+            const Chevron = expanded ? ChevronDown : ChevronRight;
+            return (
+              <Fragment key={g.signature}>
+                <TableRow onClick={() => toggle(g.signature)} className="cursor-pointer">
+                  <td className={cn("border-l-[3px] px-3 py-3 align-middle", SEVERITY_ACCENT[g.severity])}>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        aria-expanded={expanded}
+                        aria-label={expanded ? "Hide details" : "Show details"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggle(g.signature);
+                        }}
+                        className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Chevron className="h-3.5 w-3.5" />
+                      </button>
+                      <span className="tabular-nums text-muted-foreground">{i + 1}</span>
                     </div>
-                  </div>
-                </td>
-                <td className="px-3 py-2">
-                  <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium uppercase", SEVERITY_STYLES[g.severity])}>{g.severity}</span>
-                </td>
-                <td className="px-3 py-2 text-right text-sm font-semibold tabular-nums">{g.count}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{g.orgCount}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{g.candidateCount}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">{formatWhen(g.lastSeen)}</td>
-                <td className="px-3 py-2">
-                  <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase", STATUS_STYLES[g.status])}>
-                    {STATUS_LABEL[g.status]}
-                  </span>
-                </td>
-              </TableRow>
-              {expanded && (
-                <tr className="bg-muted/20">
-                  <td colSpan={COLS} className="p-0">
-                    <GroupDetail group={g} />
                   </td>
-                </tr>
-              )}
-            </Fragment>
-          );
-        })}
-      </tbody>
-    </DataTableWrapper>
+                  <td className="px-3 py-3 align-middle">
+                    <p className="line-clamp-2 break-words font-mono text-[11px] leading-snug" title={g.sampleMessage}>
+                      {g.sampleMessage}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <Badge variant="outline" className="text-[10px] font-normal">
+                        {CATEGORY_LABELS[g.category] ?? g.category}
+                      </Badge>
+                      <span className="truncate text-[10px] text-muted-foreground">{g.source}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 align-middle">
+                    <span
+                      className={cn(
+                        "inline-flex w-[68px] justify-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase",
+                        SEVERITY_STYLES[g.severity],
+                      )}
+                    >
+                      {g.severity}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle">
+                    <p className="text-sm font-semibold tabular-nums">{g.count}</p>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
+                      <div className="h-full rounded-full bg-primary/60" style={{ width: `${Math.max(6, (g.count / maxCount) * 100)}%` }} />
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle tabular-nums">{g.orgCount}</td>
+                  <td className="px-3 py-3 text-right align-middle tabular-nums">{g.candidateCount}</td>
+                  <td className="px-3 py-3 align-middle" title={formatWhen(g.lastSeen)}>
+                    <p className="whitespace-nowrap">{timeAgo(g.lastSeen)}</p>
+                    <p className="whitespace-nowrap text-[10px] text-muted-foreground">{formatWhen(g.lastSeen)}</p>
+                  </td>
+                  <td className="px-3 py-3 align-middle">
+                    <span
+                      className={cn(
+                        "inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                        STATUS_STYLES[g.status],
+                      )}
+                    >
+                      {STATUS_LABEL[g.status]}
+                    </span>
+                  </td>
+                </TableRow>
+                {expanded && (
+                  <tr className="border-b border-border/40 bg-muted/20">
+                    <td colSpan={COLS} className="p-0">
+                      <GroupDetail group={g} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </DataTableWrapper>
+      {groups.length > INITIAL_VISIBLE && (
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <span className="tabular-nums">
+            Showing {visible.length} of {groups.length} groups
+          </span>
+          <Button size="sm" variant="outline" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? `Show top ${INITIAL_VISIBLE}` : `Show all ${groups.length}`}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
