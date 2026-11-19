@@ -503,9 +503,12 @@ export function FilterBar({
 export function DataTableWrapper({
   children,
   className,
+  tableClassName,
 }: {
   children: ReactNode;
   className?: string;
+  /** Extra classes for the <table> itself, e.g. "table-fixed min-w-[900px]". */
+  tableClassName?: string;
 }) {
   return (
     <div
@@ -515,7 +518,7 @@ export function DataTableWrapper({
       )}
     >
       <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">{children}</table>
+        <table className={cn("w-full text-left text-xs", tableClassName)}>{children}</table>
       </div>
     </div>
   );
