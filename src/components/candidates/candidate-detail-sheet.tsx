@@ -19,11 +19,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
-import { needsFreshInviteLink } from "@/lib/session-link";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
@@ -252,6 +253,7 @@ export function CandidateDetailSheet({
   const [form, setForm] = useState<CandidateFormState>(EMPTY_CANDIDATE_FORM);
   const [confirmDiscard, setConfirmDiscard] = useState<null | "close" | "cancel">(null);
   const [copied, setCopied] = useState(false);
+  const [extendOpen, setExtendOpen] = useState(false);
   const [sendEmail, setSendEmail] = useState(false);
   const [sendWhatsapp, setSendWhatsapp] = useState(false);
 
@@ -302,6 +304,7 @@ export function CandidateDetailSheet({
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
   const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
+  const linkExpired = isLinkExpired({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
   const tailored: { text: string; skill?: string | null }[] = Array.isArray(c?.tailoredQuestions) ? c.tailoredQuestions : [];
 
   const update = trpc.candidate.update.useMutation({
@@ -460,7 +463,21 @@ export function CandidateDetailSheet({
                         </Button>
                       </div>
 
-                      {canSendAny ? (
+                      {linkExpired ? (
+                        <div className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                          <div className="flex items-center gap-2">
+                            <ExpiredBadge />
+                            <span className="text-xs text-muted-foreground">Expired on {fmt(c.expiresAt)}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            The candidate cannot open this link. Extend the expiry to enable sending it again.
+                          </p>
+                          <Button size="sm" onClick={() => setExtendOpen(true)}>
+                            <CalendarClock className="mr-1.5 h-3.5 w-3.5" />
+                            Extend expiry
+                          </Button>
+                        </div>
+                      ) : canSendAny ? (
                         <div className="space-y-2 rounded-lg border bg-background/60 p-3">
                           <p className="text-xs font-medium text-foreground">
                             {needsNewLink ? "Send new link via" : "Resend via"}
@@ -560,6 +577,15 @@ export function CandidateDetailSheet({
                   onDone={onSaved}
                 />
 
+                <ExtendExpiryDialog
+                  open={extendOpen}
+                  onOpenChange={setExtendOpen}
+                  candidateId={c.id}
+                  candidateName={c.name}
+                  expiresAt={c.expiresAt}
+                  onExtended={() => onSaved()}
+                />
+
                 <InviteMessagesSection views={c.inviteMessageViews} />
 
                 {hasResume && (
@@ -620,7 +646,7 @@ export function CandidateDetailSheet({
                   <h4 className="mb-1 text-sm font-semibold">Schedule & status</h4>
                   <Row icon={CalendarClock} label="Created" value={fmt(c.createdAt)} />
                   <Row icon={CalendarClock} label="Scheduled" value={fmt(c.scheduledAt)} />
-                  <Row icon={CalendarClock} label="Link expires" value={fmt(c.expiresAt)} />
+                  <Row icon={CalendarClock} label="Link expires" value={linkExpired ? `${fmt(c.expiresAt)} (expired)` : fmt(c.expiresAt)} />
                   <Row icon={CalendarClock} label="Started" value={fmt(c.session?.interviewBeganAt ?? (interviewBegun ? (c.session?.startedAt ?? c.session?.createdAt) : null))} />
                   <Row icon={CalendarClock} label="Completed" value={fmt(c.session?.completedAt)} />
                   <Row icon={Languages} label="Language" value={interviewLanguageLabel(c.interview?.language, c.session?.language)} />

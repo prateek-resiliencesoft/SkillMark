@@ -47,8 +47,9 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
-import { needsFreshInviteLink } from "@/lib/session-link";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
@@ -58,6 +59,7 @@ import {
     ArrowUp,
     ArrowUpDown,
     Calendar,
+    CalendarClock,
     Check,
     ChevronLeft,
     ChevronRight,
@@ -114,6 +116,9 @@ type CandidateRow = {
   notes: string | null;
   inviteToken: string | null;
   expiresAt: string | null;
+  followupSentAt: string | null;
+  followupSentToken: string | null;
+  followupError: string | null;
   session: any;
   createdAt: string;
   hasResume?: boolean;
@@ -461,6 +466,7 @@ export function CandidateManager({
   const [resumeImportOpen, setResumeImportOpen] = useState(false);
   const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
   const [detail, setDetail] = useState<{ id: string; edit: boolean } | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string | null; expiresAt: string | null } | null>(null);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
 
@@ -650,6 +656,9 @@ export function CandidateManager({
         notes: c.notes ?? null,
         inviteToken: c.inviteToken,
         expiresAt: c.expiresAt ?? null,
+        followupSentAt: c.followupSentAt ?? null,
+        followupSentToken: c.followupSentToken ?? null,
+        followupError: c.followupError ?? null,
         session: c.session,
         createdAt: c.createdAt,
         hasResume: !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName),
@@ -687,6 +696,9 @@ export function CandidateManager({
     if (statusFilter !== "ALL") {
       result = result.filter((row) => {
         const s = getSessionStatus(row);
+        if (statusFilter === "EXPIRED") {
+          return row.type === "candidate" && isLinkExpired({ session: row.session, expiresAt: row.expiresAt });
+        }
         if (statusFilter === "NOT_STARTED") return s === "Not Started";
         return s === statusFilter;
       });
@@ -1001,6 +1013,7 @@ export function CandidateManager({
             <SelectItem value="IN_PROGRESS">In Progress</SelectItem>
             <SelectItem value="DISQUALIFIED">Disqualified</SelectItem>
             <SelectItem value="NOT_STARTED">Not Started</SelectItem>
+            <SelectItem value="EXPIRED">Link Expired</SelectItem>
           </SelectContent>
         </Select>
 
@@ -1345,6 +1358,9 @@ export function CandidateManager({
                           {neverReachedFirstQuestion(row.session) ? (
                             <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
                           ) : null}
+                          {row.type === "candidate" && isLinkExpired({ session: row.session, expiresAt: row.expiresAt }) ? (
+                            <ExpiredBadge />
+                          ) : null}
                           {row.type === "candidate" ? (
                             <LeftFollowupAction candidateId={row.id} candidate={row} session={row.session} variant="compact" />
                           ) : null}
@@ -1477,6 +1493,23 @@ export function CandidateManager({
                             const rowEmailOk = !!deliveryOptions.data?.email && !!String(row.email ?? "").trim();
                             const rowPhone = String(row.phone ?? "").replace(/[\s()-]/g, "");
                             const rowWaOk = !!deliveryOptions.data?.whatsapp && rowPhone.startsWith("+");
+                            if (isLinkExpired({ session: row.session, expiresAt: row.expiresAt })) {
+                              // Expired: no send options until the expiry is extended.
+                              return (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  title="Extend expiry"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExtendFor({ id: row.id, name: row.name, expiresAt: row.expiresAt });
+                                  }}
+                                >
+                                  <CalendarClock className="h-3.5 w-3.5 text-primary" />
+                                </Button>
+                              );
+                            }
                             const fresh = needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt });
                             if (!rowEmailOk && !rowWaOk && !fresh) return null;
                             return (
@@ -1708,6 +1741,18 @@ export function CandidateManager({
         onOpenChange={(o) => !o && setDetail(null)}
         onSaved={invalidateAll}
       />
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={invalidateAll}
+          onExtendAndSend={() => setDetail({ id: extendFor.id, edit: false })}
+          sendLabel="Extend & open send options"
+        />
+      )}
     </div>
   );
 }

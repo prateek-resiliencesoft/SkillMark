@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { HEARTBEAT_GRACE_MS, isHeartbeatStale, isLinkConsumed, needsFreshInviteLink } from "@/lib/session-link";
+import { HEARTBEAT_GRACE_MS, isHeartbeatStale, isLinkConsumed, isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 
 const NOW = 1_800_000_000_000;
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -99,5 +99,27 @@ describe("needsFreshInviteLink", () => {
   it("is false for completed or disqualified sessions (no retake from this action)", () => {
     assert.equal(needsFreshInviteLink({ session: { status: "COMPLETED" }, nowMs: NOW }), false);
     assert.equal(needsFreshInviteLink({ session: { status: "DISQUALIFIED" }, nowMs: NOW }), false);
+  });
+});
+
+describe("isLinkExpired", () => {
+  const past = new Date(NOW - 60_000).toISOString();
+  const future = new Date(NOW + 60_000).toISOString();
+
+  it("is true once the deadline has passed", () => {
+    assert.equal(isLinkExpired({ session: { status: "NOT_STARTED" }, expiresAt: past, nowMs: NOW }), true);
+    assert.equal(isLinkExpired({ session: { status: "ABANDONED" }, expiresAt: past, nowMs: NOW }), true);
+    assert.equal(isLinkExpired({ session: null, expiresAt: past, nowMs: NOW }), true);
+  });
+
+  it("is false before the deadline, with no deadline, or with an unparseable one", () => {
+    assert.equal(isLinkExpired({ expiresAt: future, nowMs: NOW }), false);
+    assert.equal(isLinkExpired({ expiresAt: null, nowMs: NOW }), false);
+    assert.equal(isLinkExpired({ expiresAt: "not-a-date", nowMs: NOW }), false);
+  });
+
+  it("is false for finished sessions regardless of the deadline", () => {
+    assert.equal(isLinkExpired({ session: { status: "COMPLETED" }, expiresAt: past, nowMs: NOW }), false);
+    assert.equal(isLinkExpired({ session: { status: "DISQUALIFIED" }, expiresAt: past, nowMs: NOW }), false);
   });
 });
