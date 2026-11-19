@@ -131,7 +131,15 @@ export function objectPathFromSignedUrl(
     const filesIdx = segments.indexOf("files");
     if (filesIdx >= 0 && segments[filesIdx + 1] === bucket) {
       const rest = segments.slice(filesIdx + 2).filter(Boolean);
+      // The URL carries the object key; non-orgs keys are `<bucket>/<path>`.
+      if (rest.length > 1 && rest[0] === bucket) return rest.slice(1).join("/");
       if (rest.length > 0) return rest.join("/");
+    }
+    // Bucket URLs (/<S3_BUCKET>/orgs/…): the key starts at `orgs/`, even when
+    // a later folder shares the bucket name (…/recordings/file.webm).
+    const orgsIdx = segments.indexOf("orgs");
+    if (orgsIdx >= 0 && segments.length > orgsIdx + 1) {
+      return segments.slice(orgsIdx).filter(Boolean).join("/");
     }
   } catch {
     // fall through

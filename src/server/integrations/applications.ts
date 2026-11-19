@@ -12,6 +12,7 @@ import {
   type UploadedFileInfo,
 } from "@/lib/forms/schema";
 import { storage } from "@/lib/storage";
+import { isStorageCapError } from "@/lib/storage-cap";
 import { candidateFolderSlug, cvObjectName } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
@@ -274,10 +275,10 @@ export async function createApplication(opts: {
       if (error) {
         throw new SubmissionError(
           "STORAGE_ERROR",
-          error.message?.startsWith("S3 ")
+          error.message?.startsWith("S3 ") || isStorageCapError(error.message)
             ? error.message
             : `Failed to store uploaded file: ${error.message || "unknown storage error"}`,
-          500,
+          isStorageCapError(error.message) ? 507 : 500,
         );
       }
       storedFiles[key].push({ name: f.name, size: f.bytes.length, type: f.type, path });
