@@ -50,3 +50,40 @@ export function setAiSpeaking(v: boolean) {
 export function isAiSpeaking() {
   return aiSpeaking;
 }
+
+/** Latest strike state from the server (after each reported violation). */
+export interface StrikeState {
+  count: number;
+  max: number;
+  disqualified: boolean;
+  lastReason: string | null;
+}
+
+type StrikeListener = (s: StrikeState) => void;
+const strikeListeners = new Set<StrikeListener>();
+let lastStrike: StrikeState | null = null;
+
+export function publishStrike(s: StrikeState) {
+  lastStrike = s;
+  strikeListeners.forEach((l) => l(s));
+}
+
+/** Calls `l` with the latest state right away (if any), then on every update. */
+export function subscribeStrikes(l: StrikeListener): () => void {
+  strikeListeners.add(l);
+  if (lastStrike) l(lastStrike);
+  return () => { strikeListeners.delete(l); };
+}
+
+type NoticeListener = (text: string) => void;
+const noticeListeners = new Set<NoticeListener>();
+
+/** Text the AI should say aloud (voice interviews only). */
+export function publishAiNotice(text: string) {
+  noticeListeners.forEach((l) => l(text));
+}
+
+export function subscribeAiNotices(l: NoticeListener): () => void {
+  noticeListeners.add(l);
+  return () => { noticeListeners.delete(l); };
+}

@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
+import { StrikeBadge } from "@/components/session/strike-badge";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding } from "@/components/session/interviewee-onboarding";
 import { PreparingScreen } from "@/components/session/preparing-screen";
@@ -253,6 +254,7 @@ export default function InviteSessionPage() {
     return (
       <>
         <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+        <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={session.id}
@@ -276,6 +278,7 @@ export default function InviteSessionPage() {
   return (
     <>
       <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+      <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={session.id}
