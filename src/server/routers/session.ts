@@ -1184,7 +1184,23 @@ export const sessionRouter = router({
             });
           }
         }
-        updateData.screenshots = input.screenshots;
+        // Merge with captures the upload route already linked (never drop them).
+        const { data: current } = await ctx.supabase
+          .from("sessions")
+          .select("screenshots")
+          .eq("id", input.sessionId)
+          .maybeSingle();
+        const byPath = new Map<string, unknown>();
+        const stored = (current as { screenshots?: unknown } | null)?.screenshots;
+        for (const s of Array.isArray(stored) ? (stored as { path?: string }[]) : []) {
+          if (s?.path) byPath.set(s.path, s);
+        }
+        for (const s of input.screenshots) byPath.set(s.path, s);
+        updateData.screenshots = [...byPath.values()].sort((a, b) =>
+          String((a as { timestamp?: string }).timestamp ?? "").localeCompare(
+            String((b as { timestamp?: string }).timestamp ?? ""),
+          ),
+        );
       }
 
       if (Object.keys(updateData).length === 0) {

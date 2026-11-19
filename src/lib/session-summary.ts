@@ -106,14 +106,19 @@ export async function flagCaptureFailureIfNeeded(
 
 /** Load the interview fields the summary prompt needs, then generate the report. */
 export async function generateSummaryForSession(sessionId: string): Promise<SummaryOutcome> {
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from("sessions")
     .select(
       `id, interview:interviews!inner(title, objective, language, assessmentCriteria, questions(text, order, type))`,
     )
     .eq("id", sessionId)
     .order("order", { referencedTable: "interviews.questions", ascending: true })
-    .single();
+    .maybeSingle();
+  if (error) {
+    // Surface the real cause (e.g. a missing column) instead of "Session not found".
+    log.error(`Loading session ${sessionId} for the report failed: ${error.message}`);
+    throw new Error(`Could not load session for report: ${error.message}`);
+  }
   const interview = (data as { interview?: Record<string, unknown> } | null)?.interview as
     | {
         title: string;
@@ -300,7 +305,7 @@ export async function generateSessionSummary(
       insightsData.codeEvaluations = parsed.codeEvaluations;
     }
 
-    await supabaseAdmin
+    const { error: saveError } = await supabaseAdmin
       .from("sessions")
       .update({
         summary: String(parsed.summary ?? ""),
@@ -309,6 +314,8 @@ export async function generateSessionSummary(
         insights: insightsData,
       })
       .eq("id", sessionId);
+    // Never report "READY" for a report that was not stored.
+    if (saveError) throw new Error(`Could not save the report: ${saveError.message}`);
 
     const themeCount = Array.isArray(parsed.themes) ? parsed.themes.length : 0;
     const insightCount = Array.isArray(parsed.keyInsights)
