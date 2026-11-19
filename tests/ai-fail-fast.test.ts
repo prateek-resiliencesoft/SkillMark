@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 
 process.env.AUTH_SECRET ||= "x".repeat(40);
+
+// The fake "hung" providers do no I/O and AbortSignal.timeout() is unref'd, so on
+// Node 20 the event loop empties mid-test and the runner cancels it. Real hung
+// calls hold a socket open; this ref'd timer stands in for it.
+let keepAlive: ReturnType<typeof setInterval>;
+before(() => {
+  keepAlive = setInterval(() => {}, 1_000);
+});
+after(() => clearInterval(keepAlive));
 
 import {
   AI_CALL_TIMEOUT_MS,
