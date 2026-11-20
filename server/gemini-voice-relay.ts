@@ -19,6 +19,7 @@ import { entryFromError, type ErrorSeverity } from "../src/lib/session-error-log
 import { recordSessionError } from "../src/lib/session-error-log-server";
 import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
+import { LISTENING_RULES } from "../src/lib/ai/prompts/listening";
 import {
   detectLanguageSwitch,
   getGeminiInterviewLanguageCode,
@@ -436,6 +437,7 @@ When transitioning to a CODING or WHITEBOARD question:
   3. Thinking ALOUD (self-talk, "hmm", reading code) → Brief encouragement only (e.g. "Take your time")
   4. Wanting to SKIP ("I can't do this", "skip", "next question") → Brief encouragement, then call signal_question_change
   5. Discussion naturally CONCLUDED → Brief acknowledgement, then call signal_question_change
+${LISTENING_RULES}
 
 ## Language Requirements
 - ${languageRules(ctx)}
