@@ -255,7 +255,7 @@ Still nothing committed, pushed or deployed; `.env*` untouched.
 - Caddy: only the `dev.` vhost sets `response_header_timeout 90s`; the main app block has no header timeout. Dev is where this showed.
 - `/api/ai/generate`, `/api/ai/refine`, `/api/ai/parse-resume`: SSE, headers go out immediately → no proxy header timeout; no `maxDuration` set. Left as is.
 - `/api/ai/summarize`: **mismatch remains** (`maxDuration = 300`, non-streaming JSON; `withReportTimeout` 5 min). On dev Caddy it would 504 after 90s while the report keeps generating (status polling already covers the UI; client now shows a readable message). Real fix = return 202 and generate in the background — not trivial, not done.
-- `batch.generateCandidate` (tRPC, up to 3 generations of 8192 tokens): can also exceed 90s on slow providers; only the quota/auth fast-fail was added. Same for `session/retranscribe`, `storage/migration` (300).
+- `batch.generateCandidate` (tRPC, up to 3 generations of 8192 tokens): can also exceed 90s on slow providers; only the quota/auth fast-fail was added. Same for `session/retranscribe` (300).
 
 ## Tests / checks
 - New `tests/ai-fail-fast.test.ts` (quota/auth classification, chain tagging incl. mixed cases, one-pass-over-chain with call counts, hung provider cut at budget → 504, signal-ignoring provider via `raceAbort`, parent abort, resume-parse no backoff) and `tests/fetch-json.test.ts` (empty 504, HTML 502, empty/non-JSON 200, server error/code, network failure). Both added to `test:web`.

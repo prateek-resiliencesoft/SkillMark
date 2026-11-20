@@ -1,8 +1,8 @@
 import "server-only";
 /**
- * Backblaze B2 / object-store explorer for the super-admin panel.
+ * Stored-media explorer for the super-admin panel.
  *
- * The object store is the source of truth: every object under `orgs/...` is listed with
+ * The server disk is the source of truth: every object under `orgs/...` is listed with
  * its real size, then enriched with candidate / session / project info from the database.
  * Objects are grouped into ONE entry per person (org + project + email), even when
  * several physical folders exist for them (re-invites, older naming), so the admin sees
@@ -58,7 +58,7 @@ type FolderInfo = {
 
 export type StorageSnapshot = {
   at: number;
-  /** Every object in the bucket (for the true "used" figure). */
+  /** Every stored object (for the true "used" figure). */
   bucketObjects: number;
   bucketBytes: number;
   /** Objects under orgs/ with parsed + enriched metadata. */

@@ -71,6 +71,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
 import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { leftFollowupState } from "@/lib/left-followup";
 import { isLinkExpired } from "@/lib/session-link";
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +135,7 @@ type SortKey =
   | "source"
   | "status"
   | "link"
+  | "followup"
   | "created"
   /** Default: newest activity first (session start, else when the row was created). */
   | "recent";
@@ -193,6 +195,7 @@ const COLUMNS: ColumnDef[] = [
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
   { key: "link", label: "Link", sortKey: "link", defaultVisible: true },
+  { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: true },
   { key: "score", label: "Score", sortKey: "score", defaultVisible: true },
   {
     key: "duration",
@@ -306,6 +309,10 @@ function isRowLinkExpired(row: UnifiedRow): boolean {
   return !!c && isLinkExpired({ session: row.session, expiresAt: c.expiresAt });
 }
 
+function rowFollowup(row: UnifiedRow) {
+  return leftFollowupState(getCandidateField(row), row.session);
+}
+
 function getSessionScore(row: UnifiedRow): number | null {
   const session = row.session;
   if (!session?.insights) return null;
@@ -362,6 +369,10 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return row.type === "walkin" ? "Walk-in" : "Invited";
     case "status":
       return getSessionStatus(row);
+    case "followup": {
+      const f = rowFollowup(row);
+      return !f.relevant ? 0 : f.sent ? 2 : 1;
+    }
     case "link":
       // Expired links first (ascending), then by how soon the live ones lapse.
       return c?.expiresAt ? new Date(c.expiresAt).getTime() : Number.MAX_SAFE_INTEGER;
@@ -669,6 +680,11 @@ export default function CandidatesPage() {
         // Filter on the displayed label: quiet pre-flight sessions read "Not Started" (never abandoned).
         const label = formatSessionStatusLabel(row.session);
         if (statusFilter === "EXPIRED") return isRowLinkExpired(row);
+        if (statusFilter === "FOLLOWUP_SENT") return rowFollowup(row).sent;
+        if (statusFilter === "FOLLOWUP_NOT_SENT") {
+          const f = rowFollowup(row);
+          return f.relevant && !f.sent;
+        }
         if (statusFilter === "NOT_STARTED") return label === "Not Started";
         if (statusFilter === "ABANDONED") return label === "Abandoned";
         if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && label !== "Not Started";
@@ -890,6 +906,15 @@ export default function CandidatesPage() {
           case "status":
             record[col.label] = statusLabel(row);
             break;
+          case "followup": {
+            const f = rowFollowup(row);
+            record[col.label] = !f.relevant
+              ? ""
+              : f.sent
+                ? `Sent ${f.sentAt ? formatDate(f.sentAt) : ""}`.trim()
+                : `Not sent${f.error ? `: ${f.error}` : ""}`;
+            break;
+          }
           case "link": {
             const exp = getCandidateField(row)?.expiresAt;
             record[col.label] = isRowLinkExpired(row)
@@ -1041,15 +1066,13 @@ export default function CandidatesPage() {
             </Badge>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
             {isRowLinkExpired(row) && <ExpiredBadge />}
-            {getCandidateField(row) ? (
-              <LeftFollowupAction
-                candidateId={getCandidateField(row)!.id}
-                candidate={getCandidateField(row)}
-                session={row.session}
-                variant="compact"
-              />
-            ) : null}
           </div>
+        );
+      case "followup":
+        return c && rowFollowup(row).relevant ? (
+          <LeftFollowupAction candidateId={c.id} candidate={c} session={row.session} variant="compact" />
+        ) : (
+          <span className="text-muted-foreground">-</span>
         );
       case "link": {
         if (!c?.expiresAt) return <span className="text-muted-foreground">-</span>;
@@ -1168,6 +1191,12 @@ export default function CandidatesPage() {
             </SelectItem>
             <SelectItem value="EXPIRED">
               {isZh ? "链接已过期" : "Link Expired"}
+            </SelectItem>
+            <SelectItem value="FOLLOWUP_SENT">
+              {isZh ? "已发送跟进" : "Follow-up Sent"}
+            </SelectItem>
+            <SelectItem value="FOLLOWUP_NOT_SENT">
+              {isZh ? "未发送跟进" : "Follow-up Not Sent"}
             </SelectItem>
           </SelectContent>
         </Select>
