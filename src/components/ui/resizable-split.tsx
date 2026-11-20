@@ -12,7 +12,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-const DESKTOP_QUERY = "(min-width: 1024px)";
+// Below this the report would be squeezed too much, so the panel becomes a full-screen overlay.
+const DESKTOP_QUERY = "(min-width: 1280px)";
 
 function useIsDesktop() {
   const [desktop, setDesktop] = useState(false);
@@ -31,7 +32,7 @@ const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n
 /**
  * Main content with an optional resizable side panel.
  *
- * Desktop (lg+): content and panel sit side by side; drag the divider (or focus it and use
+ * Desktop (xl+): content and panel sit side by side; drag the divider (or focus it and use
  * ←/→, Home/End; double-click resets) to resize. The panel width is a percentage of the
  * container and is remembered in localStorage under `storageKey`.
  * Smaller screens: the panel opens as a full-screen overlay instead.
@@ -43,16 +44,16 @@ export function ResizableSplit({
   open,
   panel,
   children,
-  defaultPanelPct = 25,
-  minPanelPct = 18,
-  maxPanelPct = 60,
+  defaultPanelPct = 40,
+  minPanelPct = 25,
+  maxPanelPct = 75,
   storageKey,
   className,
 }: {
   open: boolean;
   panel: ReactNode;
   children: ReactNode;
-  /** Panel width as a percentage of the whole container (default 25 → 75/25 split). */
+  /** Panel width as a percentage of the whole container (default 40). */
   defaultPanelPct?: number;
   minPanelPct?: number;
   maxPanelPct?: number;
@@ -185,7 +186,7 @@ export function ResizableSplit({
           </div>
           <aside
             className="no-print sticky top-2 shrink-0 self-start overflow-hidden rounded-xl border bg-card shadow-sm"
-            style={{ width: `${pct}%`, height: panelHeight ?? undefined }}
+            style={{ width: `${pct}%`, minWidth: 380, height: panelHeight ?? undefined }}
           >
             {panel}
           </aside>
