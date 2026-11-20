@@ -32,6 +32,7 @@ import {
     WhiteboardCanvas,
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
+import { MicrophoneLevelMeter } from "@/components/interview/MicrophoneLevelMeter";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
 import { subscribeAiNotices } from "@/lib/integrity/bus";
 import { reportSessionError } from "@/lib/session-error-report-client";
@@ -653,7 +654,10 @@ export function VoiceInterface({
     });
   }, []);
 
+  /** Mic permission refused (shown by the level meter; the error toast is unchanged). */
+  const [micDenied, setMicDenied] = useState(false);
   const handleError = useCallback((err: string) => {
+    if (/permission|notallowed|denied/i.test(err)) setMicDenied(true);
     setError(err);
     setTimeout(() => setError(""), 5000);
   }, []);
@@ -668,6 +672,24 @@ export function VoiceInterface({
     onTtsChunk: recording.addTtsChunk,
     onInterrupt: recording.cancelTts,
   });
+
+  const [micWasOn, setMicWasOn] = useState(false);
+  useEffect(() => {
+    if (voice.isListening) {
+      setMicDenied(false);
+      setMicWasOn(true);
+    }
+  }, [voice.isListening]);
+
+  const micMeter = (
+    <MicrophoneLevelMeter
+      compact
+      stream={voice.isListening ? voice.mediaStreamRef.current : null}
+      muted={micWasOn && !voice.isListening}
+      permissionDenied={micDenied && !voice.isListening}
+      expectSpeaking={voice.isListening && !voice.isSpeaking && !voice.isProcessing && !voice.isTransitioning}
+    />
+  );
 
   useEffect(() => {
     if (voice.isConnected) {
@@ -2473,6 +2495,10 @@ export function VoiceInterface({
         )}
       </div>
 
+      {/* Mic level meter: passive tap on the shared mic stream (UI only). Mobile: own slim row, the button bar is full. */}
+      {isMobile && !preview && voice.isConnected && (
+        <div className="flex shrink-0 justify-center border-t bg-card pt-1">{micMeter}</div>
+      )}
       {/* ── Bottom control bar (Zoom-like) ──────────────────── */}
       {(voice.isConnected || preview) && (
         <div className={`relative flex shrink-0 items-center justify-center gap-1 border-t bg-card px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:gap-6 md:px-6 md:py-2${preview ? " pointer-events-none" : ""}`}>
@@ -2483,6 +2509,7 @@ export function VoiceInterface({
               <span>{formatTime(remainingSeconds)} left</span>
             </div>
           )}
+          {!isMobile && micMeter}
           {/* Mic toggle */}
           <div data-tour="voice-mic" className="flex flex-col items-center gap-0.5">
             <Button
