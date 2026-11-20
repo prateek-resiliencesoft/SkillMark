@@ -388,8 +388,8 @@ export function InterviewResults({
 }
 
 /**
- * Session report plus an optional CV panel docked on the right (75 / 25 by default,
- * resizable). The report stays mounted when the panel opens, so nothing resets.
+ * Session report plus an optional CV panel docked on the right (about 58 / 42 by default,
+ * resizable up to 75%). The report stays mounted when the panel opens, so nothing resets.
  */
 function SessionDetail({
   sessionId,
@@ -409,8 +409,10 @@ function SessionDetail({
   return (
     <ResizableSplit
       open={cvOpen && !!candidateId}
-      storageKey="skillmark:session-cv-panel-pct"
-      defaultPanelPct={25}
+      storageKey="skillmark:session-cv-panel-pct:v2"
+      defaultPanelPct={42}
+      minPanelPct={28}
+      maxPanelPct={75}
       panel={
         candidateId ? (
           <CvViewerPanel
