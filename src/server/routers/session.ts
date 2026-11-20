@@ -355,7 +355,7 @@ export const sessionRouter = router({
       const session = sessionJson as { id: string };
 
       // Point session at candidate object prefix so form CVs + recordings share
-      // approve / decline / put-aside purge (B2/local under orgs/.../candidates/{id}/).
+      // approve / decline / put-aside purge (server disk under orgs/.../candidates/{id}/).
       const projectId = interview.projectId as string | undefined;
       if (projectId && candidate.id) {
         const { data: project } = await ctx.supabase
@@ -1363,7 +1363,7 @@ export const sessionRouter = router({
       return { success: true };
     }),
 
-  /** Permanently delete sessions together with their candidate data and bucket media. */
+  /** Permanently delete sessions together with their candidate data and stored media. */
   deleteMany: protectedProcedure
     .input(z.object({ ids: z.array(z.string()).min(1) }))
     .mutation(async ({ ctx, input }) => {

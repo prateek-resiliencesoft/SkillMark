@@ -275,7 +275,7 @@ export async function createApplication(opts: {
       if (error) {
         throw new SubmissionError(
           "STORAGE_ERROR",
-          error.message?.startsWith("S3 ") || isStorageCapError(error.message)
+          isStorageCapError(error.message)
             ? error.message
             : `Failed to store uploaded file: ${error.message || "unknown storage error"}`,
           isStorageCapError(error.message) ? 507 : 500,

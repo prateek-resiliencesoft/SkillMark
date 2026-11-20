@@ -71,5 +71,5 @@ graphify-out/
 *.odt
 *.rtf
 
-# local file storage (candidate recordings, images, CVs uploaded when S3/B2 is not configured)
+# local file storage (candidate recordings, images, CVs)
 /storage/

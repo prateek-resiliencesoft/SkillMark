@@ -977,7 +977,7 @@ export function SessionsTable({
               Deleting {deleteTarget?.participantName || deleteTarget?.participantEmail || "this candidate"}
               &apos;s data will also erase their media files. The session, transcript, candidate
               record and every recording, proctoring image and CV will be permanently removed from
-              the database and the storage bucket. This cannot be undone.
+              the database and server storage. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1005,7 +1005,7 @@ export function SessionsTable({
               Are you sure you want to delete {selectedIds.size} session
               {selectedIds.size > 1 ? "s" : ""}? This will permanently remove
               all associated messages, candidate records and media files
-              (recordings, images, CV) from the database and the storage bucket.
+              (recordings, images, CV) from the database and server storage.
               This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

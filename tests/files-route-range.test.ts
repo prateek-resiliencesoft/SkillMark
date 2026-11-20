@@ -8,10 +8,8 @@ import { parseRangeHeader } from "@/lib/http-range";
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "skillmark-files-"));
 process.env.STORAGE_DIR = dir;
-process.env.STORAGE_DRIVER = "local";
 process.env.STORAGE_CAP_GATE = "off";
 process.env.AUTH_SECRET = "test-secret-for-files-route-0123456789";
-for (const k of ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET", "S3_ENDPOINT"]) delete process.env[k];
 
 test("parseRangeHeader", () => {
   assert.equal(parseRangeHeader(null, 100), null);
