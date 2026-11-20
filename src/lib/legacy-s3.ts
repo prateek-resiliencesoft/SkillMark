@@ -65,7 +65,9 @@ export function signS3Request(
   const url = new URL(cfg.endpoint);
   const keyPath = objKey ? `/${objKey.replace(/^\/+/, "").split("/").map(awsEncode).join("/")}` : "";
   const basePath = url.pathname.replace(/\/+$/, "");
-  const canonicalUri = `${basePath}/${awsEncode(cfg.bucket)}${keyPath}` || "/";
+  // Empty bucket = virtual-hosted endpoint (bucket already in the host name).
+  const bucketSeg = cfg.bucket ? `/${awsEncode(cfg.bucket)}` : "";
+  const canonicalUri = `${basePath}${bucketSeg}${keyPath}` || "/";
   const canonicalQuery = Object.keys(query)
     .sort()
     .map((k) => `${awsEncode(k)}=${awsEncode(query[k])}`)
