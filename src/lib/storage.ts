@@ -1,101 +1,17 @@
 /**
- * File storage: local STORAGE_DIR on the server, or an S3-compatible object
- * store (Backblaze B2 / R2 / MinIO). See storage-driver.ts for how
- * STORAGE_DRIVER and the S3 credentials pick the backend.
+ * File storage on the server disk (STORAGE_DIR).
  *
  * API keeps Supabase-Storage shape: storage.from(bucket).upload|createSignedUrl|download|remove
  *
  * Keys prefer full hierarchy: orgs/.../kind/file. Legacy = `{bucket}/{path}`.
- * Local files live at STORAGE_DIR/<key> (+ `<key>.meta` holding the content type),
- * i.e. the same keys as in the bucket, so a bucket copies over key for key.
- *
- * S3 / Backblaze B2 settings:
- *   S3_ENDPOINT=https://s3.<region>.backblazeb2.com
- *   S3_REGION=<region>   e.g. us-west-004
- *   S3_ACCESS_KEY_ID=<applicationKeyId>
- *   S3_SECRET_ACCESS_KEY=<applicationKey>
- *   S3_BUCKET=<bucketName>
- *   STORAGE_DRIVER=local  → write to the server disk, read not-yet-copied files from S3
+ * Files live at STORAGE_DIR/<key> (+ `<key>.meta` holding the content type) and are
+ * served by /api/files with a signed token.
  */
 import { createReadStream, promises as fs } from "fs";
 import path from "path";
 import { SignJWT, jwtVerify } from "jose";
-import { AwsClient } from "aws4fetch";
-import { resolveStorageDriver } from "@/lib/storage-driver";
 
 export const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
-
-const S3_ACCESS_KEY_ID =
-  process.env.S3_ACCESS_KEY_ID?.trim() ||
-  process.env.B2_KEY_ID?.trim() ||
-  process.env.R2_ACCESS_KEY_ID?.trim() ||
-  "";
-const S3_SECRET_ACCESS_KEY =
-  process.env.S3_SECRET_ACCESS_KEY?.trim() ||
-  process.env.B2_APPLICATION_KEY?.trim() ||
-  process.env.R2_SECRET_ACCESS_KEY?.trim() ||
-  "";
-const S3_BUCKET =
-  process.env.S3_BUCKET?.trim() ||
-  process.env.B2_BUCKET?.trim() ||
-  process.env.R2_BUCKET?.trim() ||
-  "";
-const S3_REGION =
-  process.env.S3_REGION?.trim() ||
-  process.env.B2_REGION?.trim() ||
-  "auto";
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID?.trim() || "";
-const S3_ENDPOINT = (
-  process.env.S3_ENDPOINT?.trim() ||
-  process.env.B2_ENDPOINT?.trim() ||
-  process.env.R2_ENDPOINT?.trim() ||
-  (R2_ACCOUNT_ID ? `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : "")
-).replace(/\/$/, "");
-
-function hasS3Credentials(): boolean {
-  return !!(S3_ACCESS_KEY_ID && S3_SECRET_ACCESS_KEY && S3_BUCKET && S3_ENDPOINT);
-}
-
-const DRIVER = resolveStorageDriver({
-  driver: process.env.STORAGE_DRIVER,
-  hasS3Credentials: hasS3Credentials(),
-});
-
-/** True when new files are written to (and read from) the S3 bucket. */
-export function isObjectStorageEnabled(): boolean {
-  return DRIVER.writes === "s3";
-}
-
-/** Local disk is primary, but files not copied yet are still read from the old bucket. */
-export function isLegacyS3ReadEnabled(): boolean {
-  return DRIVER.legacyS3Reads;
-}
-
-/** Bucket reachable at all (primary or legacy). */
-export function hasS3Bucket(): boolean {
-  return isObjectStorageEnabled() || isLegacyS3ReadEnabled();
-}
-
-/** @deprecated use isObjectStorageEnabled */
-export const isR2Enabled = isObjectStorageEnabled;
-
-function s3Client(): AwsClient {
-  return new AwsClient({
-    accessKeyId: S3_ACCESS_KEY_ID,
-    secretAccessKey: S3_SECRET_ACCESS_KEY,
-    service: "s3",
-    region: S3_REGION || "auto",
-  });
-}
-
-function objectUrl(ok: string): string {
-  return `${S3_ENDPOINT}/${S3_BUCKET}/${ok.split("/").map(encodeURIComponent).join("/")}`;
-}
-
-/** S3 endpoint + bucket, used to recognise stored bucket URLs. */
-export function s3BucketBaseUrl(): string | null {
-  return S3_ENDPOINT && S3_BUCKET ? `${S3_ENDPOINT}/${S3_BUCKET}` : null;
-}
 
 export function objectKey(bucket: string, p: string): string {
   if (p.startsWith("orgs/")) return p;
@@ -115,7 +31,6 @@ function safeJoin(bucket: string, p: string) {
   return localPathForKey(objectKey(bucket, p));
 }
 
-const isMissing = (e: unknown) => (e as NodeJS.ErrnoException | null)?.code === "ENOENT";
 
 const key = () =>
   new TextEncoder().encode(
@@ -168,10 +83,7 @@ export function openLocalObjectStream(fullPath: string, range?: { start: number;
   return createReadStream(fullPath, range);
 }
 
-/**
- * Write a file to the server disk atomically (temp file + rename) with its
- * content type. Used by uploads and by the bucket → disk migration.
- */
+/** Write a file to the server disk atomically (temp file + rename) with its content type. */
 export async function writeLocalObject(objKey: string, data: Buffer, contentType?: string | null): Promise<void> {
   const full = localPathForKey(objKey);
   await fs.mkdir(path.dirname(full), { recursive: true });
@@ -192,48 +104,9 @@ async function removeLocalObject(objKey: string): Promise<void> {
   await fs.rm(full + ".meta", { force: true }).catch(() => {});
 }
 
-async function readFromS3(ok: string) {
-  const res = await s3Client().fetch(objectUrl(ok));
-  if (!res.ok) throw new Error(await s3FailureMessage("read", res));
-  const data = Buffer.from(await res.arrayBuffer());
-  const contentType = res.headers.get("content-type") || "application/octet-stream";
-  return { data, contentType };
-}
-
-const legacyCopies = ((globalThis as unknown as { __legacyCopies?: Map<string, Promise<{ data: Buffer; contentType: string }>> })
-  .__legacyCopies ??= new Map());
-
-/**
- * File not copied to the server yet: fetch it from the old bucket once, keep
- * it on disk, and return it. Later reads never touch the bucket again.
- */
-export function copyLegacyObjectToLocal(objKey: string): Promise<{ data: Buffer; contentType: string }> {
-  const pending = legacyCopies.get(objKey);
-  if (pending) return pending;
-  const job = (async () => {
-    const got = await readFromS3(objKey);
-    const before = await statLocalObject(objKey);
-    if (!before) {
-      await writeLocalObject(objKey, got.data, got.contentType);
-      notifyLocalUsageChanged(got.data.byteLength);
-    }
-    return got;
-  })().finally(() => legacyCopies.delete(objKey));
-  legacyCopies.set(objKey, job);
-  return job;
-}
-
 export async function readFile(bucket: string, p: string) {
-  const ok = objectKey(bucket, p);
-  if (isObjectStorageEnabled()) return readFromS3(ok);
   const full = safeJoin(bucket, p);
-  let data: Buffer;
-  try {
-    data = await fs.readFile(full);
-  } catch (e) {
-    if (isMissing(e) && isLegacyS3ReadEnabled()) return copyLegacyObjectToLocal(ok);
-    throw e;
-  }
+  const data = await fs.readFile(full);
   let contentType = "application/octet-stream";
   try {
     contentType = (await fs.readFile(full + ".meta", "utf8")).trim() || contentType;
@@ -243,84 +116,9 @@ export async function readFile(bucket: string, p: string) {
   return { data, contentType };
 }
 
-/** GET an object straight from the bucket (migration). Throws with B2's message on failure. */
-export async function readLegacyS3Object(objKey: string): Promise<{ data: Buffer; contentType: string }> {
-  if (!hasS3Bucket()) throw new Error("No S3 bucket configured");
-  return readFromS3(objKey);
-}
-
 type Err = { message: string } | null;
 
-/** B2 answers this when the daily download / transaction cap is used up. */
-export function isS3CapExceededMessage(message: string): boolean {
-  return /cap exceeded/i.test(message);
-}
-
-/**
- * Readable message for a failed S3/B2 response, e.g. B2's
- * "AccessDenied — Cannot download file, download bandwidth or transaction (Class B) cap exceeded".
- */
-async function s3FailureMessage(action: string, res: Response): Promise<string> {
-  const t = (await res.text().catch(() => "")).slice(0, 600);
-  const code = t.match(/<Code>([^<]+)<\/Code>/)?.[1];
-  const msg = t
-    .match(/<Message>([^<]+)<\/Message>/)?.[1]
-    ?.replace(/&amp;/g, "&")
-    .replace(/\.\s*$/, "");
-  const capHit = isS3CapExceededMessage(msg ?? "");
-  const hint = capHit ? " Raise the cap under Backblaze → Caps & Alerts." : "";
-  return code || msg
-    ? `S3 ${action} failed (${res.status}): ${code ?? "error"}${msg ? ` — ${msg}` : ""}.${hint}`
-    : `S3 ${action} failed: ${res.status}`;
-}
-
-async function s3Put(ok: string, body: Buffer, contentType?: string) {
-  // B2 requires Content-Length. aws4fetch hashes/streams the body and undici then
-  // sends chunked transfer (no Content-Length) → 411. Sign without reading body,
-  // then PUT with an explicit length.
-  const bytes = Buffer.from(body);
-  const headers: Record<string, string> = {
-    "content-type": contentType || "application/octet-stream",
-    "content-length": String(bytes.byteLength),
-    "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
-  };
-  const signed = await s3Client().sign(objectUrl(ok), { method: "PUT", headers });
-  const res = await fetch(signed.url, {
-    method: "PUT",
-    headers: {
-      ...Object.fromEntries(new Headers(signed.headers).entries()),
-      "content-length": String(bytes.byteLength),
-    },
-    body: bytes,
-  });
-  if (!res.ok) throw new Error(await s3FailureMessage("upload", res));
-}
-
-async function s3Head(ok: string): Promise<boolean> {
-  const res = await s3Client().fetch(objectUrl(ok), { method: "HEAD" });
-  return res.ok;
-}
-
-async function s3Delete(ok: string) {
-  await s3Client().fetch(objectUrl(ok), { method: "DELETE" });
-}
-
-async function s3SignedGetUrl(ok: string, expiresIn: number): Promise<string> {
-  const url = new URL(objectUrl(ok));
-  url.searchParams.set("X-Amz-Expires", String(expiresIn));
-  const signed = await s3Client().sign(new Request(url.toString(), { method: "GET" }), {
-    aws: { signQuery: true },
-  });
-  return signed.url;
-}
-
-/** Signed bucket URL for a key, or null when no bucket is configured. */
-export async function legacyS3SignedUrl(objKey: string, expiresIn: number): Promise<string | null> {
-  if (!hasS3Bucket()) return null;
-  return s3SignedGetUrl(objKey, expiresIn);
-}
-
-/** Stored object metadata from S3/B2 or local storage */
+/** Stored object metadata */
 export interface StorageObjectMeta {
   key: string;
   size: number;
@@ -328,80 +126,13 @@ export interface StorageObjectMeta {
   etag?: string;
 }
 
-function providerName(): string {
-  const ep = S3_ENDPOINT.toLowerCase();
-  if (ep.includes("backblazeb2.com") || ep.includes("b2")) return "Backblaze B2";
-  if (ep.includes("r2.cloudflarestorage.com")) return "Cloudflare R2";
-  return "S3 Object Store";
-}
-
 /** Storage configuration summary for ops & diagnostics */
 export function getStorageConfigSummary() {
-  const enabled = isObjectStorageEnabled();
-  const legacy = isLegacyS3ReadEnabled();
   return {
-    enabled,
-    provider: enabled ? providerName() : "VPS Disk",
-    bucket: enabled ? S3_BUCKET || "configured-bucket" : "local-storage",
-    endpoint: enabled ? S3_ENDPOINT : `local://${STORAGE_DIR}`,
-    region: enabled ? S3_REGION : "",
-    /** Files not yet copied to the server are still read from the old bucket. */
-    legacyFallback: legacy,
-    legacyProvider: legacy ? providerName() : null,
-    legacyBucket: legacy ? S3_BUCKET : null,
+    provider: "VPS Disk",
+    bucket: "local-storage",
+    endpoint: `local://${STORAGE_DIR}`,
   };
-}
-
-/** One page-walk over a bucket prefix. */
-async function s3ListObjects(prefix: string, maxItems: number): Promise<StorageObjectMeta[]> {
-  const items: StorageObjectMeta[] = [];
-  let token: string | undefined;
-  do {
-    const url = new URL(`${S3_ENDPOINT}/${S3_BUCKET}`);
-    url.searchParams.set("list-type", "2");
-    if (prefix) url.searchParams.set("prefix", prefix);
-    url.searchParams.set("max-keys", String(Math.min(maxItems, 1000)));
-    if (token) url.searchParams.set("continuation-token", token);
-    const res = await s3Client().fetch(url.toString());
-    // Throw (don't return a partial/empty list): an empty list made the admin
-    // panel show "no media" and let deletes/measurements think nothing exists.
-    if (!res.ok) throw new Error(await s3FailureMessage("list", res));
-    const xml = await res.text();
-    for (const block of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
-      const body = block[1];
-      const keyMatch = body.match(/<Key>([^<]+)<\/Key>/);
-      if (!keyMatch) continue;
-      const sizeMatch = body.match(/<Size>(\d+)<\/Size>/);
-      const lastModMatch = body.match(/<LastModified>([^<]+)<\/LastModified>/);
-      const etagMatch = body.match(/<ETag>([^<]+)<\/ETag>/);
-      items.push({
-        key: decodeXml(keyMatch[1]),
-        size: sizeMatch ? parseInt(sizeMatch[1], 10) : 0,
-        lastModified: lastModMatch ? lastModMatch[1] : undefined,
-        etag: etagMatch ? etagMatch[1].replace(/"|&quot;/g, "") : undefined,
-      });
-      if (items.length >= maxItems) break;
-    }
-    const truncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
-    const next = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/);
-    token = truncated && next ? decodeXml(next[1]) : undefined;
-  } while (token && items.length < maxItems);
-  return items;
-}
-
-function decodeXml(s: string): string {
-  return s
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-/** Every object in the bucket (primary or legacy) under a prefix. */
-export async function listLegacyS3Objects(prefix: string = ""): Promise<StorageObjectMeta[]> {
-  if (!hasS3Bucket()) return [];
-  return s3ListObjects(prefix.replace(/^\/+/, ""), Number.MAX_SAFE_INTEGER);
 }
 
 async function listLocalObjects(prefix: string, maxItems: number): Promise<StorageObjectMeta[]> {
@@ -444,37 +175,18 @@ async function listLocalObjects(prefix: string, maxItems: number): Promise<Stora
   return items;
 }
 
-/**
- * List object keys under a prefix. During the migration period the bucket is
- * included too (best effort) so recording parts split across both are found.
- */
+/** List object keys under a prefix. */
 export async function listObjectKeys(prefix: string): Promise<string[]> {
   const clean = prefix.replace(/^\/+/, "").replace(/\/?$/, "/");
-  if (isObjectStorageEnabled()) {
-    return (await s3ListObjects(clean, Number.MAX_SAFE_INTEGER)).map((o) => o.key);
-  }
-  const keys = (await listLocalObjects(clean, Number.MAX_SAFE_INTEGER)).map((o) => o.key);
-  if (isLegacyS3ReadEnabled()) {
-    try {
-      const seen = new Set(keys);
-      for (const o of await s3ListObjects(clean, Number.MAX_SAFE_INTEGER)) {
-        if (!seen.has(o.key)) keys.push(o.key);
-      }
-    } catch {
-      /* bucket unreachable (e.g. cap hit): local keys only */
-    }
-  }
-  return keys;
+  return (await listLocalObjects(clean, Number.MAX_SAFE_INTEGER)).map((o) => o.key);
 }
 
-/** List objects with size and timestamp metadata (S3/B2 or local disk). */
+/** List objects with size and timestamp metadata. */
 export async function listObjectsWithMetadata(
   prefix: string = "",
   maxItems: number = 200,
 ): Promise<StorageObjectMeta[]> {
-  const clean = prefix.replace(/^\/+/, "");
-  if (isObjectStorageEnabled()) return s3ListObjects(clean, maxItems);
-  return listLocalObjects(clean, maxItems);
+  return listLocalObjects(prefix.replace(/^\/+/, ""), maxItems);
 }
 
 /** Every object under a prefix with sizes (no item cap). */
@@ -489,11 +201,7 @@ export async function measurePrefix(prefix: string): Promise<{ objects: number; 
   return { objects: objs.length, bytes: objs.reduce((n, o) => n + o.size, 0) };
 }
 
-/**
- * Delete all objects under a candidate/org prefix and report what was freed. Does not touch DB.
- * During the migration period the old bucket copy is deleted too, so a data
- * deletion request never leaves files behind there.
- */
+/** Delete all objects under a candidate/org prefix and report what was freed. Does not touch DB. */
 export async function deletePrefixStats(
   prefix: string,
 ): Promise<{ objects: number; bytes: number }> {
@@ -503,38 +211,17 @@ export async function deletePrefixStats(
   const queue = [...objs];
   const worker = async () => {
     for (let o = queue.shift(); o; o = queue.shift()) {
-      if (isObjectStorageEnabled()) {
-        await s3Delete(o.key);
-      } else {
-        try {
-          await removeLocalObject(o.key);
-        } catch {
-          continue;
-        }
+      try {
+        await removeLocalObject(o.key);
+      } catch {
+        continue;
       }
       bytes += o.size;
       objects += 1;
     }
   };
   await Promise.all(Array.from({ length: 8 }, worker));
-
-  if (isLegacyS3ReadEnabled()) {
-    const clean = prefix ? prefix.replace(/^\/+/, "").replace(/\/?$/, "/") : "";
-    const local = new Set(objs.map((o) => o.key));
-    const legacy = await listLegacyS3Objects(clean);
-    const legacyQueue = [...legacy];
-    const legacyWorker = async () => {
-      for (let o = legacyQueue.shift(); o; o = legacyQueue.shift()) {
-        await s3Delete(o.key);
-        if (!local.has(o.key)) {
-          bytes += o.size;
-          objects += 1;
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: 8 }, legacyWorker));
-  }
-  if (!isObjectStorageEnabled()) notifyLocalUsageChanged(-bytes);
+  notifyLocalUsageChanged(-bytes);
   return { objects, bytes };
 }
 
@@ -545,21 +232,13 @@ export async function deletePrefix(prefix: string): Promise<number> {
 
 /** Whether an object exists at the key (used to avoid overwriting when merging folders). */
 export async function storedObjectExists(objKey: string): Promise<boolean> {
-  const clean = objKey.replace(/^\/+/, "");
-  if (isObjectStorageEnabled()) return s3Head(clean);
-  if (await statLocalObject(clean)) return true;
-  if (isLegacyS3ReadEnabled()) return s3Head(clean).catch(() => false);
-  return false;
+  return !!(await statLocalObject(objKey.replace(/^\/+/, "")));
 }
 
 /**
- * Capacity of the backing store.
- * - Local disk: real total/free from the filesystem, narrowed to the super-admin
- *   cap (`configuredBytes`) when one is set.
- * - S3/B2/R2: the S3 API cannot report the account plan size, so the limit must be
- *   supplied: `configuredBytes` (saved by a super admin in the UI) or the
- *   STORAGE_QUOTA_GB / STORAGE_QUOTA_BYTES env vars. "unset" means nobody has told us.
- * `usedBytes` (local mode) lets free space reflect the cap: min(cap − used, disk free).
+ * Capacity of the server disk: real total/free from the filesystem, narrowed to the
+ * cap (`configuredBytes` saved by a super admin, else STORAGE_QUOTA_GB / STORAGE_QUOTA_BYTES)
+ * when one is set. `usedBytes` lets free space reflect the cap: min(cap − used, disk free).
  */
 export async function getStorageCapacity(
   configuredBytes?: number | null,
@@ -580,36 +259,31 @@ export async function getStorageCapacity(
   const quota = adminQuota ?? envQuota;
   const limitFrom = adminQuota ? ("admin" as const) : envQuota ? ("env" as const) : null;
 
-  if (!isObjectStorageEnabled()) {
-    const disk = await getLocalDiskSpace();
-    if (!disk) {
-      return quota
-        ? { source: "quota", limitFrom, totalBytes: quota, freeBytes: null }
-        : { source: "unset", limitFrom: null, totalBytes: null, freeBytes: null };
-    }
-    if (!quota) {
-      return {
-        source: "disk",
-        limitFrom: null,
-        totalBytes: disk.totalBytes,
-        freeBytes: disk.freeBytes,
-        diskTotalBytes: disk.totalBytes,
-        diskFreeBytes: disk.freeBytes,
-      };
-    }
-    const capFree = usedBytes != null ? Math.max(0, quota - usedBytes) : quota;
+  const disk = await getLocalDiskSpace();
+  if (!disk) {
+    return quota
+      ? { source: "quota", limitFrom, totalBytes: quota, freeBytes: null }
+      : { source: "unset", limitFrom: null, totalBytes: null, freeBytes: null };
+  }
+  if (!quota) {
     return {
-      source: "quota",
-      limitFrom,
-      totalBytes: Math.min(quota, disk.totalBytes),
-      freeBytes: Math.min(capFree, disk.freeBytes),
+      source: "disk",
+      limitFrom: null,
+      totalBytes: disk.totalBytes,
+      freeBytes: disk.freeBytes,
       diskTotalBytes: disk.totalBytes,
       diskFreeBytes: disk.freeBytes,
     };
   }
-  return quota
-    ? { source: "quota", limitFrom, totalBytes: quota, freeBytes: null }
-    : { source: "unset", limitFrom: null, totalBytes: null, freeBytes: null };
+  const capFree = usedBytes != null ? Math.max(0, quota - usedBytes) : quota;
+  return {
+    source: "quota",
+    limitFrom,
+    totalBytes: Math.min(quota, disk.totalBytes),
+    freeBytes: Math.min(capFree, disk.freeBytes),
+    diskTotalBytes: disk.totalBytes,
+    diskFreeBytes: disk.freeBytes,
+  };
 }
 
 /** Physical size / free space of the disk holding STORAGE_DIR. */
@@ -626,7 +300,7 @@ export async function getLocalDiskSpace(): Promise<{ totalBytes: number; freeByt
   }
 }
 
-/** Copy an object from source key to destination key (Backblaze B2/S3 or local disk). */
+/** Copy an object from source key to destination key. */
 export async function copyStoredObject(
   sourceKey: string,
   destKey: string,
@@ -636,36 +310,8 @@ export async function copyStoredObject(
   if (cleanSrc === cleanDst) return true;
 
   try {
-    if (isObjectStorageEnabled()) {
-      // First attempt native S3 x-amz-copy-source
-      const destUrl = objectUrl(cleanDst);
-      const headers: Record<string, string> = {
-        "x-amz-copy-source": `/${S3_BUCKET}/${cleanSrc
-          .split("/")
-          .map(encodeURIComponent)
-          .join("/")}`,
-        "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
-      };
-      const signed = await s3Client().sign(destUrl, { method: "PUT", headers });
-      const res = await fetch(signed.url, {
-        method: "PUT",
-        headers: Object.fromEntries(new Headers(signed.headers).entries()),
-      });
-      if (res.ok) return true;
-
-      // Fallback: Read and put directly
-      const { data, contentType } = await readFile("files", cleanSrc);
-      await s3Put(cleanDst, data, contentType);
-      return true;
-    }
-
-    // Local disk (source may still be in the old bucket during migration).
     const src = await statLocalObject(cleanSrc);
-    if (!src) {
-      const { data, contentType } = await readFile("files", cleanSrc);
-      await writeLocalObject(cleanDst, data, contentType);
-      return true;
-    }
+    if (!src) return false;
     const dstFull = localPathForKey(cleanDst);
     await fs.mkdir(path.dirname(dstFull), { recursive: true });
     await fs.copyFile(src.fullPath, dstFull);
@@ -693,12 +339,7 @@ export async function moveStoredObject(
   if (!copied) return false;
 
   try {
-    if (isObjectStorageEnabled()) {
-      await s3Delete(cleanSrc);
-    } else {
-      await removeLocalObject(cleanSrc);
-      if (isLegacyS3ReadEnabled()) await s3Delete(cleanSrc).catch(() => {});
-    }
+    await removeLocalObject(cleanSrc);
     return true;
   } catch {
     return false;
@@ -722,9 +363,9 @@ export function setUploadGate(fn: UploadGate | null): void {
   uploadGate = fn;
 }
 
-/** The super-admin cap only applies to the server disk. STORAGE_CAP_GATE=off disables it (tests). */
+/** The super-admin storage cap. STORAGE_CAP_GATE=off disables it (tests). */
 async function loadUploadGate(): Promise<UploadGate | null> {
-  if (uploadGate || isObjectStorageEnabled() || process.env.STORAGE_CAP_GATE === "off") return uploadGate;
+  if (uploadGate || process.env.STORAGE_CAP_GATE === "off") return uploadGate;
   await import("@/lib/storage-usage");
   return uploadGate;
 }
@@ -751,13 +392,6 @@ export const storage = {
             const refused = await gate(buf.byteLength, { liveSession: !!opts?.liveSession });
             if (refused) return { data: null, error: { message: refused } };
           }
-          if (isObjectStorageEnabled()) {
-            if (!opts?.upsert && (await s3Head(ok))) {
-              return { data: null, error: { message: "The resource already exists" } };
-            }
-            await s3Put(ok, buf, opts?.contentType);
-            return { data: { path: p.startsWith("orgs/") ? p : ok }, error: null };
-          }
           const existing = await statLocalObject(ok);
           if (!opts?.upsert && existing) {
             return { data: null, error: { message: "The resource already exists" } };
@@ -776,12 +410,7 @@ export const storage = {
       ): Promise<{ data: { signedUrl: string } | null; error: Err }> {
         try {
           const ok = objectKey(bucket, p);
-          if (isObjectStorageEnabled()) {
-            const signedUrl = await s3SignedGetUrl(ok, expiresIn);
-            return { data: { signedUrl }, error: null };
-          }
           localPathForKey(ok);
-          // Files not on disk yet are copied from the old bucket by /api/files on first view.
           return { data: { signedUrl: await localFileUrl(bucket, ok, expiresIn) }, error: null };
         } catch (e) {
           return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
@@ -801,13 +430,9 @@ export const storage = {
         for (const p of paths) {
           try {
             const ok = objectKey(bucket, p);
-            if (isObjectStorageEnabled()) await s3Delete(ok);
-            else {
-              const st = await statLocalObject(ok);
-              await removeLocalObject(ok);
-              if (st) notifyLocalUsageChanged(-st.size);
-              if (isLegacyS3ReadEnabled()) await s3Delete(ok).catch(() => {});
-            }
+            const st = await statLocalObject(ok);
+            await removeLocalObject(ok);
+            if (st) notifyLocalUsageChanged(-st.size);
           } catch {
             /* ignore */
           }

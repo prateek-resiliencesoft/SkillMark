@@ -75,6 +75,6 @@ test("isLiveInterviewUpload: running, or ended within the finalize window", () =
 test("isStorageCapError recognises only the gate's messages", () => {
   assert.equal(isStorageCapError(STORAGE_CAP_MESSAGES.cap), true);
   assert.equal(isStorageCapError(STORAGE_CAP_MESSAGES.disk), true);
-  assert.equal(isStorageCapError("S3 upload failed (403)"), false);
+  assert.equal(isStorageCapError("upload failed (403)"), false);
   assert.equal(isStorageCapError(null), false);
 });

@@ -135,8 +135,8 @@ export function objectPathFromSignedUrl(
       if (rest.length > 1 && rest[0] === bucket) return rest.slice(1).join("/");
       if (rest.length > 0) return rest.join("/");
     }
-    // Bucket URLs (/<S3_BUCKET>/orgs/…): the key starts at `orgs/`, even when
-    // a later folder shares the bucket name (…/recordings/file.webm).
+    // Other full URLs (…/orgs/…): the key starts at `orgs/`, even when a later
+    // folder shares the bucket name (…/recordings/file.webm).
     const orgsIdx = segments.indexOf("orgs");
     if (orgsIdx >= 0 && segments.length > orgsIdx + 1) {
       return segments.slice(orgsIdx).filter(Boolean).join("/");

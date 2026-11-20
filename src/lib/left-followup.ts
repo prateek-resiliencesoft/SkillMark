@@ -19,6 +19,8 @@ export interface FollowupSession {
 }
 
 export interface LeftFollowupState {
+  /** Worth showing a follow-up status: the candidate left midway, or one was sent for this link. */
+  relevant: boolean;
   /** The candidate left midway and the link is still valid, so the follow-up can be sent. */
   applicable: boolean;
   /** The link has expired: extend the expiry before sending anything. */
@@ -35,8 +37,10 @@ export function leftFollowupState(
 ): LeftFollowupState {
   const sent = !!candidate?.inviteToken && !!candidate.followupSentAt && candidate.followupSentToken === candidate.inviteToken;
   const expired = isLinkExpired({ session, expiresAt: candidate?.expiresAt });
+  const left = session?.status === "ABANDONED";
   return {
-    applicable: session?.status === "ABANDONED" && !!candidate?.inviteToken && !expired,
+    relevant: sent || left,
+    applicable: left && !!candidate?.inviteToken && !expired,
     expired,
     sent,
     sentAt: sent ? (candidate?.followupSentAt ?? null) : null,
