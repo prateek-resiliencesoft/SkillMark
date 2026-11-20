@@ -806,7 +806,7 @@ export default function AdminOrganizationDetailPage() {
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         title={`Permanently remove “${data.name}”?`}
-        description="This permanently deletes the organization and ALL of its data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV in the storage bucket. This cannot be undone. Type the organization name to proceed."
+        description="This permanently deletes the organization and ALL of its data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV stored on the server. This cannot be undone. Type the organization name to proceed."
         confirmLabel="Delete organization and all data"
         confirmText={data.name}
         destructive

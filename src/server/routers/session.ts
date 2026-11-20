@@ -1363,7 +1363,7 @@ export const sessionRouter = router({
       return { success: true };
     }),
 
-  /** Permanently delete sessions together with their candidate data and bucket media. */
+  /** Permanently delete sessions together with their candidate data and stored media. */
   deleteMany: protectedProcedure
     .input(z.object({ ids: z.array(z.string()).min(1) }))
     .mutation(async ({ ctx, input }) => {

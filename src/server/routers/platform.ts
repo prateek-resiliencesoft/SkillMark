@@ -732,7 +732,7 @@ export const platformRouter = router({
       return { id: org.id as string, limits };
     }),
 
-  /** Permanently delete an organization and ALL of its data (database rows + bucket files). */
+  /** Permanently delete an organization and ALL of its data (database rows + stored files). */
   softDeleteOrganization: platformProcedure
     .input(
       z.object({
@@ -770,7 +770,7 @@ export const platformRouter = router({
       return { id: input.id, status: "DELETED" as const, ...result };
     }),
 
-  /** Permanently delete several organizations and all of their data (database rows + bucket files). */
+  /** Permanently delete several organizations and all of their data (database rows + stored files). */
   softDeleteOrganizations: platformProcedure
     .input(z.object({ ids: z.array(z.string().uuid()).min(1).max(50) }))
     .mutation(async ({ ctx, input }) => {
@@ -1862,7 +1862,7 @@ export const platformRouter = router({
           source: capacity.source,
           limitFrom: capacity.limitFrom,
           totalBytes: capacity.totalBytes,
-          // Server disk: min(cap − used, disk free). Bucket: cap minus used (when a cap is set).
+          // min(cap − used, disk free); cap minus used when the disk size is unknown.
           freeBytes:
             capacity.freeBytes != null
               ? capacity.freeBytes
