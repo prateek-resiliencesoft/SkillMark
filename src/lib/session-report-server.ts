@@ -11,6 +11,7 @@ import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { generateSummaryForSession } from "@/lib/session-summary";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { refineTranscriptFromRecording } from "@/lib/transcript/retranscribe";
 import {
   MAX_REPORT_ATTEMPTS,
   REPORT_LOCK_STALE_MS,
@@ -21,6 +22,7 @@ import {
   idleCloseDecision,
   decideReport,
   hasReport,
+  isEndedStatus,
   retryDelayMs,
   withReportTimeout,
   type ReportSessionState,
@@ -165,6 +167,8 @@ export async function ensureSessionReport(
   if (reportColumnsMissing) memAttempts.set(sessionId, attempt);
   try {
     log.info(`Generating report for ${sessionId} (${opts.reason}, attempt ${attempt})`);
+    // Live ASR has no question context (names, "5 LPA" -> "5 PM"); prefer the recording transcript.
+    await refineTranscriptFromRecording(sessionId);
     const outcome = await withReportTimeout(generateSummaryForSession(sessionId));
     if (outcome === "no_messages") {
       await setReportStatus(sessionId, "SKIPPED", { reportError: "No transcript" });
@@ -191,6 +195,24 @@ export async function ensureSessionReport(
   } finally {
     inFlight.delete(sessionId);
   }
+}
+
+/**
+ * Recording linked after the session ended. A report already built from the
+ * live transcript is re-run once so the recording transcript replaces it.
+ * ponytail: a link landing while a report is GENERATING is dropped (busy); the manual re-transcribe button covers it.
+ */
+export async function onRecordingLinked(sessionId: string): Promise<void> {
+  const row = await loadState(sessionId);
+  if (!row || !isEndedStatus(row.status) || !hasReport(row)) return;
+  const { count } = await supabaseAdmin
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .eq("sessionId", sessionId)
+    .eq("role", "USER")
+    .eq("transcription", "recording");
+  if (count) return;
+  scheduleSessionReport(sessionId, "recording-linked", 0, { force: true });
 }
 
 /**

@@ -1268,6 +1268,9 @@ export const sessionRouter = router({
           message: error.message,
         });
       }
+      if (updateData.audioRecordingUrl) {
+        void import("@/lib/session-report-server").then(({ onRecordingLinked }) => onRecordingLinked(input.sessionId));
+      }
 
       return { success: true };
     }),

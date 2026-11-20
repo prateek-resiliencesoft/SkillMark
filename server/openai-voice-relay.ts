@@ -12,6 +12,7 @@ import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
+import { LISTENING_RULES, TRANSCRIPTION_HINT } from "../src/lib/ai/prompts/listening";
 import {
   interviewLanguageRequirement,
   isChineseInterviewLanguage,
@@ -388,6 +389,7 @@ When transitioning to a CODING or WHITEBOARD question:
   3. Thinking ALOUD (self-talk, "hmm", reading code) → Brief encouragement only (e.g. "Take your time")
   4. Wanting to SKIP ("I can't do this", "skip", "next question") → Brief encouragement, then call signal_question_change
   5. Discussion naturally CONCLUDED → Brief acknowledgement, then call signal_question_change
+${LISTENING_RULES}
 
 ## Language Requirements
 - ${interviewLanguageRequirement(ctx.language)}
@@ -614,7 +616,7 @@ async function handleMicTest(browserWs: WebSocket) {
           input: {
             format: { type: "audio/pcm", rate: 24000 },
             noise_reduction: { type: "far_field" },
-            transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL },
+            transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL, prompt: TRANSCRIPTION_HINT },
             turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 300 },
           },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: AZURE_VOICE },
@@ -1198,7 +1200,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
     return {
       format: { type: "audio/pcm", rate: 24000 as const },
       noise_reduction: { type: "far_field" as const },
-      transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL },
+      transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL, prompt: TRANSCRIPTION_HINT },
       turn_detection: {
         type: "semantic_vad" as const,
         eagerness: "low" as const,

@@ -16,6 +16,7 @@ import {
   type RecordingRun,
 } from "@/lib/recording-parts";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { onRecordingLinked } from "@/lib/session-report-server";
 import { listObjectKeys } from "@/lib/storage";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -105,6 +106,7 @@ export async function linkRecordingToSession(
     });
     return false;
   }
+  void onRecordingLinked(sessionId).catch((err) => log.error(`Recording-linked report for ${sessionId} failed:`, err));
   return true;
 }
 
