@@ -2,7 +2,7 @@ name: Purge expired set-aside media
 
 on:
   schedule:
-    # Daily 03:30 UTC — clears B2/S3/local blobs for set-aside sessions past 15 days
+    # Daily 03:30 UTC — clears stored media for set-aside sessions past 15 days
     - cron: "30 3 * * *"
   workflow_dispatch:
 

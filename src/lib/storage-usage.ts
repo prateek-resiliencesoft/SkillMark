@@ -15,7 +15,6 @@ import {
 } from "@/lib/storage-cap";
 import {
   getLocalDiskSpace,
-  isObjectStorageEnabled,
   listAllObjects,
   onLocalUsageChanged,
   setUploadGate,
@@ -127,7 +126,6 @@ export async function noteStorageCapLevel(status: StorageCapStatus): Promise<voi
 }
 
 async function gate(bytes: number, opts: { liveSession: boolean }): Promise<string | null> {
-  if (isObjectStorageEnabled()) return null;
   const [usedBytes, quotaBytes, disk] = await Promise.all([
     getLocalUsedBytes(),
     getStorageQuotaBytes(),

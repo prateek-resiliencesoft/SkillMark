@@ -140,7 +140,7 @@ export function CapacityOverview({
           </p>
           <p className="text-[11px] text-muted-foreground">
             {usage.usedObjects.toLocaleString()} files stored
-            {usage.config.enabled ? ` in ${usage.config.provider}` : " on this server"}
+            {" "}on this server
             {usage.outsideTenantBytes > 0
               ? ` • ${formatSize(usage.outsideTenantBytes)} outside candidate folders`
               : ""}
