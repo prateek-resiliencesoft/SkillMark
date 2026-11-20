@@ -11,6 +11,8 @@
  * Nothing here guesses: unreadable input is reported in `warnings` so callers
  * can flag the document for human review.
  */
+import { configuredGeminiModel } from "@/lib/ai/gemini-models";
+import { unwrappingFetch } from "@/lib/ai/providers/compatible";
 import "server-only";
 import type { AnyNode, Element } from "domhandler";
 import { getChildren, getElementsByTagName, textContent } from "domutils";
@@ -361,12 +363,12 @@ async function getVisionClients(organizationId?: string | null): Promise<VisionC
     const model =
       id === "openai"
         ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
-        : process.env.GEMINI_MODEL || "gemini-3.5-flash";
+        : configuredGeminiModel();
     for (const apiKey of c.apiKeys) {
       out.push({
         kind: id,
         // maxRetries 0: we fail over across keys ourselves; SDK 429 backoff only burns the time budget.
-        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0 }),
+        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0, fetch: unwrappingFetch }),
         model,
         apiKey,
       });

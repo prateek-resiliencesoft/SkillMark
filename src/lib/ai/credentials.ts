@@ -3,6 +3,7 @@ if (typeof window !== "undefined") {
 }
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import type { Context } from "@/server/context";
+import { configuredGeminiModel } from "./gemini-models";
 import { checkVoiceModel, isVoiceCapableProvider } from "./capabilities";
 import { splitKeyList } from "./key-chain";
 
@@ -392,7 +393,7 @@ export function defaultModelForProvider(id: AiProviderId): string {
     case "openai":
       return process.env.OPENAI_MODEL || "gpt-4o-mini";
     case "gemini":
-      return process.env.GEMINI_MODEL || "gemini-3.5-flash";
+      return configuredGeminiModel();
     case "nvidia":
       return process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
     case "anthropic":
