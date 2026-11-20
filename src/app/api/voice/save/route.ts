@@ -8,9 +8,21 @@ import { finalizeRecordingParts } from "@/lib/recording-parts-server";
 import { interviewReachedClosing } from "@/lib/session-link-server";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { handleVoiceSave, messageRowId, type CompletionSession, type ProgressSession, type VoiceSaveOps, type VoiceSavePayload } from "./logic";
+import { checkRateLimit } from "@/lib/api-rate-limit";
+import { CANDIDATE_SESSION_GATE_COLUMNS, gateCandidateSession, isSessionId, rejectCrossSiteRequest } from "@/lib/session-access";
+import {
+  gateVoiceSave,
+  handleVoiceSave,
+  messageRowId,
+  type CompletionSession,
+  type ProgressSession,
+  type VoiceSaveOps,
+  type VoiceSavePayload,
+  type VoiceSaveSessionGate,
+} from "./logic";
 
 const log = createLogger("api/voice/save");
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const voiceSaveOps: VoiceSaveOps = {
   scheduleReport(sessionId, { force }) {
     // Short delay so the final transcript batch (disconnect flush) lands first.
@@ -145,9 +157,34 @@ const voiceSaveOps: VoiceSaveOps = {
  * and fire-and-forget an AI summary/analysis so the interviewee isn't blocked.
  */
 export async function POST(req: Request) {
-  // Also receives sendBeacon posts on tab close; parse leniently.
-  const payload = ((await req.json().catch(() => null)) ?? {}) as VoiceSavePayload;
-  const result = await handleVoiceSave(payload, voiceSaveOps);
+  // Also receives sendBeacon posts on tab close (JSON Blob → application/json).
+  const refused = rejectCrossSiteRequest(req, { json: true });
+  if (refused) return refused;
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  }
+  const raw = await req.text().catch(() => "");
+  if (raw.length > MAX_BODY_BYTES) return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  let payload: VoiceSavePayload;
+  try {
+    payload = (JSON.parse(raw) ?? {}) as VoiceSavePayload;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (isSessionId(payload.sessionId)) {
+    const limited = checkRateLimit(`voice:save:${payload.sessionId}`, 120);
+    if (limited) return limited;
+  }
+
+  const gate = await gateCandidateSession(req, payload.sessionId, `${CANDIDATE_SESSION_GATE_COLUMNS}, modeUsed, startedAt, createdAt`);
+  if (!gate.ok) return gate.response;
+  const allowed = gateVoiceSave(payload, gate.session as VoiceSaveSessionGate, { inviteExpiresAt: gate.invite?.expiresAt });
+  if (!allowed.ok) return NextResponse.json(allowed.body, { status: allowed.status });
+
+  const result = await handleVoiceSave(allowed.payload, voiceSaveOps);
   return NextResponse.json(result.body, { status: result.status });
 }
 

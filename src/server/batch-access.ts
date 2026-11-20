@@ -3,6 +3,7 @@ import { headers } from "next/headers";
 import {
   getEffectiveProjectRole,
   getOrgMembership,
+  hasMinRole,
   hasProjectAccess,
   type MemberRole,
 } from "./trpc";
@@ -10,11 +11,15 @@ import type { Context } from "./context";
 
 type Db = Context["supabase"];
 
-/** Resolves the caller's effective role on a project, or throws. */
+/**
+ * Resolves the caller's effective role on a project, or throws.
+ * `write` blocks paused organizations.
+ */
 export async function verifyProjectAccess(
   supabase: Db,
   projectId: string,
   userId: string,
+  options: { write?: boolean } = {},
 ): Promise<{ role: MemberRole; organizationId: string }> {
   const { data: project } = await supabase
     .from("projects")
@@ -23,7 +28,7 @@ export async function verifyProjectAccess(
     .single();
   if (!project) throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
 
-  const membership = await getOrgMembership(supabase, project.organizationId, userId);
+  const membership = await getOrgMembership(supabase, project.organizationId, userId, options);
   if (!membership) {
     throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
   }
@@ -34,15 +39,73 @@ export async function verifyProjectAccess(
   return { role, organizationId: project.organizationId };
 }
 
-export async function verifyBatchAccess(supabase: Db, batchId: string, userId: string) {
+export async function verifyBatchAccess(
+  supabase: Db,
+  batchId: string,
+  userId: string,
+  options: { write?: boolean } = {},
+) {
   const { data: batch } = await supabase
     .from("interview_batches")
     .select("*")
     .eq("id", batchId)
     .single();
   if (!batch) throw new TRPCError({ code: "NOT_FOUND", message: "Batch not found" });
-  const access = await verifyProjectAccess(supabase, batch.projectId, userId);
+  const access = await verifyProjectAccess(supabase, batch.projectId, userId, options);
   return { batch, ...access };
+}
+
+/**
+ * Authorize a CV upload for a batch candidate: write access (MEMBER+) on the
+ * candidate's project in an active organization. Returns an HTTP status on failure.
+ */
+export async function authorizeCandidateCvUpload(
+  supabase: Db,
+  candidateId: string,
+  userId: string,
+): Promise<
+  | { ok: true; candidate: { id: string; name: string; email: string | null; profile: unknown }; orgId: string; projectId: string }
+  | { ok: false; status: 403 | 404; error: string }
+> {
+  const { data: candidate } = await supabase
+    .from("candidates")
+    .select(
+      "id, name, email, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
+    )
+    .eq("id", candidateId)
+    .maybeSingle();
+  if (!candidate) return { ok: false, status: 404, error: "Candidate not found" };
+
+  const interview = candidate.interview as unknown as {
+    projectId: string;
+    project: { organizationId: string };
+  };
+  try {
+    const { role, organizationId } = await verifyProjectAccess(
+      supabase,
+      interview.projectId,
+      userId,
+      { write: true },
+    );
+    if (!hasMinRole(role, "MEMBER")) return { ok: false, status: 403, error: "Forbidden" };
+    return {
+      ok: true,
+      candidate: {
+        id: candidate.id as string,
+        name: candidate.name as string,
+        email: (candidate.email as string | null) ?? null,
+        profile: candidate.profile,
+      },
+      orgId: organizationId,
+      projectId: interview.projectId,
+    };
+  } catch (err) {
+    if (err instanceof TRPCError && err.code === "NOT_FOUND") {
+      return { ok: false, status: 404, error: "Candidate not found" };
+    }
+    if (err instanceof TRPCError) return { ok: false, status: 403, error: "Forbidden" };
+    throw err;
+  }
 }
 
 export async function resolveDefaultProjectId(supabase: Db, userId: string): Promise<string> {

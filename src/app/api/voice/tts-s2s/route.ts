@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { createLogger } from "@/lib/logger";
+import { checkRateLimit } from "@/lib/api-rate-limit";
+import { getAuthUser } from "@/lib/auth";
+import { clientIp } from "@/lib/client-ip";
+import { assertActiveInterviewSession, rejectCrossSiteRequest } from "@/lib/session-access";
 
 const log = createLogger("api/voice/tts-s2s");
+const MAX_BODY_BYTES = 4 * 1024;
+const MAX_TEXT_CHARS = 500;
 import WebSocket from "ws";
 import {
   buildStartConnection,
@@ -54,15 +60,31 @@ export async function POST(req: Request) {
     );
   }
 
+  const refused = rejectCrossSiteRequest(req, { json: true });
+  if (refused) return refused;
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  }
+  const ipLimited = checkRateLimit(`voice:tts-s2s:${clientIp(req)}`, 20);
+  if (ipLimited) return ipLimited;
+
   // Body can be empty when the client aborts (e.g. its 8s timeout fires during a slow first compile).
   let text: unknown;
   let language: unknown;
+  let sessionId: unknown;
+  let interviewId: unknown;
   try {
     const raw = await req.text();
     if (!raw.trim()) {
       return NextResponse.json({ error: "Empty request body" }, { status: 400 });
     }
-    ({ text, language } = JSON.parse(raw) as { text?: unknown; language?: unknown });
+    if (raw.length > MAX_BODY_BYTES) return NextResponse.json({ error: "Request too large" }, { status: 413 });
+    ({ text, language, sessionId, interviewId } = JSON.parse(raw) as {
+      text?: unknown;
+      language?: unknown;
+      sessionId?: unknown;
+      interviewId?: unknown;
+    });
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -70,13 +92,35 @@ export async function POST(req: Request) {
   if (!text || typeof text !== "string" || !text.trim()) {
     return NextResponse.json({ error: "Missing text" }, { status: 400 });
   }
+  if (text.length > MAX_TEXT_CHARS) {
+    return NextResponse.json({ error: `Text exceeds ${MAX_TEXT_CHARS} characters` }, { status: 413 });
+  }
   const lang = typeof language === "string" ? language : undefined;
 
+  // Paid upstream synthesis: only a signed-in user or a candidate in a live session.
+  if (sessionId !== undefined || interviewId !== undefined) {
+    const access = await assertActiveInterviewSession(sessionId, interviewId, { req });
+    if (!access.ok) return NextResponse.json({ error: access.error }, { status: access.status });
+    const limited = checkRateLimit(`voice:tts-s2s:session:${access.sessionId}`, 10);
+    if (limited) return limited;
+  } else if (!(await getAuthUser())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let ws: WebSocket | null = null;
   const stream = new ReadableStream({
     async start(controller) {
-      let ws: WebSocket | null = null;
+      const onAbort = () => {
+        try {
+          ws?.terminate();
+        } catch {
+          /* ignore */
+        }
+      };
+      req.signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
+        if (req.signal?.aborted) return;
         const connectId = randomUUID();
         const sessionId = randomUUID();
         const headers: Record<string, string> = {
@@ -103,6 +147,10 @@ export async function POST(req: Request) {
           ws!.on("error", (err) => {
             clearTimeout(timeout);
             reject(err);
+          });
+          ws!.on("close", () => {
+            clearTimeout(timeout);
+            reject(new Error("WebSocket closed"));
           });
         });
 
@@ -167,6 +215,11 @@ export async function POST(req: Request) {
           };
 
           ws!.on("message", handler);
+          ws!.once("close", () => {
+            clearTimeout(timeout);
+            ws!.removeListener("message", handler);
+            resolve();
+          });
         });
 
         // Tear down
@@ -187,7 +240,19 @@ export async function POST(req: Request) {
           }
         }
       } finally {
-        controller.close();
+        req.signal?.removeEventListener("abort", onAbort);
+        try {
+          controller.close();
+        } catch {
+          /* already cancelled by the client */
+        }
+      }
+    },
+    cancel() {
+      try {
+        ws?.terminate();
+      } catch {
+        /* ignore */
       }
     },
   });

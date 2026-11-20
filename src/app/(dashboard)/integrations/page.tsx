@@ -1060,7 +1060,7 @@ export default function IntegrationsSettingsPage() {
           icon={<Webhook className="h-5 w-5 text-indigo-500" />}
           title="Webhooks"
           hint="Outbound event stream and inbound ATS triggers"
-          connectedCount={Number(!!d.outboundWebhook.url) + Number(!!d.inboundWebhook.secret)}
+          connectedCount={Number(!!d.outboundWebhook.url) + Number(!!d.inboundWebhook.configured)}
           total={2}
         >
           <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -1077,7 +1077,7 @@ export default function IntegrationsSettingsPage() {
             />
             <ProviderTile
               selected={webhookPane === "inbound"}
-              connected={!!d.inboundWebhook.secret}
+              connected={!!d.inboundWebhook.configured}
               logo={<WebhookLogo tone="in" />}
               title="Inbound webhook"
               subtitle="Create candidates from ATS / Zapier"

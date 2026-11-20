@@ -5,42 +5,39 @@ import {
   type ActivitySegment,
 } from "@/app/api/voice/save/logic";
 import { checkRateLimit } from "@/lib/api-rate-limit";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { notifySessionCompleted } from "@/server/completion-notify";
 import { NextResponse } from "next/server";
 import { canMarkCompleted, REPORT_DELAY_AFTER_COMPLETE_MS } from "@/lib/session-report-policy";
 import { scheduleSessionReport } from "@/lib/session-report-server";
-import { completionEndReason } from "@/lib/session-link";
+import { candidateWriteWindow, completionEndReason } from "@/lib/session-link";
 import { interviewReachedClosing } from "@/lib/session-link-server";
+import { CANDIDATE_SESSION_GATE_COLUMNS, gateCandidateSession, rejectCrossSiteRequest } from "@/lib/session-access";
 
 const log = createLogger("api/session/complete");
 
 export async function POST(req: Request) {
   try {
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
     const ip = clientIp(req);
     const rateLimited = checkRateLimit(`session:complete:${ip}`);
     if (rateLimited) return rateLimited;
 
     const body = await req.json().catch(() => null);
-    const sessionId = body?.sessionId;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    }
-
-    const { data: session } = await supabaseAdmin
-      .from("sessions")
-      .select("id, status, startedAt, lastActivityAt, interviewId, activitySegments")
-      .eq("id", sessionId)
-      .single();
-
-    if (!session) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
+    const gate = await gateCandidateSession(req, body?.sessionId, `${CANDIDATE_SESSION_GATE_COLUMNS}, startedAt, activitySegments`);
+    if (!gate.ok) return gate.response;
+    const { session, invite } = gate;
+    const sessionId = session.id;
 
     if (!canMarkCompleted(session.status as string)) {
       return NextResponse.json({ ok: true, alreadyCompleted: session.status === "COMPLETED" });
+    }
+    // Only a live session, or the short tab-close race after an abandon, may complete.
+    if (candidateWriteWindow(session, { inviteExpiresAt: invite?.expiresAt }) === "closed") {
+      return NextResponse.json({ ok: false, expired: true, status: session.status }, { status: 409 });
     }
     const wasAbandoned = session.status === "ABANDONED";
     // Explicit quit (End interview button) → COMPLETED + endReason QUIT, unless the interview had already finished.
@@ -82,15 +79,19 @@ export async function POST(req: Request) {
         ...(withReason ? { endReason } : {}),
       })
       .eq("id", sessionId)
-      .in("status", ["IN_PROGRESS", "ABANDONED", "NOT_STARTED"]);
-    let { error: writeErr } = await writeCompletion(true);
+      .eq("status", session.status as string)
+      .is("supersededAt", null)
+      .select("id");
+    let { data: written, error: writeErr } = await writeCompletion(true);
     if (writeErr && /endReason|42703|PGRST204/.test(`${writeErr.code} ${writeErr.message}`)) {
-      ({ error: writeErr } = await writeCompletion(false));
+      ({ data: written, error: writeErr } = await writeCompletion(false));
     }
     if (writeErr) {
       log.error(`Session ${sessionId} completion write failed: ${writeErr.message}`);
       return NextResponse.json({ error: "Could not complete session" }, { status: 500 });
     }
+    // Lost a race (parallel completion / abandon / disqualify): the other write wins.
+    if (!written?.length) return NextResponse.json({ ok: true, alreadyCompleted: false });
 
     log.info(`Session ${sessionId} completed via safety-net (${duration}s)`);
     void notifySessionCompleted(supabaseAdmin, sessionId);

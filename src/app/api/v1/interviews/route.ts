@@ -9,7 +9,7 @@ import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 async function legacyGet(request: Request) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:read");
   if (isAuthError(auth)) return auth;
 
   const { searchParams } = new URL(request.url);
@@ -87,7 +87,7 @@ function isAssessmentCriteria(
 }
 
 export async function POST(request: Request) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:write");
   if (isAuthError(auth)) return auth;
 
   if (auth.projectIds.length === 0) {

@@ -12,6 +12,27 @@ type Db = Context["supabase"];
 
 const log = createLogger("completion-notify");
 
+/** Paid WhatsApp alerts per interview per window; public walk-in completions must not fan out unboundedly. */
+export const COMPLETION_NOTIFY_WINDOW_MS = 60 * 60 * 1000;
+export const COMPLETION_NOTIFY_MAX_PER_WINDOW = 30;
+
+/** Only sessions where the candidate actually took part (interview began, or they answered). */
+async function hadCandidateActivity(supabase: Db, sessionId: string): Promise<boolean> {
+  const { data: s } = await supabase
+    .from("sessions")
+    .select("id, status, interviewBeganAt, completionNotifiedAt")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (!s || s.status !== "COMPLETED" || s.completionNotifiedAt) return false;
+  if (s.interviewBeganAt) return true;
+  const { count } = await supabase
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .eq("sessionId", sessionId)
+    .eq("role", "USER");
+  return (count ?? 0) > 0;
+}
+
 /**
  * WhatsApp team alert when a session becomes COMPLETED.
  * Idempotent via sessions.completionNotifiedAt (chat + voice race-safe).
@@ -19,11 +40,16 @@ const log = createLogger("completion-notify");
  */
 export async function notifySessionCompleted(supabase: Db, sessionId: string): Promise<void> {
   try {
+    if (!(await hadCandidateActivity(supabase, sessionId))) {
+      log.info("skip completion WA — no candidate activity", sessionId);
+      return;
+    }
     const claimedAt = new Date().toISOString();
     const { data: claimed, error: claimErr } = await supabase
       .from("sessions")
       .update({ completionNotifiedAt: claimedAt })
       .eq("id", sessionId)
+      .eq("status", "COMPLETED")
       .is("completionNotifiedAt", null)
       .select("id, interviewId, participantName, candidateId")
       .maybeSingle();
@@ -33,6 +59,17 @@ export async function notifySessionCompleted(supabase: Db, sessionId: string): P
       return;
     }
     if (!claimed?.interviewId) return;
+
+    const { count: recent } = await supabase
+      .from("sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("interviewId", claimed.interviewId)
+      .neq("id", sessionId)
+      .gte("completionNotifiedAt", new Date(Date.now() - COMPLETION_NOTIFY_WINDOW_MS).toISOString());
+    if ((recent ?? 0) >= COMPLETION_NOTIFY_MAX_PER_WINDOW) {
+      log.warn("skip completion WA — per-interview cap reached", claimed.interviewId);
+      return;
+    }
 
     const { data: interview } = await supabase
       .from("interviews")

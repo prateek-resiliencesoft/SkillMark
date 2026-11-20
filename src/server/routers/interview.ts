@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import { effectiveIntegrityConfig, type IntegrityConfigInput } from "@/lib/integrity/config";
+import { projectInterviewForCandidate } from "@/lib/session-redact";
 import {
   assertMinRole,
   filterAccessibleProjectIds,
@@ -14,6 +15,7 @@ import {
   protectedProcedure,
   publicProcedure,
   router,
+  type MemberRole,
 } from "../trpc";
 
 function emptyDashboard() {
@@ -65,6 +67,7 @@ async function getInterviewWithAccess(
   supabase: Parameters<typeof getOrgMembership>[0],
   interviewId: string,
   userId: string,
+  options: { write?: boolean } = {},
 ) {
   const { data: interview } = await supabase
     .from("interviews")
@@ -83,6 +86,7 @@ async function getInterviewWithAccess(
     supabase,
     project.organizationId,
     userId,
+    options,
   );
 
   if (!membership) return null;
@@ -98,6 +102,39 @@ async function getInterviewWithAccess(
   );
 
   return { interview, orgId: project.organizationId, role: effectiveRole };
+}
+
+/** Project must belong to one of `orgIds` (when given) and pass the project ACL. */
+async function projectInScope(
+  supabase: Parameters<typeof getOrgMembership>[0],
+  projectId: string,
+  userId: string,
+  orgIds?: string[],
+): Promise<boolean> {
+  if (orgIds) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("organizationId")
+      .eq("id", projectId)
+      .maybeSingle();
+    if (!project || !orgIds.includes(project.organizationId as string)) return false;
+  }
+  return hasProjectAccess(supabase, projectId, userId);
+}
+
+/** MEMBERs may only change interviews they created (same rule as interview.update). */
+function assertCanEditInterview(
+  result: { role: MemberRole; interview: { userId?: string | null } },
+  userId: string,
+) {
+  if (result.role === "MEMBER" && result.interview.userId !== userId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "You can only edit interviews you created. Ask an admin for broader access.",
+    });
+  }
+  assertMinRole(result.role, "MEMBER");
 }
 
 async function resolveDefaultProject(
@@ -163,10 +200,11 @@ export const interviewRouter = router({
         .limit(limit + 1);
 
       if (input?.projectId) {
-        const projAccess = await hasProjectAccess(
+        const projAccess = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          input.organizationId ? [input.organizationId] : undefined,
         );
         if (!projAccess) {
           throw new TRPCError({
@@ -327,10 +365,18 @@ export const interviewRouter = router({
         });
       }
 
-      // Omit sensitive invited candidate emails and system prompt from public view
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { invitedEmails: _omittedEmails, systemPrompt: _omittedPrompt, ...safeInterview } = interview;
-      return safeInterview;
+      // Invitees load questions through their personal link, never the public slug.
+      const safeInterview = projectInterviewForCandidate(interview, {
+        includeQuestions: !interview.requireInvite,
+      });
+      return {
+        ...safeInterview,
+        id: interview.id as string,
+        title: interview.title as string,
+        aiName: interview.aiName as string,
+        mode: interview.mode as string,
+        questions: safeInterview?.questions ?? [],
+      };
     }),
 
   create: protectedProcedure
@@ -428,6 +474,7 @@ export const interviewRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({
@@ -531,6 +578,7 @@ export const interviewRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({
@@ -661,6 +709,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -717,6 +766,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -760,6 +810,7 @@ export const interviewRouter = router({
             ctx.supabase,
             id,
             ctx.user.id,
+            { write: true },
           );
           if (!result) {
             throw new TRPCError({ code: "NOT_FOUND" });
@@ -775,6 +826,20 @@ export const interviewRouter = router({
             });
           }
           assertMinRole(result.role, "MEMBER");
+          if (result.role === "MEMBER") {
+            const { count } = await ctx.supabase
+              .from("sessions")
+              .select("*", { count: "exact", head: true })
+              .eq("interviewId", id)
+              .in("status", ["IN_PROGRESS", "COMPLETED"]);
+            if ((count ?? 0) > 0) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message:
+                  "Cannot delete an interview with active or completed sessions. Contact an admin.",
+              });
+            }
+          }
         }),
       );
 
@@ -789,11 +854,12 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
-      assertMinRole(result.role, "MEMBER");
+      assertCanEditInterview(result, ctx.user.id);
 
       const slug = result.interview.publicSlug ?? nanoid(10);
 
@@ -812,11 +878,12 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
-      assertMinRole(result.role, "MEMBER");
+      assertCanEditInterview(result, ctx.user.id);
 
       await ctx.supabase
         .from("interviews")
@@ -833,6 +900,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -979,10 +1047,11 @@ export const interviewRouter = router({
 
       let projectIds: string[];
       if (input?.projectId) {
-        const projAccess = await hasProjectAccess(
+        const projAccess = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          orgIds,
         );
         projectIds = projAccess ? [input.projectId] : [];
       } else {
@@ -1071,10 +1140,11 @@ export const interviewRouter = router({
 
       let projectIds: string[];
       if (input?.projectId) {
-        const ok = await hasProjectAccess(
+        const ok = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          orgIds,
         );
         projectIds = ok ? [input.projectId] : [];
       } else {

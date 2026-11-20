@@ -1,4 +1,5 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
+import { clientIp } from "@/lib/client-ip";
 import { getPublicUptimeStatus } from "@/lib/uptime/client";
 
 export const runtime = "nodejs";
@@ -10,14 +11,6 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Accept",
   "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
 };
-
-function clientIp(request: Request): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown"
-  );
-}
 
 export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
@@ -41,7 +34,6 @@ export async function GET(request: Request) {
         monitors: status.monitors.map((m) => ({
           id: m.id,
           name: m.name,
-          url: m.url,
           status: m.status,
           statusLabel: m.statusLabel,
           uptimeRatio: m.uptimeRatio,

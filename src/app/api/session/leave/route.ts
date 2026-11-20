@@ -1,22 +1,19 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { gateCandidateSession, rejectCrossSiteRequest } from "@/lib/session-access";
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
   try {
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
     const body = await req.json().catch(() => null);
-    const sessionId = body?.sessionId;
-    if (!sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    }
+    const gate = await gateCandidateSession(req, body?.sessionId, "id, status, supersededAt, capabilityRequired, activitySegments");
+    if (!gate.ok) return gate.response;
+    const { session } = gate;
 
-    const { data: session } = await supabaseAdmin
-      .from("sessions")
-      .select("activitySegments")
-      .eq("id", sessionId)
-      .single();
-
-    if (!session) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    // Ended sessions keep their final activity record.
+    if (session.status !== "IN_PROGRESS" || session.supersededAt) {
+      return NextResponse.json({ ok: true, ignored: true });
     }
 
     const segments = (session.activitySegments as { enteredAt: string; leftAt: string | null }[]) ?? [];
@@ -29,7 +26,8 @@ export async function POST(req: Request) {
     await supabaseAdmin
       .from("sessions")
       .update({ activitySegments: updated, lastActivityAt: now })
-      .eq("id", sessionId);
+      .eq("id", session.id)
+      .eq("status", "IN_PROGRESS");
 
     return NextResponse.json({ ok: true });
   } catch {

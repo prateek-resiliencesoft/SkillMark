@@ -1,5 +1,7 @@
 import { getAuthUser } from "@/lib/auth";
+import { aiOrgAccessResponse, authorizeAiOrg } from "@/lib/ai/org-access";
 import { resolveTaskModels } from "@/lib/ai/registry";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("api/ai/generate");
@@ -38,7 +40,16 @@ export async function POST(req: Request) {
     return new Response(JSON.stringify({ error: "Description is required" }), { status: 400 });
   }
 
-  const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
+  let orgId: string | undefined;
+  try {
+    orgId = await authorizeAiOrg(supabaseAdmin, user.id, organizationId);
+  } catch (err) {
+    const denied = aiOrgAccessResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
+
+  const { provider, generatorModel } = await resolveTaskModels(orgId, "generate");
   const messages = buildGeneratorPrompt(
     description,
     durationMinutes,

@@ -1,11 +1,11 @@
 import { ACTIVE_ORG_COOKIE } from "@/lib/active-org";
 import { readAccountTokens, setAccountsCookie, withAccount } from "@/lib/auth-accounts";
-import { SESSION_COOKIE, sessionCookieOptions, signSession } from "@/lib/auth-session";
-import { checkRateLimit } from "@/lib/api-rate-limit";
-import { createUser, ensureProfileRow, findUserByEmail, verifyLogin } from "@/lib/users";
+import { SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth-session";
+import { checkPasswordAttemptLimit, checkRateLimit, PASSWORD_ATTEMPT_WINDOW_MS } from "@/lib/api-rate-limit";
+import { createUser, ensureProfileRow, findUserByEmail, issueSessionToken, verifyLogin } from "@/lib/users";
 import { acceptOrgInviteForUser } from "@/server/accept-org-invite";
 import { authenticateForInviteEmail } from "@/server/invite-join-auth";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { TRPCError } from "@trpc/server";
 import { cookies } from "next/headers";
@@ -24,6 +24,8 @@ export async function POST(req: Request) {
   if (token.length < 8 || token.length > 64) {
     return NextResponse.json({ error: "Invalid invite link" }, { status: 400 });
   }
+  const tokenLimited = checkRateLimit(`auth:invite-join:token:${token}`, 10, PASSWORD_ATTEMPT_WINDOW_MS);
+  if (tokenLimited) return tokenLimited;
 
   const { data: invite } = await supabaseAdmin
     .from("organization_invites")
@@ -37,6 +39,9 @@ export async function POST(req: Request) {
       { status: 404 },
     );
   }
+
+  const accountLimited = checkPasswordAttemptLimit(String(invite.email));
+  if (accountLimited) return accountLimited;
 
   const authResult = await authenticateForInviteEmail(
     { email: String(invite.email), password, name },
@@ -52,7 +57,7 @@ export async function POST(req: Request) {
 
   try {
     const joined = await acceptOrgInviteForUser(supabaseAdmin, authResult.user, token);
-    const sessionToken = await signSession(authResult.user);
+    const sessionToken = await issueSessionToken(authResult.user);
     const res = NextResponse.json({
       user: authResult.user,
       organizationId: joined.organizationId,

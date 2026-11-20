@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { DEFAULT_NEXT_PATH, safeNextPath } from "@/lib/safe-next";
 import { createClient } from "@/lib/supabase/client";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -33,17 +34,14 @@ interface AuthSplitViewProps {
 export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const rawNext = searchParams.get("next");
-  const nextUrl =
-    rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") && !rawNext.includes("://")
-      ? rawNext
-      : "/dashboard";
+  const validNext = safeNextPath(searchParams.get("next"), "");
+  const nextUrl = validNext || DEFAULT_NEXT_PATH;
   const addMode = searchParams.has("add");
   const prefillEmail = searchParams.get("email") ?? "";
   const sessionExpired = searchParams.get("reason") === "session_expired";
   const nextQuery = (() => {
     const q = new URLSearchParams();
-    if (rawNext && nextUrl === rawNext) q.set("next", rawNext);
+    if (validNext) q.set("next", validNext);
     if (addMode) q.set("add", "1");
     if (prefillEmail) q.set("email", prefillEmail);
     const str = q.toString();

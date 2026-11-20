@@ -1,10 +1,11 @@
 import { getAuthUser } from "@/lib/auth";
+import { canonicalMimeForDetected, normaliseDetected, sniffFileType } from "@/lib/forms/schema";
 import { createLogger } from "@/lib/logger";
 import { isStorageCapError } from "@/lib/storage-cap";
 import { cvObjectName, mediaObjectKey } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { FILES_BUCKET } from "@/server/integrations/applications";
-import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
+import { authorizeCandidateCvUpload } from "@/server/batch-access";
 
 const log = createLogger("api/batches/upload-cv");
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -24,30 +25,13 @@ export async function POST(req: Request) {
     return Response.json({ error: "File too large (max 20MB)" }, { status: 413 });
   }
 
-  const { data: candidate } = await supabaseAdmin
-    .from("candidates")
-    .select(
-      "id, name, email, profile, interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))",
-    )
-    .eq("id", candidateId)
-    .maybeSingle();
-
-  if (!candidate) return Response.json({ error: "Candidate not found" }, { status: 404 });
-
-  const interview = candidate.interview as unknown as {
-    id: string;
-    projectId: string;
-    project: { id: string; organizationId: string };
-  };
-  const orgId = interview.project.organizationId;
-  const membership = await getOrgMembership(supabaseAdmin, orgId, user.id);
-  if (!membership) return Response.json({ error: "Forbidden" }, { status: 403 });
-  const access = await hasProjectAccess(supabaseAdmin, interview.projectId, user.id);
-  if (!access) return Response.json({ error: "Forbidden" }, { status: 403 });
+  const auth = await authorizeCandidateCvUpload(supabaseAdmin, candidateId, user.id);
+  if (!auth.ok) return Response.json({ error: auth.error }, { status: auth.status });
+  const { candidate, orgId, projectId } = auth;
 
   const path = mediaObjectKey({
     orgId,
-    projectId: interview.projectId,
+    projectId,
     candidateId,
     candidateName: candidate.name,
     candidateEmail: candidate.email as string | null,
@@ -56,10 +40,13 @@ export async function POST(req: Request) {
   });
 
   const buffer = Buffer.from(await file.arrayBuffer());
+  const contentType = canonicalMimeForDetected(
+    normaliseDetected(sniffFileType(new Uint8Array(buffer)), file.name),
+  );
   const { error: uploadError } = await supabaseAdmin.storage
     .from(FILES_BUCKET)
     .upload(path, buffer, {
-      contentType: file.type || "application/octet-stream",
+      contentType,
       upsert: true,
     });
   if (uploadError) {
@@ -78,7 +65,7 @@ export async function POST(req: Request) {
         ...prev,
         fileName: file.name,
         cvPath: path,
-        cvType: file.type || "application/octet-stream",
+        cvType: contentType,
         cvSize: file.size,
       },
     })

@@ -8,7 +8,14 @@ import { errorSignature, sanitizeContext, redactSecrets, type SessionErrorEntry 
 const log = createLogger("session-error-log");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function recordSessionErrors(entries: SessionErrorEntry[]): Promise<void> {
+/**
+ * `reopenGroups: false` for candidate-browser reports: anyone holding a session can
+ * write those, so they must not flip platform-wide resolved error groups back open.
+ */
+export async function recordSessionErrors(
+  entries: SessionErrorEntry[],
+  opts: { reopenGroups?: boolean } = {},
+): Promise<void> {
   const rows = entries
     .filter((e) => e.sessionId && UUID_RE.test(e.sessionId))
     .map((e) => {
@@ -34,6 +41,7 @@ export async function recordSessionErrors(entries: SessionErrorEntry[]): Promise
       log.warn(`Could not store session error log: ${error.message}`);
       return;
     }
+    if (opts.reopenGroups === false) return;
     // A group marked resolved that errors again goes back to open.
     const signatures = Array.from(new Set(rows.map((r) => r.signature)));
     const { error: reopenError } = await supabaseAdmin
@@ -47,8 +55,8 @@ export async function recordSessionErrors(entries: SessionErrorEntry[]): Promise
   }
 }
 
-export function recordSessionError(entry: SessionErrorEntry): Promise<void> {
-  return recordSessionErrors([entry]);
+export function recordSessionError(entry: SessionErrorEntry, opts?: { reopenGroups?: boolean }): Promise<void> {
+  return recordSessionErrors([entry], opts);
 }
 
 type FailoverLike = {

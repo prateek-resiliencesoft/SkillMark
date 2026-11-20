@@ -10,7 +10,7 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:read");
   if (isAuthError(auth)) return auth;
 
   const { id } = await params;
@@ -85,7 +85,7 @@ export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:write");
   if (isAuthError(auth)) return auth;
 
   const { id } = await params;
@@ -238,7 +238,7 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:write");
   if (isAuthError(auth)) return auth;
 
   const { id } = await params;
