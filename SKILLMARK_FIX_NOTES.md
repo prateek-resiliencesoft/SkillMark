@@ -265,3 +265,81 @@ Still nothing committed, pushed or deployed; `.env*` untouched.
 ## Known trade-offs
 - Gemini quota is per model; the chain only tries the first model per key, so a key out of quota for `gemini-3.5-flash` is not retried on another Gemini model for this route (that retry was the main time sink).
 - Vision quota/auth on a PDF with a text layer still returns text + warning, then profile extraction reports the quota error if it also fails.
+
+---
+
+# Pass 5 — Microphone VU meter (candidate voice interview)
+
+UI-only feature on branch `feat/mic-vu-meter`. No change to transcription, recording, VAD/endpointing, interview flow, AI logic or scoring. No new dependency.
+
+## Architecture findings (Step 0)
+- **Candidate screens**: `src/components/session/voice-interface.tsx` (voice interview; bottom Zoom-like control bar, optional chat) and `interviewee-onboarding.tsx` (pre-flight: camera test + mic test with its own `getUserMedia`, level bar, Silero VAD, pass/fail via `lib/voice/mic-test-check.ts`).
+- **Mic stream**: one `getUserMedia({audio:{sampleRate:16000, channelCount:1, echoCancellation, noiseSuppression, autoGainControl}})` in `useVoice.startListening()` (`src/hooks/use-voice.ts`). Stored in `mediaStreamRef`. The same stream feeds (a) a 16 kHz `AudioContext` + `ScriptProcessor` (4096) that converts float32 → PCM hex and sends `{type:"audio"}` over the relay WebSocket (Gemini/OpenAI live relay does the STT), (b) Silero VAD (`getStream: mediaStreamRef.current`), (c) `useInterviewRecording.attachMicStream` (own `AudioContext` → `MediaStreamDestination` → `MediaRecorder`), (d) `use-integrity-monitor` (passive analyser, precedent for this approach).
+- **Mute** = `stopListening()`: stops the tracks, nulls `mediaStreamRef`, `isListening=false`. Unmute = a **new** `getUserMedia` (new stream object). So the meter must follow the stream identity, not hold one.
+- **Turn state exposed**: `isSpeaking` (AI audio), `isProcessing`, `isTransitioning`, `isListening`. Used for "candidate is expected to speak".
+- **Existing visuals** (mic-icon fill, onboarding level bar) use `voice.audioLevel` React state per audio chunk; left untouched.
+- **Pre vs post processing**: there is no gain/resample node in the transcription chain besides the browser's own constraints (echo cancel / NS / AGC are applied inside `getUserMedia`, before the stream exists) and the ScriptProcessor float→PCM copy. The meter taps **the same `MediaStream`** via its own `AudioContext` + `createMediaStreamSource`. So it measures exactly what the transcription path receives (post-browser-processing). Tapping the ScriptProcessor output would have required editing `use-voice.ts` (forbidden here) and adds nothing since that node does not alter level. Consequence: with AGC on, "increase your microphone volume" advice has limited effect in browsers that auto-gain; the meter still shows the truth.
+- **Stream is mono** (`channelCount: 1`), so the meter mirrors the single channel on both bars and shows a small `MONO` tag. A real stereo track (`getSettings().channelCount >= 2`) is split with `ChannelSplitterNode` (code path present; not reachable with the current constraints).
+- Never a second `getUserMedia`: the component receives the existing stream by prop.
+
+## Files changed
+- New `src/lib/audio/level-thresholds.ts` — single exported `LEVEL_CONFIG` (bands, windows, ballistics, messages).
+- New `src/lib/audio/level-math.ts` — `rmsToDbfs`, `measureBuffer`, `classifyLevel`, `classifyWithHysteresis`, `dbToFraction`, `formatDb`, `Ballistics`, `PeakHold`.
+- New `src/lib/audio/level-guidance.ts` — pure `LevelGuidance` state machine (time injected, no DOM).
+- New `src/hooks/use-microphone-level.ts` — Web Audio tap + rAF loop; per-frame data goes to `subscribe` listeners, React state only on coarse status/warning change.
+- New `src/components/interview/MicrophoneLevelMeter.tsx` — segmented L/R bars drawn via direct style writes (CSS gradient + `clip-path`), dBFS scale, dB readout, peak-hold tick, status dot + label, `MONO` tag, warning pill.
+- Edited `src/components/session/voice-interface.tsx` — mounts the meter (desktop: control bar left of the mic button; mobile: slim row above the control bar since the bar is full at 360px); tracks `micDenied` / `micWasOn` for status. No pipeline code touched.
+- New `tests/mic-level-meter.test.ts` (15 tests), added to `test:web` in `package.json`.
+
+## Where it appears
+Voice interview, whenever connected and not in `preview`. Always visible, ~44px tall. Not mounted in the pre-flight mic test (that screen owns a separate stream/state and a pass/fail check; kept out as not low-risk). Chat-only interviews have no mic, so no meter.
+
+## Behaviour and thresholds (`LEVEL_CONFIG`)
+| Level (dBFS) | Band | Status |
+|---|---|---|
+| < -45 | too quiet | red, "Quiet" |
+| -45 … -30 | very quiet | yellow, "Quiet" |
+| -30 … -12 | good | green, "Good" |
+| -12 … -6 | getting loud | yellow, "Loud" |
+| ≥ -6 | may clip | red, "Loud" |
+
+- Bar segments are FL-style: green up to -12, yellow to -6, red above. Band colours drive the status dot. A thin green line on the scale marks the -30…-12 target zone.
+- dBFS = `20·log10(rms)` from `getFloatTimeDomainData` (fftSize 2048); `rms < 1e-8`/NaN → -90 floor; UI never sees NaN/Infinity.
+- Ballistics: attack τ 25 ms, release 30 dB/s. Peak hold 1.5 s then 20 dB/s decay.
+- Status uses the loudest level of the last 2.5 s with 2 dB hysteresis (no flicker between sentences).
+- **Too quiet** warning: only while the candidate is expected to speak (`isListening && !isSpeaking && !isProcessing && !isTransitioning`; window restarts each turn); ≥15 % of frames voiced (> -55 dBFS) over 4 s and the 85th percentile of voiced frames < -30 dBFS. Clears when the median voiced level over 1 s is ≥ -30.
+- **Too loud** warning: ≥50 % of voiced frames over 1.5 s have RMS ≥ -6 or sample peak ≥ -0.5 dBFS. A single peak never triggers. Clears after ~1 s.
+- Total silence on the candidate's turn gives **no banner**; after 10 s only the label changes to "No signal" (thinking pauses are normal).
+- Muted / disconnected / no permission: red status + pill immediately. Sources: app mute (stream gone), `track.enabled=false`, track `mute`/`unmute`/`ended`, `devicechange`, 250 ms poll for missed events, `getUserMedia` permission/NotAllowed error.
+- AudioContext: own context, never connected to destination, closed on cleanup; shared tracks are never stopped/modified. `suspended` → resumed on statechange, tab visible, pointerdown, keydown. Background-tab gaps >1 s reset the guidance history.
+
+## Test results
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: 0 errors (pre-existing warnings only; none in touched files).
+- `TZ=UTC npm run test:web`: 533 pass, 0 fail (15 new).
+- New tests cover: `rmsToDbfs` silence/NaN/Infinity, band boundaries, hysteresis, peak hold/decay, ballistics, brief pauses don't warn, ~4 s quiet warns (not at 3 s), recovery clears (a short blip doesn't), no warning while AI talks, silence → no banner + subtle hint, sustained loud warns / single peak doesn't, near-clip peaks, muted/disconnected/no-permission immediate, background-tab gap reset.
+- Not automated: the Web Audio hook and visual (no browser harness for the candidate screen in this repo). Not exercised in a real browser in this pass.
+
+## Manual QA checklist
+1. **Normal volume**: speak normally → bars mostly in green (-30…-12), status "Good", no pill, peak tick hangs ~1.5 s then falls.
+2. **Very low**: speak quietly / mic far away on your turn → status "Quiet"; after ~4 s the amber "too low" pill; speak louder for ~1 s → pill clears.
+3. **Very loud**: shout / mic gain up → red segments, "Loud"; "too loud" pill after ~1.5 s; a single clap/cough does not trigger it.
+4. **Silence**: say nothing on your turn → no pill; label becomes "No signal" after ~10 s. While the AI speaks, no quiet warning.
+5. **Pauses**: speak with 1–2 s gaps between sentences → no warning, no status flicker.
+6. **Mute mid-interview**: press Mute → bars drop, red "Muted" + pill instantly; Unmute → meter returns (new stream attaches), recording/transcription continue as before.
+7. **Unplug mic mid-interview**: unplug USB/headset → "Disconnected" + pill; plug back and press Unmute → recovers. Confirm the interview itself behaves exactly as before.
+8. **Permission denied**: block mic in the browser, start interview → "No permission" + pill (existing error toast still shows).
+9. **Headset mic**: switch device in OS → levels follow; Bluetooth headset shows mono tag and (often) low level with AGC.
+10. **Mobile browser** (iOS Safari + Android Chrome, 360 px wide): meter in slim row above the control bar, nothing overlaps the buttons; pill readable; tab away and back → meter resumes (tap if it stays flat on iOS).
+11. Dark and light theme; desktop width 1280 px; hardware mic-mute switch (track `mute` event) → "Muted".
+12. Confirm DevTools shows no extra `getUserMedia` prompt and CPU stays low (no per-frame React renders).
+
+## Known limitations
+- Mono only in practice (constraints request `channelCount: 1`); the stereo splitter path is untested on hardware.
+- Level is post-AGC/NS (browser constraints), so it reflects what STT receives, not the raw mic gain; with AGC the "increase mic volume" hint may not change much.
+- Echo from AI playback during the candidate's turn can raise the level; guidance only runs while the AI is not speaking/thinking, with the usual ~500 ms tail.
+- A very noisy room (> -55 dBFS noise floor) counts as "voice activity"; the 85th-percentile rule limits false "too quiet" warnings but a constant noise floor can still mask a quiet speaker.
+- Muted state is shown only after the mic has been on once (avoids a "Muted" flash before auto-start).
+- iOS Safari may keep a second AudioContext suspended until a tap; the meter then stays flat until the user touches the page.
+- Pre-flight mic test not given the meter (separate stream and flow); would be a follow-up (pass its `micStreamRef` through state).
+- `graphify` CLI/graph was not available in this environment, so exploration used grep.
