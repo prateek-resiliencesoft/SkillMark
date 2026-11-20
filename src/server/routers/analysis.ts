@@ -181,6 +181,7 @@ export const analysisRouter = router({
         interviewLanguage: interview.language ?? null,
         participantName: session.participantName,
         participantEmail: session.participantEmail,
+        candidateId: ((session as { candidateId?: string | null }).candidateId ?? null) as string | null,
         status: session.status,
         createdAt: session.createdAt,
         summary: session.summary,

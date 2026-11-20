@@ -163,22 +163,24 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 /**
  * Meta UTILITY template sent automatically when a candidate leaves a live
  * interview midway (session → ABANDONED). Body must match the approved template.
- * {{1}} candidate name, {{2}} project contact number, {{3}} invite link,
- * {{4}} link expiry date, {{5}} link expiry time, {{6}} organization name.
+ * {{1}} candidate name, {{2}} organization name, {{3}} project contact number,
+ * {{4}} invite link, {{5}} link expiry date, {{6}} link expiry time.
  */
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
-  // v2: body wording changed (restart, not resume) — Meta needs the new text approved under a new name.
-  name: "left_interview_followup_v2",
+  name: "interview_incomplete",
   category: "UTILITY",
   language: "en_US",
-  body: `Hi {{1}}, You left your interview in the middle. Is there any issue? If so, please contact us directly at {{2}}. Or you can restart your interview using this link: {{3}} This link is valid until your original interview link expires on {{4}} at {{5}}. Team {{6}}©`,
+  body: `Hi {{1}}, your interview with {{2}} is incomplete.
+For support, contact {{3}}.
+Restart link: {{4}}
+This link is valid until {{5}} at {{6}}. Please use the link above to continue.`,
   example: [
     "Priya Sharma",
+    "Acme Corp",
     "+919876543210",
     "https://app.example.com/i/invite/abc123xyz789",
     "Nov 26, 2026",
     "11:59 PM",
-    "Acme Corp",
   ],
 };
 
@@ -227,7 +229,7 @@ export function normalizeWhatsappPhone(raw: string | null | undefined): string |
 
 export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string): string[] {
   const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
-  return [v.name, v.supportPhone, v.link, date, time, v.organization];
+  return [v.name, v.organization, v.supportPhone, v.link, date, time];
 }
 
 /** Preview of the follow-up body with the given values (defaults to the Meta example). */
