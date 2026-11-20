@@ -1,9 +1,9 @@
 /**
  * Who may (re)generate a session report. Pure, unit-tested.
  *
- * Same scope as viewing the report (analysis.getSessionSummary): any member of
- * the interview's organization with access to its project. Viewers can read
- * but not spend AI credits. The interview's creator is always allowed.
+ * Same scope as viewing the report (analysis.getSessionSummary): any non-VIEWER member of
+ * the interview's organization with access to its project. Being the interview's creator
+ * grants nothing on its own — removed or downgraded creators lose access like anyone else.
  */
 export type ReportAccessInput = {
   userId: string;
@@ -16,7 +16,6 @@ export type ReportAccessInput = {
 export type ReportAccess = { ok: true } | { ok: false; status: 403; error: string };
 
 export function reportAccess(i: ReportAccessInput): ReportAccess {
-  if (i.interviewOwnerId && i.interviewOwnerId === i.userId) return { ok: true };
   if (!i.orgRole) return { ok: false, status: 403, error: "You are not a member of this organization" };
   if (i.orgRole === "VIEWER") return { ok: false, status: 403, error: "Viewers can't generate reports" };
   if (!i.hasProjectAccess) return { ok: false, status: 403, error: "You do not have access to this project" };

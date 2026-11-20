@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { createLogger } from "@/lib/logger";
+import { safeFetch } from "@/lib/network-security";
 import {
   geminiAcceptsTemperature,
   geminiModelChain,
@@ -16,17 +17,32 @@ const log = createLogger("ai/compatible");
  * fetch for the OpenAI SDK: Gemini's compat endpoint returns errors as a JSON
  * array, which the SDK reports as "(no body)". Re-shape it to `{error:{…}}`.
  */
-export const unwrappingFetch: typeof fetch = async (input, init) => {
-  const res = await fetch(input, init);
-  if (res.ok) return res;
-  const text = await res.text().catch(() => "");
-  const unwrapped = unwrapGeminiErrorBody(text);
-  const headers = new Headers(res.headers);
-  headers.delete("content-length");
-  headers.delete("content-encoding");
-  if (unwrapped) headers.set("content-type", "application/json");
-  return new Response(unwrapped ?? text, { status: res.status, statusText: res.statusText, headers });
-};
+function unwrapping(base: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    const res = await base(input, init);
+    if (res.ok) return res;
+    const text = await res.text().catch(() => "");
+    const unwrapped = unwrapGeminiErrorBody(text);
+    const headers = new Headers(res.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    if (unwrapped) headers.set("content-type", "application/json");
+    return new Response(unwrapped ?? text, { status: res.status, statusText: res.statusText, headers });
+  };
+}
+
+export const unwrappingFetch: typeof fetch = unwrapping((input, init) => fetch(input, init));
+
+const MAX_TENANT_LLM_RESPONSE_BYTES = 20 * 1024 * 1024;
+
+/** For tenant-configured base URLs: public https only, IP-pinned, redirects revalidated, size-capped. */
+export const guardedUnwrappingFetch: typeof fetch = unwrapping((input, init) =>
+  safeFetch(input instanceof Request ? input.url : String(input), {
+    ...init,
+    maxBytes: MAX_TENANT_LLM_RESPONSE_BYTES,
+    timeoutMs: 300_000,
+  }),
+);
 
 export type CompatibleProviderOptions = {
   id: string;
@@ -35,6 +51,8 @@ export type CompatibleProviderOptions = {
   defaultModel: string;
   apiKey: string;
   baseURL?: string;
+  /** baseURL is tenant-supplied; route requests through the SSRF guard. */
+  untrustedBaseUrl?: boolean;
 };
 
 /** OpenAI-compatible chat provider (OpenAI, Gemini OpenAI mode, NVIDIA NIM, Ollama, etc.). */
@@ -53,7 +71,7 @@ export class CompatibleOpenAIProvider implements LLMProvider {
     this.client = new OpenAI({
       apiKey: opts.apiKey || "unused",
       baseURL: opts.baseURL || undefined,
-      fetch: unwrappingFetch,
+      fetch: opts.untrustedBaseUrl ? guardedUnwrappingFetch : unwrappingFetch,
     });
   }
 

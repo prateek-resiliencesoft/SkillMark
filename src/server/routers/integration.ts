@@ -16,18 +16,39 @@ import {
   loadDeliveryConfig,
 } from "../invite-delivery";
 import { isPlatformAdmin } from "../tenant";
-import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
+import { assertMinRole, getOrgMembership, hasMinRole, protectedProcedure, router } from "../trpc";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 
+/** Returns true when the caller may manage integration credentials (ADMIN+ or platform admin). */
 async function requireOrgRole(
   supabase: Parameters<typeof getOrgMembership>[0],
   organizationId: string,
   userId: string,
   min: "VIEWER" | "ADMIN",
-) {
-  if (await isPlatformAdmin(supabase, userId)) return;
-  const membership = await getOrgMembership(supabase, organizationId, userId);
+): Promise<boolean> {
+  if (await isPlatformAdmin(supabase, userId)) return true;
+  const membership = await getOrgMembership(supabase, organizationId, userId, {
+    write: min !== "VIEWER",
+  });
   if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
   assertMinRole(membership.role, min);
+  return hasMinRole(membership.role, "ADMIN");
+}
+
+/** Org-configured outbound destinations must be public HTTPS hosts. */
+async function assertSafeOutboundUrl(raw: string, label: string, opts: { baseOnly?: boolean } = {}) {
+  try {
+    const url = await assertSafeRemoteUrl(raw);
+    if (url.username || url.password) throw new Error("URL must not contain credentials");
+    if (opts.baseOnly && (url.search || url.hash || raw.includes("?") || raw.includes("#"))) {
+      throw new Error("URL must not contain a query string or fragment");
+    }
+  } catch (err) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${label}: ${err instanceof Error ? err.message : "invalid URL"}`,
+    });
+  }
 }
 
 /** undefined = keep current, "" or null = clear, string = replace. */
@@ -35,7 +56,7 @@ const secretInput = z.string().max(500).nullable().optional();
 
 export const integrationRouter = router({
   get: protectedProcedure.input(z.object({ organizationId: z.string() })).query(async ({ ctx, input }) => {
-    await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "VIEWER");
+    const canManage = await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "VIEWER");
     const { data: row } = await ctx.supabase
       .from("org_integrations")
       .select("*")
@@ -69,7 +90,10 @@ export const integrationRouter = router({
         events: (row?.outboundWebhookEvents as string[]) ?? ["candidate.invited", "session.started", "session.completed"],
       },
       inboundWebhook: {
-        secret: (row?.inboundWebhookSecret as string | null) ?? "",
+        // The inbound secret alone authorizes candidate creation + invites: admins only.
+        secret: canManage ? ((row?.inboundWebhookSecret as string | null) ?? "") : "",
+        secretHint: maskSecret(row?.inboundWebhookSecret),
+        configured: !!row?.inboundWebhookSecret,
         endpointUrl: `${appBaseUrl()}/api/webhooks/candidates`,
       },
       templates: mergeTemplates(row?.messageTemplates),
@@ -111,6 +135,13 @@ export const integrationRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "ADMIN");
+
+      if (input.outboundWebhookUrl?.trim()) {
+        await assertSafeOutboundUrl(input.outboundWebhookUrl.trim(), "Outbound webhook URL");
+      }
+      if (input.resilioBaseUrl?.trim()) {
+        await assertSafeOutboundUrl(input.resilioBaseUrl.trim(), "ResilioHub base URL", { baseOnly: true });
+      }
 
       const patch: Record<string, unknown> = { organizationId: input.organizationId };
       const secret = (v: string | null | undefined) => (v === undefined ? undefined : v ? encryptSecret(v.trim()) : null);
@@ -224,6 +255,7 @@ export const integrationRouter = router({
       if (!cfg.outboundWebhook?.url) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Outbound webhook URL is not configured" });
       }
+      await assertSafeOutboundUrl(cfg.outboundWebhook.url, "Outbound webhook URL");
       const result = await dispatchOutboundWebhook({
         url: cfg.outboundWebhook.url,
         secret: cfg.outboundWebhook.secret,

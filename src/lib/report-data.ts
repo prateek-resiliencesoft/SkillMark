@@ -124,6 +124,21 @@ export function findAnswerExcerpt(
   return text.length > maxLen ? `${text.slice(0, maxLen).trimEnd()}…` : text;
 }
 
+/** Only signed `/api/files/…?token=` URLs minted by the server are rendered in reports. */
+export function isSignedFileUrl(url: unknown): url is string {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    const u = new URL(url, "http://local.invalid");
+    return (
+      (u.protocol === "http:" || u.protocol === "https:") &&
+      u.pathname.startsWith("/api/files/") &&
+      !!u.searchParams.get("token")
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Normalize the analysis.getSessionSummary payload for the report UI + PDF. */
 export function buildReportData(d: any): ReportData {
   const insights = d?.insights;
@@ -169,7 +184,7 @@ export function buildReportData(d: any): ReportData {
     title: d?.interviewTitle ?? "Interview",
     participantName: d?.participantName || d?.participantEmail || "Anonymous",
     participantEmail: d?.participantEmail ?? null,
-    avatarUrl: screenshots.find((s) => s.type === "camera")?.url ?? null,
+    avatarUrl: screenshots.find((s) => s?.type === "camera" && isSignedFileUrl(s.url))?.url ?? null,
     status: d?.status ?? null,
     createdAt: d?.createdAt ?? null,
     objective: d?.interviewObjective ?? null,

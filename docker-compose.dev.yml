@@ -103,9 +103,15 @@ services:
     memswap_limit: 192m
     cpus: "0.40"
     oom_score_adj: 800
+    depends_on:
+      rest:
+        condition: service_started
     env_file:
       - .env.dev
     environment:
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env.dev}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?set NEXT_PUBLIC_APP_URL in .env.dev}
+      POSTGREST_URL: http://rest:3000
       VOICE_RELAY_HOST: "0.0.0.0"
       VOICE_RELAY_PORT: "8082"
       OPENAI_VOICE_RELAY_PORT: "8082"

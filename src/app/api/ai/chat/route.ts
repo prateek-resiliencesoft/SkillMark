@@ -10,19 +10,41 @@ import { nextAskableQuestionIndex } from "@/lib/question-conditions";
 import { recordAiCallErrors } from "@/lib/session-error-log-server";
 import type { LLMMessage } from "@/lib/ai/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { assertActiveInterviewSession } from "@/lib/session-access";
+import { assertActiveInterviewSession, rejectCrossSiteRequest } from "@/lib/session-access";
+import { checkRateLimit } from "@/lib/api-rate-limit";
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { devanagariToRoman } from "@/lib/transcript/transliterate";
 
 const log = createLogger("api/ai/chat");
 
+const MAX_HISTORY_CHARS = 200_000;
+
+/** Client history may only carry candidate and interviewer turns — never "system". */
+const ChatRequest = z.object({
+  sessionId: z.string().min(1).max(64),
+  interviewId: z.string().min(1).max(64),
+  messages: z
+    .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(20_000) }))
+    .max(400)
+    .refine((ms) => ms.reduce((n, m) => n + m.content.length, 0) <= MAX_HISTORY_CHARS, "History too long"),
+  currentQuestionIndex: z.number().int().min(0).max(10_000).optional(),
+});
+
 export async function POST(req: Request) {
-  const { sessionId, interviewId, messages, currentQuestionIndex } =
-    await req.json();
+  const refused = rejectCrossSiteRequest(req, { json: true });
+  if (refused) return refused;
+  const parsed = ChatRequest.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
+  const { sessionId, interviewId, messages } = parsed.data;
+  const limited = checkRateLimit(`ai:chat:${sessionId}`, 30);
+  if (limited) return limited;
 
   let provider: Awaited<ReturnType<typeof resolveProvider>> | null = null;
   try {
-    const access = await assertActiveInterviewSession(sessionId, interviewId);
+    const access = await assertActiveInterviewSession(sessionId, interviewId, { req });
     if (!access.ok) {
       return NextResponse.json(
         { error: access.error },
@@ -53,18 +75,15 @@ export async function POST(req: Request) {
       task: taskFromFollowUpDepth(interview.followUpDepth as string | undefined),
     });
 
-    const conversationHistory: LLMMessage[] = messages.map(
-      (m: { role: "user" | "assistant"; content: string }) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }),
-    );
+    const questionCount = ((interview.questions ?? []) as unknown[]).length;
+    const currentQuestionIndex = Math.min(parsed.data.currentQuestionIndex ?? 0, questionCount);
+    const conversationHistory: LLMMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
 
     const promptMessages = buildInterviewerPrompt({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       interview: interview as any,
       conversationHistory,
-      currentQuestionIndex: currentQuestionIndex ?? 0,
+      currentQuestionIndex,
     });
 
     const probing = buildIntegrityProbingSection(
@@ -125,14 +144,8 @@ export async function POST(req: Request) {
         id: string;
         skipIf?: unknown;
       }[];
-      const priorUser = (messages as { role: string; content: string }[])
-        .filter((m) => m.role === "user")
-        .map((m) => m.content);
-      nextQuestionIndex = nextAskableQuestionIndex(
-        questions,
-        (currentQuestionIndex ?? 0) + 1,
-        priorUser,
-      );
+      const priorUser = messages.filter((m) => m.role === "user").map((m) => m.content);
+      nextQuestionIndex = nextAskableQuestionIndex(questions, currentQuestionIndex + 1, priorUser);
       const nextQuestion = questions[nextQuestionIndex];
       if (nextQuestion) {
         await supabaseAdmin

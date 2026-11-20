@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { createLogger } from "@/lib/logger";
+import { safeFetch, UnsafeUrlError } from "@/lib/network-security";
 
 const log = createLogger("messaging/webhooks");
 
@@ -66,12 +67,15 @@ export async function dispatchOutboundWebhook(opts: {
   }
 
   try {
-    const res = await fetch(opts.url, {
+    const res = await safeFetch(opts.url, {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(10_000),
+      redirect: "error",
+      maxBytes: 64 * 1024,
+      timeoutMs: 10_000,
     });
+    await res.body?.cancel().catch(() => {});
 
     if (!res.ok) {
       log.warn(`Outbound webhook to ${opts.url} returned HTTP ${res.status}`);
@@ -82,6 +86,9 @@ export async function dispatchOutboundWebhook(opts: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Outbound webhook dispatch failed";
     log.warn(`Outbound webhook dispatch to ${opts.url} failed: ${msg}`);
-    return { ok: false, error: msg };
+    if (err instanceof UnsafeUrlError) {
+      return { ok: false, error: "Webhook URL must be a public https:// address without redirects" };
+    }
+    return { ok: false, error: "Webhook request failed" };
   }
 }

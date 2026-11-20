@@ -1,5 +1,7 @@
 import { budgetSignal, describeAiFailure, PARSE_CV_BUDGET_MS, raceAbort } from "@/lib/ai/fail-fast";
+import { aiOrgAccessResponse, authorizeAiOrg } from "@/lib/ai/org-access";
 import { getAuthUser } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { extractCandidateProfile } from "@/lib/documents/cv-profile";
 import { extractDocument, MAX_DOCUMENT_BYTES } from "@/lib/documents/extract";
 import { createLogger } from "@/lib/logger";
@@ -17,7 +19,18 @@ export async function POST(req: Request) {
   const form = await req.formData();
   const file = form.get("file");
   const defaultCountryCode = (form.get("defaultCountryCode") as string | null)?.trim() || undefined;
-  const organizationId = (form.get("organizationId") as string | null)?.trim() || undefined;
+  let organizationId: string | undefined;
+  try {
+    organizationId = await authorizeAiOrg(
+      supabaseAdmin,
+      user.id,
+      (form.get("organizationId") as string | null)?.trim() || undefined,
+    );
+  } catch (err) {
+    const denied = aiOrgAccessResponse(err);
+    if (denied) return denied;
+    throw err;
+  }
   if (!(file instanceof File)) return Response.json({ error: "No file provided" }, { status: 400 });
   if (file.size > MAX_DOCUMENT_BYTES) {
     return Response.json({ error: `File is larger than ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB` }, { status: 413 });

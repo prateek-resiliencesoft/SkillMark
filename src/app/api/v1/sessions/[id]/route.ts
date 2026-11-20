@@ -17,7 +17,7 @@ async function legacyGet(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, ["sessions:read", "results:read", "transcripts:read"]);
   if (isAuthError(auth)) return auth;
 
   const { id: sessionId } = await params;
@@ -52,12 +52,12 @@ async function legacyGet(
     return apiError("FORBIDDEN", "You do not have access to this session", 403);
   }
 
-  const messages = (session.messages ?? []) as {
+  const messages = ((session.messages ?? []) as {
     id: string;
     role: string;
     content: string;
     timestamp: string;
-  }[];
+  }[]).filter((m) => m.role === "USER" || m.role === "ASSISTANT");
 
   return Response.json({
     data: {

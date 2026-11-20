@@ -1,5 +1,6 @@
 import { ACTIVE_ORG_COOKIE } from "@/lib/active-org";
 import { SESSION_COOKIE } from "@/lib/auth-session";
+import { safeNextPath } from "@/lib/safe-next";
 import { NextResponse } from "next/server";
 
 /**
@@ -11,14 +12,8 @@ export async function GET(request: Request) {
   const next = url.searchParams.get("next");
   const login = new URL("/login", url.origin);
   login.searchParams.set("reason", "session_expired");
-  if (
-    next &&
-    next.startsWith("/") &&
-    !next.startsWith("//") &&
-    !next.includes("://")
-  ) {
-    login.searchParams.set("next", next);
-  }
+  const safe = safeNextPath(next, "");
+  if (safe) login.searchParams.set("next", safe);
 
   const res = NextResponse.redirect(login);
   res.cookies.delete(SESSION_COOKIE);

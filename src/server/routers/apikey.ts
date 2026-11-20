@@ -5,6 +5,7 @@ import { API_KEY_SCOPES, generateApiKey } from "@/lib/api-keys";
 import type { MemberRole } from "../trpc";
 import { TRPCError } from "@trpc/server";
 import { deleteOrgApiKey } from "../api-key-admin";
+import { requireOrgAccess } from "../tenant";
 
 
 /** Org API keys are managed by org admins and owners only. */
@@ -12,6 +13,19 @@ async function requireOrgAdmin(supabase: Context["supabase"], organizationId: st
   const m = await getOrgMembership(supabase, organizationId, userId);
   if (!m) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
   assertMinRole(m.role as MemberRole, "ADMIN");
+}
+
+/** Minting a key hands out org-wide access, so it needs ADMIN+ in an ACTIVE org. */
+async function requireKeyIssuer(supabase: Context["supabase"], organizationId: string, userId: string) {
+  await requireOrgAccess(supabase, organizationId, userId, { minRole: "ADMIN", requireActive: true });
+}
+
+/** Revoked and expired keys stay dead: rotation must never resurrect them. */
+function assertRotatable(key: { isActive?: unknown; revokedAt?: unknown; expiresAt?: unknown }) {
+  const expired = !!key.expiresAt && new Date(key.expiresAt as string) < new Date();
+  if (!key.isActive || key.revokedAt || expired) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Revoked or expired keys can't be rotated. Create a new key instead." });
+  }
 }
 
 async function insertOrgKey(
@@ -56,10 +70,11 @@ export const apiKeyRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      if (input.organizationId) {
-        const m = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
-        if (!m) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      // Kept optional in the schema for older callers, but unbound keys are no longer issued.
+      if (!input.organizationId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Choose an organization for this API key." });
       }
+      await requireKeyIssuer(ctx.supabase, input.organizationId, ctx.user.id);
       const { key, hash, prefix } = generateApiKey(input.environment);
       const { data: apiKey, error } = await ctx.supabase
         .from("api_keys")
@@ -70,7 +85,7 @@ export const apiKeyRouter = router({
           keyPrefix: prefix,
           environment: input.environment,
           scopes: input.scopes,
-          organizationId: input.organizationId ?? null,
+          organizationId: input.organizationId,
           expiresAt: input.expiresAt ?? null,
         })
         .select("id")
@@ -86,11 +101,16 @@ export const apiKeyRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: old } = await ctx.supabase
         .from("api_keys")
-        .select("id, name, environment, scopes, organizationId, expiresAt")
+        .select("id, name, environment, scopes, organizationId, expiresAt, isActive, revokedAt")
         .eq("id", input.id)
         .eq("userId", ctx.user.id)
         .single();
       if (!old) throw new TRPCError({ code: "NOT_FOUND" });
+      assertRotatable(old);
+      if (!old.organizationId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "This older key isn't tied to an organization. Create a new organization key instead." });
+      }
+      await requireKeyIssuer(ctx.supabase, old.organizationId as string, ctx.user.id);
       const { key, hash, prefix } = generateApiKey(old.environment === "test" ? "test" : "live");
       const { data: created, error } = await ctx.supabase
         .from("api_keys")
@@ -188,7 +208,7 @@ export const apiKeyRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      await requireKeyIssuer(ctx.supabase, input.organizationId, ctx.user.id);
       const { key, hash, prefix } = generateApiKey(input.environment);
       const id = await insertOrgKey(ctx.supabase, {
         userId: ctx.user.id,
@@ -237,14 +257,15 @@ export const apiKeyRouter = router({
   orgRotate: protectedProcedure
     .input(z.object({ organizationId: z.string().uuid(), id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      await requireKeyIssuer(ctx.supabase, input.organizationId, ctx.user.id);
       const { data: old } = await ctx.supabase
         .from("api_keys")
-        .select("id, name, environment, scopes, expiresAt")
+        .select("id, name, environment, scopes, expiresAt, isActive, revokedAt")
         .eq("id", input.id)
         .eq("organizationId", input.organizationId)
         .maybeSingle();
       if (!old) throw new TRPCError({ code: "NOT_FOUND", message: "Key not found" });
+      assertRotatable(old);
       const { key, hash, prefix } = generateApiKey(old.environment === "test" ? "test" : "live");
       const id = await insertOrgKey(ctx.supabase, {
         userId: ctx.user.id,

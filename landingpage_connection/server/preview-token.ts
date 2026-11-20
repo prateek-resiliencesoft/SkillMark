@@ -1,14 +1,19 @@
+import { hkdfSync } from 'node:crypto'
 import { SignJWT, jwtVerify } from 'jose'
 
 const PURPOSE = 'landing-preview'
 
-/** Fail closed — never fall back to a known default (that would let anyone forge preview tokens). */
+/**
+ * Fail closed — never fall back to a known default (that would let anyone forge preview tokens).
+ * Derived subkey: session JWTs are signed with AUTH_SECRET itself, so preview tokens must never
+ * share that key or they would verify as login sessions.
+ */
 function key() {
   const secret = process.env.AUTH_SECRET
   if (!secret || secret.length < 32) {
     throw new Error('AUTH_SECRET must be set (32+ chars) to sign landing preview tokens')
   }
-  return new TextEncoder().encode(secret)
+  return new Uint8Array(hkdfSync('sha256', secret, 'skillmark', 'landing-preview-token/v1', 32))
 }
 
 /** Short-lived token so "Preview in new tab" can read the draft without admin cookies. */

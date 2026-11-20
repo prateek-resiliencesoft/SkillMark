@@ -3,10 +3,10 @@ import { recordAiCallErrors } from "@/lib/session-error-log-server";
 import { getAuthUser } from "@/lib/auth";
 import { reportAccess } from "@/lib/report-access";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { generateSummaryForSession } from "@/lib/session-summary";
-import { setReportStatus } from "@/lib/session-report-server";
-import { withReportTimeout } from "@/lib/session-report-policy";
-import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
+import { runReportWithTimeout, setReportStatus } from "@/lib/session-report-server";
+import { hasProjectAccess } from "@/server/trpc";
+import { requireOrgAccess, type MemberRole } from "@/server/tenant";
+import { TRPCError } from "@trpc/server";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/ai/summarize");
@@ -52,12 +52,22 @@ export async function POST(req: Request) {
   }
 
   const orgId = interview.project?.organizationId ?? null;
-  const membership = orgId ? await getOrgMembership(supabaseAdmin, orgId, user.id) : null;
+  let orgRole: MemberRole | null = null;
+  if (orgId) {
+    try {
+      const { membership } = await requireOrgAccess(supabaseAdmin, orgId, user.id, { minRole: "MEMBER" });
+      orgRole = membership.role;
+    } catch (err) {
+      if (!(err instanceof TRPCError)) throw err;
+      return NextResponse.json({ error: err.message }, { status: 403 });
+    }
+  }
+  const projectAccess = !!interview.projectId && (await hasProjectAccess(supabaseAdmin, interview.projectId, user.id));
   const access = reportAccess({
     userId: user.id,
     interviewOwnerId: interview.userId,
-    orgRole: membership?.role ?? null,
-    hasProjectAccess: interview.projectId ? await hasProjectAccess(supabaseAdmin, interview.projectId, user.id) : false,
+    orgRole,
+    hasProjectAccess: projectAccess,
   });
   if (!access.ok) {
     return NextResponse.json({ error: access.error }, { status: access.status });
@@ -65,7 +75,7 @@ export async function POST(req: Request) {
 
   try {
     await setReportStatus(sessionId, "GENERATING", { reportStartedAt: new Date().toISOString(), reportError: null });
-    const outcome = await withReportTimeout(generateSummaryForSession(sessionId));
+    const outcome = await runReportWithTimeout(sessionId);
 
     if (outcome === "capture_failure") {
       await setReportStatus(sessionId, "READY", { reportError: null });

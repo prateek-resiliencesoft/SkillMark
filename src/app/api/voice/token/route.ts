@@ -15,6 +15,7 @@ export async function POST(req: Request) {
     const access = await assertActiveInterviewSession(
       body.sessionId,
       body.interviewId,
+      { req },
     );
     if (!access.ok) {
       return NextResponse.json(

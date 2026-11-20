@@ -5,7 +5,7 @@ import { reportAccess } from "@/lib/report-access";
 import { isReportStuck, REPORT_LOCK_STALE_MS, withReportTimeout } from "@/lib/session-report-policy";
 
 test("reportAccess: org members with project access can generate, not only the creator", () => {
-  assert.deepEqual(reportAccess({ userId: "u1", interviewOwnerId: "u1", orgRole: null, hasProjectAccess: false }), { ok: true });
+  assert.deepEqual(reportAccess({ userId: "u1", interviewOwnerId: "u1", orgRole: "MEMBER", hasProjectAccess: true }), { ok: true });
   // The live bug: a teammate (not the creator) got 404 from /api/ai/summarize.
   assert.deepEqual(reportAccess({ userId: "u2", interviewOwnerId: "u1", orgRole: "MEMBER", hasProjectAccess: true }), { ok: true });
   assert.deepEqual(reportAccess({ userId: "u2", interviewOwnerId: "u1", orgRole: "ADMIN", hasProjectAccess: true }), { ok: true });

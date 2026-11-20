@@ -4,6 +4,7 @@ import { assessIntegrity, type IntegritySignal } from "@/lib/integrity/signals";
 import {
   objectPathFromSignedUrl,
   pathBelongsToSession,
+  type SessionStorageScope,
 } from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -16,15 +17,32 @@ interface ScreenshotEntry {
   type: "camera" | "screen";
 }
 
+/** The session's project + media folder, which bound the storage paths it may reference. */
+export async function loadSessionStorageScope(sessionId: string): Promise<SessionStorageScope> {
+  const { data } = await supabaseAdmin
+    .from("sessions")
+    .select("mediaStoragePrefix, interview:interviews!inner(projectId)")
+    .eq("id", sessionId)
+    .maybeSingle();
+  const row = data as { mediaStoragePrefix?: string | null; interview?: { projectId?: string | null } | null } | null;
+  return {
+    projectId: row?.interview?.projectId ?? null,
+    mediaStoragePrefix: row?.mediaStoragePrefix ?? null,
+  };
+}
+
 /**
- * Re-sign only when the object path is owned by this session's organization.
- * Prevents a poisoned path/URL from minting access to another tenant's media.
+ * Re-sign only when the object path is owned by this session (its project and
+ * media folder). Prevents a poisoned path/URL from minting access to another
+ * tenant's, project's, or candidate's media. Returns null when it can't sign;
+ * callers must then drop the URL rather than fall back to the stored value.
  */
 export async function resolveSessionSignedUrl(
   bucket: string,
   urlOrPath: string,
   sessionId: string,
   organizationId: string,
+  scope?: SessionStorageScope,
 ): Promise<string | null> {
   const objectPath =
     objectPathFromSignedUrl(bucket, urlOrPath) ??
@@ -32,7 +50,8 @@ export async function resolveSessionSignedUrl(
       ? urlOrPath.replace(/^\/+/, "").split("?")[0]
       : null);
   if (!objectPath) return null;
-  if (!pathBelongsToSession(objectPath, sessionId, organizationId)) {
+  const sessionScope = scope ?? (await loadSessionStorageScope(sessionId));
+  if (!pathBelongsToSession(objectPath, sessionId, organizationId, sessionScope)) {
     return null;
   }
   const { data, error } = await supabaseAdmin.storage
@@ -81,46 +100,35 @@ export const analysisRouter = router({
 
       const organizationId = interview.project.organizationId;
       const mediaClearedAt = (session as { mediaClearedAt?: string | null }).mediaClearedAt ?? null;
+      const scope: SessionStorageScope = {
+        projectId: interview.projectId,
+        mediaStoragePrefix: (session as { mediaStoragePrefix?: string | null }).mediaStoragePrefix ?? null,
+      };
 
-      // Generate fresh signed URLs for recordings and screenshots (skip if media wiped)
+      // Fresh signed URLs only; stored client-supplied URLs are never echoed back.
       let audioRecordingUrl: string | null = null;
       if (!mediaClearedAt && session.audioRecordingUrl) {
-        const storedUrl = session.audioRecordingUrl as string;
         audioRecordingUrl = await resolveSessionSignedUrl(
           "recordings",
-          storedUrl,
+          session.audioRecordingUrl as string,
           input.sessionId,
           organizationId,
+          scope,
         );
-        // Legacy fallback: keep the stored URL only when it already belongs
-        // to this session (never re-sign a foreign path).
-        if (!audioRecordingUrl) {
-          const bare = objectPathFromSignedUrl("recordings", storedUrl);
-          if (bare && pathBelongsToSession(bare, input.sessionId, organizationId)) {
-            audioRecordingUrl = storedUrl;
-          } else if (!bare && storedUrl.startsWith("http")) {
-            // Last resort for opaque absolute URLs with no extractable path.
-            audioRecordingUrl = null;
-          }
-        }
       }
 
       let screenshots: ScreenshotEntry[] | null = null;
       const rawScreenshots = session.screenshots as ScreenshotEntry[] | null;
       if (!mediaClearedAt && rawScreenshots && rawScreenshots.length > 0) {
-        screenshots = await Promise.all(
+        const signedShots = await Promise.all(
           rawScreenshots.map(async (s) => {
-            const signed = s.path
-              ? await resolveSessionSignedUrl(
-                  "screenshots",
-                  s.path,
-                  input.sessionId,
-                  organizationId,
-                )
+            const signed = s?.path
+              ? await resolveSessionSignedUrl("screenshots", s.path, input.sessionId, organizationId, scope)
               : null;
-            return { ...s, url: signed || s.url };
+            return signed ? { ...s, url: signed } : null;
           }),
         );
+        screenshots = signedShots.filter((s): s is ScreenshotEntry => s !== null);
       }
 
       type StrikeLog = {
@@ -139,21 +147,23 @@ export const analysisRouter = router({
         | StrikeLog[]
         | null;
       let antiCheatingLog: StrikeLog[] | null = rawLog;
-      if (!mediaClearedAt && rawLog?.length) {
+      if (rawLog?.length) {
         antiCheatingLog = await Promise.all(
           rawLog.map(async (v) => {
+            const { imageUrl: _cam, screenImageUrl: _screen, ...rest } = v;
+            if (mediaClearedAt) return rest;
             const camSource = v.imagePath || v.imageUrl;
             const screenSource = v.screenImagePath || v.screenImageUrl;
             const [camSigned, screenSigned] = await Promise.all([
               camSource
-                ? resolveSessionSignedUrl("screenshots", camSource, input.sessionId, organizationId)
-                : Promise.resolve(undefined),
+                ? resolveSessionSignedUrl("screenshots", camSource, input.sessionId, organizationId, scope)
+                : Promise.resolve(null),
               screenSource
-                ? resolveSessionSignedUrl("screenshots", screenSource, input.sessionId, organizationId)
-                : Promise.resolve(undefined),
+                ? resolveSessionSignedUrl("screenshots", screenSource, input.sessionId, organizationId, scope)
+                : Promise.resolve(null),
             ]);
             return {
-              ...v,
+              ...rest,
               ...(camSigned ? { imageUrl: camSigned } : {}),
               ...(screenSigned ? { screenImageUrl: screenSigned } : {}),
             };

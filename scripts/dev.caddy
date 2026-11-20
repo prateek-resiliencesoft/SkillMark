@@ -2,9 +2,22 @@
 # Dev containers are stopped when idle so they do not use production RAM.
 dev.resiliencesoftinterview.com {
 	encode gzip
+
+	@largeUpload path /api/session/upload
+	request_body @largeUpload {
+		max_size 110MB
+	}
+	@regularBody not path /api/session/upload
+	request_body @regularBody {
+		max_size 32MB
+	}
+
 	reverse_proxy 172.18.0.1:3199 {
 		header_up Host {host}
+		header_up -CF-Connecting-IP
 		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Host {host}
 		transport http {
 			response_header_timeout 90s
 			dial_timeout 10s
