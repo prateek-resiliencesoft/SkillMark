@@ -7,6 +7,7 @@ import {
   routingForTask,
 } from "./credentials";
 import { createLogger } from "@/lib/logger";
+import { configuredGeminiModel, GEMINI_FALLBACK_MODELS, normalizeGeminiModel } from "./gemini-models";
 import { isAuthError, isQuotaError, keyChainExhaustedError, splitKeyList } from "./key-chain";
 import { AnthropicProvider } from "./providers/anthropic";
 import { CompatibleOpenAIProvider } from "./providers/compatible";
@@ -29,7 +30,7 @@ function modelFor(provider: LLMProvider, kind: "generator" | "report" = "generat
   const id = provider.id;
   if (kind === "report") {
     if (id === "openai") return process.env.OPENAI_REPORT_MODEL || process.env.OPENAI_MODEL || "gpt-4o";
-    if (id === "gemini") return process.env.GEMINI_REPORT_MODEL || process.env.GEMINI_MODEL || provider.defaultModel;
+    if (id === "gemini") return normalizeGeminiModel(process.env.GEMINI_REPORT_MODEL || process.env.GEMINI_MODEL || provider.defaultModel);
     if (id === "anthropic") return process.env.ANTHROPIC_REPORT_MODEL || process.env.ANTHROPIC_MODEL || provider.defaultModel;
   }
   if (id === "kimi") return "moonshot-v1-8k";
@@ -86,7 +87,7 @@ function providerInstance(
       id: "gemini",
       name: "Google Gemini",
       models: geminiModels(),
-      defaultModel: process.env.GEMINI_MODEL || "gemini-3.5-flash",
+      defaultModel: configuredGeminiModel(),
       apiKey,
       baseURL: baseUrl,
     });
@@ -288,7 +289,12 @@ export class FailoverProvider implements LLMProvider {
   /** Clear error once every key has failed; status is 429 when any key was out of quota. */
   private allFailed(err: unknown, sawQuota: boolean, onlyQuotaOrAuth: boolean): Error {
     const tried = this.chain.map((c) => `${c.provider.id}/${c.source}#${c.keyIndex + 1}`).join(", ");
-    log.error(`All AI keys failed${sawQuota ? " (quota)" : ""}: ${tried}`);
+    log.error(
+      `All AI keys failed${sawQuota ? " (quota)" : ""}: ${tried}\n` +
+        this.failures
+          .map((f) => `  ${f.provider}/${f.source}#${f.keyIndex + 1} → ${f.status ?? "err"}: ${f.message.replace(/\s+/g, " ").slice(0, 300)}`)
+          .join("\n"),
+    );
     return keyChainExhaustedError(tried, err, sawQuota, onlyQuotaOrAuth);
   }
   /**
@@ -324,7 +330,7 @@ export class FailoverProvider implements LLMProvider {
         if (!shouldFailover(err)) throw err;
         if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
         log.warn(
-          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}) — trying next`,
+          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}): ${failureText(err)} — trying next`,
         );
       }
     }
@@ -356,12 +362,17 @@ export class FailoverProvider implements LLMProvider {
         if (yielded || !shouldFailover(err)) throw err;
         if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
         log.warn(
-          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}) — trying next`,
+          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}): ${failureText(err)} — trying next`,
         );
       }
     }
     throw lastErr;
   }
+}
+
+/** One-line error reason for logs (provider message only; requests and keys are never included). */
+function failureText(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 300);
 }
 
 function openaiModels() {
@@ -376,10 +387,7 @@ function openaiModels() {
 
 function geminiModels() {
   // Prefer current Flash; keep aliases so dead-model retries can cascade.
-  const d = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-  return Array.from(
-    new Set([d, "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"]),
-  );
+  return Array.from(new Set([configuredGeminiModel(), ...GEMINI_FALLBACK_MODELS, "gemini-flash-latest"]));
 }
 
 function nvidiaModels() {

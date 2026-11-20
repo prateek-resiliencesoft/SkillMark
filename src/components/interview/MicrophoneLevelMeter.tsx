@@ -21,17 +21,15 @@ interface Props {
   className?: string;
 }
 
-const MIXER_BG = "#0b0d10";
+const GAP = "hsl(var(--card))";
 const GREEN = "#22c55e";
 const YELLOW = "#eab308";
 const RED = "#ef4444";
 
 const f = (db: number) => dbToFraction(db) * 100;
-// Bottom -> top: green up to -12 dBFS, yellow to -6, red above (FL-style segments).
-const BAR_GRADIENT = `linear-gradient(to top, ${GREEN} 0 ${f(LEVEL_CONFIG.goodBelowDb)}%, ${YELLOW} ${f(LEVEL_CONFIG.goodBelowDb)}% ${f(LEVEL_CONFIG.loudBelowDb)}%, ${RED} ${f(LEVEL_CONFIG.loudBelowDb)}% 100%)`;
-const TICKS_FULL = [0, -6, -12, -30, -45, -60];
-const TICKS_COMPACT = [0, -12, -30, -60];
-
+// Left -> right: green up to -12 dBFS, yellow to -6, red above (segmented).
+const BAR_GRADIENT = `linear-gradient(to right, ${GREEN} 0 ${f(LEVEL_CONFIG.goodBelowDb)}%, ${YELLOW} ${f(LEVEL_CONFIG.goodBelowDb)}% ${f(LEVEL_CONFIG.loudBelowDb)}%, ${RED} ${f(LEVEL_CONFIG.loudBelowDb)}% 100%)`;
+const TICKS = [-60, -30, -12, -6, 0];
 const DOT: Record<MicTone, string> = {
   green: "bg-emerald-500",
   yellow: "bg-amber-400",
@@ -59,32 +57,31 @@ function holdColor(db: number): string {
   return db >= LEVEL_CONFIG.loudBelowDb ? RED : db >= LEVEL_CONFIG.goodBelowDb ? YELLOW : GREEN;
 }
 
-/** Segmented bar. Lit part and peak marker are moved by direct style writes (no React per frame). */
-function Bar({ segments, large, litRef, holdRef }: {
+/** Horizontal segmented bar. Lit part and peak marker are moved by direct style writes (no React per frame). */
+function Bar({ segments, litRef, holdRef }: {
   segments: number;
-  large?: boolean;
   litRef: React.RefObject<HTMLDivElement>;
   holdRef: React.RefObject<HTMLDivElement>;
 }) {
   return (
-    <div className={cn("relative overflow-hidden rounded-[2px]", large ? "w-4" : "w-2 md:w-2.5")} style={{ background: "#14171c" }}>
-      <div className="absolute inset-0" style={{ background: BAR_GRADIENT, opacity: 0.2 }} />
-      <div ref={litRef} className="absolute inset-0" style={{ background: BAR_GRADIENT, clipPath: "inset(100% 0 0 0)" }} />
+    <div className="relative h-2 overflow-hidden rounded-sm bg-muted">
+      <div className="absolute inset-0" style={{ background: BAR_GRADIENT, opacity: 0.18 }} />
+      <div ref={litRef} className="absolute inset-0" style={{ background: BAR_GRADIENT, clipPath: "inset(0 100% 0 0)" }} />
       {/* segment gaps */}
       <div
         className="pointer-events-none absolute inset-0"
         style={{
-          backgroundImage: `linear-gradient(to top, transparent calc(100% - 1px), ${MIXER_BG} calc(100% - 1px))`,
-          backgroundSize: `100% ${100 / segments}%`,
+          backgroundImage: `linear-gradient(to right, transparent calc(100% - 1px), ${GAP} calc(100% - 1px))`,
+          backgroundSize: `${100 / segments}% 100%`,
         }}
       />
-      <div ref={holdRef} className="absolute inset-x-0 h-[2px]" style={{ bottom: 0, background: GREEN, opacity: 0 }} />
+      <div ref={holdRef} className="absolute inset-y-0 w-[2px]" style={{ left: 0, background: GREEN, opacity: 0 }} />
     </div>
   );
 }
 
 /**
- * Vertical stereo VU / peak meter for the candidate's microphone (dBFS, peak hold).
+ * Horizontal stereo VU / peak meter for the candidate's microphone (dBFS, peak hold).
  * Measures the shared interview MediaStream passively; changes nothing about recording or transcription.
  */
 export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSpeaking, compact, className }: Props) {
@@ -98,9 +95,9 @@ export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSp
   useEffect(() => {
     let lastText = 0;
     const paint = (lit: HTMLDivElement | null, hold: HTMLDivElement | null, db: number, holdDb: number) => {
-      if (lit) lit.style.clipPath = `inset(${100 - f(db)}% 0 0 0)`;
+      if (lit) lit.style.clipPath = `inset(0 ${100 - f(db)}% 0 0)`;
       if (hold) {
-        hold.style.bottom = `calc(${f(holdDb)}% - 2px)`;
+        hold.style.left = `calc(${f(holdDb)}% - 2px)`;
         hold.style.opacity = holdDb > LEVEL_CONFIG.scaleMinDb ? "1" : "0";
         hold.style.background = holdColor(holdDb);
       }
@@ -116,55 +113,53 @@ export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSp
     });
   }, [subscribe]);
 
-  const segments = compact ? 15 : 40;
-  const ticks = compact ? TICKS_COMPACT : TICKS_FULL;
+  const segments = compact ? 20 : 32;
   const label = guidance.noSignal && guidance.status === "quiet" && !guidance.warning ? "No signal" : LABEL[guidance.status];
 
   return (
     <div
-      className={cn("relative inline-flex items-center gap-2", className)}
+      className={cn("relative flex items-center gap-2.5", className)}
       role="group"
       aria-label="Microphone level"
       title={guidance.message ?? undefined}
     >
-      <div
-        className={cn("flex items-stretch rounded-md ring-1 ring-black/40", compact ? "gap-1 px-1.5 py-1" : "gap-1.5 px-2 py-2")}
-        style={{ background: MIXER_BG, height: compact ? 44 : 150 }}
-      >
-        <div className={cn("relative select-none", compact ? "w-5" : "w-7")} aria-hidden>
-          {ticks.map((t) => (
+      <span className="flex w-24 shrink-0 items-center gap-1.5 text-xs font-medium text-foreground">
+        <span className={cn("h-2 w-2 shrink-0 rounded-full", DOT[guidance.tone])} aria-hidden />
+        <span className="truncate">{label}</span>
+      </span>
+
+      <div className={cn("flex flex-col gap-0.5", compact ? "w-36" : "w-44 xl:w-56")}>
+        <Bar segments={segments} litRef={litL} holdRef={holdL} />
+        <Bar segments={segments} litRef={litR} holdRef={holdR} />
+        <div className="relative h-2.5 select-none" aria-hidden>
+          {/* target ("good") zone */}
+          <span
+            className="absolute top-0 h-px bg-emerald-500/70"
+            style={{ left: `${f(LEVEL_CONFIG.quietBelowDb)}%`, width: `${f(LEVEL_CONFIG.goodBelowDb) - f(LEVEL_CONFIG.quietBelowDb)}%` }}
+          />
+          {TICKS.map((t) => (
             <span
               key={t}
-              className={cn("absolute right-1 translate-y-1/2 leading-none tabular-nums", compact ? "text-[7px] text-zinc-500" : "text-[10px] text-zinc-400")}
-              style={{ bottom: `${f(t)}%` }}
+              className={cn(
+                "absolute top-0.5 text-[8px] leading-none tabular-nums text-muted-foreground",
+                t === 0 ? "-translate-x-full" : t === -60 ? "" : "-translate-x-1/2",
+              )}
+              style={{ left: `${f(t)}%` }}
             >
               {t}
             </span>
           ))}
-          {/* target ("good") zone */}
-          <span
-            className="absolute right-0 w-px bg-emerald-500/60"
-            style={{ bottom: `${f(LEVEL_CONFIG.quietBelowDb)}%`, height: `${f(LEVEL_CONFIG.goodBelowDb) - f(LEVEL_CONFIG.quietBelowDb)}%` }}
-          />
         </div>
-        <Bar segments={segments} large={!compact} litRef={litL} holdRef={holdL} />
-        <Bar segments={segments} large={!compact} litRef={litR} holdRef={holdR} />
       </div>
 
-      <div className={cn("flex flex-col leading-none", compact ? "min-w-[3.75rem] gap-0.5" : "min-w-[5rem] gap-1.5")}>
-        <span className={cn("flex items-center gap-1 font-medium text-foreground", compact ? "text-[10px]" : "text-sm")}>
-          <span className={cn("shrink-0 rounded-full", compact ? "h-2 w-2" : "h-2.5 w-2.5", DOT[guidance.tone])} aria-hidden />
-          {label}
-        </span>
-        <span className={cn("flex items-center gap-1 tabular-nums text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
-          <span ref={readout}>{formatDb(LEVEL_CONFIG.floorDb)} dB</span>
-          {mono && stream && (
-            <span className="rounded border border-border px-0.5 text-[7px] font-semibold uppercase" title="Single-channel microphone: both bars show the same level">
-              Mono
-            </span>
-          )}
-        </span>
-      </div>
+      <span className="flex w-14 shrink-0 items-center gap-1 text-[11px] tabular-nums text-muted-foreground">
+        <span ref={readout}>{formatDb(LEVEL_CONFIG.floorDb)} dB</span>
+        {mono && stream && (
+          <span className="rounded border border-border px-0.5 text-[7px] font-semibold uppercase" title="Single-channel microphone: both bars show the same level">
+            Mono
+          </span>
+        )}
+      </span>
 
       {guidance.warning && (
         <div

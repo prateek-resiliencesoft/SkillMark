@@ -13,6 +13,7 @@
  * - New rows are marked transcription = 'recording'.
  * - The report is regenerated afterwards.
  */
+import { GEMINI_FALLBACK_MODELS, normalizeGeminiModel } from "@/lib/ai/gemini-models";
 import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, readFile as readLocalFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -89,10 +90,9 @@ function mimeFallbacks(mime: string): string[] {
 
 function geminiModels(): string[] {
   const list = [
-    process.env.GEMINI_TRANSCRIBE_MODEL?.trim(),
-    process.env.GEMINI_MODEL?.trim(),
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
+    process.env.GEMINI_TRANSCRIBE_MODEL?.trim() ? normalizeGeminiModel(process.env.GEMINI_TRANSCRIBE_MODEL) : null,
+    process.env.GEMINI_MODEL?.trim() ? normalizeGeminiModel(process.env.GEMINI_MODEL) : null,
+    ...GEMINI_FALLBACK_MODELS,
   ].filter((m): m is string => !!m);
   return Array.from(new Set(list));
 }

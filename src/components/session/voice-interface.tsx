@@ -2497,7 +2497,7 @@ export function VoiceInterface({
 
       {/* Mic level meter: passive tap on the shared mic stream (UI only). Mobile: own slim row, the button bar is full. */}
       {isMobile && !preview && voice.isConnected && (
-        <div className="flex shrink-0 justify-center border-t bg-card pt-1">{micMeter}</div>
+        <div className="flex shrink-0 justify-center border-t bg-card px-3 pt-2">{micMeter}</div>
       )}
       {/* ── Bottom control bar (Zoom-like) ──────────────────── */}
       {(voice.isConnected || preview) && (
@@ -2509,10 +2509,8 @@ export function VoiceInterface({
               <span>{formatTime(remainingSeconds)} left</span>
             </div>
           )}
-          {/* Desktop: large meter pinned to the left edge, rising above the bar. */}
-          {!isMobile && (
-            <div className="absolute bottom-2 left-3 z-10 rounded-lg border bg-card/95 p-2 shadow-md md:left-6">{micMeter}</div>
-          )}
+          {/* Desktop: pinned left like the timer on the right; in the row on narrow screens. */}
+          {!isMobile && <div className="lg:absolute lg:left-6">{micMeter}</div>}
           {/* Mic toggle */}
           <div data-tour="voice-mic" className="flex flex-col items-center gap-0.5">
             <Button

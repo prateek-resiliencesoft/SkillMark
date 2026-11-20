@@ -6,10 +6,18 @@
  * Keys prefer full hierarchy: orgs/.../kind/file. Legacy = `{bucket}/{path}`.
  * Files live at STORAGE_DIR/<key> (+ `<key>.meta` holding the content type) and are
  * served by /api/files with a signed token.
+ *
+ * Media recorded before the move to disk is still in the old S3 bucket; while
+ * S3_* credentials are set, reads fall back to it (see legacy-s3.ts). Writes
+ * and deletes only ever touch the disk.
  */
 import { createReadStream, promises as fs } from "fs";
 import path from "path";
 import { SignJWT, jwtVerify } from "jose";
+import { isLegacyS3Enabled, listLegacyS3Objects, readLegacyS3Object } from "@/lib/legacy-s3";
+import { createLogger } from "@/lib/logger";
+
+const storageLog = createLogger("storage");
 
 export const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 
@@ -175,10 +183,18 @@ async function listLocalObjects(prefix: string, maxItems: number): Promise<Stora
   return items;
 }
 
-/** List object keys under a prefix. */
+/** List object keys under a prefix (disk, plus the legacy bucket when configured). */
 export async function listObjectKeys(prefix: string): Promise<string[]> {
   const clean = prefix.replace(/^\/+/, "").replace(/\/?$/, "/");
-  return (await listLocalObjects(clean, Number.MAX_SAFE_INTEGER)).map((o) => o.key);
+  const local = (await listLocalObjects(clean, Number.MAX_SAFE_INTEGER)).map((o) => o.key);
+  if (!isLegacyS3Enabled()) return local;
+  try {
+    const legacy = (await listLegacyS3Objects(clean)).map((o) => o.key);
+    return Array.from(new Set([...local, ...legacy]));
+  } catch (err) {
+    storageLog.warn(`Legacy bucket list skipped for ${clean}: ${err instanceof Error ? err.message : err}`);
+    return local;
+  }
 }
 
 /** List objects with size and timestamp metadata. */
@@ -422,6 +438,17 @@ export const storage = {
           const { data, contentType } = await readFile(bucket, p);
           return { data: new Blob([new Uint8Array(data)], { type: contentType }), error: null };
         } catch (e) {
+          // Not on disk: older media may still be in the legacy bucket.
+          if ((e as NodeJS.ErrnoException)?.code === "ENOENT" && isLegacyS3Enabled()) {
+            try {
+              const legacy = await readLegacyS3Object(objectKey(bucket, p));
+              if (legacy) {
+                return { data: new Blob([new Uint8Array(legacy.data)], { type: legacy.contentType }), error: null };
+              }
+            } catch (le) {
+              return { data: null, error: { message: le instanceof Error ? le.message : String(le) } };
+            }
+          }
           return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
         }
       },
