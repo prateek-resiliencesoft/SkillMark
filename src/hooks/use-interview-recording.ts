@@ -583,8 +583,18 @@ export function useInterviewRecording({
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       await new Promise<void>((resolve) => {
-        recorder.onstop = () => resolve();
-        recorder.stop();
+        // onstop normally fires within ms; never let a stuck recorder hold up the end.
+        const guard = setTimeout(resolve, 5_000);
+        recorder.onstop = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+        try {
+          recorder.stop();
+        } catch {
+          clearTimeout(guard);
+          resolve();
+        }
       });
 
       const mime = audioMimeRef.current || "audio/webm";
