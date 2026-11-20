@@ -995,7 +995,7 @@ export default function AdminStoragePage() {
                           type="button"
                           onClick={() => copyToClipboard(item.key)}
                           className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                          title="Copy S3 Storage Key"
+                          title="Copy storage key"
                         >
                           {copiedKey === item.key ? (
                             <>
@@ -1412,7 +1412,7 @@ export default function AdminStoragePage() {
                               size="sm"
                               onClick={() => copyToClipboard(item.key)}
                               className="h-7 px-2 text-xs"
-                              title="Copy S3 Key"
+                              title="Copy storage key"
                             >
                               <Copy className="h-3.5 w-3.5" />
                             </TacticalButton>
@@ -1747,7 +1747,7 @@ export default function AdminStoragePage() {
               className="text-xs border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] text-zinc-200"
             >
               <Copy className="h-3.5 w-3.5 mr-1" />
-              <span>Copy S3 Key</span>
+              <span>Copy storage key</span>
             </TacticalButton>
           </div>
         </DialogContent>

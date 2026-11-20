@@ -398,7 +398,7 @@ export default function AdminOrganizationsPage() {
           if (!open && !removeMany.isPending) setDeleteOpen(false);
         }}
         title={`Delete ${selected.size} organization${selected.size === 1 ? "" : "s"}?`}
-        description={`${selectedNames.slice(0, 5).join(", ")}${selectedNames.length > 5 ? ` and ${selectedNames.length - 5} more` : ""} will be permanently deleted with ALL of their data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV in the storage bucket. This cannot be undone.`}
+        description={`${selectedNames.slice(0, 5).join(", ")}${selectedNames.length > 5 ? ` and ${selectedNames.length - 5} more` : ""} will be permanently deleted with ALL of their data: projects, interviews, sessions, candidates, applications, members, and every recording, image and CV stored on the server. This cannot be undone.`}
         confirmLabel="Delete organizations and all data"
         confirmText="delete"
         confirmPlaceholder="Type delete"

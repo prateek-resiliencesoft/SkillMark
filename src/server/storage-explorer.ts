@@ -58,7 +58,7 @@ type FolderInfo = {
 
 export type StorageSnapshot = {
   at: number;
-  /** Every object in the bucket (for the true "used" figure). */
+  /** Every stored object (for the true "used" figure). */
   bucketObjects: number;
   bucketBytes: number;
   /** Objects under orgs/ with parsed + enriched metadata. */

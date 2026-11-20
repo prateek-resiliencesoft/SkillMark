@@ -30,7 +30,7 @@ export async function purgeOrganization(
   supabase: Db,
   org: { id: string },
 ): Promise<PurgeResult> {
-  // 1. Bucket files first (they are located through the org id, not the DB rows).
+  // 1. Stored files first (they are located through the org id, not the DB rows).
   const media = await deletePrefixStats(`orgs/${org.id}/`);
 
   // 2. Interviews (cascade to questions, sessions, messages, candidates, ...).
