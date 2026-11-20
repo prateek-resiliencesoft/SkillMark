@@ -8,18 +8,19 @@ import {
 } from "../src/lib/messaging/templates";
 
 test("follow-up template has six positional variables and the approved name", () => {
-  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "left_interview_followup_v2");
+  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete");
   const placeholders = WHATSAPP_FOLLOWUP_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
   assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}", "{{6}}"]);
 });
 
-test("follow-up wording says restart, not continue/resume", () => {
+test("follow-up body matches the approved interview_incomplete wording", () => {
   const body = WHATSAPP_FOLLOWUP_META_TEMPLATE.body;
-  assert.match(body, /restart your interview using this link: \{\{3\}\}/);
-  assert.doesNotMatch(body, /continue|left off|resume/i);
+  assert.match(body, /Restart link: \{\{4\}\}/);
+  assert.match(body, /For support, contact \{\{3\}\}\./);
+  assert.doesNotMatch(body, /left off|resume/i);
 });
 
-test("follow-up body variables are ordered name, contact, link, expiry date, expiry time, organization", () => {
+test("follow-up body variables are ordered name, organization, contact, link, expiry date, expiry time", () => {
   const vars = followupBodyVariables({
     name: "Priya Sharma",
     supportPhone: "+919876543210",
@@ -28,10 +29,12 @@ test("follow-up body variables are ordered name, contact, link, expiry date, exp
     organization: "Acme Corp",
   });
   assert.equal(vars.length, 6);
-  assert.deepEqual(vars.slice(0, 3), ["Priya Sharma", "+919876543210", "https://app.example.com/i/invite/abc"]);
-  assert.equal(vars[3], "Nov 26, 2026");
-  assert.equal(vars[4], "11:59 PM");
-  assert.equal(vars[5], "Acme Corp");
+  assert.equal(vars[0], "Priya Sharma");
+  assert.equal(vars[1], "Acme Corp");
+  assert.equal(vars[2], "+919876543210");
+  assert.equal(vars[3], "https://app.example.com/i/invite/abc");
+  assert.equal(vars[4], "Nov 26, 2026");
+  assert.equal(vars[5], "11:59 PM");
 });
 
 test("expiry parts split into a readable date and time", () => {

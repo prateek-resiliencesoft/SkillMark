@@ -8,7 +8,9 @@ import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
 import { SessionErrorLogButton } from "@/components/session/session-error-log";
+import { CvViewerPanel } from "@/components/session/cv-viewer-panel";
 import { SessionRow, SessionsTable } from "@/components/session/sessions-table";
+import { ResizableSplit } from "@/components/ui/resizable-split";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,6 +52,7 @@ import {
   Clock,
   Code2,
   FileDown,
+  FileText,
   Lightbulb,
   Loader2,
   MessageCircle,
@@ -384,12 +387,61 @@ export function InterviewResults({
   );
 }
 
+/**
+ * Session report plus an optional CV panel docked on the right (75 / 25 by default,
+ * resizable). The report stays mounted when the panel opens, so nothing resets.
+ */
 function SessionDetail({
   sessionId,
   onBack,
 }: {
   sessionId: string;
   onBack: () => void;
+}) {
+  // Same query key as the body's, so this is served from the cache (no extra request).
+  const summary = trpc.analysis.getSessionSummary.useQuery({ sessionId });
+  const [cvOpen, setCvOpen] = useState(false);
+  const candidateId = summary.data?.candidateId ?? null;
+
+  // The CV belongs to one candidate: close it when switching to another session.
+  useEffect(() => setCvOpen(false), [sessionId]);
+
+  return (
+    <ResizableSplit
+      open={cvOpen && !!candidateId}
+      storageKey="skillmark:session-cv-panel-pct"
+      defaultPanelPct={25}
+      panel={
+        candidateId ? (
+          <CvViewerPanel
+            key={candidateId}
+            candidateId={candidateId}
+            candidateName={summary.data?.participantName}
+            onClose={() => setCvOpen(false)}
+          />
+        ) : null
+      }
+    >
+      <SessionDetailBody
+        sessionId={sessionId}
+        onBack={onBack}
+        cvOpen={cvOpen}
+        onToggleCv={() => setCvOpen((v) => !v)}
+      />
+    </ResizableSplit>
+  );
+}
+
+function SessionDetailBody({
+  sessionId,
+  onBack,
+  cvOpen,
+  onToggleCv,
+}: {
+  sessionId: string;
+  onBack: () => void;
+  cvOpen: boolean;
+  onToggleCv: () => void;
 }) {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
@@ -825,6 +877,17 @@ function SessionDetail({
                 <Mic className="mr-2 h-4 w-4" />
               )}
               {retranscribing ? "Re-transcribing..." : "Re-transcribe from recording"}
+            </Button>
+          )}
+          {summary.data?.candidateId && (
+            <Button
+              variant={cvOpen ? "secondary" : "outline"}
+              onClick={onToggleCv}
+              aria-pressed={cvOpen}
+              title={cvOpen ? "Hide the candidate's CV" : "Show the candidate's CV beside the report"}
+            >
+              <FileText className="mr-2 h-4 w-4" />
+              {cvOpen ? "Hide CV" : "Show CV"}
             </Button>
           )}
           {hasReport && (
