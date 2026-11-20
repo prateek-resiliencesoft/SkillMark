@@ -410,6 +410,7 @@ function SessionDetail({
   } | null>(null);
   const [audioCanPlay, setAudioCanPlay] = useState(false);
   const [audioFailed, setAudioFailed] = useState(false);
+  const [audioFailReason, setAudioFailReason] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState("");
   const [exportPercent, setExportPercent] = useState(0);
   const reportRef = useRef<HTMLDivElement>(null);
@@ -1530,7 +1531,15 @@ function SessionDetail({
                   )}
                   {audioFailed && (
                     <p className="text-xs text-destructive">
-                      Recording file could not be played. Try opening it in a new tab or re-approve media review.
+                      {audioFailReason ?? "Recording file could not be played."}{" "}
+                      <a
+                        href={summary.data.audioRecordingUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline"
+                      >
+                        Open in new tab
+                      </a>
                     </p>
                   )}
                   <audio
@@ -1542,7 +1551,11 @@ function SessionDetail({
                       setAudioCanPlay(true);
                       setAudioFailed(false);
                     }}
-                    onError={() => setAudioFailed(true)}
+                    onError={() => {
+                      setAudioFailed(true);
+                      const url = summary.data?.audioRecordingUrl;
+                      if (url) void recordingFailureReason(url).then(setAudioFailReason);
+                    }}
                   />
                 </CardContent>
               </Card>
@@ -1841,4 +1854,21 @@ function SessionDetail({
       )}
     </div>
   );
+}
+
+/** Why a recording URL won't play, from a HEAD request to it (status only, no body). */
+async function recordingFailureReason(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (res.status === 403) return "The playback link expired. Reload the page to get a new one.";
+    if (res.status === 404) {
+      return "The recording file is not in storage. The end-of-interview save may not have finished; it can be rebuilt from the uploaded parts.";
+    }
+    if (res.status >= 500) return `Storage could not be reached (${res.status}). Try again in a minute.`;
+    if (res.ok && res.headers.get("content-length") === "0") return "The recording file is empty.";
+    if (res.ok) return "The file is there but this browser could not decode it. Download it or open it in a new tab.";
+    return `The recording could not be loaded (${res.status}).`;
+  } catch {
+    return "The recording could not be loaded (network error).";
+  }
 }
