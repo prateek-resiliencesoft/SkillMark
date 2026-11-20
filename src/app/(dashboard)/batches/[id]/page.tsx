@@ -477,7 +477,7 @@ export default function BatchDetailPage() {
                   <TableHead>Candidate</TableHead>
                   <TableHead>Profile</TableHead>
                   <TableHead>Interview</TableHead>
-                  <TableHead>Invites</TableHead>
+                  <TableHead>Messages</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
@@ -553,17 +553,7 @@ export default function BatchDetailPage() {
                           Extend expiry
                         </button>
                       )}
-                      {b.canEdit && (
-                        <div className="mt-1">
-                          <LeftFollowupAction
-                            candidateId={c.id}
-                            candidate={c}
-                            session={c.session}
-                            variant="compact"
-                            onDone={() => void utils.batch.getById.invalidate({ id })}
-                          />
-                        </div>
-                      )}
+
                       <p className="mt-1 text-xs text-muted-foreground">
                         {c.questionCount} questions
                         {c.completedAt && ` · ${new Date(c.completedAt).toLocaleDateString()}`}
@@ -573,6 +563,15 @@ export default function BatchDetailPage() {
                     <TableCell className="min-w-[140px]">
                       <InviteState icon={Mail} status={c.emailStatus} at={c.emailSentAt} />
                       <InviteState icon={MessageCircle} status={c.whatsappStatus} at={c.whatsappSentAt} />
+                      <div className="mt-1">
+                        <LeftFollowupAction
+                          candidateId={c.id}
+                          candidate={c}
+                          session={c.session}
+                          variant="compact"
+                          canSend={b.canEdit}
+                        />
+                      </div>
                       {c.lastSendError && (
                         <p className="mt-1 max-w-[220px] text-xs text-destructive" title={c.lastSendError}>
                           {c.lastSendError.slice(0, 90)}

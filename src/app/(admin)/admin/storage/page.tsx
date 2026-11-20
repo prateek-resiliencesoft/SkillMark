@@ -24,7 +24,6 @@ import {
   CapacityOverview,
   UsageBreakdown,
 } from "@/components/admin/storage-usage-panel";
-import { StorageMigrationCard } from "@/components/admin/storage-migration-card";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -34,7 +33,6 @@ import {
   Check,
   ChevronRight,
   Clock,
-  Cloud,
   Copy,
   Download,
   ExternalLink,
@@ -265,11 +263,7 @@ export default function AdminStoragePage() {
   );
 
   const storageConfig = statsQuery.data?.config || filesQuery.data?.config;
-  const storeName = storageConfig
-    ? storageConfig.enabled
-      ? storageConfig.provider
-      : "this server"
-    : "storage";
+  const storeName = "this server";
   const counts = filesQuery.data?.counts || {
     all: 0,
     recordings: 0,
@@ -307,7 +301,7 @@ export default function AdminStoragePage() {
     <div className="space-y-6">
       {/* Top Header */}
       <PageHeader
-        kicker={storageConfig?.enabled ? `${storageConfig.provider} object store` : "Server storage"}
+        kicker="Server storage"
         title="Stored Files & Media Explorer"
         description={`Structured folder hierarchy (candidateName/recordings, /images, /CV). Play interview recordings, inspect proctoring captures, and view candidate resumes stored on ${storeName}.`}
         actions={
@@ -363,7 +357,7 @@ export default function AdminStoragePage() {
         >
           <AlertOctagon className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-0.5">
-            <p className="font-medium">Could not read the object store, so files are not listed.</p>
+            <p className="font-medium">Could not read the server storage, so files are not listed.</p>
             <p className="text-xs opacity-90">
               {(filesQuery.error ?? statsQuery.error ?? usageQuery.error)?.message}
             </p>
@@ -376,20 +370,10 @@ export default function AdminStoragePage() {
         <StatCard
           title="Storage Provider"
           value={storageConfig?.provider || "—"}
-          subtitle={
-            !storageConfig
-              ? "Loading…"
-              : !storageConfig.enabled
-                ? storageConfig.legacyFallback
-                  ? `Server disk • older files still read from ${storageConfig.legacyProvider} (${storageConfig.legacyBucket})`
-                  : "Files are stored on this server's disk"
-                : storageConfig.region
-                  ? `Bucket: ${storageConfig.bucket} • Region: ${storageConfig.region}`
-                  : `Bucket: ${storageConfig.bucket}`
-          }
-          trend={storageConfig?.enabled ? "Connected" : "Server Disk"}
-          trendDirection={storageConfig?.enabled ? "up" : "neutral"}
-          icon={storageConfig && !storageConfig.enabled ? HardDrive : Cloud}
+          subtitle={storageConfig ? "Files are stored on this server's disk" : "Loading…"}
+          trend="Server Disk"
+          trendDirection="neutral"
+          icon={HardDrive}
         />
         <StatCard
           title="Candidate Audio / Video"
@@ -421,14 +405,6 @@ export default function AdminStoragePage() {
         usage={usageQuery.data}
         loading={usageQuery.isLoading}
         onQuotaSaved={() => usageQuery.refetch()}
-      />
-
-      <StorageMigrationCard
-        onFinished={() => {
-          usageQuery.refetch();
-          filesQuery.refetch();
-          statsQuery.refetch();
-        }}
       />
 
       {/* Main Mode Navigation Strip */}
@@ -674,7 +650,7 @@ export default function AdminStoragePage() {
               >
                 <HardDrive className="h-3.5 w-3.5" />
                 <span>
-                  {storageConfig?.enabled ? `b2://${storageConfig.bucket}` : "server://storage"}
+                  server://storage
                 </span>
               </button>
 

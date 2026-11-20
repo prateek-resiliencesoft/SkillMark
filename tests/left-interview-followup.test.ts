@@ -111,6 +111,23 @@ test("an expired link is never offered the follow-up: extend the expiry first", 
   assert.equal(needsLeftFollowup(live, abandoned), true);
 });
 
+test("follow-up status is shown for anyone who left, and stays visible once sent", () => {
+  const base = { inviteToken: "tok1", followupSentAt: null, followupSentToken: null };
+  assert.equal(leftFollowupState(base, { status: "ABANDONED" }).relevant, true);
+  assert.equal(leftFollowupState(base, { status: "COMPLETED" }).relevant, false);
+  assert.equal(leftFollowupState(base, { status: "NOT_STARTED" }).relevant, false);
+  const sentExpired = {
+    ...base,
+    followupSentAt: "2026-11-19T10:00:00.000Z",
+    followupSentToken: "tok1",
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  };
+  const s = leftFollowupState(sentExpired, { status: "ABANDONED" });
+  assert.equal(s.relevant, true);
+  assert.equal(s.sent, true);
+  assert.equal(s.applicable, false);
+});
+
 test("the reason a follow-up was not sent is surfaced, and hidden once sent", () => {
   const abandoned = { status: "ABANDONED" };
   const why = "Add a contact number in Project settings → General first.";

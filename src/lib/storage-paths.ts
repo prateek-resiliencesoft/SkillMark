@@ -1,5 +1,5 @@
 /**
- * Object-key layout for media (local disk or S3/Backblaze B2):
+ * Object-key layout for media on the server disk:
  *   orgs/{orgId}/projects/{projectId}/candidates/{candidateNameFolder}/{kind}/{file}
  *
  * Folders per candidate:

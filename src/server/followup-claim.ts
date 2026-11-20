@@ -7,25 +7,37 @@ export interface FollowupDb { from: (table: string) => any }
 
 export type ClaimResult = "claimed" | "already-sent" | "unsupported" | "error";
 
-const MISSING_COLUMN = /followupSent|42703|PGRST204/;
+const MISSING_COLUMN_CODE = /^(42703|PGRST204)$/;
 const SAFE_TOKEN = /^[\w-]+$/;
 
+/** Only a genuinely absent followup column means migration 37 is missing. */
+function isMissingFollowupColumn(error: { code?: string; message?: string }): boolean {
+  return MISSING_COLUMN_CODE.test(String(error.code ?? "")) && /followupSent/.test(String(error.message ?? ""));
+}
+
 /**
- * Single conditional UPDATE: succeeds (returns a row) only when the stored token differs
- * from the current inviteToken, so concurrent / repeated abandons send at most once per link.
+ * Atomic claim: succeeds (returns a row) only when the stored token differs from the current
+ * inviteToken, so concurrent / repeated abandons send at most once per link.
+ * Two single-filter conditional UPDATEs (never-claimed, then claimed for an older token):
+ * PostgREST 12.2 rejects an UPDATE that carries an `or=(…)` filter with 42703 on any column.
+ * A concurrent caller's UPDATE re-checks its WHERE after our row lock, so it matches neither.
  * "unsupported" = migration 37 not applied: caller must skip (never send un-deduped paid messages).
  */
 export async function claimFollowup(db: FollowupDb, candidateId: string, inviteToken: string): Promise<ClaimResult> {
-  if (!SAFE_TOKEN.test(inviteToken)) return "error"; // token is interpolated into a PostgREST filter
-  const { data, error } = await db
-    .from("candidates")
-    .update({ followupSentAt: new Date().toISOString(), followupSentToken: inviteToken })
-    .eq("id", candidateId)
-    .eq("inviteToken", inviteToken)
-    .or(`followupSentToken.is.null,followupSentToken.neq.${inviteToken}`)
-    .select("id");
-  if (error) return MISSING_COLUMN.test(`${error.code} ${error.message}`) ? "unsupported" : "error";
-  return Array.isArray(data) && data.length > 0 ? "claimed" : "already-sent";
+  if (!SAFE_TOKEN.test(inviteToken)) return "error";
+  const patch = { followupSentAt: new Date().toISOString(), followupSentToken: inviteToken };
+  const attempts = [
+    (q: ReturnType<FollowupDb["from"]>) => q.is("followupSentToken", null),
+    (q: ReturnType<FollowupDb["from"]>) => q.neq("followupSentToken", inviteToken),
+  ];
+  for (const narrow of attempts) {
+    const { data, error } = await narrow(
+      db.from("candidates").update(patch).eq("id", candidateId).eq("inviteToken", inviteToken),
+    ).select("id");
+    if (error) return isMissingFollowupColumn(error) ? "unsupported" : "error";
+    if (Array.isArray(data) && data.length > 0) return "claimed";
+  }
+  return "already-sent";
 }
 
 /** Undo a claim after a failed send so a later abandon can retry. Only clears our own claim. */

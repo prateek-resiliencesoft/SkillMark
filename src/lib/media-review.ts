@@ -208,7 +208,7 @@ export async function applyMediaReview(
   };
 }
 
-/** Cron: set-aside past mediaExpiresAt → clear S3/B2/local only. */
+/** Cron: set-aside past mediaExpiresAt → clear stored files only. */
 export async function purgeExpiredSetAsideMedia(supabase: Db): Promise<{ sessions: number; objects: number }> {
   const now = new Date().toISOString();
   const { data: rows } = await supabase

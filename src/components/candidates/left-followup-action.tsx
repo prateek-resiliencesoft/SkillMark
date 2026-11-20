@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { leftFollowupState, type FollowupCandidate, type FollowupSession } from "@/lib/left-followup";
 import { trpc } from "@/lib/trpc/client";
-import { CheckCircle2, Loader2, MessageCircle, Send } from "lucide-react";
+import { CheckCircle2, CircleAlert, Loader2, MessageCircle, Send } from "lucide-react";
 
 function when(iso: string | null): string {
   if (!iso) return "";
@@ -15,21 +15,25 @@ function when(iso: string | null): string {
 }
 
 /**
- * For a candidate who left the interview: shows whether the WhatsApp follow-up was sent and,
- * when it was not, a button to send it by hand. Renders nothing for anyone who did not leave.
+ * Left-interview WhatsApp follow-up status for one candidate: "sent" (with when), or "not sent"
+ * with the reason and a button to send it by hand. Renders nothing for anyone who did not leave
+ * and never received one.
  */
 export function LeftFollowupAction({
   candidateId,
   candidate,
   session,
   variant = "card",
+  canSend = true,
   onDone,
 }: {
   candidateId: string;
   candidate: FollowupCandidate | null | undefined;
   session: FollowupSession | null | undefined;
-  /** "card": full section (detail panel). "compact": one-line link (table rows). */
+  /** "card": full section (detail panel). "compact": status line (table cells). */
   variant?: "card" | "compact";
+  /** False for read-only viewers: status only, no send button. */
+  canSend?: boolean;
   onDone?: () => void;
 }) {
   const { toast } = useToast();
@@ -47,36 +51,50 @@ export function LeftFollowupAction({
       }
       void utils.candidate.getById.invalidate({ id: candidateId });
       void utils.candidate.listAll.invalidate();
+      void utils.batch.getById.invalidate();
       onDone?.();
     },
     onError: (err) => toast({ title: "Follow-up failed", description: err.message, variant: "destructive" }),
   });
 
   const state = leftFollowupState(candidate, session);
-  if (!state.applicable) return null;
+  if (!state.relevant) return null;
+  const sendable = canSend && state.applicable && !state.sent;
+  const blockedReason = state.expired ? "The invite link has expired. Extend the expiry to send it." : null;
+  const reason = state.error ?? blockedReason;
 
   if (variant === "compact") {
     if (state.sent) {
       return (
-        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-600" title={`Follow-up sent ${when(state.sentAt)}`}>
-          <CheckCircle2 className="h-3 w-3" /> Follow-up sent
+        <span className="inline-flex flex-col items-start text-[10px] leading-tight text-emerald-600" title="WhatsApp follow-up sent">
+          <span className="inline-flex items-center gap-1 font-medium">
+            <CheckCircle2 className="h-3 w-3" /> Follow-up sent
+          </span>
+          {state.sentAt && <span className="text-muted-foreground">{when(state.sentAt)}</span>}
         </span>
       );
     }
     return (
-      <button
-        type="button"
-        disabled={send.isLoading}
-        onClick={(e) => {
-          e.stopPropagation();
-          send.mutate({ candidateId });
-        }}
-        title={state.error ?? "Send the WhatsApp message so they can restart the interview"}
-        className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 hover:underline disabled:opacity-60"
-      >
-        {send.isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-        Follow-up not sent · Send
-      </button>
+      <span className="inline-flex max-w-[200px] flex-col items-start text-[10px] leading-tight" title={reason ?? undefined}>
+        <span className="inline-flex items-center gap-1 font-medium text-amber-600">
+          <CircleAlert className="h-3 w-3" /> Follow-up not sent
+          {sendable && (
+            <button
+              type="button"
+              disabled={send.isLoading}
+              onClick={(e) => {
+                e.stopPropagation();
+                send.mutate({ candidateId });
+              }}
+              className="ml-1 inline-flex items-center gap-0.5 text-primary hover:underline disabled:opacity-60"
+            >
+              {send.isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+              Send
+            </button>
+          )}
+        </span>
+        {reason && <span className="line-clamp-2 text-muted-foreground">{reason}</span>}
+      </span>
     );
   }
 
@@ -85,6 +103,15 @@ export function LeftFollowupAction({
       <div className="mb-1 flex items-center gap-2">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
         <h4 className="text-sm font-semibold">Left-interview follow-up</h4>
+        <span
+          className={
+            state.sent
+              ? "ml-auto rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+              : "ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+          }
+        >
+          {state.sent ? "Sent" : "Not sent"}
+        </span>
       </div>
       {state.sent ? (
         <p className="flex items-center gap-1.5 text-xs text-emerald-600">
@@ -96,15 +123,17 @@ export function LeftFollowupAction({
           <p className="text-xs text-muted-foreground">
             This candidate left the interview and has not received the WhatsApp message with their link to restart it.
           </p>
-          {state.error && (
+          {reason && (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-300">
-              Last attempt: {state.error}
+              {state.error ? `Last attempt: ${state.error}` : reason}
             </p>
           )}
-          <Button size="sm" disabled={send.isLoading} onClick={() => send.mutate({ candidateId })}>
-            {send.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-            Send follow-up on WhatsApp
-          </Button>
+          {sendable && (
+            <Button size="sm" disabled={send.isLoading} onClick={() => send.mutate({ candidateId })}>
+              {send.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
+              Send follow-up on WhatsApp
+            </Button>
+          )}
         </div>
       )}
     </section>
