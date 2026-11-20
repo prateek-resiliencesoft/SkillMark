@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { nanoid } from "@/lib/id";
 import { expireIfStale } from "@/lib/session-link-server";
 import { needsFreshInviteLink } from "@/lib/session-link";
+import { NEVER_STARTED_END_REASON } from "@/lib/session-report-policy";
 import { inviteLink } from "./batch-access";
 import { resolveInviteSchedule, sendCandidateInvite } from "./invite-delivery";
 
@@ -57,13 +58,14 @@ export async function issueNewInviteLink(
 
   if (session?.id) {
     const now = new Date().toISOString();
+    // The old link is revoked: an open session (begun or still in pre-flight) ends now.
+    const close =
+      session.status === "IN_PROGRESS"
+        ? { status: "ABANDONED", endReason: session.interviewBeganAt ? "DISCONNECTED" : NEVER_STARTED_END_REASON }
+        : {};
     await db
       .from("sessions")
-      .update({
-        candidateId: c.id,
-        supersededAt: now,
-        ...(session.status === "IN_PROGRESS" && session.interviewBeganAt ? { status: "ABANDONED", endReason: "DISCONNECTED" } : {}),
-      })
+      .update({ candidateId: c.id, supersededAt: now, ...close })
       .eq("id", session.id);
   }
 

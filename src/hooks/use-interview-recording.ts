@@ -21,6 +21,29 @@ const PART_UPLOAD_INTERVAL_MS = 10_000;
 const RECORDING_BITRATE = 48_000;
 /** keepalive fetch bodies must stay under ~64 KB. */
 const KEEPALIVE_MAX_BYTES = 60_000;
+/** At the end: wait this long for the last parts to upload before falling back to the whole file. */
+const FINAL_DRAIN_MS = 10_000;
+/** The finalize call only schedules the join on the server, so it answers fast. */
+const FINALIZE_REQUEST_MS = 6_000;
+/** Whole-file fallback upload (only when parts couldn't be sent). */
+const FULL_UPLOAD_MS = 20_000;
+
+/** Ask the server to join the uploaded parts in the background (retries there). keepalive: survives leaving the page. */
+async function requestBackgroundFinalize(sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/session/recording/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, background: true }),
+      keepalive: true,
+      signal: AbortSignal.timeout(FINALIZE_REQUEST_MS),
+    });
+    return res.ok;
+  } catch (err) {
+    log.warn("Recording finalize request failed:", err);
+    return false;
+  }
+}
 
 type PendingPart = { seq: number; blob: Blob; elapsedSec: number; attempts: number };
 
@@ -560,8 +583,18 @@ export function useInterviewRecording({
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") {
       await new Promise<void>((resolve) => {
-        recorder.onstop = () => resolve();
-        recorder.stop();
+        // onstop normally fires within ms; never let a stuck recorder hold up the end.
+        const guard = setTimeout(resolve, 5_000);
+        recorder.onstop = () => {
+          clearTimeout(guard);
+          resolve();
+        };
+        try {
+          recorder.stop();
+        } catch {
+          clearTimeout(guard);
+          resolve();
+        }
       });
 
       const mime = audioMimeRef.current || "audio/webm";
@@ -569,34 +602,22 @@ export function useInterviewRecording({
       const ext = isWebm ? "webm" : "m4a";
       const rawBlob = new Blob(chunksRef.current, { type: mime });
 
-      // 1) Normal path: most audio is already on the server in parts — send the
-      //    last part and ask the server to join + link them.
+      // 1) Normal path: the audio is already on the server in parts — send the
+      //    last part, then let the server join + link them in the background
+      //    (with retries). Ending the interview no longer waits for the join,
+      //    which took longer than 30 s for long interviews on remote storage.
       cutPart();
+      let finalizeQueued = false;
       if (partSeqRef.current > 0) {
-        const drained = await drainParts(8_000);
+        const drained = await drainParts(FINAL_DRAIN_MS);
         if (drained) {
-          try {
-            const res = await fetch("/api/session/recording/finalize", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ sessionId }),
-            });
-            const data = (await res.json().catch(() => ({}))) as { audioUrl?: string; audioDuration?: number };
-            if (res.ok && data.audioUrl) {
-              audioUrl = data.audioUrl;
-              audioDuration = data.audioDuration;
-              log.info("Audio saved from parts:", audioUrl);
-            } else {
-              log.warn("Recording finalize did not return a file", res.status);
-            }
-          } catch (err) {
-            log.warn("Recording finalize failed:", err);
-          }
+          finalizeQueued = await requestBackgroundFinalize(sessionId);
+          if (finalizeQueued) log.info("Recording parts uploaded; server is joining them");
         }
       }
 
       // 2) Fallback: upload the whole file (the server links it to the session itself).
-      if (!audioUrl && rawBlob.size > 0) {
+      if (!finalizeQueued && rawBlob.size > 0) {
         audioDuration = await resolveBlobDuration(rawBlob);
 
         // Patch WebM container with correct duration so players can display it
@@ -616,6 +637,7 @@ export function useInterviewRecording({
           const res = await fetch("/api/session/upload", {
             method: "POST",
             body: form,
+            signal: AbortSignal.timeout(FULL_UPLOAD_MS),
           });
           if (res.ok) {
             const data = await res.json();
@@ -633,9 +655,11 @@ export function useInterviewRecording({
             message: `Recording upload failed: ${err instanceof Error ? err.message : String(err)}`,
             context: { stage: "recording_upload", bytes: rawBlob.size, partsUploaded: partsUploadedRef.current },
           });
+          // Whatever parts did reach the server can still be joined there.
+          if (partsUploadedRef.current > 0) finalizeQueued = await requestBackgroundFinalize(sessionId);
         }
       }
-      if (!audioUrl) {
+      if (!audioUrl && !finalizeQueued) {
         reportSessionError(sessionId, {
           category: "client",
           severity: "warning",

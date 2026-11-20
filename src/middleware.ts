@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth-session";
+import { safeNextPath } from "@/lib/safe-next";
 
 const PROTECTED = [
   "/dashboard",
@@ -18,15 +19,6 @@ const PROTECTED = [
 ];
 
 const AUTH_PAGES = ["/login", "/register"];
-
-/** Only allow same-origin relative paths as post-login destinations. */
-function safeNextPath(raw: string | null | undefined): string {
-  if (!raw) return "/dashboard";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) {
-    return "/dashboard";
-  }
-  return raw;
-}
 
 /** Protects dashboard routes, cleans auth entry URLs, clears invalid session cookies. */
 export async function middleware(request: NextRequest) {
@@ -50,8 +42,9 @@ export async function middleware(request: NextRequest) {
     AUTH_PAGES.some((p) => path === p || path.startsWith(p + "/"))
   ) {
     const url = request.nextUrl.clone();
-    url.pathname = safeNextPath(request.nextUrl.searchParams.get("next"));
-    url.search = "";
+    const dest = new URL(safeNextPath(request.nextUrl.searchParams.get("next")), url.origin);
+    url.pathname = dest.pathname;
+    url.search = dest.search;
     return NextResponse.redirect(url);
   }
 

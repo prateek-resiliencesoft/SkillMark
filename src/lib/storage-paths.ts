@@ -96,9 +96,10 @@ export function mediaObjectKey(opts: {
   /** Use an already-assigned folder (e.g. sessions.mediaStoragePrefix) instead of recomputing it. */
   prefix?: string | null;
 }): string {
-  const safe = opts.fileName
+  let safe = opts.fileName
     .replace(/[^a-zA-Z0-9._-]/g, "_")
     .replace(/\.{2,}/g, ".");
+  if (isReservedObjectName(safe)) safe = `${safe}_`;
 
   // Normalize folder kinds to clean standard: recordings, images, CV
   let normalizedKind: string = opts.kind;
@@ -107,6 +108,77 @@ export function mediaObjectKey(opts: {
 
   const base = opts.prefix?.replace(/\/+$/, "") || candidateMediaPrefix(opts);
   return `${base}/${normalizedKind}/${safe}`;
+}
+
+/**
+ * Names the local storage layer treats as internal (content-type sidecars and
+ * in-flight atomic temp files): listing, quota accounting and prefix deletion
+ * skip them, so user content must never be stored under such a name.
+ */
+export function isReservedObjectName(name: string): boolean {
+  return /\.meta$/i.test(name) || /\.part-\d+-\d+$/.test(name);
+}
+
+const UPLOAD_EXTS = {
+  recording: ["webm", "m4a", "mp4", "ogg"],
+  screenshot: ["jpg", "jpeg", "png", "webp"],
+} as const;
+
+/**
+ * Candidate media file name: sanitized, max 120 chars, ending in an allowlisted
+ * extension for the upload type. Anything else gets the server fallback name.
+ */
+export function mediaUploadFileName(
+  name: string | null | undefined,
+  type: "recording" | "screenshot",
+  fallback: string,
+): string {
+  const safe = (name ?? "").replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.{2,}/g, ".");
+  const ext = safe.includes(".") ? safe.slice(safe.lastIndexOf(".") + 1).toLowerCase() : "";
+  const ok =
+    safe.length > 0 &&
+    safe.length <= 120 &&
+    !safe.startsWith(".") &&
+    (UPLOAD_EXTS[type] as readonly string[]).includes(ext) &&
+    !isReservedObjectName(safe);
+  return ok ? safe : fallback;
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  webm: "audio/webm",
+  m4a: "audio/mp4",
+  mp4: "audio/mp4",
+  ogg: "audio/ogg",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
+
+/** Stored content type comes from the (allowlisted) extension, never the client. */
+export function mediaContentType(fileName: string): string {
+  const ext = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+  return CONTENT_TYPES[ext] ?? "application/octet-stream";
+}
+
+/**
+ * Magic bytes are an audio container for audio names and an image for image
+ * names (whole recordings and images only; parts are raw slices). Browsers may
+ * pick a different container than the name suggests (e.g. Ogg named .m4a), so
+ * any container of the same family is accepted.
+ */
+export function matchesMediaSignature(buf: Uint8Array, fileName: string): boolean {
+  const ext = fileName.slice(fileName.lastIndexOf(".") + 1).toLowerCase();
+  const at = (offset: number, bytes: number[]) => bytes.every((b, i) => buf[offset + i] === b);
+  const ascii = (offset: number, s: string) => at(offset, Array.from(s, (c) => c.charCodeAt(0)));
+  const audio = at(0, [0x1a, 0x45, 0xdf, 0xa3]) || ascii(4, "ftyp") || ascii(0, "OggS");
+  const image =
+    at(0, [0xff, 0xd8, 0xff]) ||
+    at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) ||
+    (ascii(0, "RIFF") && ascii(8, "WEBP"));
+  if ((UPLOAD_EXTS.recording as readonly string[]).includes(ext)) return audio;
+  if ((UPLOAD_EXTS.screenshot as readonly string[]).includes(ext)) return image;
+  return false;
 }
 
 /** Split an object key into its parts: orgs/{org}/projects/{project}/candidates/{slug}/{kind}/{file} */

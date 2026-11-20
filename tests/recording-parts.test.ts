@@ -52,3 +52,19 @@ test("recordingExtForMime", () => {
   assert.equal(recordingExtForMime("audio/mp4"), "m4a");
   assert.equal(recordingExtForMime(""), "webm");
 });
+
+test("mapWithConcurrency keeps order and caps parallel calls", async () => {
+  const { mapWithConcurrency } = await import("@/lib/recording-parts");
+  let active = 0;
+  let peak = 0;
+  const out = await mapWithConcurrency([5, 1, 4, 2, 3, 0, 6], 3, async (n) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, n * 2));
+    active--;
+    return n * 10;
+  });
+  assert.deepEqual(out, [50, 10, 40, 20, 30, 0, 60]);
+  assert.ok(peak <= 3, `peak ${peak}`);
+  assert.deepEqual(await mapWithConcurrency([], 4, async (n: number) => n), []);
+});

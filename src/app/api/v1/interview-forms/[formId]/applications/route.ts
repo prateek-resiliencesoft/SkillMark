@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { apiError, withApiKey } from "@/lib/api-key-auth";
+import { clientIp } from "@/lib/client-ip";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   appBaseUrl,
-  clientIp,
   createApplication,
   parseSubmissionRequest,
   serializeApplication,

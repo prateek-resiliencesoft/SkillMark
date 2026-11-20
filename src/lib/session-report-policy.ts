@@ -147,9 +147,9 @@ export function isReportStuck(
 /** Whether a completion request may (re)mark the session COMPLETED. */
 export function canMarkCompleted(status: string | null | undefined): boolean {
   // COMPLETED is terminal (no re-run); DISQUALIFIED is never overridden.
-  // ABANDONED → COMPLETED is allowed: a late "complete" proves the candidate
-  // finished (e.g. the tab-close beacon raced the final save).
-  return status === "IN_PROGRESS" || status === "ABANDONED" || status === "NOT_STARTED";
+  // ABANDONED → COMPLETED is allowed only inside the late-write grace window
+  // (candidateWriteWindow): the tab-close beacon raced the final save.
+  return status === "IN_PROGRESS" || status === "ABANDONED";
 }
 
 /** No saved activity / heartbeat for this long → a session with content is over. */

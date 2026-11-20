@@ -11,13 +11,13 @@
  * Nothing here guesses: unreadable input is reported in `warnings` so callers
  * can flag the document for human review.
  */
+import { configuredGeminiModel } from "@/lib/ai/gemini-models";
+import { unwrappingFetch } from "@/lib/ai/providers/compatible";
 import "server-only";
-import type { AnyNode, Element } from "domhandler";
-import { getChildren, getElementsByTagName, textContent } from "domutils";
-import { parseDocument } from "htmlparser2";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
+import { assertZipWithinLimits, htmlToMarkdown, normalise } from "@/lib/documents/docx-safety";
 import { budgetSignal, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
 import { classifyAiFailure, isAuthError, isQuotaError, keyChainExhaustedError } from "@/lib/ai/key-chain";
 import { createLogger } from "@/lib/logger";
@@ -30,7 +30,7 @@ const log = createLogger("documents/extract");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
   buffer: Buffer,
-  options?: { pagerender?: (page: PdfPage) => Promise<string> },
+  options?: { pagerender?: (page: PdfPage) => Promise<string>; max?: number },
 ) => Promise<{ text: string; numpages: number }>;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -48,6 +48,7 @@ interface PdfPage {
 }
 
 export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const MAX_PDF_PAGES = 50;
 
 /** Below this many characters a PDF page is treated as scanned (no text layer). */
 const MIN_CHARS_PER_PAGE = 80;
@@ -102,6 +103,7 @@ export async function extractDocument(
     }
   }
 
+  options?.signal?.throwIfAborted();
   if (kind === "docx") return extractDocx(buffer);
   if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
   return extractImage(buffer, options?.organizationId, options?.signal);
@@ -136,6 +138,7 @@ async function extractWithDocling(buffer: Buffer, fileName: string, signal?: Abo
 /* ------------------------------------------------------------------ */
 
 async function extractDocx(buffer: Buffer): Promise<ExtractedDocument> {
+  assertZipWithinLimits(buffer);
   const { value: html, messages } = await mammoth.convertToHtml({ buffer });
   const markdown = htmlToMarkdown(html);
   const warnings = messages
@@ -146,52 +149,6 @@ async function extractDocx(buffer: Buffer): Promise<ExtractedDocument> {
     warnings.push("DOCX contains little or no text (content may be embedded as images).");
   }
   return { markdown, method: "docx", pages: 1, warnings };
-}
-
-/**
- * Converts mammoth's semantic HTML to Markdown, keeping table rows intact.
- * Uses htmlparser2 rather than cheerio: cheerio pulls in the `undici` package,
- * which breaks pdf-parse's bundled pdf.js ("bad XRef entry") in the same process.
- */
-function htmlToMarkdown(html: string): string {
-  const isTag = (n: AnyNode): n is Element => "name" in n && typeof n.name === "string";
-  const text = (n: AnyNode) => textContent(n).replace(/\s+/g, " ").trim();
-  const out: string[] = [];
-
-  for (const el of getChildren(parseDocument(html))) {
-    if (!isTag(el)) {
-      const t = text(el);
-      if (t) out.push(t, "");
-      continue;
-    }
-    const tag = el.name.toLowerCase();
-    if (/^h[1-6]$/.test(tag)) {
-      out.push(`${"#".repeat(Number(tag[1]))} ${text(el)}`);
-    } else if (tag === "ul" || tag === "ol") {
-      getChildren(el)
-        .filter((c) => isTag(c) && c.name === "li")
-        .forEach((li, i) => out.push(`${tag === "ol" ? `${i + 1}.` : "-"} ${text(li)}`));
-    } else if (tag === "table") {
-      const rows = getElementsByTagName("tr", el).map((tr) =>
-        getChildren(tr)
-          .filter((c) => isTag(c) && (c.name === "td" || c.name === "th"))
-          .map((c) => text(c).replace(/\|/g, "\\|")),
-      );
-      if (rows.length) {
-        const width = Math.max(...rows.map((r) => r.length));
-        const pad = (r: string[]) => [...r, ...Array(width - r.length).fill("")];
-        out.push(`| ${pad(rows[0]).join(" | ")} |`);
-        out.push(`| ${Array(width).fill("---").join(" | ")} |`);
-        for (const r of rows.slice(1)) out.push(`| ${pad(r).join(" | ")} |`);
-      }
-    } else {
-      const t = text(el);
-      if (t) out.push(t);
-    }
-    out.push("");
-  }
-
-  return normalise(out.join("\n"));
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,9 +199,13 @@ async function extractPdf(
   let numPages = 0;
 
   try {
-    const parsed = await pdfParse(buffer, { pagerender: renderPdfPage });
+    const parsed = await pdfParse(buffer, { pagerender: renderPdfPage, max: MAX_PDF_PAGES });
     numPages = parsed.numpages;
-    pages = parsed.text.split("\f").map((p) => p.trim()).filter((_, i) => i < numPages);
+    pages = parsed.text
+      .split("\f")
+      .map((p) => p.trim())
+      .filter((_, i) => i < Math.min(numPages, MAX_PDF_PAGES));
+    if (numPages > MAX_PDF_PAGES) warnings.push(`Only the first ${MAX_PDF_PAGES} of ${numPages} pages were read.`);
   } catch (err) {
     log.warn("pdf-parse failed:", err);
     warnings.push("PDF text layer could not be read.");
@@ -361,12 +322,12 @@ async function getVisionClients(organizationId?: string | null): Promise<VisionC
     const model =
       id === "openai"
         ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
-        : process.env.GEMINI_MODEL || "gemini-3.5-flash";
+        : configuredGeminiModel();
     for (const apiKey of c.apiKeys) {
       out.push({
         kind: id,
         // maxRetries 0: we fail over across keys ourselves; SDK 429 backoff only burns the time budget.
-        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0 }),
+        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0, fetch: unwrappingFetch }),
         model,
         apiKey,
       });
@@ -475,15 +436,6 @@ async function geminiPdfToMarkdown(
 }
 
 /* ------------------------------------------------------------------ */
-
-function normalise(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/[ \t]{2,}(?!\|)/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
 
 function countPages(md: string): number {
   return Math.max(1, (md.match(/<!-- page/g) ?? []).length);

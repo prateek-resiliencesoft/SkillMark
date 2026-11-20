@@ -26,7 +26,8 @@ import { Check, ChevronDown, ChevronRight, Copy, Download, Loader2, Lock, LockOp
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-const KEY_STORE = "rsi-docs-key";
+/** Older builds persisted the docs key here; it is purged on mount and never written again. */
+const LEGACY_KEY_STORE = "rsi-docs-key";
 
 const METHOD_BADGE: Record<string, string> = {
   GET: "bg-blue-600 text-white",
@@ -697,7 +698,11 @@ export function ApiReference() {
 
   useEffect(() => {
     setBase(`${window.location.origin}/api/v1`);
-    setApiKey(sessionStorage.getItem(KEY_STORE) ?? "");
+    try {
+      sessionStorage.removeItem(LEGACY_KEY_STORE);
+    } catch {
+      /* storage unavailable */
+    }
     fetch("/api/v1/openapi.json")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(setSpec)
@@ -726,10 +731,9 @@ export function ApiReference() {
     window.history.replaceState(null, "", url);
   }, []);
 
+  // Memory only: web storage would outlive logout / account switch in this tab.
   function saveKey(k: string) {
     setApiKey(k);
-    if (k) sessionStorage.setItem(KEY_STORE, k);
-    else sessionStorage.removeItem(KEY_STORE);
     if (k) setAuthOpen(false);
   }
 

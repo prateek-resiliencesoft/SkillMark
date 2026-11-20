@@ -5,27 +5,13 @@ import { getCodeRunner, CodeRunnerError } from "../code-runner";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { redactSecrets } from "@/lib/session-error-log";
 import { getLanguage } from "@/lib/code-languages";
+import { readSessionCapabilityCookie, sessionCapabilityOk } from "@/lib/session-capability";
+import { CODE_RUN_LIMITS, codeRunSessionAllowed, createCodeRunLimiter, type CodeRunSessionRow } from "../code-runner/limits";
 
 const MAX_CODE_BYTES = 64 * 1024;
 const MAX_STDIN_BYTES = 16 * 1024;
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 12; // runs per minute per session / user
 
-const hits = new Map<string, number[]>();
-function allowRun(key: string): boolean {
-  const now = Date.now();
-  const recent = (hits.get(key) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (recent.length >= RATE_MAX) {
-    hits.set(key, recent);
-    return false;
-  }
-  recent.push(now);
-  hits.set(key, recent);
-  if (hits.size > 5000) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return true;
-}
+const limiter = createCodeRunLimiter();
 
 const byteLen = (s: string) => Buffer.byteLength(s, "utf8");
 
@@ -44,39 +30,48 @@ export const codeRouter = router({
     .input(
       z.object({
         language: z.string().min(1).max(32),
-        code: z.string().min(1),
-        stdin: z.string().optional(),
+        code: z.string().min(1).max(MAX_CODE_BYTES),
+        stdin: z.string().max(MAX_STDIN_BYTES).optional(),
         sessionId: z.string().uuid().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      let sessionId: string | null = null;
-      if (input.sessionId) {
-        const { data: s } = await ctx.supabase
-          .from("sessions")
-          .select("id,status")
-          .eq("id", input.sessionId)
-          .maybeSingle();
-        if (s && (s as { status?: string }).status === "IN_PROGRESS") sessionId = (s as { id: string }).id;
-      }
-      if (!sessionId && !ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sign in or join an active interview to run code." });
-
       if (byteLen(input.code) > MAX_CODE_BYTES) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "Code is too large to run (max 64 KB)." });
       if (input.stdin && byteLen(input.stdin) > MAX_STDIN_BYTES) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "Input is too large (max 16 KB)." });
+
+      let sessionId: string | null = null;
+      let organizationId: string | null = null;
+      if (input.sessionId) {
+        const { data } = await ctx.supabase
+          .from("sessions")
+          .select('id, status, "interviewBeganAt", "capabilityRequired", interview:interviews!inner(project:projects(organizationId))')
+          .eq("id", input.sessionId)
+          .maybeSingle();
+        const s = data as (CodeRunSessionRow & { interview?: { project?: { organizationId?: string | null } | null } | null }) | null;
+        if (codeRunSessionAllowed(s) && s) {
+          const token = s.capabilityRequired ? await readSessionCapabilityCookie(s.id) : null;
+          if (sessionCapabilityOk(s, token)) {
+            sessionId = s.id;
+            organizationId = s.interview?.project?.organizationId ?? null;
+          }
+        }
+      }
+      const userId = (ctx.user as { id?: string } | null)?.id ?? null;
+      if (!sessionId && !userId) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sign in or join an active interview to run code." });
 
       const lang = getLanguage(input.language);
       const runner = getCodeRunner();
       if (!lang || !runner.supports(lang.id)) throw new TRPCError({ code: "BAD_REQUEST", message: `Running ${input.language} is not supported.` });
 
-      const rateKey = sessionId ? `s:${sessionId}` : `u:${(ctx.user as { id?: string } | null)?.id ?? "anon"}`;
-      if (!allowRun(rateKey)) {
-        if (sessionId) {
+      const slot = limiter.acquire({ sessionId, userId, organizationId });
+      if (!slot.ok) {
+        if (sessionId && slot.reason === "s") {
           void recordSessionError({
             sessionId,
             category: "rate_limit",
             severity: "warning",
             source: "code-runner",
-            message: `Code run rate limit hit (${RATE_MAX}/min).`,
+            message: `Code run rate limit hit (${slot.reason}; ${CODE_RUN_LIMITS.perSessionPerMinute}/min per session).`,
             status: 429,
             code: "RUN_RATE_LIMITED",
             context: { language: lang.id },
@@ -115,6 +110,8 @@ export const codeRouter = router({
                 ? "The code runner is busy (rate limit). Try again shortly."
                 : e.message,
         });
+      } finally {
+        slot.release();
       }
     }),
 });

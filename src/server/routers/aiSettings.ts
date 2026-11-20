@@ -18,6 +18,7 @@ import {
   decryptAiProviders,
 } from "@/lib/ai/credentials";
 import { checkVoiceModel, voiceBlockedReason } from "@/lib/ai/capabilities";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isPlatformAdmin } from "../tenant";
@@ -29,9 +30,24 @@ async function requireOrgAdmin(
   userId: string,
 ) {
   if (await isPlatformAdmin(supabase, userId)) return;
-  const membership = await getOrgMembership(supabase, organizationId, userId);
+  const membership = await getOrgMembership(supabase, organizationId, userId, { write: true });
   if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
   assertMinRole(membership.role, "ADMIN");
+}
+
+/** Tenant LLM endpoints must be public https hosts (SSRF); blank clears. */
+async function validateCustomBaseUrl(baseUrl: string | null | undefined): Promise<void> {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return;
+  try {
+    const url = await assertSafeRemoteUrl(trimmed);
+    if (url.hash) throw new Error("URL must not contain a fragment");
+  } catch (err) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Custom endpoint URL is not allowed: ${(err as Error).message}. Use a public https:// address.`,
+    });
+  }
 }
 
 const providerIdSchema = z.enum(["openai", "gemini", "nvidia", "anthropic", "custom"]);
@@ -116,6 +132,7 @@ export const aiSettingsRouter = router({
       await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
       const current = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
       const baseUrl = input.providerId === "custom" ? input.baseUrl : undefined;
+      await validateCustomBaseUrl(baseUrl);
       let next = input.slots
         ? applyKeyOrderPatch(current, input.providerId, input.slots, baseUrl)
         : applyKeySlotsPatch(current, input.providerId, input.keySlots ?? [], baseUrl);
@@ -205,8 +222,13 @@ export const aiSettingsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      const providers = { ...(input.providers ?? {}) };
+      for (const id of ["openai", "gemini", "nvidia", "anthropic"] as const) {
+        if (providers[id]) providers[id] = { ...providers[id], baseUrl: undefined };
+      }
+      await validateCustomBaseUrl(providers.custom?.baseUrl);
       const current = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
-      const next = mergeAiProvidersPatch(current, input.providers ?? {});
+      const next = mergeAiProvidersPatch(current, providers);
       const { error } = await ctx.supabase.from("org_integrations").upsert(
         { organizationId: input.organizationId, aiProviders: next },
         { onConflict: "organizationId" },

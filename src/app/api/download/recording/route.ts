@@ -1,6 +1,8 @@
 import { getAuthUser } from "@/lib/auth";
-import { assertSafeRemoteUrl } from "@/lib/network-security";
+import { assertSafeRemoteUrl, safeFetch } from "@/lib/network-security";
 import { NextRequest, NextResponse } from "next/server";
+
+const MAX_RECORDING_BYTES = 2 * 1024 * 1024 * 1024;
 
 export async function GET(req: NextRequest) {
   const user = await getAuthUser();
@@ -26,17 +28,15 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-
-    const upstream = await fetch(safeUrl, {
-      signal: controller.signal,
+    const upstream = await safeFetch(safeUrl, {
       redirect: "error",
+      maxBytes: MAX_RECORDING_BYTES,
+      timeoutMs: 10 * 60_000,
     });
-    clearTimeout(timeout);
 
     if (!upstream.ok) {
-      return NextResponse.json({ error: "Failed to fetch file" }, { status: upstream.status });
+      await upstream.body?.cancel().catch(() => {});
+      return NextResponse.json({ error: "Failed to fetch file" }, { status: 502 });
     }
 
     const headers = new Headers();

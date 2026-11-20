@@ -36,6 +36,7 @@ async function verifyInterviewAccess(
   supabase: Parameters<typeof getOrgMembership>[0],
   interviewId: string,
   userId: string,
+  options: { write?: boolean } = {},
 ): Promise<{ role: MemberRole; interviewUserId: string }> {
   const { data: interview } = await supabase
     .from("interviews")
@@ -55,6 +56,7 @@ async function verifyInterviewAccess(
     supabase,
     project.organizationId,
     userId,
+    options,
   );
   if (!membership) {
     throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
@@ -83,6 +85,7 @@ export const questionRouter = router({
         ctx.supabase,
         input.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only modify questions on interviews you created" });
@@ -211,6 +214,7 @@ export const questionRouter = router({
         ctx.supabase,
         question.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only modify questions on interviews you created" });
@@ -252,6 +256,7 @@ export const questionRouter = router({
         ctx.supabase,
         question.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete questions on interviews you created" });
@@ -292,6 +297,7 @@ export const questionRouter = router({
         ctx.supabase,
         input.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only reorder questions on interviews you created" });
@@ -303,7 +309,8 @@ export const questionRouter = router({
           ctx.supabase
             .from("questions")
             .update({ order: index })
-            .eq("id", id),
+            .eq("id", id)
+            .eq("interviewId", input.interviewId),
         ),
       );
 
@@ -350,7 +357,13 @@ export const questionRouter = router({
 
       let projectIds: string[];
       if (input.projectId) {
-        const projAccess = await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id);
+        const { data: project } = await ctx.supabase
+          .from("projects")
+          .select("organizationId")
+          .eq("id", input.projectId)
+          .maybeSingle();
+        const inScope = !!project && orgIds.includes(project.organizationId as string);
+        const projAccess = inScope && (await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id));
         projectIds = projAccess ? [input.projectId] : [];
       } else {
         const { data: projects } = await ctx.supabase

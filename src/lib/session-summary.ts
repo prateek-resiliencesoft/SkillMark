@@ -11,6 +11,12 @@ import {
 } from "@/lib/ai/prompts/summary";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import {
+  boundCodeSnippets,
+  boundDrawings,
+  boundTranscript,
+  SUMMARY_MAX_MESSAGES_LOADED,
+} from "@/lib/ai/summary-bounds";
+import {
   experienceBucket,
   profileToResumeText,
   type CandidateProfile,
@@ -23,6 +29,11 @@ import { assessCandidateCapture, buildCaptureFailure } from "@/lib/transcript/ca
 const log = createLogger("session-summary");
 
 export type SummaryOutcome = "scored" | "capture_failure" | "no_messages";
+
+export type SummaryRunOptions = {
+  /** Aborts provider calls and stops between stages when the run's time budget is spent. */
+  signal?: AbortSignal;
+};
 
 /** Load workExperience / skills / resume for experience-calibrated code review. */
 export async function loadCandidateJudgingContext(
@@ -105,7 +116,10 @@ export async function flagCaptureFailureIfNeeded(
 }
 
 /** Load the interview fields the summary prompt needs, then generate the report. */
-export async function generateSummaryForSession(sessionId: string): Promise<SummaryOutcome> {
+export async function generateSummaryForSession(
+  sessionId: string,
+  opts: SummaryRunOptions = {},
+): Promise<SummaryOutcome> {
   const { data, error } = await supabaseAdmin
     .from("sessions")
     .select(
@@ -136,6 +150,7 @@ export async function generateSummaryForSession(sessionId: string): Promise<Summ
     interview.language,
     interview.questions,
     interview.assessmentCriteria,
+    opts,
   );
 }
 
@@ -146,52 +161,60 @@ export async function generateSessionSummary(
   language?: string | null,
   questions?: { text: string; order: number; type?: string }[] | null,
   assessmentCriteria?: { name: string; description: string }[] | null,
+  opts: SummaryRunOptions = {},
 ): Promise<SummaryOutcome> {
   {
+    const { signal } = opts;
     const { data: allMessages } = await supabaseAdmin
       .from("messages")
       .select("*")
       .eq("sessionId", sessionId)
-      .order("timestamp", { ascending: true });
+      .order("timestamp", { ascending: true })
+      .limit(SUMMARY_MAX_MESSAGES_LOADED);
 
     if (!allMessages || allMessages.length === 0) {
       log.info("No messages to summarize");
       return "no_messages";
     }
 
-    const whiteboardDrawingsRaw = allMessages
-      .filter((m) => m.contentType === "WHITEBOARD" && m.whiteboardData)
-      .map((m) => {
-        const data = m.whiteboardData as Record<string, unknown>;
-        return {
-          label: (data.label as string) || "Untitled Drawing",
-          imageDataUrl: m.whiteboardImageUrl ?? null,
-        };
-      });
-
-    const whiteboardDrawings = await Promise.all(
-      whiteboardDrawingsRaw.map(async (d) => ({
-        ...d,
-        imageDataUrl: d.imageDataUrl
-          ? await svgDataUrlToPng(d.imageDataUrl)
-          : null,
-      })),
+    const whiteboardDrawingsRaw = boundDrawings(
+      allMessages
+        .filter((m) => m.contentType === "WHITEBOARD" && m.whiteboardData)
+        .map((m) => {
+          const data = m.whiteboardData as Record<string, unknown>;
+          return {
+            label: String((data.label as string) || "Untitled Drawing").slice(0, 200),
+            imageDataUrl: (m.whiteboardImageUrl as string | null) ?? null,
+          };
+        }),
     );
 
-    const codeSnippetsInput = allMessages
-      .filter(
-        (m) => (m.contentType as string) === "CODE" && m.whiteboardData,
-      )
-      .map((m) => {
-        const data = m.whiteboardData as Record<string, unknown>;
-        return {
-          id: typeof m.content === "string" && m.content.trim() ? m.content.trim() : undefined,
-          label: (data.label as string) || "Untitled Snippet",
-          code: (data.code as string) || "",
-          language: (data.language as string) || "plaintext",
-        };
-      })
-      .filter((s) => s.code.trim().length > 0);
+    // Sequential: each rasterization is memory-heavy.
+    const whiteboardDrawings: { label: string; imageDataUrl: string | null }[] = [];
+    for (const d of whiteboardDrawingsRaw) {
+      signal?.throwIfAborted();
+      whiteboardDrawings.push({
+        ...d,
+        imageDataUrl: d.imageDataUrl ? await svgDataUrlToPng(d.imageDataUrl) : null,
+      });
+    }
+
+    const codeSnippetsInput = boundCodeSnippets(
+      allMessages
+        .filter(
+          (m) => (m.contentType as string) === "CODE" && m.whiteboardData,
+        )
+        .map((m) => {
+          const data = m.whiteboardData as Record<string, unknown>;
+          return {
+            id: typeof m.content === "string" && m.content.trim() ? m.content.trim() : undefined,
+            label: (data.label as string) || "Untitled Snippet",
+            code: (data.code as string) || "",
+            language: (data.language as string) || "plaintext",
+          };
+        })
+        .filter((s) => s.code.trim().length > 0),
+    );
 
     const { data: sessionMeta } = await supabaseAdmin
       .from("sessions")
@@ -212,6 +235,8 @@ export async function generateSessionSummary(
     if (await flagCaptureFailureIfNeeded(sessionId, textMessages, "session-summary")) {
       return "capture_failure";
     }
+    const promptTranscript = boundTranscript(textMessages);
+    signal?.throwIfAborted();
 
     const drawingsInput =
       whiteboardDrawings.length > 0 ? whiteboardDrawings : null;
@@ -220,7 +245,7 @@ export async function generateSessionSummary(
 
     const promptMessages = buildSummaryPrompt(
       interviewTitle,
-      textMessages,
+      promptTranscript,
       objective,
       assessmentCriteria,
       questions,
@@ -237,6 +262,7 @@ export async function generateSessionSummary(
         temperature: 0.3,
         maxTokens: 8192,
         model: reportModel,
+        signal,
       });
     } catch (err) {
       const isVisionError =
@@ -252,7 +278,7 @@ export async function generateSessionSummary(
         }));
         const fallbackMessages = buildSummaryPrompt(
           interviewTitle,
-          textMessages,
+          promptTranscript,
           objective,
           assessmentCriteria,
           questions,
@@ -266,6 +292,7 @@ export async function generateSessionSummary(
           temperature: 0.3,
           maxTokens: 8192,
           model: reportModel,
+          signal,
         });
       } else {
         throw err;

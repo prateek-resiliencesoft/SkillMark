@@ -59,9 +59,17 @@ services:
   voice:
     image: ghcr.io/prateek-resiliencesoft/skillmark-voice:${IMAGE_TAG:-main}
     restart: unless-stopped
+    depends_on:
+      rest:
+        condition: service_started
     env_file:
       - .env
     environment:
+      # Relays verify the session row + capability cookie (AUTH_SECRET) and
+      # only accept the NEXT_PUBLIC_APP_URL origin unless VOICE_RELAY_ALLOWED_ORIGINS is set.
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?set NEXT_PUBLIC_APP_URL in .env}
+      POSTGREST_URL: http://rest:3000
       VOICE_RELAY_HOST: "0.0.0.0"
       VOICE_RELAY_PORT: "8082"
       OPENAI_VOICE_RELAY_PORT: "8082"

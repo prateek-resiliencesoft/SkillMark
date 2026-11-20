@@ -2,15 +2,16 @@
  * Which UptimeRobot monitors appear on landing + in-app /status.
  * Stored in platform_settings key `uptime`.
  *
- * Until an admin toggles/creates with an explicit flag (`seeded: true`),
- * public = heuristic (URL/name does not contain `/admin`).
+ * Fails closed: only monitors an admin explicitly marked public are shown. Missing
+ * settings mean nothing is public; a read error throws so callers never fall back to
+ * a name/URL heuristic (and admin writes never overwrite the list from a failed read).
  */
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export type UptimeVisibility = {
   /** Authoritative allowlist once seeded */
   publicIds: number[];
-  /** false = use /admin heuristic until first explicit change */
+  /** Legacy flag; visibility is always the explicit allowlist. */
   seeded: boolean;
 };
 
@@ -34,14 +35,18 @@ export function parseUptimeVisibility(raw: unknown): UptimeVisibility {
   };
 }
 
+/** What public endpoints use when the allowlist cannot be read. */
+export const FAIL_CLOSED_UPTIME_VISIBILITY: UptimeVisibility = Object.freeze({ publicIds: [], seeded: true }) as UptimeVisibility;
+
 export async function loadUptimeVisibility(): Promise<UptimeVisibility> {
   const { data, error } = await supabaseAdmin
     .from("platform_settings")
     .select("value")
     .eq("key", "uptime")
     .maybeSingle();
-  if (error || !data) return defaultUptimeVisibility();
-  return parseUptimeVisibility(data.value);
+  if (error) throw new Error(`Could not load uptime visibility: ${error.message}`);
+  if (!data) return { publicIds: [], seeded: true };
+  return { ...parseUptimeVisibility(data.value), seeded: true };
 }
 
 export async function saveUptimeVisibility(
@@ -65,24 +70,21 @@ export async function saveUptimeVisibility(
   return next;
 }
 
-/** Seed allowlist from heuristic audiences if not yet explicit. */
+/**
+ * Current explicit allowlist. Heuristic ids are intentionally not persisted: a monitor
+ * becomes public only when an admin marks it so.
+ */
 export async function seedUptimeVisibilityIfNeeded(
-  heuristicPublicIds: number[],
-  updatedBy: string,
+  _heuristicPublicIds: number[],
+  _updatedBy: string,
 ): Promise<UptimeVisibility> {
-  const current = await loadUptimeVisibility();
-  if (current.seeded) return current;
-  return saveUptimeVisibility(
-    { publicIds: heuristicPublicIds, seeded: true },
-    updatedBy,
-  );
+  return loadUptimeVisibility();
 }
 
 export function isMonitorPublic(
   monitorId: number,
-  heuristicPublic: boolean,
+  _heuristicPublic: boolean,
   vis: UptimeVisibility,
 ): boolean {
-  if (vis.seeded) return vis.publicIds.includes(monitorId);
-  return heuristicPublic;
+  return vis.publicIds.includes(monitorId);
 }

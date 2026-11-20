@@ -3,6 +3,7 @@ if (typeof window !== "undefined") {
 }
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import type { Context } from "@/server/context";
+import { configuredGeminiModel } from "./gemini-models";
 import { checkVoiceModel, isVoiceCapableProvider } from "./capabilities";
 import { splitKeyList } from "./key-chain";
 
@@ -46,6 +47,8 @@ export type ResolvedProviderCreds = {
   apiKeys: string[];
   baseUrl?: string;
   from: "org" | "env" | "none";
+  /** baseUrl came from tenant settings: reach it only through the SSRF-guarded fetch. */
+  untrustedBaseUrl?: boolean;
 };
 
 export type ResolvedAiCredentials = Record<AiProviderId, ResolvedProviderCreds>;
@@ -319,57 +322,50 @@ export function applyKeyOrderPatch(
   return current;
 }
 
+/**
+ * Platform env keys are only ever paired with platform-controlled base URLs. Built-in
+ * providers ignore any stored org baseUrl; the custom provider's org baseUrl is used
+ * with org keys (or a dummy placeholder) and is flagged untrusted.
+ */
 export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCredentials {
   const pick = (
     orgKeys: string[],
-    orgBase: string | null | undefined,
     envNames: string[],
     envBase?: string,
     defaultBase?: string,
   ): ResolvedProviderCreds => {
-    if (orgKeys.length) {
-      return {
-        apiKeys: orgKeys,
-        baseUrl: orgBase || envBase || defaultBase,
-        from: "org",
-      };
-    }
+    const baseUrl = envBase || defaultBase;
+    if (orgKeys.length) return { apiKeys: orgKeys, baseUrl, from: "org" };
     const ek = envKeys(...envNames);
-    if (ek.length) {
-      return {
-        apiKeys: ek,
-        baseUrl: orgBase || envBase || defaultBase,
-        from: "env",
-      };
-    }
-    return { apiKeys: [], baseUrl: orgBase || envBase || defaultBase, from: "none" };
+    if (ek.length) return { apiKeys: ek, baseUrl, from: "env" };
+    return { apiKeys: [], baseUrl, from: "none" };
   };
 
   const keysOf = (id: AiProviderId): string[] =>
     (orgPlain[id]?.apiKeys ?? []).filter((k): k is string => typeof k === "string" && !!k.trim());
 
   const customKeys = keysOf("custom");
-  const customOrgBase = orgPlain.custom?.baseUrl;
-  const customEnvKeys = envKeys("CUSTOM_LLM_API_KEY", "OPENAI_API_KEY");
-  const customResolved: ResolvedProviderCreds =
-    customKeys.length || customOrgBase
-      ? {
-          apiKeys: customKeys.length ? customKeys : customEnvKeys.length ? customEnvKeys : ["ollama"],
-          baseUrl: customOrgBase || process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL,
-          from: "org",
-        }
-      : pick(
-          [],
-          null,
-          ["CUSTOM_LLM_API_KEY", "OPENAI_API_KEY"],
-          process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL,
-        );
+  const customOrgBase = orgPlain.custom?.baseUrl?.trim() || null;
+  const customEnvBase = process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL;
+  let customResolved: ResolvedProviderCreds;
+  if (customOrgBase) {
+    customResolved = {
+      apiKeys: customKeys.length ? customKeys : ["ollama"],
+      baseUrl: customOrgBase,
+      from: "org",
+      untrustedBaseUrl: true,
+    };
+  } else if (customKeys.length) {
+    customResolved = { apiKeys: customKeys, baseUrl: customEnvBase, from: "org" };
+  } else {
+    customResolved = pick([], ["CUSTOM_LLM_API_KEY", "OPENAI_API_KEY"], customEnvBase);
+  }
 
   return {
-    openai: pick(keysOf("openai"), orgPlain.openai?.baseUrl, ["OPENAI_API_KEY"], process.env.OPENAI_BASE_URL),
-    gemini: pick(keysOf("gemini"), orgPlain.gemini?.baseUrl, ["GEMINI_API_KEY", "GOOGLE_API_KEY"], undefined, GEMINI_BASE),
-    nvidia: pick(keysOf("nvidia"), orgPlain.nvidia?.baseUrl, ["NVIDIA_API_KEY", "NGC_API_KEY"], undefined, NVIDIA_BASE),
-    anthropic: pick(keysOf("anthropic"), orgPlain.anthropic?.baseUrl, ["ANTHROPIC_API_KEY"]),
+    openai: pick(keysOf("openai"), ["OPENAI_API_KEY"], process.env.OPENAI_BASE_URL),
+    gemini: pick(keysOf("gemini"), ["GEMINI_API_KEY", "GOOGLE_API_KEY"], undefined, GEMINI_BASE),
+    nvidia: pick(keysOf("nvidia"), ["NVIDIA_API_KEY", "NGC_API_KEY"], undefined, NVIDIA_BASE),
+    anthropic: pick(keysOf("anthropic"), ["ANTHROPIC_API_KEY"]),
     custom: customResolved,
   };
 }
@@ -392,7 +388,7 @@ export function defaultModelForProvider(id: AiProviderId): string {
     case "openai":
       return process.env.OPENAI_MODEL || "gpt-4o-mini";
     case "gemini":
-      return process.env.GEMINI_MODEL || "gemini-3.5-flash";
+      return configuredGeminiModel();
     case "nvidia":
       return process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
     case "anthropic":

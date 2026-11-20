@@ -11,6 +11,7 @@ import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { generateSummaryForSession } from "@/lib/session-summary";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { refineTranscriptFromRecording } from "@/lib/transcript/retranscribe";
 import {
   MAX_REPORT_ATTEMPTS,
   REPORT_LOCK_STALE_MS,
@@ -21,13 +22,16 @@ import {
   idleCloseDecision,
   decideReport,
   hasReport,
+  isEndedStatus,
   retryDelayMs,
-  withReportTimeout,
+  REPORT_RUN_TIMEOUT_MS,
   type ReportSessionState,
   type ReportStatus,
 } from "@/lib/session-report-policy";
 import { effectiveDurationSeconds, lastMessageAt, reachedClosing } from "@/lib/session-activity";
 import { isInterviewBegun } from "@/lib/session-link";
+import { budgetSignal, raceAbort } from "@/lib/ai/fail-fast";
+import { SUMMARY_MAX_MESSAGES_LOADED } from "@/lib/ai/summary-bounds";
 
 const log = createLogger("session-report");
 
@@ -110,6 +114,20 @@ async function claim(row: Row, nowMs: number): Promise<boolean> {
 }
 
 const inFlight = new Set<string>();
+/** Reports generated at once by this process (sweeps start them without waiting). */
+export const MAX_CONCURRENT_REPORTS = 3;
+
+/**
+ * One report run with a hard time budget. The signal reaches the provider call, so a
+ * timed-out run stops instead of continuing detached after the lock is released.
+ */
+export function runReportWithTimeout(sessionId: string, ms = REPORT_RUN_TIMEOUT_MS) {
+  const signal = budgetSignal(ms);
+  return raceAbort(generateSummaryForSession(sessionId, { signal }), signal).catch((err) => {
+    if (signal.aborted) throw new Error(`Report generation timed out after ${Math.round(ms / 1000)}s`);
+    throw err;
+  });
+}
 /** Attempt counts when the status columns are missing (pre-migration). */
 const memAttempts = new Map<string, number>();
 const scheduled = new Map<string, ReturnType<typeof setTimeout>>();
@@ -138,7 +156,8 @@ export async function ensureSessionReport(
   const { data: msgs } = await supabaseAdmin
     .from("messages")
     .select("role, content, contentType")
-    .eq("sessionId", sessionId);
+    .eq("sessionId", sessionId)
+    .limit(SUMMARY_MAX_MESSAGES_LOADED);
   const stats = contentStats((msgs ?? []) as { role: string; content: string; contentType: string }[]);
 
   const decision = decideReport(row, stats, nowMs, { force: opts.force });
@@ -165,7 +184,9 @@ export async function ensureSessionReport(
   if (reportColumnsMissing) memAttempts.set(sessionId, attempt);
   try {
     log.info(`Generating report for ${sessionId} (${opts.reason}, attempt ${attempt})`);
-    const outcome = await withReportTimeout(generateSummaryForSession(sessionId));
+    // Live ASR has no question context (names, "5 LPA" -> "5 PM"); prefer the recording transcript.
+    await refineTranscriptFromRecording(sessionId);
+    const outcome = await runReportWithTimeout(sessionId);
     if (outcome === "no_messages") {
       await setReportStatus(sessionId, "SKIPPED", { reportError: "No transcript" });
       return "no_messages";
@@ -191,6 +212,24 @@ export async function ensureSessionReport(
   } finally {
     inFlight.delete(sessionId);
   }
+}
+
+/**
+ * Recording linked after the session ended. A report already built from the
+ * live transcript is re-run once so the recording transcript replaces it.
+ * ponytail: a link landing while a report is GENERATING is dropped (busy); the manual re-transcribe button covers it.
+ */
+export async function onRecordingLinked(sessionId: string): Promise<void> {
+  const row = await loadState(sessionId);
+  if (!row || !isEndedStatus(row.status) || !hasReport(row)) return;
+  const { count } = await supabaseAdmin
+    .from("messages")
+    .select("id", { count: "exact", head: true })
+    .eq("sessionId", sessionId)
+    .eq("role", "USER")
+    .eq("transcription", "recording");
+  if (count) return;
+  scheduleSessionReport(sessionId, "recording-linked", 0, { force: true });
 }
 
 /**
@@ -276,23 +315,29 @@ export async function sweepPendingReports(limit = 10): Promise<SweepSummary> {
     log.error("Idle-session sweep failed:", err);
   }
 
-  // 2) Ended sessions with no report.
-  const { data, error } = await supabaseAdmin
+  // 2) Ended sessions with no report. Terminal rows (SKIPPED / READY / exhausted FAILED)
+  // are filtered in SQL so they can't fill the window and starve pending ones.
+  let query = supabaseAdmin
     .from("sessions")
     .select("id, status, summary, insights" + (reportColumnsMissing ? "" : ', "reportStatus", "reportAttempts", "reportStartedAt"'))
     .in("status", ["COMPLETED", "ABANDONED"])
     .is("summary", null)
-    .gte("startedAt", since)
-    .order("startedAt", { ascending: false })
-    .limit(50);
+    .gte("startedAt", since);
+  if (!reportColumnsMissing) {
+    query = query
+      .or("reportStatus.is.null,reportStatus.in.(PENDING,GENERATING,FAILED)")
+      .or(`reportAttempts.is.null,reportAttempts.lt.${MAX_REPORT_ATTEMPTS}`);
+  }
+  const { data, error } = await query.order("startedAt", { ascending: false }).limit(50);
   if (error) {
     if (isMissingColumn(error)) reportColumnsMissing = true;
     else log.error("Report sweep query failed:", error.message);
     return summary;
   }
   let started = 0;
+  const capacity = Math.min(limit, MAX_CONCURRENT_REPORTS - inFlight.size);
   for (const row of (data ?? []) as unknown as Row[]) {
-    if (started >= limit) break;
+    if (started >= capacity) break;
     if (scheduled.has(row.id) || inFlight.has(row.id)) continue;
     if (hasReport(row)) continue;
     if (row.reportStatus === "SKIPPED") continue;
@@ -304,7 +349,8 @@ export async function sweepPendingReports(limit = 10): Promise<SweepSummary> {
     // FAILED rows wait for their own retry timer unless the process restarted.
     if (row.reportStatus === "FAILED" && row.reportStartedAt && nowMs - new Date(row.reportStartedAt).getTime() < 5 * 60_000) continue;
     started++;
-    await ensureSessionReport(row.id, { reason: "sweep" }).catch((err) =>
+    // Not awaited: a slow report must not hold the sweep (and idle-session closing) hostage.
+    void ensureSessionReport(row.id, { reason: "sweep" }).catch((err) =>
       log.error(`Sweep report for ${row.id} failed:`, err),
     );
   }
@@ -416,8 +462,9 @@ export async function closeIdleSessions(
       .from("messages")
       .select("role, content, contentType, timestamp")
       .eq("sessionId", s.id)
-      .order("timestamp", { ascending: true });
-    const messages = (msgs ?? []) as { role: string; content: string; contentType?: string; timestamp?: string }[];
+      .order("timestamp", { ascending: false })
+      .limit(SUMMARY_MAX_MESSAGES_LOADED);
+    const messages = ((msgs ?? []) as { role: string; content: string; contentType?: string; timestamp?: string }[]).reverse();
     if (!isInterviewBegun(s) && messages.length === 0) continue;
     const lastAt = lastMessageAt(messages);
     const d = idleCloseDecision({

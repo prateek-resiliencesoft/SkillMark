@@ -34,6 +34,7 @@ function fmt(v: string | null | undefined) {
 export default function ApiKeysPage() {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
+  const canManage = currentOrg?.role === "OWNER" || currentOrg?.role === "ADMIN";
   const utils = trpc.useUtils();
   const [name, setName] = useState("");
   const [env, setEnv] = useState<"live" | "test">("test");
@@ -67,6 +68,9 @@ export default function ApiKeysPage() {
       <Card>
         <CardHeader><CardTitle className="text-base">Create a key</CardTitle><CardDescription>Use test keys while developing; applications created with them are marked <code>test</code>.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
+          {!canManage ? (
+            <p className="text-sm text-muted-foreground">Only organization owners and admins can create API keys.</p>
+          ) : (<>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-1"><Label>Name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Careers site backend" /></div>
             <div className="space-y-1"><Label>Environment</Label><select className={sel} value={env} onChange={(e) => setEnv(e.target.value as "live" | "test")}><option value="test">Test (rsi_test_…)</option><option value="live">Live (rsi_live_…)</option></select></div>
@@ -80,9 +84,10 @@ export default function ApiKeysPage() {
               ))}
             </div>
           </div>
-          <Button disabled={!name.trim() || create.isLoading} onClick={() => create.mutate({ name: name.trim(), environment: env, scopes, organizationId: currentOrg?.id, expiresAt: expiresLocal ? new Date(expiresLocal).toISOString() : undefined })}>
+          <Button disabled={!name.trim() || !currentOrg || create.isLoading} onClick={() => currentOrg && create.mutate({ name: name.trim(), environment: env, scopes, organizationId: currentOrg.id, expiresAt: expiresLocal ? new Date(expiresLocal).toISOString() : undefined })}>
             {create.isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Generate key
           </Button>
+          </>)}
         </CardContent>
       </Card>
 
@@ -118,7 +123,7 @@ export default function ApiKeysPage() {
                       <td className="text-xs">{fmt(k.lastUsedAt)}</td>
                       <td className="text-xs">{fmt(k.createdAt)}</td>
                       <td className="whitespace-nowrap text-right">
-                        {k.isActive && <Button size="icon" variant="ghost" title="Rotate (revoke + new key)" onClick={() => { if (confirm("Rotate this key? The current key stops working immediately.")) rotate.mutate({ id: k.id }); }}><RefreshCw className="h-4 w-4" /></Button>}
+                        {k.isActive && canManage && <Button size="icon" variant="ghost" title="Rotate (revoke + new key)" onClick={() => { if (confirm("Rotate this key? The current key stops working immediately.")) rotate.mutate({ id: k.id }); }}><RefreshCw className="h-4 w-4" /></Button>}
                         {k.isActive && <Button size="icon" variant="ghost" title="Revoke" onClick={() => { if (confirm("Revoke this key?")) revoke.mutate({ id: k.id }); }}><Ban className="h-4 w-4" /></Button>}
                         {!k.isActive && <Button size="icon" variant="ghost" title="Delete" onClick={() => del.mutate({ id: k.id })}><Trash2 className="h-4 w-4" /></Button>}
                       </td>

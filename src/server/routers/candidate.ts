@@ -22,6 +22,13 @@ import {
 import { loadDeliveryConfig, sendCandidateInvite, type InviteDeliveryResult } from "../invite-delivery";
 import { FILES_BUCKET, signApplicationCv } from "../integrations/applications";
 import { feedbackForSession } from "../candidate-feedback";
+import { issueSessionCapabilityCookie } from "@/lib/session-capability";
+import { inviteSessionAction } from "@/lib/session-link";
+import {
+  projectCandidateForInvite,
+  projectInterviewForCandidate,
+  projectInviteSessionForCandidate,
+} from "@/lib/session-redact";
 
 const sendViaSchema = z.object({ email: z.boolean(), whatsapp: z.boolean() });
 export type { InviteDeliveryResult };
@@ -677,7 +684,14 @@ export const candidateRouter = router({
 
       let projectIds: string[];
       if (input.projectId) {
-        const projAccess = await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id);
+        // The project must live in one of the caller's (selected) organizations.
+        const { data: project } = await ctx.supabase
+          .from("projects")
+          .select("id")
+          .eq("id", input.projectId)
+          .in("organizationId", orgIds)
+          .maybeSingle();
+        const projAccess = !!project && (await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id));
         projectIds = projAccess ? [input.projectId] : [];
       } else {
         const { data: projects } = await ctx.supabase
@@ -757,7 +771,7 @@ export const candidateRouter = router({
     }),
 
   getByToken: publicProcedure
-    .input(z.object({ token: z.string() }))
+    .input(z.object({ token: z.string().min(1).max(200) }))
     .query(async ({ ctx, input }) => {
       const { data: candidate } = await ctx.supabase
         .from("candidates")
@@ -789,12 +803,27 @@ export const candidateRouter = router({
         });
       }
 
+      const expired = !!candidate.expiresAt && Date.parse(candidate.expiresAt as string) < Date.now();
+      const view = (session: Record<string, unknown> | null) => {
+        // Questions only while the link can still be used to take the interview.
+        const status = session?.status as string | undefined;
+        const usable = !expired && (status === "IN_PROGRESS" || inviteSessionAction(status) !== "reuse");
+        return {
+          ...projectCandidateForInvite(candidate),
+          session: projectInviteSessionForCandidate(session),
+          interview: projectInterviewForCandidate(interview, { includeQuestions: usable }),
+        };
+      };
+
       // One-time link: if the candidate's tab vanished mid-interview, end it now.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const linked = (candidate as any).session;
       if (linked && typeof linked === "object" && !Array.isArray(linked)) {
         const session = await expireIfStale(linked);
-        if (session.status === "IN_PROGRESS" && !session.interviewBeganAt) {
+        if (session.status === "IN_PROGRESS" && !session.interviewBeganAt && !session.supersededAt && !expired) {
+          // The link holder may pick up a not-yet-begun attempt (e.g. on another device).
+          await ctx.supabase.from("sessions").update({ capabilityRequired: true }).eq("id", session.id);
+          await issueSessionCapabilityCookie(session.id as string);
           void recordPreflightEvent({
             candidateId: candidate.id,
             sessionId: session.id,
@@ -803,7 +832,7 @@ export const candidateRouter = router({
             status: "done",
           });
         }
-        return { ...candidate, session };
+        return view(session);
       }
 
       void recordPreflightEvent({
@@ -813,7 +842,7 @@ export const candidateRouter = router({
         type: "link_opened",
         status: "done",
       });
-      return candidate;
+      return view(null);
     }),
 });
 

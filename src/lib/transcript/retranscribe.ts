@@ -13,6 +13,7 @@
  * - New rows are marked transcription = 'recording'.
  * - The report is regenerated afterwards.
  */
+import { GEMINI_FALLBACK_MODELS, normalizeGeminiModel } from "@/lib/ai/gemini-models";
 import { execFile, execFileSync } from "node:child_process";
 import { mkdtemp, readFile as readLocalFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -34,6 +35,14 @@ const GEMINI_API = "https://generativelanguage.googleapis.com";
 /** Inline audio limit (request max is 20MB; base64 adds ~33%). Bigger files use the Files API. */
 const INLINE_MAX_BYTES = 12 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 280_000;
+/** Auto mode keeps the live transcript unless the recording transcript keeps at least this share of its words. */
+const AUTO_MIN_WORD_RATIO = 0.6;
+
+const wordCount = (texts: string[]) => texts.reduce((n, t) => n + (t.trim() ? t.trim().split(/\s+/).length : 0), 0);
+
+export function recordingTranscriptKeepsWords(liveTexts: string[], recordingTexts: string[]): boolean {
+  return wordCount(recordingTexts) >= wordCount(liveTexts) * AUTO_MIN_WORD_RATIO;
+}
 
 export class RetranscribeError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -47,7 +56,7 @@ export type RetranscribeResult = {
   replacedLines: number;
   backupPath: string | null;
   model: string;
-  summary: SummaryOutcome | "failed";
+  summary: SummaryOutcome | "failed" | "skipped";
 };
 
 type DbMessage = {
@@ -81,10 +90,9 @@ function mimeFallbacks(mime: string): string[] {
 
 function geminiModels(): string[] {
   const list = [
-    process.env.GEMINI_TRANSCRIBE_MODEL?.trim(),
-    process.env.GEMINI_MODEL?.trim(),
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
+    process.env.GEMINI_TRANSCRIBE_MODEL?.trim() ? normalizeGeminiModel(process.env.GEMINI_TRANSCRIBE_MODEL) : null,
+    process.env.GEMINI_MODEL?.trim() ? normalizeGeminiModel(process.env.GEMINI_MODEL) : null,
+    ...GEMINI_FALLBACK_MODELS,
   ].filter((m): m is string => !!m);
   return Array.from(new Set(list));
 }
@@ -195,6 +203,8 @@ Transcribe the whole recording as speaker turns, in order.
 
 Rules:
 - Write exactly what was said. Never invent, summarise, or fix content. Use "[inaudible]" for words you cannot make out.
+- Use the interviewer line just before each candidate turn as context to pick the right word when the audio is ambiguous: an answer to "what is your name" is a person's name, an answer about salary or CTC is an amount, an answer about notice period is a duration.
+- Candidates are often Indian and speak Indian English. Write Indian names in their common romanised spelling, exactly as pronounced; never swap a name for a different, similar-sounding name. Keep Indian HR and money terms as spoken: LPA (lakhs per annum), lakh, crore, CTC, in-hand, fixed, variable, notice period, serving notice, B.Tech, M.Tech, MCA. "5 LPA" is an amount, never a time like "5 PM".
 - Keep the language as spoken${language ? ` (interview language: ${language})` : ""}.
 - speaker is exactly "interviewer" or "candidate". Never put interviewer words inside a candidate turn; split the turn instead.
 - startSec / endSec are when the turn starts and ends, in seconds from the start of the recording.
@@ -305,9 +315,14 @@ export async function transcribeAudio(
 
 const running = new Set<string>();
 
+/**
+ * `auto`: run by the automatic report. Skips sessions already transcribed from
+ * the recording, keeps the live transcript when the recording one would lose
+ * words, and leaves the report to the caller.
+ */
 export async function retranscribeSessionFromRecording(
   sessionId: string,
-  opts: { source: string },
+  opts: { source: string; auto?: boolean },
 ): Promise<RetranscribeResult> {
   if (running.has(sessionId)) {
     throw new RetranscribeError("A re-transcribe for this session is already running. Try again in a few minutes.", 409);
@@ -320,11 +335,23 @@ export async function retranscribeSessionFromRecording(
   }
 }
 
-async function retranscribeInner(sessionId: string, opts: { source: string }): Promise<RetranscribeResult> {
+/** Best-effort automatic pass before the report. Never throws; false = live transcript kept. */
+export async function refineTranscriptFromRecording(sessionId: string): Promise<boolean> {
+  try {
+    const r = await retranscribeSessionFromRecording(sessionId, { source: "auto/report", auto: true });
+    log.info(`Auto re-transcribed ${sessionId}: ${r.candidateLines} candidate lines (replaced ${r.replacedLines})`);
+    return true;
+  } catch (err) {
+    log.info(`Auto re-transcribe skipped for ${sessionId}: ${err instanceof Error ? err.message.slice(0, 200) : err}`);
+    return false;
+  }
+}
+
+async function retranscribeInner(sessionId: string, opts: { source: string; auto?: boolean }): Promise<RetranscribeResult> {
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, audioRecordingUrl, mediaClearedAt, interview:interviews!inner(language, project:projects!inner(organizationId))`,
+      `id, audioRecordingUrl, mediaClearedAt, mediaStoragePrefix, interview:interviews!inner(language, projectId, project:projects!inner(organizationId))`,
     )
     .eq("id", sessionId)
     .maybeSingle();
@@ -332,7 +359,8 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
   const s = session as unknown as {
     audioRecordingUrl?: string | null;
     mediaClearedAt?: string | null;
-    interview: { language?: string | null; project: { organizationId: string } };
+    mediaStoragePrefix?: string | null;
+    interview: { language?: string | null; projectId?: string | null; project: { organizationId: string } };
   };
   const organizationId = s.interview.project.organizationId;
   if (!s.audioRecordingUrl || s.mediaClearedAt) {
@@ -340,7 +368,12 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
   }
   const objectPath =
     objectPathFromSignedUrl("recordings", s.audioRecordingUrl) ?? s.audioRecordingUrl.split("?")[0];
-  if (!pathBelongsToSession(objectPath, sessionId, organizationId)) {
+  if (
+    !pathBelongsToSession(objectPath, sessionId, organizationId, {
+      projectId: s.interview.projectId,
+      mediaStoragePrefix: s.mediaStoragePrefix,
+    })
+  ) {
     throw new RetranscribeError("Recording path does not belong to this session.", 403);
   }
 
@@ -361,6 +394,9 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
     .order("timestamp", { ascending: true });
   const messages = (rows ?? []) as DbMessage[];
   const assistant = messages.filter((m) => m.role === "ASSISTANT");
+  if (opts.auto && messages.some((m) => m.role === "USER" && m.transcription === "recording")) {
+    throw new RetranscribeError("Already transcribed from the recording.", 409);
+  }
 
   log.info(
     `Transcribing recording for ${sessionId} (${Math.round(audio.length / 1024)} KB, ${mime}${prepared.converted ? ", converted with ffmpeg" : ""})`,
@@ -385,11 +421,15 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
   if (aligned.length === 0) {
     throw new RetranscribeError("No candidate speech was found in the recording. Nothing was changed.", 422);
   }
+  const candidateWords = aligned.reduce((n, t) => n + t.text.split(/\s+/).length, 0);
+  if (opts.auto && !recordingTranscriptKeepsWords(replaceable.map((m) => m.content), aligned.map((t) => t.text))) {
+    throw new RetranscribeError(`Recording transcript has only ${candidateWords} words; kept the live transcript.`, 422);
+  }
 
   // Back up the rows we are about to replace (none for a session with zero answers).
   let backupPath: string | null = null;
   if (replaceable.length > 0) {
-    backupPath = path.posix.join(path.posix.dirname(objectPath), `transcript-backup-${Date.now()}.json`);
+    backupPath = path.posix.join(path.posix.dirname(objectPath), `transcript-backup-${sessionId.toLowerCase()}-${Date.now()}.json`);
     const { error } = await storage
       .from("recordings")
       .upload(backupPath, Buffer.from(JSON.stringify({ sessionId, savedAt: new Date().toISOString(), messages: replaceable }, null, 2)), {
@@ -423,7 +463,6 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
     if (delErr) throw new RetranscribeError(`Could not replace the old transcript: ${delErr.message}`, 500);
   }
 
-  const candidateWords = aligned.reduce((n, t) => n + t.text.split(/\s+/).length, 0);
   void recordSessionError({
     sessionId,
     category: "tts_stt",
@@ -433,11 +472,13 @@ async function retranscribeInner(sessionId: string, opts: { source: string }): P
     context: { stage: "retranscribe", model, backupPath, mime },
   });
 
-  let summary: RetranscribeResult["summary"] = "failed";
-  try {
-    summary = await generateSummaryForSession(sessionId);
-  } catch (err) {
-    log.error("Report regeneration after re-transcribe failed:", err);
+  let summary: RetranscribeResult["summary"] = opts.auto ? "skipped" : "failed";
+  if (!opts.auto) {
+    try {
+      summary = await generateSummaryForSession(sessionId);
+    } catch (err) {
+      log.error("Report regeneration after re-transcribe failed:", err);
+    }
   }
 
   return {

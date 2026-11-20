@@ -9,13 +9,16 @@ import os from "node:os";
 import path from "node:path";
 import { createLogger } from "@/lib/logger";
 import {
+  FINALIZE_RETRY_DELAYS_MS,
   groupRecordingParts,
   isRunComplete,
+  mapWithConcurrency,
   mimeForRecordingExt,
   type RecordingPartExt,
   type RecordingRun,
 } from "@/lib/recording-parts";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { onRecordingLinked } from "@/lib/session-report-server";
 import { listObjectKeys } from "@/lib/storage";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -105,6 +108,7 @@ export async function linkRecordingToSession(
     });
     return false;
   }
+  void onRecordingLinked(sessionId).catch((err) => log.error(`Recording-linked report for ${sessionId} failed:`, err));
   return true;
 }
 
@@ -115,6 +119,27 @@ export function periodicScreenshotType(fileName: string): "camera" | "screen" | 
 }
 
 const screenshotLinkQueue = new Map<string, Promise<unknown>>();
+/** sessions.screenshots never grows past this (periodic captures of a ~4 h interview). */
+export const MAX_SESSION_SCREENSHOTS = 1_000;
+/** Finalize refuses part sets beyond this (~5.5 h at one part per 10 s). */
+export const MAX_FINALIZE_PARTS = 2_000;
+export const MAX_FINALIZE_RUNS = 20;
+/** Joins download every part into memory and run ffmpeg: at most this many at once per process. */
+const MAX_CONCURRENT_FINALIZE = 2;
+let activeFinalize = 0;
+const finalizeWaiters: (() => void)[] = [];
+
+async function withFinalizeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeFinalize >= MAX_CONCURRENT_FINALIZE) await new Promise<void>((r) => finalizeWaiters.push(r));
+  else activeFinalize++;
+  try {
+    return await fn();
+  } finally {
+    const next = finalizeWaiters.shift();
+    if (next) next();
+    else activeFinalize--;
+  }
+}
 
 /**
  * Append a periodic screenshot to sessions.screenshots at upload time. The
@@ -142,6 +167,7 @@ export function linkScreenshotToSession(
       }
       const existing = Array.isArray(data.screenshots) ? (data.screenshots as { path?: string }[]) : [];
       if (existing.some((s) => s.path === entry.path)) return true;
+      if (existing.length >= MAX_SESSION_SCREENSHOTS) return false;
       const { error: upErr } = await supabaseAdmin
         .from("sessions")
         .update({ screenshots: [...existing, entry] })
@@ -181,14 +207,61 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
-async function downloadRun(run: RecordingRun): Promise<Buffer> {
-  const bufs: Buffer[] = [];
-  for (const p of run.parts) {
-    const { data, error } = await supabaseAdmin.storage.from("recordings").download(p.key);
-    if (error || !data) throw new Error(`Missing recording part ${p.seq}: ${error?.message ?? "no data"}`);
-    bufs.push(Buffer.from(await data.arrayBuffer()));
+async function downloadPart(key: string, seq: number): Promise<Buffer> {
+  let lastMsg = "no data";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const { data, error } = await supabaseAdmin.storage.from("recordings").download(key);
+    if (data && !error) return Buffer.from(await data.arrayBuffer());
+    lastMsg = error?.message ?? "no data";
+    // A file that simply isn't there won't appear on retry.
+    if (/ENOENT|no such file|not found/i.test(lastMsg)) break;
+    await new Promise((r) => setTimeout(r, 500 * attempt));
   }
+  throw new Error(`Missing recording part ${seq}: ${lastMsg}`);
+}
+
+/**
+ * Parts are fetched 6 at a time (a 15-min interview is ~90 parts; one by one
+ * from a remote bucket took longer than the browser waited), then joined in order.
+ */
+async function downloadRun(run: RecordingRun): Promise<Buffer> {
+  const bufs = await mapWithConcurrency(run.parts, 6, (p) => downloadPart(p.key, p.seq));
   return Buffer.concat(bufs);
+}
+
+/** Seconds of audio ffprobe can read, or null when ffprobe isn't installed / can't tell. */
+function probeDurationSec(file: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    execFile(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file],
+      { timeout: 30_000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        const n = Number(String(stdout).trim());
+        resolve(Number.isFinite(n) ? n : null);
+      },
+    );
+  });
+}
+
+/**
+ * The joined file must be decodable before the parts it came from are
+ * deleted. Returns a reason when it isn't; null when fine or unknown (no ffprobe).
+ */
+async function verifyRecording(audio: Buffer, ext: RecordingPartExt): Promise<string | null> {
+  if (!audio.length) return "joined recording is empty";
+  if (!hasFfmpeg()) return null;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "rec-verify-"));
+  try {
+    const f = path.join(dir, `check.${ext}`);
+    await writeFile(f, audio);
+    const dur = await probeDurationSec(f);
+    if (dur === null) return null;
+    return dur > 0.5 ? null : `joined recording has no playable audio (${dur.toFixed(1)}s)`;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 /**
@@ -257,9 +330,62 @@ export type FinalizeResult = {
  *  onlyIfMissing – skip when the session already has a recording (server fallback).
  *  deleteParts   – remove the parts afterwards.
  */
-export async function finalizeRecordingParts(
+/** One finalize per session at a time: the browser, the voice-save fallback and retries must not race. */
+const finalizeInFlight = new Map<string, Promise<FinalizeResult>>();
+
+export function finalizeRecordingParts(
   sessionId: string,
   opts: { onlyIfMissing?: boolean; deleteParts?: boolean } = {},
+): Promise<FinalizeResult> {
+  const prev = finalizeInFlight.get(sessionId) ?? Promise.resolve(null);
+  const run = prev
+    .catch(() => null)
+    .then(() => finalizeRecordingPartsNow(sessionId, opts));
+  finalizeInFlight.set(sessionId, run);
+  void run.finally(() => {
+    if (finalizeInFlight.get(sessionId) === run) finalizeInFlight.delete(sessionId);
+  });
+  return run;
+}
+
+const scheduledFinalize = new Set<string>();
+
+/**
+ * Finalize in the background with retries (the browser no longer waits for the
+ * join). Attempts run after 0s, 15s, 60s and 3 min; a later attempt still
+ * runs when an earlier one failed for a transient reason (storage, ffmpeg).
+ * Returns false when one is already scheduled for this session.
+ */
+export function scheduleRecordingFinalize(
+  sessionId: string,
+  opts: { onlyIfMissing?: boolean; deleteParts?: boolean; reason?: string } = {},
+): boolean {
+  if (scheduledFinalize.has(sessionId)) return false;
+  scheduledFinalize.add(sessionId);
+  const attempt = async (i: number): Promise<void> => {
+    let res: FinalizeResult | null = null;
+    try {
+      res = await finalizeRecordingParts(sessionId, opts);
+    } catch (err) {
+      log.error(`Background finalize for ${sessionId} threw:`, err);
+    }
+    const retry = !res || res.status === "failed";
+    if (retry && i + 1 < FINALIZE_RETRY_DELAYS_MS.length) {
+      log.warn(`Recording finalize for ${sessionId} will retry (attempt ${i + 2}/${FINALIZE_RETRY_DELAYS_MS.length})`);
+      setTimeout(() => void attempt(i + 1), FINALIZE_RETRY_DELAYS_MS[i + 1]);
+      return;
+    }
+    scheduledFinalize.delete(sessionId);
+    if (retry) log.error(`Recording finalize for ${sessionId} gave up after ${FINALIZE_RETRY_DELAYS_MS.length} attempts`);
+    else log.info(`Recording finalize for ${sessionId} (${opts.reason ?? "background"}): ${res?.status}`);
+  };
+  setTimeout(() => void attempt(0), FINALIZE_RETRY_DELAYS_MS[0]);
+  return true;
+}
+
+async function finalizeRecordingPartsNow(
+  sessionId: string,
+  opts: { onlyIfMissing?: boolean; deleteParts?: boolean },
 ): Promise<FinalizeResult> {
   const target = await resolveSessionMediaTarget(sessionId);
   if (!target) return { parts: 0, status: "not_found" };
@@ -277,8 +403,23 @@ export async function finalizeRecordingParts(
       : { parts: 0, status: "no_parts" };
   }
 
+  if (partCount > MAX_FINALIZE_PARTS || runs.length > MAX_FINALIZE_RUNS) {
+    log.error(`Recording finalize refused for ${sessionId}: ${partCount} parts in ${runs.length} runs`);
+    void recordSessionError({
+      sessionId,
+      category: "client",
+      severity: "error",
+      source: "recording/finalize",
+      message: `Recording not assembled: too many parts (${partCount} in ${runs.length} runs)`,
+      context: { stage: "recording_finalize", parts: partCount, runs: runs.length },
+    });
+    return { parts: partCount, status: "failed" };
+  }
+
   try {
-    const built = await buildRecording(runs);
+    const built = await withFinalizeSlot(() => buildRecording(runs));
+    const broken = await verifyRecording(built.audio, built.ext);
+    if (broken) throw new Error(broken);
     const finalKey = `${target.prefix}/recordings/recording-${sessionId}.${built.ext}`;
     const { error: upErr } = await supabaseAdmin.storage
       .from("recordings")

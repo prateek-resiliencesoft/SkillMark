@@ -3,13 +3,26 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth-session";
 import { readAccountTokens, setAccountsCookie, tokenSubject, withoutAccount } from "@/lib/auth-accounts";
-import { getUserFromToken } from "@/lib/users";
+import { bumpTokenVersion, getUserFromToken } from "@/lib/users";
 
-/** Signs out the active account; another signed-in account (if any) becomes active. */
-export async function POST() {
+/**
+ * Signs out the active account; another signed-in account (if any) becomes active.
+ * `{ "all": true }` also revokes every session of the active account on all devices.
+ */
+export async function POST(req: Request) {
+  const body = await req.json().catch(() => ({}));
   const jar = cookies();
   const active = jar.get(SESSION_COOKIE)?.value;
   const activeId = active ? tokenSubject(active)?.id : undefined;
+
+  if (body?.all === true && active) {
+    const user = await getUserFromToken(active);
+    if (user) {
+      const { error } = await bumpTokenVersion(user.id);
+      if (error) return NextResponse.json({ error: "Could not sign out other sessions. Try again." }, { status: 500 });
+    }
+  }
+
   let rest = activeId ? withoutAccount(readAccountTokens(jar), activeId) : readAccountTokens(jar);
 
   let next: string | null = null;

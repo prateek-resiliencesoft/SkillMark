@@ -6,6 +6,7 @@
  */
 
 import {
+  FAIL_CLOSED_UPTIME_VISIBILITY,
   isMonitorPublic,
   loadUptimeVisibility,
   type UptimeVisibility,
@@ -152,7 +153,7 @@ function mapMonitors(
 async function fetchAllMonitors(): Promise<UptimeStatusResult> {
   const { apiKey, ok } = cfg();
   const checkedAt = new Date().toISOString();
-  const vis = await loadUptimeVisibility();
+  const vis = await loadUptimeVisibility().catch(() => FAIL_CLOSED_UPTIME_VISIBILITY);
   const vKey = visCacheKey(vis);
 
   if (!ok) {

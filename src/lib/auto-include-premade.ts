@@ -30,6 +30,7 @@ export async function loadAutoIncludePremade(
     .select(
       "text, type, description, options, starterCode, skipIf, sectionId, order",
     )
+    .eq("organizationId", organizationId)
     .in("sectionId", sectionIds)
     .eq("isEnabled", true)
     .order("order", { ascending: true });

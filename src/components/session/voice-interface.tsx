@@ -32,6 +32,7 @@ import {
     WhiteboardCanvas,
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
+import { MicrophoneLevelMeter } from "@/components/interview/MicrophoneLevelMeter";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
 import { subscribeAiNotices } from "@/lib/integrity/bus";
 import { reportSessionError } from "@/lib/session-error-report-client";
@@ -653,7 +654,10 @@ export function VoiceInterface({
     });
   }, []);
 
+  /** Mic permission refused (shown by the level meter; the error toast is unchanged). */
+  const [micDenied, setMicDenied] = useState(false);
   const handleError = useCallback((err: string) => {
+    if (/permission|notallowed|denied/i.test(err)) setMicDenied(true);
     setError(err);
     setTimeout(() => setError(""), 5000);
   }, []);
@@ -668,6 +672,24 @@ export function VoiceInterface({
     onTtsChunk: recording.addTtsChunk,
     onInterrupt: recording.cancelTts,
   });
+
+  const [micWasOn, setMicWasOn] = useState(false);
+  useEffect(() => {
+    if (voice.isListening) {
+      setMicDenied(false);
+      setMicWasOn(true);
+    }
+  }, [voice.isListening]);
+
+  const micMeter = (
+    <MicrophoneLevelMeter
+      compact={isMobile}
+      stream={voice.isListening ? voice.mediaStreamRef.current : null}
+      muted={micWasOn && !voice.isListening}
+      permissionDenied={micDenied && !voice.isListening}
+      expectSpeaking={voice.isListening && !voice.isSpeaking && !voice.isProcessing && !voice.isTransitioning}
+    />
+  );
 
   useEffect(() => {
     if (voice.isConnected) {
@@ -1274,9 +1296,10 @@ export function VoiceInterface({
       try {
         // Stop + save audio (and screenshots when video mode) BEFORE session completes
         if (recording.isRecording || recordingStartedRef.current) {
-          // Audio is uploaded in parts during the interview, so this is normally
-          // quick. If it still times out, the server links the upload itself.
-          const result = await withTimeout(recording.stop(), 30_000, "stop recording");
+          // Audio is uploaded in parts during the interview and the server joins
+          // them in the background, so this is normally a few seconds. The
+          // whole-file fallback is bounded (10 s drain + 20 s upload), hence 45 s.
+          const result = await withTimeout(recording.stop(), 45_000, "stop recording");
           if (result.audioUrl || result.screenshots.length > 0) {
             await withTimeout(
               fetch("/api/trpc/session.saveRecording", {
@@ -2473,6 +2496,10 @@ export function VoiceInterface({
         )}
       </div>
 
+      {/* Mic level meter: passive tap on the shared mic stream (UI only). Mobile: own slim row, the button bar is full. */}
+      {isMobile && !preview && voice.isConnected && (
+        <div className="flex shrink-0 justify-center border-t bg-card px-3 pt-2">{micMeter}</div>
+      )}
       {/* ── Bottom control bar (Zoom-like) ──────────────────── */}
       {(voice.isConnected || preview) && (
         <div className={`relative flex shrink-0 items-center justify-center gap-1 border-t bg-card px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:gap-6 md:px-6 md:py-2${preview ? " pointer-events-none" : ""}`}>
@@ -2483,6 +2510,8 @@ export function VoiceInterface({
               <span>{formatTime(remainingSeconds)} left</span>
             </div>
           )}
+          {/* Desktop: pinned left like the timer on the right; in the row on narrow screens. */}
+          {!isMobile && <div className="lg:absolute lg:left-6">{micMeter}</div>}
           {/* Mic toggle */}
           <div data-tour="voice-mic" className="flex flex-col items-center gap-0.5">
             <Button
