@@ -119,6 +119,27 @@ export function periodicScreenshotType(fileName: string): "camera" | "screen" | 
 }
 
 const screenshotLinkQueue = new Map<string, Promise<unknown>>();
+/** sessions.screenshots never grows past this (periodic captures of a ~4 h interview). */
+export const MAX_SESSION_SCREENSHOTS = 1_000;
+/** Finalize refuses part sets beyond this (~5.5 h at one part per 10 s). */
+export const MAX_FINALIZE_PARTS = 2_000;
+export const MAX_FINALIZE_RUNS = 20;
+/** Joins download every part into memory and run ffmpeg: at most this many at once per process. */
+const MAX_CONCURRENT_FINALIZE = 2;
+let activeFinalize = 0;
+const finalizeWaiters: (() => void)[] = [];
+
+async function withFinalizeSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeFinalize >= MAX_CONCURRENT_FINALIZE) await new Promise<void>((r) => finalizeWaiters.push(r));
+  else activeFinalize++;
+  try {
+    return await fn();
+  } finally {
+    const next = finalizeWaiters.shift();
+    if (next) next();
+    else activeFinalize--;
+  }
+}
 
 /**
  * Append a periodic screenshot to sessions.screenshots at upload time. The
@@ -146,6 +167,7 @@ export function linkScreenshotToSession(
       }
       const existing = Array.isArray(data.screenshots) ? (data.screenshots as { path?: string }[]) : [];
       if (existing.some((s) => s.path === entry.path)) return true;
+      if (existing.length >= MAX_SESSION_SCREENSHOTS) return false;
       const { error: upErr } = await supabaseAdmin
         .from("sessions")
         .update({ screenshots: [...existing, entry] })
@@ -381,8 +403,21 @@ async function finalizeRecordingPartsNow(
       : { parts: 0, status: "no_parts" };
   }
 
+  if (partCount > MAX_FINALIZE_PARTS || runs.length > MAX_FINALIZE_RUNS) {
+    log.error(`Recording finalize refused for ${sessionId}: ${partCount} parts in ${runs.length} runs`);
+    void recordSessionError({
+      sessionId,
+      category: "client",
+      severity: "error",
+      source: "recording/finalize",
+      message: `Recording not assembled: too many parts (${partCount} in ${runs.length} runs)`,
+      context: { stage: "recording_finalize", parts: partCount, runs: runs.length },
+    });
+    return { parts: partCount, status: "failed" };
+  }
+
   try {
-    const built = await buildRecording(runs);
+    const built = await withFinalizeSlot(() => buildRecording(runs));
     const broken = await verifyRecording(built.audio, built.ext);
     if (broken) throw new Error(broken);
     const finalKey = `${target.prefix}/recordings/recording-${sessionId}.${built.ext}`;

@@ -70,6 +70,7 @@ function providerInstance(
   id: AiProviderId,
   apiKey: string,
   baseUrl: string | undefined,
+  untrustedBaseUrl = false,
 ): LLMProvider | null {
   if (!apiKey && id !== "custom") return null;
   if (id === "openai") {
@@ -116,6 +117,7 @@ function providerInstance(
       defaultModel: process.env.CUSTOM_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini",
       apiKey: apiKey || "ollama",
       baseURL: baseUrl,
+      untrustedBaseUrl,
     });
   }
   return null;
@@ -144,10 +146,11 @@ export async function resolveProviderChain(
     keys: string[],
     baseUrl: string | undefined,
     source: "org" | "env",
+    untrustedBaseUrl = false,
   ) => {
     keys.forEach((k, keyIndex) => {
       if (!k || seenKeys.has(`${id}:${k}`)) return;
-      const provider = providerInstance(id, k, baseUrl);
+      const provider = providerInstance(id, k, baseUrl, untrustedBaseUrl);
       if (!provider) return;
       chain.push({
         provider,
@@ -163,14 +166,14 @@ export async function resolveProviderChain(
   // Org keys in task priority order (primary → backups), each with up to 5 keys.
   for (const id of order) {
     if (merged[id].from === "org" && merged[id].apiKeys.length) {
-      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org");
+      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org", merged[id].untrustedBaseUrl);
     }
   }
   // Any other org-configured providers not in the task list.
   for (const id of SETTINGS_ORDER) {
     if (order.includes(id)) continue;
     if (merged[id].from === "org" && merged[id].apiKeys.length) {
-      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org");
+      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org", merged[id].untrustedBaseUrl);
     }
   }
   // Env fallbacks last (platform defaults).
@@ -405,7 +408,7 @@ function buildFromCreds(creds: ResolvedAiCredentials): Map<string, LLMProvider> 
   for (const id of SETTINGS_ORDER) {
     const first = creds[id].apiKeys[0];
     if (!first && id !== "custom") continue;
-    const p = providerInstance(id, first || "ollama", creds[id].baseUrl);
+    const p = providerInstance(id, first || "ollama", creds[id].baseUrl, creds[id].untrustedBaseUrl);
     if (p) map.set(id, p);
   }
   // Legacy env-only providers (not in Settings → AI UI).

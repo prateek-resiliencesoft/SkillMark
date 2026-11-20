@@ -1,11 +1,12 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { createLogger } from "@/lib/logger";
 import { finalizeRecordingParts, scheduleRecordingFinalize } from "@/lib/recording-parts-server";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
+import { gateCandidateSession, isSessionId, rejectCrossSiteRequest } from "@/lib/session-access";
+import { isLiveInterviewUpload } from "@/lib/storage-cap";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/session/recording/finalize");
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST { sessionId, background? } — join the recording parts uploaded during
@@ -18,13 +19,27 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export async function POST(req: Request) {
   try {
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
     const limited = checkRateLimit(`session:recording-finalize:${clientIp(req)}`);
     if (limited) return limited;
     const body = await req.json().catch(() => null);
     const sessionId = body?.sessionId;
-    if (typeof sessionId !== "string" || !UUID_RE.test(sessionId)) {
+    if (!isSessionId(sessionId)) {
       return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
     }
+    const sessionLimited = checkRateLimit(`session:recording-finalize:${sessionId}`, 6);
+    if (sessionLimited) return sessionLimited;
+
+    const gate = await gateCandidateSession(req, sessionId, "id, status, completedAt, supersededAt, capabilityRequired, mediaClearedAt");
+    if (!gate.ok) return gate.response;
+    const { session } = gate;
+    // Abandoned sessions are finalized server-side by the abandon route; candidates
+    // may only join parts while live or just after completing.
+    if (session.mediaClearedAt || session.supersededAt || !isLiveInterviewUpload(session)) {
+      return NextResponse.json({ error: "Session has ended" }, { status: 403 });
+    }
+
     if (body?.background === true) {
       const scheduled = scheduleRecordingFinalize(sessionId, { deleteParts: true, reason: "interview end" });
       return NextResponse.json({ ok: true, status: scheduled ? "scheduled" : "already_scheduled" }, { status: 202 });

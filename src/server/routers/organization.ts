@@ -99,12 +99,11 @@ export const organizationRouter = router({
       return normalizeReportTemplate((data as { reportTemplate?: unknown } | null)?.reportTemplate);
     }),
 
-  /** Save the org default PDF report template — org members only. */
+  /** Save the org default PDF report template — MEMBER and above, active orgs only. */
   saveReportTemplate: protectedProcedure
     .input(z.object({ organizationId: z.string().uuid(), template: reportTemplateSchema }))
     .mutation(async ({ ctx, input }) => {
-      const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
-      if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Only organization members can edit the report template" });
+      await requireOrgAccess(ctx.supabase, input.organizationId, ctx.user.id, { minRole: "MEMBER" });
       const { error } = await ctx.supabase
         .from("organizations")
         .update({ reportTemplate: input.template })

@@ -163,8 +163,10 @@ export function summarizeErrorLog(entries: Pick<SessionErrorEntry, "category" | 
 /** CSV export of entries (no secrets — entries are already sanitized). */
 export function errorLogToCsv(entries: SessionErrorEntry[]): string {
   const esc = (v: unknown) => {
-    const s = v == null ? "" : typeof v === "string" ? v : JSON.stringify(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    let s = v == null ? "" : typeof v === "string" ? v : JSON.stringify(v);
+    // Candidate-supplied text: spreadsheets run cells starting with = + - @ (or tab/CR) as formulas.
+    if (/^\s*[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const head = ["time", "category", "severity", "source", "status", "code", "message", "context"];
   const rows = entries.map((e) => [e.createdAt, e.category, e.severity, e.source, e.status, e.code, e.message, e.context ?? {}].map(esc).join(","));

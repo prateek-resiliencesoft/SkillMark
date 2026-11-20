@@ -20,7 +20,16 @@ import {
 import { syncFormInterview } from "@/server/integrations/form-interview";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { assertMinRole, getOrgMembership, protectedProcedure, router, type MemberRole } from "../trpc";
+import {
+  assertMinRole,
+  filterAccessibleProjectIds,
+  getEffectiveProjectRole,
+  getOrgMembership,
+  hasProjectAccess,
+  protectedProcedure,
+  router,
+  type MemberRole,
+} from "../trpc";
 
 const fieldSchema = z.object({
   id: z.string().max(64),
@@ -79,18 +88,48 @@ const settingsSchema = z.object({
 
 type Ctx = { supabase: any; user: { id: string } };
 
+/** Anything above VIEWER is write intent (blocked while the org is paused). */
 async function requireOrg(ctx: Ctx, organizationId: string, min: MemberRole = "VIEWER") {
-  const m = await getOrgMembership(ctx.supabase, organizationId, ctx.user.id);
+  const m = await getOrgMembership(ctx.supabase, organizationId, ctx.user.id, { write: min !== "VIEWER" });
   if (!m) throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
-  assertMinRole(m.role, min);
   return m;
+}
+
+/** Org membership plus project ACL; `min` is checked against the effective project role. */
+async function requireProject(
+  ctx: Ctx,
+  organizationId: string,
+  projectId: string | null,
+  min: MemberRole = "VIEWER",
+) {
+  const m = await requireOrg(ctx, organizationId, min);
+  if (!projectId) {
+    assertMinRole(m.role, min);
+    return m.role;
+  }
+  const { data: project } = await ctx.supabase.from("projects").select("organizationId").eq("id", projectId).maybeSingle();
+  if (!project || project.organizationId !== organizationId || !(await hasProjectAccess(ctx.supabase, projectId, ctx.user.id))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this project" });
+  }
+  const role = await getEffectiveProjectRole(ctx.supabase, projectId, ctx.user.id, m.role);
+  assertMinRole(role, min);
+  return role;
 }
 
 async function loadForm(ctx: Ctx, id: string, min: MemberRole = "VIEWER"): Promise<FormRow> {
   const { data } = await ctx.supabase.from("interview_forms").select("*").eq("id", id).maybeSingle();
   if (!data) throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-  await requireOrg(ctx, data.organizationId, min);
+  await requireProject(ctx, data.organizationId, data.projectId ?? null, min);
   return data as FormRow;
+}
+
+/** Authorize reading an application through its form's project. */
+async function requireApplicationAccess(ctx: Ctx, app: { organizationId: string; formId?: string | null }) {
+  const { data: form } = app.formId
+    ? await ctx.supabase.from("interview_forms").select("organizationId, projectId").eq("id", app.formId).maybeSingle()
+    : { data: null };
+  if (form && form.organizationId !== app.organizationId) throw new TRPCError({ code: "NOT_FOUND" });
+  await requireProject(ctx, app.organizationId, form?.projectId ?? null);
 }
 
 export const interviewFormRouter = router({
@@ -98,10 +137,12 @@ export const interviewFormRouter = router({
     await requireOrg(ctx, input.organizationId);
     const { data } = await ctx.supabase
       .from("interview_forms")
-      .select("id, publicId, name, description, status, interviewId, fields, config, publishedAt, createdAt, updatedAt, applications(id)")
+      .select("id, publicId, name, description, status, projectId, interviewId, fields, config, publishedAt, createdAt, updatedAt, applications(id)")
       .eq("organizationId", input.organizationId)
       .order("updatedAt", { ascending: false });
-    return (data ?? []).map((f: any) => ({
+    const projectIds = Array.from(new Set((data ?? []).map((f: any) => f.projectId).filter(Boolean))) as string[];
+    const accessible = new Set(await filterAccessibleProjectIds(ctx.supabase, projectIds, ctx.user.id));
+    return (data ?? []).filter((f: any) => !f.projectId || accessible.has(f.projectId)).map((f: any) => ({
       ...f,
       fieldCount: Array.isArray(f.fields) ? f.fields.length : 0,
       applicationCount: Array.isArray(f.applications) ? f.applications.length : 0,
@@ -129,6 +170,7 @@ export const interviewFormRouter = router({
         projectId = p?.id ?? null;
       }
       if (!projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "Create a project first" });
+      await requireProject(ctx, input.organizationId, projectId, "MEMBER");
       const config: InterviewConfig = { ...defaultInterviewConfig(), title: input.name };
       const { data, error } = await ctx.supabase
         .from("interview_forms")
@@ -319,7 +361,7 @@ export const interviewFormRouter = router({
   application: protectedProcedure.input(z.object({ id: z.string().uuid() })).query(async ({ ctx, input }) => {
     const { data: app } = await ctx.supabase.from("applications").select("*").eq("id", input.id).maybeSingle();
     if (!app) throw new TRPCError({ code: "NOT_FOUND" });
-    await requireOrg(ctx, app.organizationId);
+    await requireApplicationAccess(ctx, app);
     const { data: form } = await ctx.supabase.from("interview_forms").select("publicId, name").eq("id", app.formId).single();
     const { candidate, session } = await loadApplicationContext(app);
     return serializeApplication(app, form!, candidate, session, appBaseUrl(), true);
@@ -338,19 +380,19 @@ export const interviewFormRouter = router({
     .query(async ({ ctx, input }) => {
       let app: Record<string, any> | null = null;
       if (input.applicationId) {
-        const { data } = await ctx.supabase.from("applications").select("id, organizationId, files").eq("id", input.applicationId).maybeSingle();
+        const { data } = await ctx.supabase.from("applications").select("id, organizationId, formId, files").eq("id", input.applicationId).maybeSingle();
         app = data;
       } else if (input.candidateId) {
         const { data } = await ctx.supabase
           .from("applications")
-          .select("id, organizationId, files")
+          .select("id, organizationId, formId, files")
           .eq("candidateId", input.candidateId)
           .order("createdAt", { ascending: false })
           .limit(1);
         app = Array.isArray(data) ? data[0] ?? null : data;
       }
       if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "No application / CV found" });
-      await requireOrg(ctx, app.organizationId);
+      await requireApplicationAccess(ctx, app as { organizationId: string; formId?: string | null });
       const cv = await signApplicationCv(app.files);
       if (!cv) throw new TRPCError({ code: "NOT_FOUND", message: "No CV uploaded for this application" });
       return cv;

@@ -192,6 +192,26 @@ async function createInvite(
   };
 }
 
+/** Throws NOT_FOUND unless the project belongs to the organization. */
+async function assertProjectInOrg(
+  supabase: Supabase,
+  organizationId: string,
+  projectId: string,
+) {
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("id", projectId)
+    .eq("organizationId", organizationId)
+    .maybeSingle();
+  if (!project) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "This project no longer exists in this organization. Refresh the page and pick another project.",
+    });
+  }
+}
+
 /**
  * Lazily populate project_members for all org members the first time
  * project-level membership is explicitly managed (role change or removal).
@@ -499,6 +519,7 @@ export const orgMemberRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!callerMembership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -571,6 +592,7 @@ export const orgMemberRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!callerMembership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -656,6 +678,7 @@ export const orgMemberRouter = router({
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
+      await assertProjectInOrg(ctx.supabase, input.organizationId, input.projectId);
 
       const { data: projectMembers } = await ctx.supabase
         .from("project_members")
@@ -683,6 +706,7 @@ export const orgMemberRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!callerMembership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -693,6 +717,23 @@ export const orgMemberRouter = router({
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "Only an organization owner can assign the project Owner role",
+        });
+      }
+
+      await assertProjectInOrg(ctx.supabase, input.organizationId, input.projectId);
+
+      const target = await getOrgMembership(
+        ctx.supabase,
+        input.organizationId,
+        input.userId,
+      );
+      if (!target) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Member not found" });
+      }
+      if (target.role === "OWNER" && callerMembership.role !== "OWNER") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only an organization owner can change another owner's project role",
         });
       }
 
@@ -737,6 +778,7 @@ export const orgMemberRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!callerMembership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -837,6 +879,7 @@ export const orgMemberRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!callerMembership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -849,6 +892,8 @@ export const orgMemberRouter = router({
           message: "You cannot remove yourself from the project this way.",
         });
       }
+
+      await assertProjectInOrg(ctx.supabase, input.organizationId, input.projectId);
 
       const targetOrg = await getOrgMembership(
         ctx.supabase,

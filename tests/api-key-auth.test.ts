@@ -64,7 +64,7 @@ describe("apiError", () => {
 
 describe("validateApiKey (early validation)", () => {
   it("returns 401 when Authorization is missing", async () => {
-    const result = await validateApiKey(req({}));
+    const result = await validateApiKey(req({}), "interviews:read");
     assert.ok(result instanceof Response);
     assert.equal(result.status, 401);
     const body = (await result.json()) as { error: { code: string } };
@@ -74,6 +74,7 @@ describe("validateApiKey (early validation)", () => {
   it("returns 401 for non-Bearer schemes", async () => {
     const result = await validateApiKey(
       req({ authorization: "Basic dGVzdA==" }),
+      "interviews:read",
     );
     assert.ok(result instanceof Response);
     assert.equal(result.status, 401);
@@ -82,6 +83,7 @@ describe("validateApiKey (early validation)", () => {
   it("returns 401 when Bearer token does not use the rsi_ (or legacy dlv_) prefix", async () => {
     const result = await validateApiKey(
       req({ authorization: "Bearer sk_live_abc" }),
+      "interviews:read",
     );
     assert.ok(result instanceof Response);
     assert.equal(result.status, 401);

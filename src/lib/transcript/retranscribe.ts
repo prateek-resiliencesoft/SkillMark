@@ -351,7 +351,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, audioRecordingUrl, mediaClearedAt, interview:interviews!inner(language, project:projects!inner(organizationId))`,
+      `id, audioRecordingUrl, mediaClearedAt, mediaStoragePrefix, interview:interviews!inner(language, projectId, project:projects!inner(organizationId))`,
     )
     .eq("id", sessionId)
     .maybeSingle();
@@ -359,7 +359,8 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   const s = session as unknown as {
     audioRecordingUrl?: string | null;
     mediaClearedAt?: string | null;
-    interview: { language?: string | null; project: { organizationId: string } };
+    mediaStoragePrefix?: string | null;
+    interview: { language?: string | null; projectId?: string | null; project: { organizationId: string } };
   };
   const organizationId = s.interview.project.organizationId;
   if (!s.audioRecordingUrl || s.mediaClearedAt) {
@@ -367,7 +368,12 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   }
   const objectPath =
     objectPathFromSignedUrl("recordings", s.audioRecordingUrl) ?? s.audioRecordingUrl.split("?")[0];
-  if (!pathBelongsToSession(objectPath, sessionId, organizationId)) {
+  if (
+    !pathBelongsToSession(objectPath, sessionId, organizationId, {
+      projectId: s.interview.projectId,
+      mediaStoragePrefix: s.mediaStoragePrefix,
+    })
+  ) {
     throw new RetranscribeError("Recording path does not belong to this session.", 403);
   }
 
@@ -423,7 +429,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   // Back up the rows we are about to replace (none for a session with zero answers).
   let backupPath: string | null = null;
   if (replaceable.length > 0) {
-    backupPath = path.posix.join(path.posix.dirname(objectPath), `transcript-backup-${Date.now()}.json`);
+    backupPath = path.posix.join(path.posix.dirname(objectPath), `transcript-backup-${sessionId.toLowerCase()}-${Date.now()}.json`);
     const { error } = await storage
       .from("recordings")
       .upload(backupPath, Buffer.from(JSON.stringify({ sessionId, savedAt: new Date().toISOString(), messages: replaceable }, null, 2)), {

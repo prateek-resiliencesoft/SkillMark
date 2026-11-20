@@ -41,6 +41,18 @@ import { createLogger } from "../src/lib/logger";
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import { SPOKEN, PROMPTS } from "./voice-relay-prompts";
+import {
+  RELAY_MAX_PAYLOAD_BYTES,
+  admitRelayConnection,
+  authorizeRelayInit,
+  awaitRelayHandshake,
+  createRelayGate,
+  parseClientMessage,
+  pushCapped,
+  rejectRelayInit,
+  relaySessionStore,
+  relayVerifyClient,
+} from "./relay-security";
 
 const log = createLogger("voice-relay");
 
@@ -50,9 +62,6 @@ config({ path: ".env" });
 
 const RELAY_PORT = Number(process.env.VOICE_RELAY_PORT) || 8766;
 const RELAY_HOST = process.env.VOICE_RELAY_HOST || "0.0.0.0";
-const ALLOWED_ORIGINS = process.env.VOICE_RELAY_ALLOWED_ORIGINS
-  ? process.env.VOICE_RELAY_ALLOWED_ORIGINS.split(",").map((s) => s.trim().toLowerCase())
-  : null;
 const VOLCENGINE_WS_URL =
   process.env.DOUBAO_WS_URL ||
   "wss://openspeech.bytedance.com/api/v3/realtime/dialogue";
@@ -478,47 +487,29 @@ async function summarizeQuestion(
 
 // ── Relay server ────────────────────────────────────────────────────
 
+const relayGate = createRelayGate(log);
+const relayStore = relaySessionStore();
 const wss = new WebSocketServer({
   port: RELAY_PORT,
   host: RELAY_HOST,
-  verifyClient: (info, cb) => {
-    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.length > 0) {
-      const origin = info.origin?.toLowerCase();
-      if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
-        log.error(`Rejected WebSocket connection from untrusted origin: ${info.origin}`);
-        return cb(false, 403, "Forbidden: Untrusted Origin");
-      }
-    }
-    cb(true);
-  },
+  maxPayload: RELAY_MAX_PAYLOAD_BYTES,
+  verifyClient: relayVerifyClient(relayGate),
 });
 log.info(`Listening on ws://${RELAY_HOST}:${RELAY_PORT}`);
 
-wss.on("connection", (browserWs) => {
+wss.on("connection", (browserWs, req) => {
+  if (!admitRelayConnection(relayGate, browserWs, req)) return;
   log.info("Browser connected, waiting for init...");
-
-  const timeout = setTimeout(() => {
-    log.error("No init message received within 10s");
-    browserWs.close();
-  }, 10000);
-
-  const handler = (data: Buffer) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      if (msg.type === "mic_test") {
-        clearTimeout(timeout);
-        browserWs.removeListener("message", handler);
-        handleMicTestConnection(browserWs);
-      } else if (msg.type === "init" && msg.context) {
-        clearTimeout(timeout);
-        browserWs.removeListener("message", handler);
-        handleBrowserConnection(browserWs, msg.context as InterviewContext);
-      }
-    } catch {
-      // Not JSON, ignore
-    }
-  };
-  browserWs.on("message", handler);
+  awaitRelayHandshake(browserWs, {
+    log,
+    onMicTest: () => handleMicTestConnection(browserWs),
+    onInit: async (msg) => {
+      const auth = await authorizeRelayInit(relayStore, msg, req.headers.cookie);
+      if (!auth.ok) return rejectRelayInit(browserWs, auth, log);
+      if (browserWs.readyState !== WebSocket.OPEN) return;
+      await handleBrowserConnection(browserWs, auth.context);
+    },
+  });
 });
 
 // ── Mic test handler (ASR-only, no LLM/TTS) ────────────────────────
@@ -531,6 +522,7 @@ async function handleMicTestConnection(browserWs: WebSocket) {
   let isAlive = false;
   let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
   let asrAccumulator = "";
+  let browserClosed = false;
 
   const autoTimeout = setTimeout(() => {
     log.info("Mic test auto-timeout");
@@ -538,7 +530,14 @@ async function handleMicTestConnection(browserWs: WebSocket) {
       browserWs.send(JSON.stringify({ type: "timeout" }));
     }
     cleanup();
+    browserWs.close(1000, "Mic test timeout");
   }, 20_000);
+
+  browserWs.on("close", () => {
+    log.info("Mic test: browser disconnected");
+    browserClosed = true;
+    cleanup();
+  });
 
   function cleanup() {
     clearTimeout(autoTimeout);
@@ -580,14 +579,17 @@ async function handleMicTestConnection(browserWs: WebSocket) {
       volcWs!.on("open", () => { clearTimeout(t); resolve(); });
       volcWs!.on("error", (e) => { clearTimeout(t); reject(e); });
     });
+    if (browserClosed || !volcWs) return cleanup();
 
     volcWs.send(buildStartConnection());
     await waitForEvent(volcWs, ServerEvent.CONNECTION_STARTED, 5000);
+    if (browserClosed || !volcWs) return cleanup();
 
     volcWs.send(
       buildStartSession(volcSessionId, "MicTest", "Listen to the user. Do not speak.", undefined)
     );
     await waitForEvent(volcWs, ServerEvent.SESSION_STARTED, 5000);
+    if (browserClosed || !volcWs) return cleanup();
     isAlive = true;
 
     browserWs.send(JSON.stringify({ type: "ready" }));
@@ -633,19 +635,12 @@ async function handleMicTestConnection(browserWs: WebSocket) {
       log.error("Mic test Volcengine error:", err.message);
     });
 
-    browserWs.on("message", (data) => {
+    browserWs.on("message", (data, isBinary) => {
       if (!volcWs || volcWs.readyState !== WebSocket.OPEN || !isAlive) return;
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === "audio" && msg.data) {
-          volcWs.send(buildSendAudio(volcSessionId, Buffer.from(msg.data, "hex")));
-        }
-      } catch { /* ignore */ }
-    });
-
-    browserWs.on("close", () => {
-      log.info("Mic test: browser disconnected");
-      cleanup();
+      const msg = isBinary ? null : parseClientMessage(data);
+      if (msg?.type === "audio" && msg.data) {
+        volcWs.send(buildSendAudio(volcSessionId, Buffer.from(msg.data as string, "hex")));
+      }
     });
 
     keepAliveInterval = setInterval(() => {
@@ -671,10 +666,12 @@ async function handleMicTestConnection(browserWs: WebSocket) {
 // ── Interview handler ───────────────────────────────────────────────
 
 async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewContext) {
+  if (browserWs.readyState !== WebSocket.OPEN) return;
   let volcSessionId = randomUUID();
   let volcWs: WebSocket | null = null;
   let isAlive = false;
   let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+  let browserClosed = false;
 
   // ── Per-question state ──────────────────────────────────────────
   // When resuming a session, start from the question the interviewee
@@ -747,7 +744,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
     const transcriptSnapshot = [...questionTranscript];
     if (transcriptSnapshot.length > 0) {
       summarizeQuestion(currentQ.text, transcriptSnapshot, isZh)
-        .then((summary) => questionSummaries.push(summary))
+        .then((summary) => pushCapped(questionSummaries, summary))
         .catch(log.error);
     }
 
@@ -762,7 +759,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
     }
 
     volcWs.send(buildSayHello(volcSessionId, farewell));
-    questionTranscript.push({ role: "assistant", text: farewell });
+    pushCapped(questionTranscript, { role: "assistant", text: farewell });
     pendingInterviewEnd = true;
     log.info(reason);
 
@@ -1109,7 +1106,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
               awaitingSayHelloTts = true;
               skipNextTtsTranscript = true;
               volcWs.send(buildSayHello(volcSessionId, spokenFollowUp));
-              questionTranscript.push({ role: "assistant", text: spokenFollowUp });
+              pushCapped(questionTranscript, { role: "assistant", text: spokenFollowUp });
               log.info("Sent whiteboard follow-up via SayHello");
             }
           })
@@ -1168,7 +1165,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
       }
 
       for (const t of transcriptSnapshot) {
-        if (t.role === "user" && t.text.trim()) priorUserAnswers.push(t.text);
+        if (t.role === "user" && t.text.trim()) pushCapped(priorUserAnswers, t.text);
       }
 
       currentQuestionIndex = nextAskableQuestionIndex(
@@ -1201,7 +1198,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
 
         // Wait for both to complete
         const [summary] = await Promise.all([summaryPromise, sessionTeardownPromise]);
-        questionSummaries.push(summary);
+        pushCapped(questionSummaries, summary);
 
         const nextQ = sortedQuestions[currentQuestionIndex];
 
@@ -1246,7 +1243,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
         // Last question — still summarize for the final report
         if (transcriptSnapshot.length > 0) {
           const lastSummary = await summarizeQuestion(currentQ.text, transcriptSnapshot, isZh);
-          questionSummaries.push(lastSummary);
+          pushCapped(questionSummaries, lastSummary);
         }
 
         // Brief pause so the acknowledgement and wrap-up don't run
@@ -1266,7 +1263,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
         const wrapUp = buildWrapUpSayHello(isZh);
         volcWs!.send(buildSayHello(volcSessionId, wrapUp));
         skipNextTtsTranscript = true;
-        questionTranscript.push({ role: "assistant", text: wrapUp });
+        pushCapped(questionTranscript, { role: "assistant", text: wrapUp });
 
         log.info("All questions covered, awaiting final response");
       }
@@ -1312,7 +1309,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
       const currentQ = sortedQuestions[currentQuestionIndex];
       if (transcriptSnapshot.length > 0) {
         const summary = await summarizeQuestion(currentQ.text, transcriptSnapshot, isZh);
-        questionSummaries.push(summary);
+        pushCapped(questionSummaries, summary);
       }
 
       currentQuestionIndex--;
@@ -1387,6 +1384,32 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
   log.info("System text:", systemPrompt.slice(0, 300) + "...");
   log.info("SayHello:", greeting.slice(0, 200) + "...");
 
+  // Registered before the first await so a disconnect mid-handshake still tears down.
+  browserWs.on("close", () => {
+    log.info("Browser disconnected");
+    interviewDone = true;
+    browserClosed = true;
+    if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
+    if (finalResponseTimeout) clearTimeout(finalResponseTimeout);
+    if (pendingLastQuestionTimeout) clearTimeout(pendingLastQuestionTimeout);
+    if (isAlive && volcWs && volcWs.readyState === WebSocket.OPEN) {
+      try {
+        volcWs.send(buildFinishSession(volcSessionId));
+        volcWs.send(buildFinishConnection());
+      } catch {
+        // ignore
+      }
+    }
+    volcWs?.removeAllListeners();
+    // A socket still connecting emits 'error' when aborted; keep it from going unhandled.
+    volcWs?.on("error", () => {});
+    volcWs?.close();
+  });
+
+  browserWs.on("error", (err) => {
+    log.error("Browser WS error:", err.message);
+  });
+
   // ── Connect to Volcengine ──────────────────────────────────────
 
   try {
@@ -1441,11 +1464,14 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
       });
     });
 
+    if (browserClosed) return;
+
     // Step 1: StartConnection
     volcWs.send(buildStartConnection());
     log.info("Sent StartConnection");
 
     await waitForEvent(volcWs, ServerEvent.CONNECTION_STARTED, 5000);
+    if (browserClosed) return;
     log.info("ConnectionStarted received");
 
     // Step 2: StartSession with system prompt (focused on Q1)
@@ -1455,6 +1481,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
     log.info("Sent StartSession (Q1)");
 
     await waitForEvent(volcWs, ServerEvent.SESSION_STARTED, 5000);
+    if (browserClosed) return;
     log.info("SessionStarted received");
     isAlive = true;
 
@@ -1539,7 +1566,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
           // Save accumulated text to transcript — unless it was a controlled
           // SayHello whose text we already pushed manually.
           if (!skipNextTtsTranscript && ttsAccumulator.trim()) {
-            questionTranscript.push({
+            pushCapped(questionTranscript, {
               role: "assistant",
               text: ttsAccumulator.trim(),
             });
@@ -1598,7 +1625,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
               skipNextTtsTranscript = true;
               if (volcWs && volcWs.readyState === WebSocket.OPEN && isAlive) {
                 volcWs.send(buildSayHello(volcSessionId, farewell));
-                questionTranscript.push({ role: "assistant", text: farewell });
+                pushCapped(questionTranscript, { role: "assistant", text: farewell });
                 pendingInterviewEnd = true;
                 log.info("No final response after timeout, sending farewell");
               } else {
@@ -1634,7 +1661,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
 
         if (userText) {
           updateUserLanguage(userText);
-          questionTranscript.push({ role: "user", text: userText });
+          pushCapped(questionTranscript, { role: "user", text: userText });
           userTurnsOnCurrentQ++;
           lastResponseWasCorrection = false;
           browserWs.send(JSON.stringify({ type: "asr_ended", text: userText }));
@@ -1661,7 +1688,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
             awaitingSayHelloTts = true;
             skipNextTtsTranscript = true;
             volcWs!.send(buildSayHello(volcSessionId, farewell));
-            questionTranscript.push({ role: "assistant", text: farewell });
+            pushCapped(questionTranscript, { role: "assistant", text: farewell });
             pendingInterviewEnd = true;
             log.info("Final response received, sending farewell");
           }
@@ -1732,7 +1759,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
                   awaitingSayHelloTts = true;
                   skipNextTtsTranscript = true;
                   volcWs.send(buildSayHello(volcSessionId, spokenText));
-                  questionTranscript.push({ role: "assistant", text: spokenText });
+                  pushCapped(questionTranscript, { role: "assistant", text: spokenText });
                   log.info("Sent controlled response via SayHello");
                 } else {
                   suppressModelOutput = false;
@@ -1928,22 +1955,23 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
 
   // ── Relay: Browser → Volcengine ────────────────────────────────
 
-  browserWs.on("message", (data) => {
+  browserWs.on("message", (data, isBinary) => {
     if (!volcWs || volcWs.readyState !== WebSocket.OPEN) return;
 
     try {
-      const msg = JSON.parse(data.toString());
+      const msg = isBinary ? null : parseClientMessage(data);
+      if (!msg) return;
 
       if (msg.type === "audio" && msg.data) {
         if (!isAlive || isTransitioning) return; // Drop audio during transitions
-        const audioBuf = Buffer.from(msg.data, "hex");
+        const audioBuf = Buffer.from(msg.data as string, "hex");
         volcWs.send(buildSendAudio(volcSessionId, audioBuf));
       } else if (msg.type === "text_input" && msg.content) {
         // Text chat input — treat exactly like a completed voice utterance
         const userText = (msg.content as string).trim();
         if (userText && !isTransitioning && !interviewDone) {
           updateUserLanguage(userText);
-          questionTranscript.push({ role: "user", text: userText });
+          pushCapped(questionTranscript, { role: "user", text: userText });
           userTurnsOnCurrentQ++;
           lastResponseWasCorrection = false;
           // Interrupt any playing audio, then signal ASR completion
@@ -1966,7 +1994,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
             awaitingSayHelloTts = true;
             skipNextTtsTranscript = true;
             volcWs!.send(buildSayHello(volcSessionId, farewell));
-            questionTranscript.push({ role: "assistant", text: farewell });
+            pushCapped(questionTranscript, { role: "assistant", text: farewell });
             pendingInterviewEnd = true;
           } else if (isUserEndRequest(userText)) {
             queueFarewellAndEnd(`Explicit interview end request (text): "${userText.slice(0, 80)}"`);
@@ -2018,7 +2046,7 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
                   awaitingSayHelloTts = true;
                   skipNextTtsTranscript = true;
                   volcWs!.send(buildSayHello(volcSessionId, spokenText));
-                  questionTranscript.push({ role: "assistant", text: spokenText });
+                  pushCapped(questionTranscript, { role: "assistant", text: spokenText });
                 } else {
                   suppressModelOutput = false;
                 }
@@ -2051,10 +2079,11 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
         log.info("Browser requested previous question");
         handlePreviousTransition().catch(log.error);
       } else if (msg.type === "text" && msg.content) {
-        volcWs.send(buildSayHello(volcSessionId, msg.content));
+        // parseClientMessage only lets the fixed strike warnings through.
+        volcWs.send(buildSayHello(volcSessionId, msg.content as string));
       } else if (msg.type === "code_update") {
         currentCodeContent = (msg.content as string) || "";
-        currentCodeLanguage = (msg.language as string) || "plaintext";
+        currentCodeLanguage = msg.language as string;
       } else if (msg.type === "whiteboard_update") {
         const img = (msg.imageDataUrl as string) || "";
         if (img && img !== latestWhiteboardImage) {
@@ -2070,30 +2099,9 @@ async function handleBrowserConnection(browserWs: WebSocket, ctx: InterviewConte
     }
   });
 
-  browserWs.on("close", () => {
-    log.info("Browser disconnected");
-    interviewDone = true;
-    if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
-    if (finalResponseTimeout) clearTimeout(finalResponseTimeout);
-    if (pendingLastQuestionTimeout) clearTimeout(pendingLastQuestionTimeout);
-    if (isAlive && volcWs && volcWs.readyState === WebSocket.OPEN) {
-      try {
-        volcWs.send(buildFinishSession(volcSessionId));
-        volcWs.send(buildFinishConnection());
-      } catch {
-        // ignore
-      }
-    }
-    volcWs?.removeAllListeners();
-    volcWs?.close();
-  });
-
-  browserWs.on("error", (err) => {
-    log.error("Browser WS error:", err.message);
-  });
-
   // ── Keep-alive: send silence periodically ──────────────────────
 
+  if (browserClosed) return;
   keepAliveInterval = setInterval(() => {
     if (!isAlive || !volcWs || volcWs.readyState !== WebSocket.OPEN) {
       return;

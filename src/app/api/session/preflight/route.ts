@@ -1,7 +1,8 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { isPreflightEventStatus, isPreflightEventType } from "@/lib/preflight";
 import { authorizePreflightSource, recordPreflightEvent } from "@/lib/preflight-server";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
+import { rejectCrossSiteRequest } from "@/lib/session-access";
 import { NextResponse } from "next/server";
 
 /**
@@ -11,9 +12,13 @@ import { NextResponse } from "next/server";
  */
 export async function POST(req: Request) {
   try {
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
+    const ipLimited = checkRateLimit(`session:preflight-ip:${clientIp(req)}`, 600);
+    if (ipLimited) return ipLimited;
     const body = await req.json().catch(() => null);
-    const token = typeof body?.token === "string" ? body.token : undefined;
-    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : undefined;
+    const token = typeof body?.token === "string" ? body.token.slice(0, 128) : undefined;
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId.slice(0, 64) : undefined;
     const limited = checkRateLimit(
       `session:preflight:${token || sessionId || clientIp(req)}`,
       40,
@@ -26,7 +31,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid event" }, { status: 400 });
     }
 
-    const auth = await authorizePreflightSource({ token, sessionId });
+    const auth = await authorizePreflightSource({ token, sessionId, cookieHeader: req.headers.get("cookie") });
     if (!auth.ok) {
       return NextResponse.json({ error: auth.error }, { status: auth.status });
     }

@@ -10,7 +10,9 @@ import { FeedbackInput } from "@/lib/candidate-feedback";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { FeedbackError, feedbackStatus, submitFeedback } from "@/server/candidate-feedback";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
+import { requestHasSessionCapability } from "@/lib/session-capability";
+import { rejectCrossSiteRequest } from "@/lib/session-access";
 
 export const dynamic = "force-dynamic";
 const log = createLogger("api/session/feedback");
@@ -31,6 +33,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const refused = rejectCrossSiteRequest(req, { json: true });
+  if (refused) return refused;
   const limited = checkRateLimit(`session:feedback:${clientIp(req)}`, 20);
   if (limited) return limited;
   const body = await req.json().catch(() => null);
@@ -43,6 +47,14 @@ export async function POST(req: Request) {
     );
   }
   try {
+    const { data: session } = await supabaseAdmin
+      .from("sessions")
+      .select("id, capabilityRequired")
+      .eq("id", parsed.data.sessionId)
+      .maybeSingle();
+    if (session && !requestHasSessionCapability(req, session as { id: string; capabilityRequired?: boolean | null })) {
+      return NextResponse.json({ error: "FORBIDDEN", message: "Not allowed." }, { status: 403 });
+    }
     await submitFeedback(supabaseAdmin, parsed.data, { userAgent: req.headers.get("user-agent") });
     return NextResponse.json({ ok: true }, { status: 201 });
   } catch (err) {

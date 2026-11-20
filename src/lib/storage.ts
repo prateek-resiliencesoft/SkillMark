@@ -26,9 +26,26 @@ export function objectKey(bucket: string, p: string): string {
   return `${bucket}/${p}`;
 }
 
-/** Absolute disk path for an object key; refuses paths that escape STORAGE_DIR. */
+/** Content-type sidecars and in-flight temp files share the object's directory. */
+const RESERVED_NAME = /(\.meta|\.part-\d+-\d+)$/;
+
+/**
+ * Absolute disk path for an object key. Refuses dot segments, backslashes, NUL
+ * and sidecar/temp names (listing hides those, so such objects would escape
+ * quota accounting and prefix deletes), and anything outside STORAGE_DIR.
+ */
 export function localPathForKey(key: string): string {
-  const full = path.resolve(STORAGE_DIR, key.replace(/^\/+/, ""));
+  const clean = key.replace(/^\/+/, "");
+  const segments = clean.split("/");
+  if (
+    !clean ||
+    /[\\\0]/.test(clean) ||
+    segments.some((s) => s === "." || s === "..") ||
+    RESERVED_NAME.test(segments[segments.length - 1])
+  ) {
+    throw new Error("Invalid storage path");
+  }
+  const full = path.resolve(STORAGE_DIR, clean);
   if (!full.startsWith(STORAGE_DIR + path.sep)) {
     throw new Error("Invalid storage path");
   }
@@ -238,7 +255,40 @@ export async function deletePrefixStats(
   };
   await Promise.all(Array.from({ length: 8 }, worker));
   notifyLocalUsageChanged(-bytes);
+  const clean = prefix.replace(/^\/+/, "");
+  if (clean) await sweepOrphanSidecars(path.resolve(STORAGE_DIR, clean));
   return { objects, bytes };
+}
+
+const STALE_TEMP_MS = 15 * 60 * 1000;
+
+/** Remove `.meta` files whose object is gone and abandoned temp files (listing never shows either). */
+async function sweepOrphanSidecars(dir: string): Promise<void> {
+  if (!dir.startsWith(STORAGE_DIR + path.sep)) return;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      await sweepOrphanSidecars(full);
+      continue;
+    }
+    try {
+      if (e.name.endsWith(".meta")) {
+        const base = await fs.stat(full.slice(0, -".meta".length)).catch(() => null);
+        if (!base) await fs.rm(full, { force: true });
+      } else if (/\.part-\d+-\d+$/.test(e.name)) {
+        const st = await fs.stat(full);
+        if (Date.now() - st.mtimeMs > STALE_TEMP_MS) await fs.rm(full, { force: true });
+      }
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 /** Delete all objects under a candidate/org prefix. Does not touch DB. */
@@ -372,6 +422,8 @@ function notifyLocalUsageChanged(delta: number): void {
   if (delta) usageListener?.(delta);
 }
 
+let inFlightUploadBytes = 0;
+
 /** Upload gate installed by storage-usage.ts. Returns an error message to refuse the upload. */
 type UploadGate = (bytes: number, opts: { liveSession: boolean }) => Promise<string | null>;
 let uploadGate: UploadGate | null = null;
@@ -400,12 +452,16 @@ export const storage = {
           liveSession?: boolean;
         },
       ): Promise<{ data: { path: string } | null; error: Err }> {
+        const buf = Buffer.from(body as ArrayBuffer);
+        // Reserve before the first await so concurrent uploads see each other's bytes.
+        const othersInFlight = inFlightUploadBytes;
+        inFlightUploadBytes += buf.byteLength;
         try {
-          const buf = Buffer.from(body as ArrayBuffer);
           const ok = objectKey(bucket, p);
+          localPathForKey(ok);
           const gate = await loadUploadGate();
           if (gate) {
-            const refused = await gate(buf.byteLength, { liveSession: !!opts?.liveSession });
+            const refused = await gate(buf.byteLength + othersInFlight, { liveSession: !!opts?.liveSession });
             if (refused) return { data: null, error: { message: refused } };
           }
           const existing = await statLocalObject(ok);
@@ -417,6 +473,8 @@ export const storage = {
           return { data: { path: p.startsWith("orgs/") ? p : ok }, error: null };
         } catch (e) {
           return { data: null, error: { message: e instanceof Error ? e.message : String(e) } };
+        } finally {
+          inFlightUploadBytes -= buf.byteLength;
         }
       },
 

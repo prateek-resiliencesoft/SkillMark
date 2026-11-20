@@ -1,9 +1,9 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { abandonSession } from "@/lib/session-link-server";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
 import { NextResponse } from "next/server";
 import { finalizeRecordingParts } from "@/lib/recording-parts-server";
+import { gateCandidateSession, rejectCrossSiteRequest } from "@/lib/session-access";
 
 /**
  * Sent via sendBeacon when the candidate closes/leaves the tab mid-interview.
@@ -11,29 +11,26 @@ import { finalizeRecordingParts } from "@/lib/recording-parts-server";
  */
 export async function POST(req: Request) {
   try {
+    // sendBeacon posts the JSON Blob as application/json.
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
     const limited = checkRateLimit(`session:abandon:${clientIp(req)}`);
     if (limited) return limited;
 
-    // sendBeacon posts text/plain; parse leniently.
     const body = await req.json().catch(() => null);
-    const sessionId = body?.sessionId;
-    if (typeof sessionId !== "string" || !sessionId) {
-      return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
-    }
-
-    const { data: session } = await supabaseAdmin
-      .from("sessions")
-      .select("id, status, interviewBeganAt")
-      .eq("id", sessionId)
-      .maybeSingle();
-    if (!session) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const gate = await gateCandidateSession(req, body?.sessionId);
+    if (!gate.ok) return gate.response;
+    const { session } = gate;
+    const sessionId = session.id;
     if (!session.interviewBeganAt) return NextResponse.json({ ok: true, ended: false });
 
     const ended = await abandonSession(sessionId, "TAB_CLOSED");
     // Keep whatever audio was uploaded in parts before the tab closed.
-    setTimeout(() => {
-      void finalizeRecordingParts(sessionId, { onlyIfMissing: true, deleteParts: false }).catch(() => undefined);
-    }, 30_000);
+    if (ended) {
+      setTimeout(() => {
+        void finalizeRecordingParts(sessionId, { onlyIfMissing: true, deleteParts: false }).catch(() => undefined);
+      }, 30_000);
+    }
     return NextResponse.json({ ok: true, ended });
   } catch {
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
