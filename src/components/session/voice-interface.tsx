@@ -1296,9 +1296,10 @@ export function VoiceInterface({
       try {
         // Stop + save audio (and screenshots when video mode) BEFORE session completes
         if (recording.isRecording || recordingStartedRef.current) {
-          // Audio is uploaded in parts during the interview, so this is normally
-          // quick. If it still times out, the server links the upload itself.
-          const result = await withTimeout(recording.stop(), 30_000, "stop recording");
+          // Audio is uploaded in parts during the interview and the server joins
+          // them in the background, so this is normally a few seconds. The
+          // whole-file fallback is bounded (10 s drain + 20 s upload), hence 45 s.
+          const result = await withTimeout(recording.stop(), 45_000, "stop recording");
           if (result.audioUrl || result.screenshots.length > 0) {
             await withTimeout(
               fetch("/api/trpc/session.saveRecording", {

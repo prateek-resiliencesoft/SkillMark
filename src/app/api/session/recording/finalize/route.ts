@@ -1,6 +1,6 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { createLogger } from "@/lib/logger";
-import { finalizeRecordingParts } from "@/lib/recording-parts-server";
+import { finalizeRecordingParts, scheduleRecordingFinalize } from "@/lib/recording-parts-server";
 import { clientIp } from "@/server/integrations/applications";
 import { NextResponse } from "next/server";
 
@@ -8,8 +8,13 @@ const log = createLogger("api/session/recording/finalize");
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * POST { sessionId } — join the recording parts uploaded during the interview
- * into one file and link it to the session. Safe to call more than once.
+ * POST { sessionId, background? } — join the recording parts uploaded during
+ * the interview into one file and link it to the session. Safe to call more
+ * than once.
+ *
+ * background: true (what the interview page sends) answers 202 right away and
+ * joins on the server with retries, so ending the interview never waits on
+ * downloading and joining every part.
  */
 export async function POST(req: Request) {
   try {
@@ -19,6 +24,10 @@ export async function POST(req: Request) {
     const sessionId = body?.sessionId;
     if (typeof sessionId !== "string" || !UUID_RE.test(sessionId)) {
       return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+    }
+    if (body?.background === true) {
+      const scheduled = scheduleRecordingFinalize(sessionId, { deleteParts: true, reason: "interview end" });
+      return NextResponse.json({ ok: true, status: scheduled ? "scheduled" : "already_scheduled" }, { status: 202 });
     }
     const result = await finalizeRecordingParts(sessionId, { deleteParts: true });
     if (result.status === "not_found") return NextResponse.json({ error: "Session not found" }, { status: 404 });

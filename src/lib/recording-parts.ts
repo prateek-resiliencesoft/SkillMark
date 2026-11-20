@@ -100,3 +100,24 @@ export function isRunComplete(run: RecordingRun): boolean {
   if (!run.parts.length || run.parts[0].seq !== 0) return false;
   return run.parts.every((p, i) => p.seq === i);
 }
+
+/** Background finalize attempts: now, then after 15 s, 60 s and 3 min. */
+export const FINALIZE_RETRY_DELAYS_MS = [0, 15_000, 60_000, 180_000] as const;
+
+/** Map with at most `limit` calls in flight; results keep input order. */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
