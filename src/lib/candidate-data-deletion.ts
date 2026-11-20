@@ -1,7 +1,9 @@
 import "server-only";
 import { createLogger } from "@/lib/logger";
-import { deletePrefixStats, listObjectsWithMetadata, storage } from "@/lib/storage";
+import { sessionOwnedMediaKeys, type SessionMediaRow } from "@/lib/media-review";
+import { deletePrefixStats, statLocalObject, storage } from "@/lib/storage";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
+import { objectPathFromSignedUrl, pathBelongsToOrganization } from "@/lib/tenant-storage";
 import type { Context } from "@/server/context";
 
 const log = createLogger("candidate-data-deletion");
@@ -30,7 +32,7 @@ export async function deleteSessionWithData(
   const { data: session } = await supabase
     .from("sessions")
     .select(
-      `id, mediaStoragePrefix, audioRecordingUrl, audioRecordings, screenshots, participantName, participantEmail,
+      `id, mediaStoragePrefix, audioRecordingUrl, audioRecordings, screenshots, antiCheatingLog, participantName, participantEmail,
        interview:interviews!inner(id, projectId, project:projects!inner(id, organizationId))`,
     )
     .eq("id", sessionId)
@@ -54,14 +56,15 @@ export async function deleteSessionWithData(
     .trim()
     .toLowerCase();
 
-  // Every object key this session / candidate points to.
+  // Every object key this session / candidate points to (signed URLs included),
+  // limited to this organization so a poisoned path never deletes foreign media.
   const keys = new Set<string>();
   const add = (k: unknown) => {
-    if (typeof k === "string" && k.startsWith("orgs/")) keys.add(k.replace(/^\/+/, ""));
+    if (typeof k !== "string" || !k) return;
+    const key = objectPathFromSignedUrl("files", k);
+    if (key && key.startsWith(`orgs/${orgId}/`) && pathBelongsToOrganization(key, orgId)) keys.add(key);
   };
-  add(session.audioRecordingUrl);
-  pathsFrom(session.audioRecordings).forEach(add);
-  pathsFrom(session.screenshots).forEach(add);
+  for (const ref of await sessionOwnedMediaKeys(supabase, session as unknown as SessionMediaRow)) add(ref.key);
   for (const c of candidates ?? []) {
     const profile = c.profile as Record<string, unknown> | null;
     add(profile?.cvPath);
@@ -118,8 +121,7 @@ export async function deleteSessionWithData(
   // Explicit keys (all of them when shared; leftovers/legacy locations otherwise).
   for (const key of Array.from(keys)) {
     if (!shared && key.startsWith(`${folder}/`)) continue;
-    const meta = await listObjectsWithMetadata(key, 1).catch(() => []);
-    const hit = meta.find((m) => m.key === key);
+    const hit = await statLocalObject(key);
     await storage.from("files").remove([key]);
     if (hit) {
       objects += 1;
@@ -134,6 +136,8 @@ export async function deleteSessionWithData(
   if (candidateIds.length > 0) {
     await supabase.from("candidates").delete().in("id", candidateIds);
   }
+  // sessionId is ON DELETE SET NULL there: walk-in rows would outlive the session.
+  await supabase.from("session_preflight_events").delete().eq("sessionId", sessionId);
   const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
   if (error) throw new Error(error.message);
 

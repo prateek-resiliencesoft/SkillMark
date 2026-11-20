@@ -7,6 +7,7 @@ import { mergeInviteMessages, type InviteMessages } from "@/lib/messaging/invite
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "@/server/invite-delivery";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
+import { orgAcceptsInbound, resolveInboundTarget } from "./inbound";
 
 const inboundCandidateSchema = z.object({
   organizationId: z.string().uuid().optional(),
@@ -87,44 +88,21 @@ export async function POST(req: NextRequest) {
 
     const orgId = orgIntegration.organizationId;
 
-    // Resolve interview ID
-    let interviewId = data.interviewId;
-    let batchId = data.batchId;
-
-    if (interviewId) {
-      // Validate that interviewId belongs to this organization (cross-tenant protection)
-      const { data: iv } = await supabase
-        .from("interviews")
-        .select("id, batchId, project:projects!inner(organizationId)")
-        .eq("id", interviewId)
-        .maybeSingle();
-
-      const ivProject = (iv as unknown as { project?: { organizationId?: string } } | null)?.project;
-      if (!iv || ivProject?.organizationId !== orgId) {
-        return NextResponse.json(
-          { ok: false, error: "Interview not found or does not belong to your organization" },
-          { status: 403 },
-        );
-      }
-      if (!batchId && iv.batchId) batchId = iv.batchId;
-    } else if (batchId) {
-      // Find interview in batch and verify tenant ownership
-      const { data: iv } = await supabase
-        .from("interviews")
-        .select("id, project:projects!inner(organizationId)")
-        .eq("batchId", batchId)
-        .limit(1)
-        .maybeSingle();
-
-      const ivProject = (iv as unknown as { project?: { organizationId?: string } } | null)?.project;
-      if (!iv || ivProject?.organizationId !== orgId) {
-        return NextResponse.json(
-          { ok: false, error: "Batch not found or does not belong to your organization" },
-          { status: 403 },
-        );
-      }
-      interviewId = iv.id;
+    if (!(await orgAcceptsInbound(supabase, orgId))) {
+      return NextResponse.json(
+        { ok: false, error: "This organization is not accepting candidates right now" },
+        { status: 403 },
+      );
     }
+
+    const target = await resolveInboundTarget(supabase, orgId, {
+      interviewId: data.interviewId,
+      batchId: data.batchId,
+    });
+    if (!target.ok) {
+      return NextResponse.json({ ok: false, error: target.error }, { status: target.status });
+    }
+    let { interviewId, batchId } = target;
 
     if (!interviewId) {
       // Fallback to most recent interview in organization

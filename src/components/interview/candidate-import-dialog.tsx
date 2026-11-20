@@ -13,25 +13,18 @@ import { trpc } from "@/lib/trpc/client";
 import { CheckCircle2, FileText, Loader2, Upload } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import {
+    MAX_IMPORT_FILE_BYTES,
+    parseCandidateSpreadsheet,
+    SpreadsheetImportError,
+    type ParsedCandidate,
+} from "@/lib/documents/spreadsheet-import";
 
 interface CandidateImportDialogProps {
   interviewId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onImported: () => void;
-}
-
-interface ParsedCandidate {
-  name: string;
-  email?: string;
-  phone?: string;
-  gender?: string;
-  birthday?: string;
-  education?: string;
-  school?: string;
-  major?: string;
-  graduationYear?: number;
-  workExperience?: string;
 }
 
 const TEMPLATE_HEADERS = [
@@ -91,77 +84,6 @@ function generateTemplate(): void {
   XLSX.writeFile(wb, "Candidate_Import_Template.xlsx");
 }
 
-function parseExcel(data: ArrayBuffer): ParsedCandidate[] {
-  const wb = XLSX.read(data, { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  if (!ws) return [];
-
-  // Convert entire sheet to array-of-arrays to find the header row
-  const allRows = XLSX.utils.sheet_to_json<(string | number | null)[]>(ws, {
-    header: 1,
-    defval: "",
-  });
-
-  // Find the header row by looking for "Name" in the first cell
-  let headerIndex = -1;
-  for (let i = 0; i < allRows.length; i++) {
-    const firstCell = String(allRows[i]?.[0] ?? "").toLowerCase().trim();
-    if (firstCell === "name") {
-      headerIndex = i;
-      break;
-    }
-  }
-
-  if (headerIndex === -1) return [];
-
-  const headers = (allRows[headerIndex] as (string | number | null)[]).map((h) =>
-    String(h ?? "").toLowerCase().trim(),
-  );
-
-  const results: ParsedCandidate[] = [];
-
-  for (let i = headerIndex + 1; i < allRows.length; i++) {
-    const row = allRows[i] as (string | number | null)[];
-    if (!row || row.every((c) => !c && c !== 0)) continue;
-
-    // Build a normalized key-value map from headers
-    const normalized: Record<string, string> = {};
-    headers.forEach((key, idx) => {
-      normalized[key] = String(row[idx] ?? "").trim();
-    });
-
-    const name = normalized["name"] || "";
-    if (!name) continue;
-
-    const candidate: ParsedCandidate = { name };
-
-    const email = normalized["email"] || normalized["e-mail"] || "";
-    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      candidate.email = email.toLowerCase();
-    }
-
-    if (normalized["phone"]) candidate.phone = normalized["phone"];
-    if (normalized["gender"]) candidate.gender = normalized["gender"];
-    if (normalized["birthday"]) candidate.birthday = normalized["birthday"];
-    if (normalized["education"]) candidate.education = normalized["education"];
-    if (normalized["school"]) candidate.school = normalized["school"];
-    if (normalized["major"]) candidate.major = normalized["major"];
-
-    const gradYear = normalized["graduation year"] || normalized["graduationyear"] || "";
-    if (gradYear) {
-      const yr = parseInt(gradYear, 10);
-      if (!isNaN(yr)) candidate.graduationYear = yr;
-    }
-
-    const workExp = normalized["work experience"] || normalized["workexperience"] || "";
-    if (workExp) candidate.workExperience = workExp;
-
-    results.push(candidate);
-  }
-
-  return results;
-}
-
 type Step = "upload" | "preview" | "complete";
 
 export function CandidateImportDialog({
@@ -197,11 +119,29 @@ export function CandidateImportDialog({
       const file = e.target.files?.[0];
       if (!file) return;
 
+      if (file.size > MAX_IMPORT_FILE_BYTES) {
+        toast({
+          title: "File is too large",
+          description: `Upload a file up to ${MAX_IMPORT_FILE_BYTES / 1024 / 1024} MB.`,
+          variant: "destructive",
+        });
+        return;
+      }
       setFileName(file.name);
       const reader = new FileReader();
       reader.onload = (ev) => {
         const data = ev.target?.result as ArrayBuffer;
-        const parsed = parseExcel(data);
+        let parsed: ParsedCandidate[];
+        try {
+          parsed = parseCandidateSpreadsheet(data);
+        } catch (err) {
+          toast({
+            title: "Could not read file",
+            description: err instanceof SpreadsheetImportError ? err.message : "Save it as .xlsx or .csv and try again.",
+            variant: "destructive",
+          });
+          return;
+        }
         if (parsed.length === 0) {
           toast({
             title: "No valid sessions found",
@@ -309,7 +249,7 @@ export function CandidateImportDialog({
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".xlsx,.xls,.csv"
+                accept=".xlsx,.csv"
                 className="hidden"
                 onChange={handleFileUpload}
               />

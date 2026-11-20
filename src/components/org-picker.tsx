@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { LAST_ORG_STORAGE_KEY } from "@/lib/active-org";
+import { DEFAULT_NEXT_PATH, safeNextPath } from "@/lib/safe-next";
 import { trpc } from "@/lib/trpc/client";
 import {
   ArrowRight,
@@ -22,9 +23,9 @@ import { useEffect, useMemo, useState } from "react";
 
 /** Only same-origin relative paths are allowed as the post-pick destination. */
 function safeNext(raw: string | null): string {
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/dashboard";
-  if (raw.startsWith("/organizations") || raw.startsWith("/org/new")) return "/dashboard";
-  return raw;
+  const path = safeNextPath(raw);
+  if (path.startsWith("/organizations") || path.startsWith("/org/new")) return DEFAULT_NEXT_PATH;
+  return path;
 }
 
 /** Shown after every fresh login (and when the active org is missing/removed). */

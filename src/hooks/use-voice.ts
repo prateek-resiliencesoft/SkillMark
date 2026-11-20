@@ -586,12 +586,14 @@ export function useVoice({
       const connector = new RelayConnector<Record<string, unknown>>({
         targets,
         binaryType: "arraybuffer",
+        // Same-origin socket, so the session capability cookie rides on the upgrade.
+        // The relay loads the interview script from the database by sessionId;
+        // only the candidate's position and language are taken from here.
         buildInitMessage: () => ({
           type: "init",
           sessionId,
           clientVad: clientVadEnabledRef.current,
           context: {
-            ...interviewContext,
             candidateLanguage: candidateLanguageRef.current ?? interviewContext.candidateLanguage ?? null,
             startQuestionIndex: currentQuestionIndexRef.current,
             // On a reconnect the relay rebuilds the AI session from this:

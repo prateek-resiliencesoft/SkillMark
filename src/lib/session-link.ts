@@ -11,6 +11,8 @@
  * superseded). The recruiter's expiresAt deadline still applies.
  */
 
+import { NEVER_STARTED_END_REASON } from "@/lib/session-report-policy";
+
 /** Client heartbeat cadence. */
 /** Shown on the candidate expired / revoked-link page. */
 export const EXPIRED_INVITE_MESSAGE =
@@ -192,6 +194,57 @@ export function isLinkExpired(opts: {
   if (!opts.expiresAt) return false;
   const t = new Date(opts.expiresAt).getTime();
   return Number.isFinite(t) && t < (opts.nowMs ?? Date.now());
+}
+
+/**
+ * The invite deadline passed before the live interview began. An interview that
+ * began before expiresAt may still finish; a pre-flight session may not start.
+ */
+export function inviteExpiredForSession(
+  s: { interviewBeganAt?: string | null },
+  inviteExpiresAt: string | null | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!inviteExpiresAt) return false;
+  const exp = Date.parse(inviteExpiresAt);
+  if (!Number.isFinite(exp) || exp >= nowMs) return false;
+  const began = s.interviewBeganAt ? Date.parse(s.interviewBeganAt) : NaN;
+  return !(Number.isFinite(began) && began <= exp);
+}
+
+/** Final transcript flush / tab-close beacon races may still land this long after a session ends. */
+export const LATE_WRITE_GRACE_MS = 2 * 60_000;
+
+export type CandidateWriteSession = LinkSessionState & {
+  supersededAt?: string | null;
+  endReason?: string | null;
+  completedAt?: string | null;
+};
+
+/**
+ * Whether candidate writes may land on a session:
+ *  live   – open IN_PROGRESS session (not superseded, invite not expired before it began)
+ *  grace  – just ended (COMPLETED, or ABANDONED after the interview began) within
+ *           LATE_WRITE_GRACE_MS of the last sign of life: only transcript lines / completion
+ *  closed – everything else (superseded, disqualified, never started, long ended)
+ */
+export function candidateWriteWindow(
+  s: CandidateWriteSession,
+  opts: { inviteExpiresAt?: string | null; nowMs?: number } = {},
+): "live" | "grace" | "closed" {
+  const now = opts.nowMs ?? Date.now();
+  if (s.supersededAt) return "closed";
+  if (s.status === "IN_PROGRESS") return inviteExpiredForSession(s, opts.inviteExpiresAt, now) ? "closed" : "live";
+  const recent = (...isos: (string | null | undefined)[]) => {
+    const ts = isos.map((v) => (v ? Date.parse(v) : NaN)).filter((v) => Number.isFinite(v));
+    return ts.length > 0 && now - Math.max(...ts) <= LATE_WRITE_GRACE_MS;
+  };
+  if (s.status === "COMPLETED") return recent(s.completedAt) ? "grace" : "closed";
+  if (s.status === "ABANDONED") {
+    if (!s.interviewBeganAt || s.endReason === NEVER_STARTED_END_REASON) return "closed";
+    return recent(s.lastHeartbeatAt, s.lastActivityAt) ? "grace" : "closed";
+  }
+  return "closed";
 }
 
 /** True when the recruiter should issue a new token (not merely resend the current one). */

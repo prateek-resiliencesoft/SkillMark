@@ -1,9 +1,10 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { clientIp } from "@/server/integrations/applications";
+import { clientIp } from "@/lib/client-ip";
 import { recordPreflightEvent } from "@/lib/preflight-server";
-import { decideStart } from "@/lib/session-link";
+import { decideStart, inviteExpiredForSession } from "@/lib/session-link";
 import { abandonSession } from "@/lib/session-link-server";
+import { gateCandidateSession, isSessionId, rejectCrossSiteRequest } from "@/lib/session-access";
 import { NextResponse } from "next/server";
 
 const START_FAILED = "Could not start this interview. Try again.";
@@ -15,22 +16,29 @@ const START_FAILED = "Could not start this interview. Try again.";
  */
 export async function POST(req: Request) {
   try {
+    const refused = rejectCrossSiteRequest(req, { json: true });
+    if (refused) return refused;
     const body = await req.json().catch(() => null);
     const sessionId = body?.sessionId;
-    if (typeof sessionId !== "string" || !sessionId) {
+    if (!isSessionId(sessionId)) {
       return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
     }
     // Per session, not per IP: batch drives start many candidates behind one NAT.
     const limited = checkRateLimit(`session:start:${sessionId}`, 20) ?? checkRateLimit(`session:start-ip:${clientIp(req)}`, 600);
     if (limited) return limited;
 
-    const { data: session, error } = await supabaseAdmin
-      .from("sessions")
-      .select("id, status, interviewBeganAt, lastHeartbeatAt, candidateId")
-      .eq("id", sessionId)
-      .maybeSingle();
-    if (error) return NextResponse.json({ error: START_FAILED }, { status: 503 });
-    if (!session) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const gate = await gateCandidateSession(req, sessionId);
+    if (!gate.ok) {
+      return gate.response.status === 503 ? NextResponse.json({ error: START_FAILED }, { status: 503 }) : gate.response;
+    }
+    const { session, invite } = gate;
+
+    // Revoked ("Send new link" / restarted attempt) or past the invite deadline:
+    // the pre-flight session must not become a live interview.
+    const revoked = !!session.supersededAt || (!!session.candidateId && invite?.sessionId !== sessionId);
+    if (session.status === "IN_PROGRESS" && (revoked || inviteExpiredForSession(session, invite?.expiresAt))) {
+      return NextResponse.json({ ok: false, expired: true, status: session.status }, { status: 409 });
+    }
 
     const decision = decideStart(session, { retry: body?.retry === true });
     if (decision.action === "expired") {
@@ -58,24 +66,16 @@ export async function POST(req: Request) {
       .eq("id", sessionId)
       .eq("status", "IN_PROGRESS")
       .is("interviewBeganAt", null)
+      .is("supersededAt", null)
       .select("id");
     // Never answer ok without interviewBeganAt: an un-begun session is later swept as
     // preflight-idle. No row = lost a race (parallel start / abandon); the retry re-reads.
     if (updateError || !began?.length) return NextResponse.json({ error: START_FAILED }, { status: 503 });
 
-    let inviteToken: string | null = null;
-    if (session.candidateId) {
-      const { data: candidate } = await supabaseAdmin
-        .from("candidates")
-        .select("inviteToken")
-        .eq("id", session.candidateId)
-        .maybeSingle();
-      inviteToken = (candidate?.inviteToken as string | null) ?? null;
-    }
     void recordPreflightEvent({
       candidateId: (session.candidateId as string | null) ?? null,
       sessionId,
-      inviteToken,
+      inviteToken: invite?.inviteToken ?? null,
       type: "interview_started",
       status: "done",
     });

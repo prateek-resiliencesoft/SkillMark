@@ -81,6 +81,55 @@ export function correlationSeverity(r: number): number {
   return r < 0.05 ? 0.8 : r < 0.15 ? 0.5 : 0;
 }
 
+/** Stored samples per signal type; 11 types × 180 stays under the old 2000-entry column budget. */
+export const MAX_SIGNALS_PER_TYPE = 180;
+
+/** True when a sample carries no concern on its own (safe to drop first when a type is full). */
+export function isBenignSignal(s: IntegritySignal): boolean {
+  switch (s.type) {
+    case "liveness":
+      return s.value !== 0;
+    case "extension_injection":
+      return (s.value ?? 0.4) < 0.4;
+    case "av_correlation":
+      return correlationSeverity(s.value ?? 1) === 0;
+    case "processing_device":
+    case "detector_unavailable":
+    case "response_latency":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Append browser-reported signals without letting any batch evict earlier
+ * detections: each type has its own cap, a full type drops its oldest benign
+ * sample first, and a type full of detections keeps the earliest ones.
+ */
+export function mergeIntegritySignals(
+  prev: IntegritySignal[],
+  incoming: IntegritySignal[],
+  perType = MAX_SIGNALS_PER_TYPE,
+): IntegritySignal[] {
+  const out = [...prev];
+  const counts = new Map<string, number>();
+  for (const s of out) counts.set(s.type, (counts.get(s.type) ?? 0) + 1);
+  for (const s of incoming) {
+    const n = counts.get(s.type) ?? 0;
+    if (n < perType) {
+      out.push(s);
+      counts.set(s.type, n + 1);
+      continue;
+    }
+    const evict = out.findIndex((x) => x.type === s.type && isBenignSignal(x));
+    if (evict < 0) continue;
+    out.splice(evict, 1);
+    out.push(s);
+  }
+  return out;
+}
+
 const noisyOr = (xs: number[]) => 1 - xs.reduce((p, x) => p * (1 - Math.max(0, Math.min(1, x))), 1);
 
 /** A group is "elevated" at this level; "needs review" takes 2 elevated groups. */

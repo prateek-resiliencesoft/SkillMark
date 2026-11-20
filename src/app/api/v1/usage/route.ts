@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:read");
   if (isAuthError(auth)) return auth;
 
   const { count: templateCount } = await supabaseAdmin

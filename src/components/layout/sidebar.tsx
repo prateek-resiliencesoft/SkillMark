@@ -549,6 +549,12 @@ export function Sidebar({
                   // Session may have expired; clear local state instead
                   await createClient().auth.signOut().catch(() => {});
                 }
+                try {
+                  // API docs key persisted by older builds of the developers page.
+                  sessionStorage.removeItem("rsi-docs-key");
+                } catch {
+                  /* storage unavailable */
+                }
                 window.location.href = switchedTo ? "/dashboard" : "/login";
               }}
             >

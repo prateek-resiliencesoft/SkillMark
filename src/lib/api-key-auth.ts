@@ -1,6 +1,7 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
-import { effectiveScopes, hashApiKey, keyHasScope, parseBearerKey, type ApiKeyScope } from "@/lib/api-keys";
+import { API_KEY_SCOPES, effectiveScopes, hashApiKey, keyHasScope, parseBearerKey, type ApiKeyScope } from "@/lib/api-keys";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getUserById } from "@/lib/users";
 import { filterAccessibleProjectIds } from "@/server/trpc";
 
 export interface ApiKeyAuth {
@@ -10,6 +11,33 @@ export interface ApiKeyAuth {
   apiKeyId?: string;
   environment?: "test" | "live";
   scopes?: string[];
+  /** Key owner is a VIEWER or the organization is paused: write scopes were stripped. */
+  readOnly?: boolean;
+}
+
+/**
+ * Scope(s) the endpoint needs. `null` only for transports that check a scope
+ * per operation themselves (MCP tools); every REST handler must name one.
+ */
+export type RequiredScope = ApiKeyScope | readonly ApiKeyScope[] | null;
+
+const READ_SCOPES = API_KEY_SCOPES.filter((s) => s.endsWith(":read"));
+
+/** Downgrade a key to what a VIEWER (or a paused org) may do: reads only. */
+export function readOnlyScopes(scopes: string[]): string[] {
+  const out = new Set<string>();
+  for (const s of scopes) {
+    if (s === "*") for (const r of READ_SCOPES) out.add(r);
+    else if (s.endsWith(":write")) out.add(`${s.slice(0, -":write".length)}:read`);
+    else out.add(s);
+  }
+  return Array.from(out);
+}
+
+function missingScope(scopes: string[], required: RequiredScope): ApiKeyScope | null {
+  if (required === null) return null;
+  const list: readonly ApiKeyScope[] = typeof required === "string" ? [required] : required;
+  return list.find((s) => !keyHasScope(scopes, s)) ?? null;
 }
 
 export function apiError(
@@ -23,7 +51,7 @@ export function apiError(
 
 export async function validateApiKey(
   request: Request,
-  requiredScope?: ApiKeyScope,
+  requiredScope: RequiredScope,
 ): Promise<ApiKeyAuth | Response> {
   const key = parseBearerKey(request.headers.get("authorization"));
   if (!key) {
@@ -52,9 +80,66 @@ export async function validateApiKey(
   const rateLimited = checkRateLimit(`key:${apiKey.id}`);
   if (rateLimited) return rateLimited;
 
-  const scopes = effectiveScopes(apiKey.scopes as string[], apiKey.keyPrefix as string | null);
-  if (requiredScope && !keyHasScope(scopes, requiredScope)) {
-    return apiError("FORBIDDEN", `This API key lacks the "${requiredScope}" permission.`, 403);
+  let scopes = effectiveScopes(apiKey.scopes as string[], apiKey.keyPrefix as string | null);
+  const lacking = missingScope(scopes, requiredScope);
+  if (lacking) {
+    return apiError("FORBIDDEN", `This API key lacks the "${lacking}" permission.`, 403);
+  }
+
+  const userId: string = apiKey.userId;
+  if (!(await getUserById(userId))) {
+    return apiError("UNAUTHORIZED", "The account that owns this API key is paused or deleted.", 401);
+  }
+
+  let organizationId: string | null = (apiKey.organizationId as string | null) ?? null;
+  let member: { organizationId: string; role: string } | null;
+  if (organizationId) {
+    const { data } = await supabaseAdmin
+      .from("organization_members")
+      .select("organizationId, role")
+      .eq("userId", userId)
+      .eq("organizationId", organizationId)
+      .maybeSingle();
+    member = data as typeof member;
+  } else {
+    const { data } = await supabaseAdmin
+      .from("organization_members")
+      .select("organizationId, role")
+      .eq("userId", userId)
+      .order("organizationId")
+      .limit(1)
+      .maybeSingle();
+    member = data as typeof member;
+  }
+  organizationId = member?.organizationId ?? null;
+
+  if (!member || !organizationId) {
+    return apiError("FORBIDDEN", "No organization found for this API key user.", 403);
+  }
+
+  const { data: org } = await supabaseAdmin
+    .from("organizations")
+    .select("status")
+    .eq("id", organizationId)
+    .maybeSingle();
+  const status = (org?.status as string | undefined) ?? (org ? "ACTIVE" : null);
+  if (!status || status === "DELETED") {
+    return apiError("FORBIDDEN", "This organization is no longer available.", 403);
+  }
+
+  const readOnly = member.role === "VIEWER" || status !== "ACTIVE";
+  if (readOnly) {
+    scopes = readOnlyScopes(scopes);
+    const blocked = missingScope(scopes, requiredScope);
+    if (blocked) {
+      return apiError(
+        "FORBIDDEN",
+        status !== "ACTIVE"
+          ? "This organization is paused. API changes are blocked until it is resumed."
+          : `The API key owner's role (viewer) does not allow "${blocked}".`,
+        403,
+      );
+    }
   }
 
   supabaseAdmin
@@ -63,42 +148,20 @@ export async function validateApiKey(
     .eq("id", apiKey.id)
     .then();
 
-  const userId: string = apiKey.userId;
-  let organizationId: string | null = (apiKey.organizationId as string | null) ?? null;
-
-  if (organizationId) {
-    const { data: member } = await supabaseAdmin
-      .from("organization_members")
-      .select("organizationId")
-      .eq("userId", userId)
-      .eq("organizationId", organizationId)
-      .maybeSingle();
-    if (!member) organizationId = null;
-  } else {
-    const { data: membership } = await supabaseAdmin
-      .from("organization_members")
-      .select("organizationId")
-      .eq("userId", userId)
-      .order("organizationId")
-      .limit(1)
-      .maybeSingle();
-    organizationId = (membership?.organizationId as string | undefined) ?? null;
-  }
-
-  if (!organizationId) {
-    return apiError("FORBIDDEN", "No organization found for this API key user.", 403);
-  }
-
   const { data: projects } = await supabaseAdmin
     .from("projects")
     .select("id")
     .eq("organizationId", organizationId);
 
   const allProjectIds = (projects ?? []).map((p) => p.id);
+  const writeRequest =
+    requiredScope !== null &&
+    (typeof requiredScope === "string" ? [requiredScope] : requiredScope).some((s) => s === "*" || s.endsWith(":write"));
   const projectIds = await filterAccessibleProjectIds(
     supabaseAdmin,
     allProjectIds,
     userId,
+    writeRequest ? { minRole: "MEMBER" } : {},
   );
 
   return {
@@ -108,6 +171,7 @@ export async function validateApiKey(
     apiKeyId: apiKey.id as string,
     environment: ((apiKey.environment as string) === "test" ? "test" : "live"),
     scopes,
+    readOnly,
   };
 }
 
@@ -157,7 +221,7 @@ export function logApiUsage(
 /** Run an authenticated v1 handler and log its usage. */
 export async function withApiKey(
   request: Request,
-  scope: ApiKeyScope | undefined,
+  scope: ApiKeyScope | readonly ApiKeyScope[],
   handler: (auth: ApiKeyAuth) => Promise<Response>,
 ): Promise<Response> {
   const started = Date.now();

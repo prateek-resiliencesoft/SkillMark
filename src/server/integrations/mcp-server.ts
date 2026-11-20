@@ -16,7 +16,8 @@ import {
 } from "@/server/integrations/applications";
 import { resolveFormForKey } from "@/server/integrations/form-access";
 import { generateQuestions } from "@/server/integrations/form-interview";
-import { assertSafeRemoteUrl } from "@/lib/network-security";
+import { assertSafeRemoteUrl, safeFetch } from "@/lib/network-security";
+import { filterAccessibleProjectIds } from "@/server/trpc";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ENDPOINTS } from "@/server/public-api/endpoints";
 import { runEndpoint, zodDetails } from "@/server/public-api/handler";
@@ -26,6 +27,11 @@ import { z } from "zod";
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
+
+/** MCP authenticates with no route scope, so `auth.projectIds` is the read-level list. */
+function writableProjectIds(auth: ApiKeyAuth): Promise<string[]> {
+  return filterAccessibleProjectIds(supabaseAdmin, auth.projectIds, auth.userId, { minRole: "MEMBER" });
+}
 
 function ok(data: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { data } as Record<string, unknown> };
@@ -42,10 +48,8 @@ async function fetchRemoteFile(url: string, filename?: string): Promise<Incoming
   } catch (err) {
     throw new SubmissionError("INVALID_FILE_URL", (err as Error).message, 400);
   }
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
   try {
-    const r = await fetch(u, { signal: ctrl.signal, redirect: "error" });
+    const r = await safeFetch(u, { redirect: "error", maxBytes: MAX_FILE_BYTES + 1, timeoutMs: 15000 });
     if (!r.ok || !r.body) throw new SubmissionError("FILE_FETCH_FAILED", `Could not download ${url} (${r.status})`, 400);
     const len = Number(r.headers.get("content-length") || "0");
     if (len > MAX_FILE_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "Remote file exceeds 20 MB", 413);
@@ -67,8 +71,6 @@ async function fetchRemoteFile(url: string, filename?: string): Promise<Incoming
   } catch (err) {
     if (err instanceof SubmissionError) throw err;
     throw new SubmissionError("FILE_FETCH_FAILED", `Could not download ${url}`, 400);
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -89,7 +91,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
   const tool = <S extends z.ZodRawShape>(
     name: string,
     description: string,
-    scope: ApiKeyScope,
+    scope: ApiKeyScope | readonly ApiKeyScope[],
     shape: S,
     run: (args: z.infer<z.ZodObject<S>>) => Promise<ToolResult>,
     annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean },
@@ -99,7 +101,8 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
       { description, inputSchema: shape, annotations: { title: name.replace(/_/g, " "), ...annotations } },
       (async (args: z.infer<z.ZodObject<S>>) => {
         let res: ToolResult;
-        if (!keyHasScope(auth.scopes, scope)) res = fail("FORBIDDEN", `This API key lacks the "${scope}" permission.`);
+        const lacking = (typeof scope === "string" ? [scope] : scope).find((s) => !keyHasScope(auth.scopes, s));
+        if (lacking) res = fail("FORBIDDEN", `This API key lacks the "${lacking}" permission.`);
         else {
           try { res = await run(args); } catch (err) {
             res = err instanceof SubmissionError ? fail(err.code, err.message, err.details) : fail("INTERNAL_ERROR", err instanceof Error ? err.message : "Unexpected error");
@@ -146,6 +149,9 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
   }, async ({ form_id, candidate, answers, files }) => {
     const form = await resolveFormForKey(form_id, auth);
     if (form instanceof Response) return fail(form.status === 404 ? "NOT_FOUND" : "FORBIDDEN", (await form.json()).error.message);
+    if (form.projectId && !(await writableProjectIds(auth)).includes(form.projectId)) {
+      return fail("FORBIDDEN", "The API key owner's project role does not allow submitting applications to this form");
+    }
     const fileMap: Record<string, IncomingFile[]> = {};
     for (const f of files ?? []) {
       let file: IncomingFile;
@@ -218,7 +224,8 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     anti_cheating: z.boolean().default(false),
     head_movement_detection: z.boolean().default(false),
   }, async (a) => {
-    if (!auth.projectIds.length) return fail("FORBIDDEN", "No accessible project for this API key");
+    const writable = await writableProjectIds(auth);
+    if (!writable.length) return fail("FORBIDDEN", "No project where this API key's owner can create interviews");
     const cfg: InterviewConfig = { title: a.title, description: a.description, jobRole: a.job_role, jobDescription: a.job_description, experienceLevel: a.experience_level, interviewType: a.interview_type, difficulty: a.difficulty, numberOfQuestions: a.number_of_questions, durationMinutes: a.duration_minutes, language: a.language, mode: a.mode, predefinedQuestions: a.questions ?? [], questionSource: a.generate_questions ? "ai" : "predefined" };
     let qs: { text?: string; type?: string; description?: string; options?: unknown; starterCode?: unknown }[] = (a.questions ?? []).map((text) => ({ text, type: "OPEN_ENDED" }));
     let objective: string | null = null;
@@ -230,7 +237,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     }
     if (!qs.length) return fail("VALIDATION_ERROR", "Provide questions or set generate_questions=true");
     const { data: iv, error } = await supabaseAdmin.from("interviews").insert({
-      title: a.title, description: a.description ?? null, userId: auth.userId, projectId: auth.projectIds[0], language: a.language,
+      title: a.title, description: a.description ?? null, userId: auth.userId, projectId: writable[0], language: a.language,
       timeLimitMinutes: a.duration_minutes ?? null, voiceEnabled: a.mode === "voice", chatEnabled: true, mode: a.mode === "voice" ? "VOICE" : "CHAT",
       antiCheatingEnabled: a.anti_cheating, headMovementDetectionEnabled: a.anti_cheating && a.head_movement_detection,
       objective: [a.job_role ? `Role: ${a.job_role}` : "", a.job_description ? `Job description:\n${a.job_description}` : "", objective ?? ""].filter(Boolean).join("\n\n") || null,
@@ -266,10 +273,13 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     }, { readOnlyHint: true });
   }
 
-  tool("get_session_results", "Get the results of one interview session: status, summary, insights, themes, sentiment, integrity (anti-cheating) events and optionally the transcript.", "interviews:read", {
+  tool("get_session_results", "Get the results of one interview session: status, summary, insights, themes, sentiment, integrity (anti-cheating) events and optionally the transcript.", ["sessions:read", "results:read"], {
     session_id: z.string().uuid(),
     include_transcript: z.boolean().default(false),
   }, async ({ session_id, include_transcript }) => {
+    if (include_transcript && !keyHasScope(auth.scopes, "transcripts:read")) {
+      return fail("FORBIDDEN", `This API key lacks the "transcripts:read" permission.`);
+    }
     const { data: s } = await supabaseAdmin.from("sessions").select("id, interviewId, status, participantName, participantEmail, startedAt, completedAt, totalDurationSeconds, summary, insights, themes, sentiment, antiCheatingLog").eq("id", session_id).maybeSingle();
     if (!s) return fail("NOT_FOUND", "Session not found");
     const r = await interviewInScope(s.interviewId as string, auth);
@@ -277,7 +287,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     const log = Array.isArray(s.antiCheatingLog) ? s.antiCheatingLog : [];
     const out: Record<string, unknown> = { ...s, antiCheatingLog: undefined, integrity_events: log.map((e: any) => ({ type: e.type, timestamp: e.timestamp, detail: e.detail })) };
     if (include_transcript) {
-      const { data: m } = await supabaseAdmin.from("messages").select("role, content, timestamp").eq("sessionId", session_id).eq("contentType", "TEXT").order("timestamp").limit(500);
+      const { data: m } = await supabaseAdmin.from("messages").select("role, content, timestamp").eq("sessionId", session_id).eq("contentType", "TEXT").in("role", ["USER", "ASSISTANT"]).order("timestamp").limit(500);
       out.transcript = m ?? [];
     }
     return ok(out);

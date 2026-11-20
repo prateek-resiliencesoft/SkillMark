@@ -109,6 +109,22 @@ async function seedDefaultSections(
   }
 }
 
+async function assertSectionInOrg(
+  supabase: Parameters<typeof getOrgMembership>[0],
+  sectionId: string,
+  organizationId: string,
+) {
+  const { data: section } = await supabase
+    .from("question_bank_sections")
+    .select("id")
+    .eq("id", sectionId)
+    .eq("organizationId", organizationId)
+    .maybeSingle();
+  if (!section) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Round not found in this organization" });
+  }
+}
+
 export const questionBankRouter = router({
   list: protectedProcedure
     .input(z.object({ organizationId: z.string() }))
@@ -188,6 +204,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -248,6 +265,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         sec.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -287,6 +305,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         sec.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -337,9 +356,11 @@ export const questionBankRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
+      await assertSectionInOrg(ctx.supabase, input.sectionId, input.organizationId);
 
       const { data: maxOrderRow } = await ctx.supabase
         .from("question_bank_items")
@@ -407,9 +428,13 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
+      if (input.sectionId !== undefined) {
+        await assertSectionInOrg(ctx.supabase, input.sectionId, itm.organizationId);
+      }
 
       const { id, skipIf, ...rest } = input;
       const { data: updated, error } = await ctx.supabase
@@ -447,6 +472,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -485,6 +511,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -578,6 +605,7 @@ export const questionBankRouter = router({
       const { data: initialItems, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
         .select("*")
+        .eq("organizationId", input.organizationId)
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
@@ -588,6 +616,7 @@ export const questionBankRouter = router({
         const retry = await ctx.supabase
           .from("question_bank_items")
           .select("id, sectionId, text, type, description, options, starterCode, order, isEnabled")
+          .eq("organizationId", input.organizationId)
           .in("sectionId", activeSecIds)
           .eq("isEnabled", true)
           .order("order", { ascending: true });

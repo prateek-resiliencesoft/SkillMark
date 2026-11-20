@@ -1,4 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { readCapabilityFromCookieHeader, sessionCapabilityOk } from "@/lib/session-capability";
+import { inviteExpiredForSession } from "@/lib/session-link";
 import {
   isPreflightEventStatus,
   isPreflightEventType,
@@ -108,10 +110,35 @@ async function touchSession(
   }
 }
 
-/** Resolve the invite token / in-progress session that is allowed to post events. */
+type PreflightSession = {
+  id: string;
+  candidateId?: string | null;
+  status: string;
+  supersededAt?: string | null;
+  interviewBeganAt?: string | null;
+  capabilityRequired?: boolean | null;
+};
+
+const PREFLIGHT_SESSION_COLUMNS = "id, candidateId, status, supersededAt, interviewBeganAt, capabilityRequired";
+
+/** Session-level writes (lastActivityAt, preflightStep, device) need an open session and its capability. */
+function canTouchSession(session: PreflightSession, capabilityToken: string | null, inviteExpiresAt: string | null): boolean {
+  return (
+    session.status === "IN_PROGRESS" &&
+    !session.supersededAt &&
+    !inviteExpiredForSession(session, inviteExpiresAt) &&
+    sessionCapabilityOk(session, capabilityToken)
+  );
+}
+
+/**
+ * Resolve the invite token / in-progress session that is allowed to post events.
+ * `cookieHeader` is the request's Cookie header (session capability).
+ */
 export async function authorizePreflightSource(opts: {
   token?: string | null;
   sessionId?: string | null;
+  cookieHeader?: string | null;
 }): Promise<
   | { ok: true; candidateId: string | null; sessionId: string | null; inviteToken: string | null }
   | { ok: false; status: number; error: string }
@@ -119,28 +146,36 @@ export async function authorizePreflightSource(opts: {
   const token = opts.token?.trim() || null;
   const sessionId = opts.sessionId?.trim() || null;
   if (!token && !sessionId) return { ok: false, status: 400, error: "Missing token" };
+  const capability = (id: string) => readCapabilityFromCookieHeader(opts.cookieHeader, id);
 
   if (token) {
     const { data: candidate } = await supabaseAdmin
       .from("candidates")
-      .select("id, sessionId, inviteToken")
+      .select("id, sessionId, inviteToken, expiresAt")
       .eq("inviteToken", token)
       .maybeSingle();
     if (!candidate) return { ok: false, status: 404, error: "Invalid link" };
+    const expiresAt = (candidate.expiresAt as string | null) ?? null;
+    if (expiresAt && Date.parse(expiresAt) < Date.now() && !candidate.sessionId) {
+      return { ok: false, status: 410, error: "Link expired" };
+    }
 
-    let resolvedSession = sessionId || (candidate.sessionId as string | null);
-    if (sessionId && candidate.sessionId && sessionId !== candidate.sessionId) {
-      // Session id must belong to this invite (or be the linked session).
+    // Any session id (the caller's or the linked one) must belong to this invite;
+    // session writes additionally need an open session and its capability.
+    let resolvedSession: string | null = null;
+    const targetId = sessionId || (candidate.sessionId as string | null);
+    if (targetId) {
       const { data: session } = await supabaseAdmin
         .from("sessions")
-        .select("id, candidateId, status")
-        .eq("id", sessionId)
+        .select(PREFLIGHT_SESSION_COLUMNS)
+        .eq("id", targetId)
         .maybeSingle();
       const belongs =
-        session &&
-        (session.candidateId === candidate.id || session.id === candidate.sessionId);
-      if (!belongs) return { ok: false, status: 403, error: "Invalid session" };
-      resolvedSession = session.id;
+        !!session && (session.candidateId === candidate.id || session.id === candidate.sessionId);
+      if (sessionId && !belongs) return { ok: false, status: 403, error: "Invalid session" };
+      if (belongs && canTouchSession(session as PreflightSession, capability(targetId), expiresAt)) {
+        resolvedSession = session!.id as string;
+      }
     }
     return {
       ok: true,
@@ -152,26 +187,32 @@ export async function authorizePreflightSource(opts: {
 
   const { data: session } = await supabaseAdmin
     .from("sessions")
-    .select("id, status, interviewBeganAt, candidateId")
+    .select(PREFLIGHT_SESSION_COLUMNS)
     .eq("id", sessionId!)
     .maybeSingle();
   if (!session) return { ok: false, status: 404, error: "Not found" };
-  if (session.status !== "IN_PROGRESS") {
-    return { ok: false, status: 409, error: "Session is no longer active" };
+  if (!sessionCapabilityOk(session as PreflightSession, capability(sessionId!))) {
+    return { ok: false, status: 403, error: "Invalid session" };
   }
-  let inviteToken: string | null = null;
+  type InviteRow = { id: string; inviteToken: string | null; expiresAt: string | null };
+  let candidate: InviteRow | null = null;
   if (session.candidateId) {
-    const { data: candidate } = await supabaseAdmin
+    const { data } = await supabaseAdmin
       .from("candidates")
-      .select("id, inviteToken")
+      .select("id, inviteToken, expiresAt")
       .eq("id", session.candidateId)
       .maybeSingle();
-    inviteToken = (candidate?.inviteToken as string | null) ?? null;
+    candidate = (data as InviteRow | null) ?? null;
+  }
+  if (!canTouchSession(session as PreflightSession, capability(sessionId!), candidate?.expiresAt ?? null)) {
+    return { ok: false, status: 409, error: "Session is no longer active" };
+  }
+  if (session.candidateId) {
     return {
       ok: true,
-      candidateId: (candidate?.id as string | null) ?? (session.candidateId as string | null),
+      candidateId: candidate?.id ?? (session.candidateId as string | null),
       sessionId: session.id as string,
-      inviteToken,
+      inviteToken: candidate?.inviteToken ?? null,
     };
   }
   return { ok: true, candidateId: null, sessionId: session.id as string, inviteToken: null };

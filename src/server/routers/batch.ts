@@ -103,7 +103,7 @@ export const batchRouter = router({
     .input(z.object({ projectId: z.string().optional(), name: z.string().min(1).max(160), settings: batchSettings }))
     .mutation(async ({ ctx, input }) => {
       const projectId = input.projectId ?? (await resolveDefaultProjectId(ctx.supabase, ctx.user.id));
-      const { role } = await verifyProjectAccess(ctx.supabase, projectId, ctx.user.id);
+      const { role } = await verifyProjectAccess(ctx.supabase, projectId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
 
       const { data, error } = await ctx.supabase
@@ -224,7 +224,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const settings = batch.settings as BatchSettings;
       const profile = { ...input.profile, name: input.contact.name, email: input.contact.email, phone: input.contact.phone } as CandidateProfile;
@@ -387,7 +387,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const prev = (batch.settings ?? {}) as BatchSettings;
       const next: BatchSettings = {
@@ -419,7 +419,7 @@ export const batchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase.from("candidates").select("batchId").eq("id", input.candidateId).single();
       if (!c?.batchId) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
-      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const { error } = await ctx.supabase
         .from("candidates")
@@ -436,7 +436,7 @@ export const batchRouter = router({
   removeCandidate: protectedProcedure
     .input(z.object({ batchId: z.string(), candidateId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
 
       const { data: c, error: loadErr } = await ctx.supabase
@@ -482,7 +482,7 @@ export const batchRouter = router({
   removeCandidates: protectedProcedure
     .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).min(1).max(200) }))
     .mutation(async ({ ctx, input }) => {
-      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
 
       const { data: rows, error: loadErr } = await ctx.supabase
@@ -551,7 +551,7 @@ export const batchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase.from("candidates").select("batchId").eq("id", input.candidateId).single();
       if (!c?.batchId) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
-      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
       if (input.scheduledAt !== undefined) patch.scheduledAt = input.scheduledAt || null;
@@ -569,7 +569,7 @@ export const batchRouter = router({
   sendLeftFollowups: protectedProcedure
     .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).max(500).optional() }))
     .mutation(async ({ ctx, input }) => {
-      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       let q = ctx.supabase
         .from("candidates")
@@ -616,7 +616,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       if (!input.channels.email && !input.channels.whatsapp) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Choose at least one channel" });
@@ -764,7 +764,7 @@ export const batchRouter = router({
     }),
 
   delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
-    const { role } = await verifyBatchAccess(ctx.supabase, input.id, ctx.user.id);
+    const { role } = await verifyBatchAccess(ctx.supabase, input.id, ctx.user.id, { write: true });
     assertMinRole(role, "ADMIN");
     // Interviews cascade to their candidates, questions and sessions.
     await ctx.supabase.from("interviews").delete().eq("batchId", input.id);

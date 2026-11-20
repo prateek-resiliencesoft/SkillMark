@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { RetranscribeError, retranscribeSessionFromRecording } from "@/lib/transcript/retranscribe";
 import { getOrgMembership, hasProjectAccess } from "@/server/trpc";
+import { rejectCrossSiteRequest } from "@/lib/session-access";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/session/retranscribe");
@@ -30,6 +31,8 @@ function hasInternalSecret(req: Request): boolean {
  * regenerate the report. Org members (not viewers) with project access only.
  */
 export async function POST(req: Request) {
+  const refused = rejectCrossSiteRequest(req, { json: true });
+  if (refused) return refused;
   const { sessionId } = (await req.json().catch(() => ({}))) as { sessionId?: string };
   if (!sessionId || !UUID_RE.test(sessionId)) {
     return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });

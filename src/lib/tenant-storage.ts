@@ -23,6 +23,26 @@ export function normalizeObjectPath(objectPath: string): string {
   return objectPath.replace(/^\/+/, "").replace(/\/{2,}/g, "/");
 }
 
+function isDotSegment(seg: string): boolean {
+  if (seg === "." || seg === "..") return true;
+  if (!seg.includes("%")) return false;
+  try {
+    const d = decodeURIComponent(seg);
+    return d === "." || d === ".." || /[/\\\0]/.test(d);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Object keys are compared as strings, but disk reads resolve them as paths:
+ * refuse anything that path resolution could reinterpret.
+ */
+export function isSafeObjectPath(objectPath: string): boolean {
+  if (!objectPath || /[\\\0]/.test(objectPath)) return false;
+  return !objectPath.split("/").some(isDotSegment);
+}
+
 /** Session media path for new uploads. */
 export function tenantSessionObjectPath(
   organizationId: string,
@@ -50,6 +70,7 @@ export function pathBelongsToOrganization(
   organizationId: string,
 ): boolean {
   const p = normalizeObjectPath(objectPath);
+  if (!organizationId || !isSafeObjectPath(p)) return false;
   return (
     p.startsWith(`${ORGS_PREFIX}${organizationId}/`) ||
     p.startsWith(`${ORG_PREFIX}${organizationId}/`) ||
@@ -57,23 +78,39 @@ export function pathBelongsToOrganization(
   );
 }
 
+/** Where this session's media may live under orgs/ (from the sessions row + its interview). */
+export type SessionStorageScope = {
+  projectId: string | null | undefined;
+  mediaStoragePrefix: string | null | undefined;
+};
+
+const SESSION_MEDIA_KINDS = new Set(["recordings", "images", "screenshots"]);
+
 /**
  * True when the path may be served for this session.
- * Accepts orgs/ media, org/ session media, and legacy `sessionId/...` paths.
+ * Accepts orgs/ recordings/images in the session's own folder
+ * (candidates/session-{sessionId}, or its mediaStoragePrefix when `scope` is
+ * given) inside its project, org/ session media, and legacy `sessionId/...`
+ * paths. Without `scope`, shared candidate folders are refused.
  */
 export function pathBelongsToSession(
   objectPath: string,
   sessionId: string,
   organizationId: string,
+  scope?: SessionStorageScope,
 ): boolean {
   const p = normalizeObjectPath(objectPath);
+  if (!sessionId || !organizationId || !isSafeObjectPath(p)) return false;
 
-  // Current layout: orgs/{org}/projects/.../candidates/{id|session-{sessionId}}/...
+  // Current layout: orgs/{org}/projects/{project}/candidates/{folder}/{kind}/{file}
   if (p.startsWith(`${ORGS_PREFIX}${organizationId}/`)) {
-    return (
-      p.includes(`/candidates/session-${sessionId}/`) ||
-      p.includes("/candidates/")
-    );
+    const parts = p.split("/");
+    if (parts.length < 8 || parts[2] !== "projects" || parts[4] !== "candidates") return false;
+    if (scope && (!scope.projectId || parts[3] !== scope.projectId)) return false;
+    if (!SESSION_MEDIA_KINDS.has(parts[6])) return false;
+    if (parts[5] === `session-${sessionId}`) return true;
+    const own = scope?.mediaStoragePrefix ? normalizeObjectPath(scope.mediaStoragePrefix).replace(/\/+$/, "") : "";
+    return !!own && parts.slice(0, 6).join("/") === own;
   }
   if (p.startsWith(ORGS_PREFIX)) {
     return false;
@@ -105,6 +142,11 @@ export function objectPathFromSignedUrl(
   bucket: string,
   urlOrPath: string,
 ): string | null {
+  const p = extractObjectPath(bucket, urlOrPath);
+  return p && isSafeObjectPath(p) ? p : null;
+}
+
+function extractObjectPath(bucket: string, urlOrPath: string): string | null {
   const raw = urlOrPath.trim();
   if (!raw) return null;
 

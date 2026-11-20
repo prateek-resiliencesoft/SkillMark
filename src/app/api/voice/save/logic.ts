@@ -1,6 +1,6 @@
 import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
 import { canMarkCompleted } from "@/lib/session-report-policy";
-import { completionEndReason, QUIT_REQUEST_REASON } from "@/lib/session-link";
+import { candidateWriteWindow, completionEndReason, QUIT_REQUEST_REASON, type CandidateWriteSession } from "@/lib/session-link";
 import { stripToolCallText } from "@/lib/transcript/sanitize";
 import { devanagariToRoman } from "@/lib/transcript/transliterate";
 import { normalizeCandidateLanguage } from "@/lib/interview-language";
@@ -154,6 +154,97 @@ export type VoiceSaveOps = {
   /** Newest saved message for the session (used to drop repeated candidate lines). */
   loadLastMessage?: (sessionId: string) => Promise<{ role: string; content: string } | null>;
 };
+
+export const MAX_SAVE_MESSAGES = 500;
+export const MAX_SAVE_LINE_CHARS = 20_000;
+/** Client clocks drift a little; later than this is not a real speak time. */
+const MAX_CLOCK_SKEW_MS = 60_000;
+
+export type VoiceSaveSessionGate = CandidateWriteSession & {
+  modeUsed?: string | null;
+  startedAt?: string | null;
+  createdAt?: string | null;
+};
+
+export type VoiceSaveGateResult =
+  | { ok: true; payload: VoiceSavePayload }
+  | { ok: false; status: number; body: { ok?: boolean; error?: string; completed?: boolean; status?: string } };
+
+/**
+ * Decide what a /api/voice/save call may write, before any write happens:
+ *  - live session: everything
+ *  - just-ended session (grace): only transcript lines and the completion
+ *  - otherwise nothing (COMPLETED / DISQUALIFIED answer like a repeated completion)
+ * Lines are restricted to the roles a candidate browser legitimately relays:
+ * "user", plus "assistant" only for voice sessions (the relay's interviewer
+ * speech); "chat" tags only on the candidate's typed lines; timestamps clamped
+ * to the session's lifetime.
+ */
+export function gateVoiceSave(
+  payload: VoiceSavePayload,
+  session: VoiceSaveSessionGate,
+  opts: { inviteExpiresAt?: string | null; nowMs?: number } = {},
+): VoiceSaveGateResult {
+  const now = opts.nowMs ?? Date.now();
+  const window = candidateWriteWindow(session, { inviteExpiresAt: opts.inviteExpiresAt, nowMs: now });
+  if (window === "closed") {
+    if (session.status === "COMPLETED" || session.status === "DISQUALIFIED") {
+      return { ok: false, status: 200, body: { ok: true, completed: session.status === "COMPLETED", status: session.status } };
+    }
+    return { ok: false, status: 409, body: { error: "Session has ended", completed: false, status: session.status } };
+  }
+
+  const raw = payload.messages;
+  if (raw !== undefined && !Array.isArray(raw)) {
+    return { ok: false, status: 400, body: { error: "Invalid messages" } };
+  }
+  if (raw && raw.length > MAX_SAVE_MESSAGES) {
+    return { ok: false, status: 413, body: { error: "Too many messages" } };
+  }
+  const voice = session.modeUsed === "VOICE";
+  const startMs = Date.parse(session.startedAt ?? session.createdAt ?? "");
+  const messages: NonNullable<VoiceSavePayload["messages"]> = [];
+  for (const m of raw ?? []) {
+    if (!m || typeof m !== "object" || typeof m.content !== "string") {
+      return { ok: false, status: 400, body: { error: "Invalid message" } };
+    }
+    if (m.role !== "user" && !(m.role === "assistant" && voice)) {
+      return { ok: false, status: 400, body: { error: "Invalid message role" } };
+    }
+    if (m.content.length > MAX_SAVE_LINE_CHARS) {
+      return { ok: false, status: 413, body: { error: "Message too long" } };
+    }
+    const ts = typeof m.timestamp === "string" ? Date.parse(m.timestamp) : NaN;
+    const tsOk = Number.isFinite(ts) && ts <= now + MAX_CLOCK_SKEW_MS && !(Number.isFinite(startMs) && ts < startMs);
+    messages.push({
+      id: typeof m.id === "string" ? m.id : undefined,
+      role: m.role,
+      content: m.content,
+      questionId: typeof m.questionId === "string" ? m.questionId : undefined,
+      source: m.role === "user" && m.source === "chat" ? "chat" : undefined,
+      timestamp: tsOk ? m.timestamp : undefined,
+      seq: typeof m.seq === "number" && Number.isFinite(m.seq) ? m.seq : undefined,
+    });
+  }
+
+  const sanitized: VoiceSavePayload = {
+    sessionId: payload.sessionId,
+    ...(raw ? { messages } : {}),
+    complete: payload.complete === true,
+    reason: typeof payload.reason === "string" ? payload.reason : undefined,
+  };
+  if (window === "live") {
+    sanitized.language = payload.language;
+    if (typeof payload.currentQuestionIndex === "number") sanitized.currentQuestionIndex = payload.currentQuestionIndex;
+    return { ok: true, payload: sanitized };
+  }
+  // Grace: late transcript lines / completion only; a late "complete" may only
+  // turn an ABANDONED session COMPLETED (a COMPLETED one stays as it is).
+  if (!sanitized.messages?.length && !sanitized.complete) {
+    return { ok: false, status: 409, body: { error: "Session has ended", completed: session.status === "COMPLETED", status: session.status } };
+  }
+  return { ok: true, payload: sanitized };
+}
 
 export async function handleVoiceSave(
   payload: VoiceSavePayload,

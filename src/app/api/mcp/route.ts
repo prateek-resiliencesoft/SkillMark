@@ -35,7 +35,8 @@ function authRequest(req: Request): Request {
 
 async function handle(req: Request): Promise<Response> {
   const authed = authRequest(req);
-  const auth = await validateApiKey(authed);
+  // Each MCP tool checks its own scope(s) in buildMcpServer.
+  const auth = await validateApiKey(authed, null);
   if (isAuthError(auth)) {
     const body = await auth.text();
     logApiUsage(req, auth.status, null);

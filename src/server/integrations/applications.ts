@@ -2,11 +2,13 @@
 import { nanoid } from "@/lib/id";
 import {
   CANDIDATE_KEYS,
+  canonicalMimeForDetected,
   deriveApplicationStatus,
   isFileField,
   normaliseDetected,
   sniffFileType,
   validateSubmission,
+  zipMatchesOfficeType,
   type FieldError,
   type FormField,
   type UploadedFileInfo,
@@ -19,8 +21,11 @@ import type { FormSettings, InterviewConfig } from "@/lib/forms/schema";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { resolveInviteSchedule, sendCandidateInvite, type InviteDeliveryResult } from "@/server/invite-delivery";
 
+export { clientIp } from "@/lib/client-ip";
+
 export const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
 export const FILES_BUCKET = "applications";
+const OFFICE_TYPES = new Set(["docx", "xlsx", "pptx", "odt"]);
 
 export interface IncomingFile {
   name: string;
@@ -62,21 +67,24 @@ export function appBaseUrl(request?: Request): string {
   return "http://localhost:3000";
 }
 
+export const MAX_TEXT_BYTES = 1024 * 1024;
+export const MAX_MULTIPART_PARTS = 200;
+export const MAX_SUBMISSION_FILES = 20;
+
+/** Repeated keys (answers[x][]) are appended in place; answers has no prototype. */
 function setNested(target: ParsedSubmission, rawKey: string, value: unknown) {
   // candidate[name], answers[skills][], answers[skills], name/email at top level
   const m = rawKey.match(/^(candidate|answers)\[([^\]]+)\](\[\])?$/);
   if (m) {
     const [, group, key, arr] = m;
     if (group === "candidate") {
-      (target.candidate as Record<string, unknown>)[key] = value;
-    } else if (arr) {
-      const prev = target.answers[key];
-      target.answers[key] = Array.isArray(prev) ? [...prev, value] : [value];
-    } else if (key in target.answers) {
-      const prev = target.answers[key];
-      target.answers[key] = Array.isArray(prev) ? [...prev, value] : [prev, value];
+      if (key === "name" || key === "email" || key === "phone") target.candidate[key] = String(value);
+    } else if (!Object.prototype.hasOwnProperty.call(target.answers, key)) {
+      target.answers[key] = arr ? [value] : value;
     } else {
-      target.answers[key] = value;
+      const prev = target.answers[key];
+      if (Array.isArray(prev)) prev.push(value);
+      else target.answers[key] = [prev, value];
     }
     return;
   }
@@ -85,22 +93,55 @@ function setNested(target: ParsedSubmission, rawKey: string, value: unknown) {
     return;
   }
   if (rawKey === "answers" && typeof value === "string") {
-    try { Object.assign(target.answers, JSON.parse(value)); } catch { /* ignore */ }
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) Object.assign(target.answers, parsed);
+    } catch { /* ignore */ }
   }
+}
+
+/** Read the body, refusing as soon as it passes `max` bytes (Content-Length is not trusted). */
+async function readBodyCapped(request: Request, max: number, message: string): Promise<Uint8Array<ArrayBuffer>> {
+  const declared = Number(request.headers.get("content-length") || "0");
+  if (declared > max) throw new SubmissionError("PAYLOAD_TOO_LARGE", message, 413);
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new SubmissionError("PAYLOAD_TOO_LARGE", message, 413);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
 }
 
 /** Parse JSON or multipart/form-data with a hard size limit. */
 export async function parseSubmissionRequest(request: Request): Promise<ParsedSubmission> {
-  const len = Number(request.headers.get("content-length") || "0");
-  if (len > MAX_REQUEST_BYTES) {
-    throw new SubmissionError("PAYLOAD_TOO_LARGE", "Request body exceeds 25 MB", 413);
-  }
   const ct = request.headers.get("content-type") || "";
-  const out: ParsedSubmission = { candidate: {}, answers: {}, files: {} };
+  const out: ParsedSubmission = { candidate: {}, answers: Object.create(null) as Record<string, unknown>, files: {} };
+  const isJson = ct.includes("application/json");
+  if (!isJson && !ct.includes("multipart/form-data")) {
+    throw new SubmissionError("UNSUPPORTED_MEDIA_TYPE", "Use Content-Type application/json or multipart/form-data", 415);
+  }
+  const raw = isJson
+    ? await readBodyCapped(request, MAX_TEXT_BYTES, "JSON body exceeds 1 MB")
+    : await readBodyCapped(request, MAX_REQUEST_BYTES, "Request body exceeds 25 MB");
 
-  if (ct.includes("application/json")) {
-    const text = await request.text();
-    if (text.length > 1024 * 1024) throw new SubmissionError("PAYLOAD_TOO_LARGE", "JSON body exceeds 1 MB", 413);
+  if (isJson) {
+    const text = new TextDecoder().decode(raw);
+    if (text.length > MAX_TEXT_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "JSON body exceeds 1 MB", 413);
     let body: unknown;
     try { body = JSON.parse(text); } catch {
       throw new SubmissionError("INVALID_JSON", "Request body is not valid JSON", 400);
@@ -113,28 +154,37 @@ export async function parseSubmissionRequest(request: Request): Promise<ParsedSu
     return out;
   }
 
-  if (ct.includes("multipart/form-data")) {
-    let form: FormData;
-    try { form = await request.formData(); } catch {
-      throw new SubmissionError("INVALID_MULTIPART", "Could not parse multipart body", 400);
-    }
-    let total = 0;
-    for (const [rawKey, value] of Array.from(form.entries())) {
-      if (typeof value === "string") {
-        setNested(out, rawKey, value);
-        continue;
-      }
-      const fm = rawKey.match(/^files\[([^\]]+)\](\[\])?$/) || rawKey.match(/^files\.(.+)$/);
-      const key = fm ? fm[1] : rawKey;
-      const buf = new Uint8Array(await value.arrayBuffer());
-      total += buf.length;
-      if (total > MAX_REQUEST_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "Uploaded files exceed 25 MB in total", 413);
-      (out.files[key] ??= []).push({ name: (value as File).name || "upload", type: value.type || "application/octet-stream", bytes: buf });
-    }
-    return out;
+  let form: FormData;
+  try {
+    form = await new Response(raw, { headers: { "content-type": ct } }).formData();
+  } catch {
+    throw new SubmissionError("INVALID_MULTIPART", "Could not parse multipart body", 400);
   }
-
-  throw new SubmissionError("UNSUPPORTED_MEDIA_TYPE", "Use Content-Type application/json or multipart/form-data", 415);
+  let total = 0;
+  let textBytes = 0;
+  let parts = 0;
+  let fileCount = 0;
+  for (const [rawKey, value] of form.entries()) {
+    if (++parts > MAX_MULTIPART_PARTS) {
+      throw new SubmissionError("PAYLOAD_TOO_LARGE", `Too many form parts (max ${MAX_MULTIPART_PARTS})`, 413);
+    }
+    if (typeof value === "string") {
+      textBytes += rawKey.length + value.length;
+      if (textBytes > MAX_TEXT_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "Form fields exceed 1 MB", 413);
+      setNested(out, rawKey, value);
+      continue;
+    }
+    if (++fileCount > MAX_SUBMISSION_FILES) {
+      throw new SubmissionError("PAYLOAD_TOO_LARGE", `Too many files (max ${MAX_SUBMISSION_FILES})`, 413);
+    }
+    const fm = rawKey.match(/^files\[([^\]]+)\](\[\])?$/) || rawKey.match(/^files\.(.+)$/);
+    const key = fm ? fm[1] : rawKey;
+    const buf = new Uint8Array(await value.arrayBuffer());
+    total += buf.length;
+    if (total > MAX_REQUEST_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "Uploaded files exceed 25 MB in total", 413);
+    (out.files[key] ??= []).push({ name: (value as File).name || "upload", type: value.type || "application/octet-stream", bytes: buf });
+  }
+  return out;
 }
 
 export interface FormRow {
@@ -199,13 +249,14 @@ export async function createApplication(opts: {
   if (keys.has(CANDIDATE_KEYS.phone) && answers[CANDIDATE_KEYS.phone] == null && cand.phone) answers[CANDIDATE_KEYS.phone] = cand.phone;
 
   const fileInfos: Record<string, UploadedFileInfo[]> = {};
+  const detectedByFile = new Map<IncomingFile, string | null>();
   for (const [k, list] of Object.entries(input.files)) {
-    fileInfos[k] = list.map((f) => ({
-      name: f.name,
-      size: f.bytes.length,
-      type: f.type,
-      detected: normaliseDetected(sniffFileType(f.bytes.subarray(0, 600)), f.name),
-    }));
+    fileInfos[k] = list.map((f) => {
+      let detected = normaliseDetected(sniffFileType(f.bytes.subarray(0, 4096)), f.name);
+      if (detected && OFFICE_TYPES.has(detected) && !zipMatchesOfficeType(f.bytes, detected)) detected = "zip";
+      detectedByFile.set(f, detected);
+      return { name: f.name, size: f.bytes.length, type: f.type, detected };
+    });
   }
 
   const result = validateSubmission(fields, answers, fileInfos);
@@ -249,64 +300,76 @@ export async function createApplication(opts: {
     .single();
   if (candErr || !candidate) throw new SubmissionError("INTERNAL_ERROR", "Failed to create candidate", 500);
 
-  const { data: interviewRow } = await supabaseAdmin
-    .from("interviews")
-    .select("projectId")
-    .eq("id", interviewId)
-    .maybeSingle();
-  const projectId = interviewRow?.projectId || form.projectId || "unknown";
+  const uploadedPaths: string[] = [];
+  let app: Record<string, any>;
+  try {
+    const { data: interviewRow } = await supabaseAdmin
+      .from("interviews")
+      .select("projectId")
+      .eq("id", interviewId)
+      .maybeSingle();
+    const projectId = interviewRow?.projectId || form.projectId || "unknown";
 
-  // Store files: orgs/{org}/projects/{project}/candidates/{id}/cv|other/...
-  const storedFiles: Record<string, { name: string; size: number; type: string; path: string }[]> = {};
-  for (const [key, list] of Object.entries(input.files)) {
-    const field = fields.find((f) => f.key === key);
-    if (!field || !isFileField(field.type)) continue;
-    const kind = field.type === "resume" || key === "resume" ? "CV" : "other";
-    const candFolder = candidateFolderSlug({
-      candidateId: candidate.id,
-      candidateName: name,
-      candidateEmail: email || null,
-    });
-    storedFiles[key] = [];
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candFolder}/${kind}/${cvObjectName(candidate.id, safeName(f.name), i)}`;
-      const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType: f.type || "application/octet-stream" });
-      if (error) {
-        throw new SubmissionError(
-          "STORAGE_ERROR",
-          isStorageCapError(error.message)
-            ? error.message
-            : `Failed to store uploaded file: ${error.message || "unknown storage error"}`,
-          isStorageCapError(error.message) ? 507 : 500,
-        );
+    // Store files: orgs/{org}/projects/{project}/candidates/{id}/cv|other/...
+    const storedFiles: Record<string, { name: string; size: number; type: string; path: string }[]> = {};
+    for (const [key, list] of Object.entries(input.files)) {
+      const field = fields.find((f) => f.key === key);
+      if (!field || !isFileField(field.type)) continue;
+      const kind = field.type === "resume" || key === "resume" ? "CV" : "other";
+      const candFolder = candidateFolderSlug({
+        candidateId: candidate.id,
+        candidateName: name,
+        candidateEmail: email || null,
+      });
+      storedFiles[key] = [];
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        const contentType = canonicalMimeForDetected(detectedByFile.get(f));
+        // Field key in the name: two fields sharing the `other` folder must not collide.
+        const path = `orgs/${form.organizationId}/projects/${projectId}/candidates/${candFolder}/${kind}/${cvObjectName(candidate.id, `${safeName(key)}-${safeName(f.name)}`, i)}`;
+        const { error } = await storage.from(FILES_BUCKET).upload(path, f.bytes, { contentType });
+        if (error) {
+          throw new SubmissionError(
+            "STORAGE_ERROR",
+            isStorageCapError(error.message)
+              ? error.message
+              : `Failed to store uploaded file: ${error.message || "unknown storage error"}`,
+            isStorageCapError(error.message) ? 507 : 500,
+          );
+        }
+        uploadedPaths.push(path);
+        storedFiles[key].push({ name: f.name, size: f.bytes.length, type: contentType, path });
       }
-      storedFiles[key].push({ name: f.name, size: f.bytes.length, type: f.type, path });
     }
-  }
 
-  const { data: app, error: appErr } = await supabaseAdmin
-    .from("applications")
-    .insert({
-      publicId,
-      formId: form.id,
-      organizationId: form.organizationId,
-      interviewId,
-      candidateId: candidate.id,
-      candidateName: name,
-      candidateEmail: email || null,
-      candidatePhone: phone || null,
-      answers: result.values,
-      files: storedFiles,
-      status: "pending",
-      source: opts.source,
-      apiKeyId: opts.apiKeyId ?? null,
-      environment: opts.environment ?? "live",
-      submitterIp: opts.ip ?? null,
-    })
-    .select("*")
-    .single();
-  if (appErr || !app) throw new SubmissionError("INTERNAL_ERROR", "Failed to save application", 500);
+    const { data, error: appErr } = await supabaseAdmin
+      .from("applications")
+      .insert({
+        publicId,
+        formId: form.id,
+        organizationId: form.organizationId,
+        interviewId,
+        candidateId: candidate.id,
+        candidateName: name,
+        candidateEmail: email || null,
+        candidatePhone: phone || null,
+        answers: result.values,
+        files: storedFiles,
+        status: "pending",
+        source: opts.source,
+        apiKeyId: opts.apiKeyId ?? null,
+        environment: opts.environment ?? "live",
+        submitterIp: opts.ip ?? null,
+      })
+      .select("*")
+      .single();
+    if (appErr || !data) throw new SubmissionError("INTERNAL_ERROR", "Failed to save application", 500);
+    app = data;
+  } catch (err) {
+    if (uploadedPaths.length) await storage.from(FILES_BUCKET).remove(uploadedPaths);
+    await supabaseAdmin.from("candidates").delete().eq("id", candidate.id);
+    throw err;
+  }
 
   // Deliver invite (email / WhatsApp). Failures never fail the application itself.
   const wantEmail = settings.sendInviteEmail !== false && !!email;
@@ -520,15 +583,6 @@ export async function serializeApplication(
         }
       : null;
   return base;
-}
-
-export function clientIp(request: Request): string {
-  return (
-    request.headers.get("cf-connecting-ip") ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown"
-  );
 }
 
 export function submissionErrorResponse(err: unknown): Response {

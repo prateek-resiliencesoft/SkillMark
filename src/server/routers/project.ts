@@ -2,7 +2,7 @@ import { z } from "zod";
 import { router, protectedProcedure } from "../trpc";
 import { TRPCError } from "@trpc/server";
 import { normalizeWhatsappPhone } from "@/lib/messaging/templates";
-import { getOrgMembership, assertMinRole, filterAccessibleProjectIds } from "../trpc";
+import { getOrgMembership, assertMinRole, filterAccessibleProjectIds, hasProjectAccess } from "../trpc";
 
 export const projectRouter = router({
   list: protectedProcedure
@@ -70,6 +70,9 @@ export const projectRouter = router({
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
+      if (!(await hasProjectAccess(ctx.supabase, input.id, ctx.user.id))) {
+        throw new TRPCError({ code: "FORBIDDEN" });
+      }
 
       return {
         ...project,
@@ -94,6 +97,7 @@ export const projectRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -153,6 +157,7 @@ export const projectRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -198,11 +203,22 @@ export const projectRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
       }
       assertMinRole(membership.role, "ADMIN");
+
+      // interviews.projectId is ON DELETE SET NULL: delete them first (cascading
+      // questions, sessions, candidates, messages) so nothing is left orphaned.
+      const { error: ivError } = await ctx.supabase
+        .from("interviews")
+        .delete()
+        .eq("projectId", input.id);
+      if (ivError) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: ivError.message });
+      }
 
       await ctx.supabase.from("projects").delete().eq("id", input.id);
 
