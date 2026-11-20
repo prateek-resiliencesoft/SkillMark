@@ -60,13 +60,14 @@ function holdColor(db: number): string {
 }
 
 /** Segmented bar. Lit part and peak marker are moved by direct style writes (no React per frame). */
-function Bar({ segments, litRef, holdRef }: {
+function Bar({ segments, large, litRef, holdRef }: {
   segments: number;
+  large?: boolean;
   litRef: React.RefObject<HTMLDivElement>;
   holdRef: React.RefObject<HTMLDivElement>;
 }) {
   return (
-    <div className="relative w-2 overflow-hidden rounded-[2px] md:w-2.5" style={{ background: "#14171c" }}>
+    <div className={cn("relative overflow-hidden rounded-[2px]", large ? "w-4" : "w-2 md:w-2.5")} style={{ background: "#14171c" }}>
       <div className="absolute inset-0" style={{ background: BAR_GRADIENT, opacity: 0.2 }} />
       <div ref={litRef} className="absolute inset-0" style={{ background: BAR_GRADIENT, clipPath: "inset(100% 0 0 0)" }} />
       {/* segment gaps */}
@@ -115,7 +116,7 @@ export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSp
     });
   }, [subscribe]);
 
-  const segments = compact ? 15 : 30;
+  const segments = compact ? 15 : 40;
   const ticks = compact ? TICKS_COMPACT : TICKS_FULL;
   const label = guidance.noSignal && guidance.status === "quiet" && !guidance.warning ? "No signal" : LABEL[guidance.status];
 
@@ -127,14 +128,14 @@ export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSp
       title={guidance.message ?? undefined}
     >
       <div
-        className="flex items-stretch gap-1 rounded-md px-1.5 py-1 ring-1 ring-black/40"
-        style={{ background: MIXER_BG, height: compact ? 44 : 104 }}
+        className={cn("flex items-stretch rounded-md ring-1 ring-black/40", compact ? "gap-1 px-1.5 py-1" : "gap-1.5 px-2 py-2")}
+        style={{ background: MIXER_BG, height: compact ? 44 : 150 }}
       >
-        <div className="relative w-5 select-none" aria-hidden>
+        <div className={cn("relative select-none", compact ? "w-5" : "w-7")} aria-hidden>
           {ticks.map((t) => (
             <span
               key={t}
-              className="absolute right-1 translate-y-1/2 text-[7px] leading-none tabular-nums text-zinc-500"
+              className={cn("absolute right-1 translate-y-1/2 leading-none tabular-nums", compact ? "text-[7px] text-zinc-500" : "text-[10px] text-zinc-400")}
               style={{ bottom: `${f(t)}%` }}
             >
               {t}
@@ -146,16 +147,16 @@ export function MicrophoneLevelMeter({ stream, muted, permissionDenied, expectSp
             style={{ bottom: `${f(LEVEL_CONFIG.quietBelowDb)}%`, height: `${f(LEVEL_CONFIG.goodBelowDb) - f(LEVEL_CONFIG.quietBelowDb)}%` }}
           />
         </div>
-        <Bar segments={segments} litRef={litL} holdRef={holdL} />
-        <Bar segments={segments} litRef={litR} holdRef={holdR} />
+        <Bar segments={segments} large={!compact} litRef={litL} holdRef={holdL} />
+        <Bar segments={segments} large={!compact} litRef={litR} holdRef={holdR} />
       </div>
 
-      <div className="flex min-w-[3.75rem] flex-col gap-0.5 leading-none">
-        <span className="flex items-center gap-1 text-[10px] font-medium text-foreground">
-          <span className={cn("h-2 w-2 shrink-0 rounded-full", DOT[guidance.tone])} aria-hidden />
+      <div className={cn("flex flex-col leading-none", compact ? "min-w-[3.75rem] gap-0.5" : "min-w-[5rem] gap-1.5")}>
+        <span className={cn("flex items-center gap-1 font-medium text-foreground", compact ? "text-[10px]" : "text-sm")}>
+          <span className={cn("shrink-0 rounded-full", compact ? "h-2 w-2" : "h-2.5 w-2.5", DOT[guidance.tone])} aria-hidden />
           {label}
         </span>
-        <span className="flex items-center gap-1 text-[10px] tabular-nums text-muted-foreground">
+        <span className={cn("flex items-center gap-1 tabular-nums text-muted-foreground", compact ? "text-[10px]" : "text-xs")}>
           <span ref={readout}>{formatDb(LEVEL_CONFIG.floorDb)} dB</span>
           {mono && stream && (
             <span className="rounded border border-border px-0.5 text-[7px] font-semibold uppercase" title="Single-channel microphone: both bars show the same level">

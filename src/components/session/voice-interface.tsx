@@ -683,7 +683,7 @@ export function VoiceInterface({
 
   const micMeter = (
     <MicrophoneLevelMeter
-      compact
+      compact={isMobile}
       stream={voice.isListening ? voice.mediaStreamRef.current : null}
       muted={micWasOn && !voice.isListening}
       permissionDenied={micDenied && !voice.isListening}
@@ -2509,7 +2509,10 @@ export function VoiceInterface({
               <span>{formatTime(remainingSeconds)} left</span>
             </div>
           )}
-          {!isMobile && micMeter}
+          {/* Desktop: large meter pinned to the left edge, rising above the bar. */}
+          {!isMobile && (
+            <div className="absolute bottom-2 left-3 z-10 rounded-lg border bg-card/95 p-2 shadow-md md:left-6">{micMeter}</div>
+          )}
           {/* Mic toggle */}
           <div data-tour="voice-mic" className="flex flex-col items-center gap-0.5">
             <Button
