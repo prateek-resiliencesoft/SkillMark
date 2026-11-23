@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { effectiveDurationSeconds } from "@/lib/session-activity";
+import { listDurationSeconds } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
@@ -389,7 +389,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return effectiveDurationSeconds(row.session) ?? -1;
+      return listDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -897,7 +897,7 @@ export function CandidateManager({
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(effectiveDurationSeconds(session))
+              ? formatDuration(listDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -1308,7 +1308,7 @@ export function CandidateManager({
                         );
                       })(),
                       duration: hasSession
-                        ? formatDuration(effectiveDurationSeconds(session))
+                        ? formatDuration(listDurationSeconds(session))
                         : "-",
                       started: (
                         <span className="whitespace-nowrap">

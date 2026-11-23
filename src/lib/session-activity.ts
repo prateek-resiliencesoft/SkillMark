@@ -40,6 +40,43 @@ export function effectiveDurationSeconds(s: DurationFields | null | undefined, l
   return null;
 }
 
+/** Longest live elapsed time shown for an interview that is still running. */
+export const LIVE_DURATION_CAP_SECONDS = 3 * 3600;
+
+export type ListDurationFields = DurationFields & {
+  status?: string | null;
+  endReason?: string | null;
+};
+
+/**
+ * Duration for the recruiter lists. sessions.startedAt is set when the
+ * candidate opens the link, and heartbeats / preflight pings keep bumping
+ * lastHeartbeatAt / lastActivityAt while the tab stays open, so for a session
+ * that never began (Opened link / Setting up / quiet setup shown as
+ * "Not Started") end − startedAt just measures how long the tab was open.
+ * - IN_PROGRESS before interviewBeganAt, or ended as NEVER_STARTED → null ("-")
+ * - IN_PROGRESS after interviewBeganAt → live elapsed from interviewBeganAt, capped
+ * - ended → effectiveDurationSeconds (stored, end − start, or recording length)
+ */
+export function listDurationSeconds(
+  s: ListDurationFields | null | undefined,
+  lastMessageAt?: Ts,
+): number | null {
+  if (!s) return null;
+  const status = s.status ?? "";
+  if (!status || status === "NOT_STARTED") return null;
+  if (s.endReason === "NEVER_STARTED") return null;
+  if (status === "IN_PROGRESS") {
+    if (!s.interviewBeganAt) return null;
+    const start = ms(s.interviewBeganAt);
+    const ends = [ms(lastMessageAt), ms(s.lastActivityAt), ms(s.lastHeartbeatAt)].filter((v): v is number => v != null);
+    if (start == null || ends.length === 0) return null;
+    const sec = Math.round((Math.max(...ends) - start) / 1000);
+    return sec > 0 ? Math.min(sec, LIVE_DURATION_CAP_SECONDS) : null;
+  }
+  return effectiveDurationSeconds(s, lastMessageAt);
+}
+
 export type ActivityMessage = {
   role: string;
   content?: string | null;
