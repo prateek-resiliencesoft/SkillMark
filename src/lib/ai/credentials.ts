@@ -230,7 +230,8 @@ export function mergeAiProvidersPatch(
         const rest = existing.slice(1);
         next.apiKeys = [enc, ...rest].slice(0, MAX_KEYS_PER_PROVIDER);
         next.apiKey = enc;
-        next.keyTiers = ["free", ...prevTiers.slice(1)].slice(0, next.apiKeys.length);
+        const newTiers: AiKeyTier[] = ["free", ...prevTiers.slice(1)];
+        next.keyTiers = newTiers.slice(0, next.apiKeys.length);
       }
     }
 
