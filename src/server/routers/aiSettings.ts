@@ -83,6 +83,7 @@ export const aiSettingsRouter = router({
         apiKeyHint: masked[id].apiKeyHint,
         apiKeyHints: masked[id].apiKeyHints,
         keyCount: masked[id].keyCount,
+        keyTiers: masked[id].keyTiers,
         maxKeys: MAX_KEYS_PER_PROVIDER,
         baseUrl: id === "custom" ? masked[id].baseUrl : undefined,
         textModel: id === "custom" ? plain.custom?.textModel ?? "" : undefined,
@@ -118,6 +119,7 @@ export const aiSettingsRouter = router({
             z.object({
               keep: z.number().int().min(0).max(MAX_KEYS_PER_PROVIDER - 1).nullish(),
               value: z.string().max(500).optional(),
+              tier: z.enum(["free", "paid"]).optional(),
             }),
           )
           .max(MAX_KEYS_PER_PROVIDER)
