@@ -47,7 +47,6 @@ import { getSessionOverallScore } from "@/lib/session-score";
 import { formatSessionStatusLabel } from "@/lib/preflight";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { decisionStatusLabel } from "@/lib/candidate-decision";
-import { rejectTagLabel } from "@/lib/reject-tags";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -138,6 +137,7 @@ type SortKey =
   | "finished"
   | "source"
   | "status"
+  | "decision"
   | "link"
   | "followup"
   | "created"
@@ -198,6 +198,7 @@ const COLUMNS: ColumnDef[] = [
   },
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
+  { key: "decision", label: "Decision", sortKey: "decision", defaultVisible: true },
   { key: "link", label: "Link", sortKey: "link", defaultVisible: true },
   { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: true },
   { key: "score", label: "Score", sortKey: "score", defaultVisible: true },
@@ -254,29 +255,35 @@ function getSessionStatus(row: UnifiedRow): string {
 }
 
 /** Media-review / recruiter outcome for list badges + filters. */
-function getReviewOutcome(row: UnifiedRow): {
-  kind: "approved" | "rejected" | "put_aside" | "followup_sent" | null;
-  reason: string | null;
-  tags: string[];
-} {
+function getReviewOutcome(
+  row: UnifiedRow,
+): "approved" | "rejected" | "put_aside" | "followup_sent" | null {
   const decision = row.type === "candidate" ? row.decisionStatus : null;
   const media = (row.session as { mediaReviewStatus?: string | null } | null)?.mediaReviewStatus ?? null;
-  const reason = (row.session as { rejectReason?: string | null } | null)?.rejectReason ?? null;
-  const tags = (row.session as { rejectTags?: string[] | null } | null)?.rejectTags ?? [];
 
-  if (decision === "approved" || media === "approved") {
-    return { kind: "approved", reason: null, tags: [] };
+  if (decision === "approved" || media === "approved") return "approved";
+  if (decision === "rejected" || media === "declined") return "rejected";
+  if (media === "set_aside") return "put_aside";
+  if (decision === "followup_sent") return "followup_sent";
+  return null;
+}
+
+function reviewOutcomeLabel(
+  kind: ReturnType<typeof getReviewOutcome>,
+  isZh: boolean,
+): string {
+  switch (kind) {
+    case "approved":
+      return isZh ? "已通过" : "Approved";
+    case "rejected":
+      return isZh ? "已拒绝" : "Rejected";
+    case "put_aside":
+      return isZh ? "暂存" : "Put aside";
+    case "followup_sent":
+      return decisionStatusLabel("followup_sent");
+    default:
+      return "";
   }
-  if (decision === "rejected" || media === "declined") {
-    return { kind: "rejected", reason, tags: Array.isArray(tags) ? tags : [] };
-  }
-  if (media === "set_aside") {
-    return { kind: "put_aside", reason: null, tags: [] };
-  }
-  if (decision === "followup_sent") {
-    return { kind: "followup_sent", reason: null, tags: [] };
-  }
-  return { kind: null, reason: null, tags: [] };
 }
 
 function getSessionBadgeVariant(
@@ -399,6 +406,8 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return row.type === "walkin" ? "Walk-in" : "Invited";
     case "status":
       return getSessionStatus(row);
+    case "decision":
+      return getReviewOutcome(row) ?? "";
     case "followup": {
       const f = rowFollowup(row);
       return !f.relevant ? 0 : f.sent ? 2 : 1;
@@ -473,6 +482,7 @@ export default function CandidatesPage() {
     experience: isZh ? "经验" : "Experience",
     notes: isZh ? "备注" : "Notes",
     status: isZh ? "状态" : "Status",
+    decision: isZh ? "决定" : "Decision",
     score: isZh ? "分数" : "Score",
     duration: isZh ? "时长" : "Duration",
     started: isZh ? "开始时间" : "Started",
@@ -717,14 +727,14 @@ export default function CandidatesPage() {
           const f = rowFollowup(row);
           return f.relevant && !f.sent;
         }
-        if (statusFilter === "APPROVED") return review.kind === "approved";
-        if (statusFilter === "REJECTED") return review.kind === "rejected";
-        if (statusFilter === "PUT_ASIDE") return review.kind === "put_aside";
-        if (statusFilter === "DECISION_FOLLOWUP") return review.kind === "followup_sent";
+        if (statusFilter === "APPROVED") return review === "approved";
+        if (statusFilter === "REJECTED") return review === "rejected";
+        if (statusFilter === "PUT_ASIDE") return review === "put_aside";
+        if (statusFilter === "DECISION_FOLLOWUP") return review === "followup_sent";
         if (statusFilter === "PENDING_REVIEW") {
           return (
             s === "COMPLETED" &&
-            review.kind === null &&
+            review === null &&
             !(row.session as { mediaClearedAt?: string | null } | null)?.mediaClearedAt
           );
         }
@@ -946,21 +956,12 @@ export default function CandidatesPage() {
           case "source":
             record[col.label] = sourceLabel(row.type);
             break;
-          case "status": {
-            const review = getReviewOutcome(row);
-            const reviewBit =
-              review.kind === "approved"
-                ? "Approved"
-                : review.kind === "rejected"
-                  ? `Rejected${review.reason ? `: ${review.reason}` : ""}`
-                  : review.kind === "put_aside"
-                    ? "Put aside"
-                    : review.kind === "followup_sent"
-                      ? "Follow-up sent"
-                      : "";
-            record[col.label] = [statusLabel(row), reviewBit].filter(Boolean).join(" · ");
+          case "status":
+            record[col.label] = statusLabel(row);
             break;
-          }
+          case "decision":
+            record[col.label] = reviewOutcomeLabel(getReviewOutcome(row), isZh);
+            break;
           case "followup": {
             const f = rowFollowup(row);
             record[col.label] = !f.relevant
@@ -984,7 +985,7 @@ export default function CandidatesPage() {
       return record;
     });
     exportToXlsx(rows, `sessions-${new Date().toISOString().slice(0, 10)}`);
-  }, [dynamicColumns, frozenCol, processedRows, sourceLabel, statusLabel]);
+  }, [dynamicColumns, frozenCol, isZh, processedRows, sourceLabel, statusLabel]);
 
   // ── Cell values ──
   function getCellValue(row: UnifiedRow, key: string): JSX.Element | string {
@@ -1110,68 +1111,36 @@ export default function CandidatesPage() {
             {sourceLabel("candidate")}
           </Badge>
         );
-      case "status": {
-        const review = getReviewOutcome(row);
-        const reviewLabel =
-          review.kind === "approved"
-            ? isZh
-              ? "已通过"
-              : "Approved"
-            : review.kind === "rejected"
-              ? isZh
-                ? "已拒绝"
-                : "Rejected"
-              : review.kind === "put_aside"
-                ? isZh
-                  ? "暂存"
-                  : "Put aside"
-                : review.kind === "followup_sent"
-                  ? decisionStatusLabel("followup_sent")
-                  : null;
+      case "status":
         return (
           <div className="flex flex-col items-start gap-0.5">
-            <div className="flex flex-wrap items-center gap-1">
-              <Badge
-                variant={getSessionBadgeVariant(statusLabel(row))}
-                className="whitespace-nowrap"
-              >
-                {statusLabel(row)}
-              </Badge>
-              {reviewLabel && (
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    "whitespace-nowrap text-[10px]",
-                    review.kind === "approved" && "border-green-600 text-green-700",
-                    review.kind === "rejected" && "border-red-600 text-red-700",
-                    review.kind === "put_aside" && "border-amber-600 text-amber-700",
-                    review.kind === "followup_sent" && "border-amber-600 text-amber-700",
-                  )}
-                >
-                  {reviewLabel}
-                </Badge>
-              )}
-            </div>
+            <Badge
+              variant={getSessionBadgeVariant(statusLabel(row))}
+              className="whitespace-nowrap"
+            >
+              {statusLabel(row)}
+            </Badge>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
             {isRowLinkExpired(row) && <ExpiredBadge />}
-            {review.kind === "rejected" && review.reason ? (
-              <span className="line-clamp-1 max-w-[14rem] text-[10px] text-muted-foreground">
-                {review.reason}
-              </span>
-            ) : null}
-            {review.kind === "rejected" && review.tags.length > 0 ? (
-              <span className="flex flex-wrap gap-0.5">
-                {review.tags.slice(0, 3).map((t) => (
-                  <span
-                    key={t}
-                    className="rounded border border-red-600/25 px-1 text-[9px] text-muted-foreground"
-                  >
-                    {rejectTagLabel(t)}
-                  </span>
-                ))}
-              </span>
-            ) : null}
           </div>
+        );
+      case "decision": {
+        const review = getReviewOutcome(row);
+        const label = reviewOutcomeLabel(review, isZh);
+        if (!label) return <span className="text-muted-foreground">-</span>;
+        return (
+          <Badge
+            variant="outline"
+            className={cn(
+              "whitespace-nowrap",
+              review === "approved" && "border-green-600 text-green-700",
+              review === "rejected" && "border-red-600 text-red-700",
+              review === "put_aside" && "border-amber-600 text-amber-700",
+              review === "followup_sent" && "border-amber-600 text-amber-700",
+            )}
+          >
+            {label}
+          </Badge>
         );
       }
       case "followup":
