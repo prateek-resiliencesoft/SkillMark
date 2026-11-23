@@ -163,8 +163,9 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 /**
  * Meta UTILITY template for incomplete / abandoned interviews (manual Send follow-up
  * or auto when interviews.autoLeftFollowup). Body must match the approved template.
- * {{1}} name, {{2}} RESILIENCESOFT, {{3}} position/title, {{4}} resume link,
- * {{5}} expiry date, {{6}} expiry time, {{7}} support phone.
+ * Approved WABA expects **5** variables (brand RESILIENCESOFT is fixed in the body):
+ * {{1}} name, {{2}} position/title, {{3}} resume link,
+ * {{4}} expiry ("Dec 31, 2026 at 11:59 PM"), {{5}} support phone.
  */
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   name: "interview_incomplete_reminder",
@@ -172,20 +173,18 @@ export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   language: "en",
   body: `Hi {{1}},
 
-Your interview with {{2}} for {{3}} is currently incomplete. You can resume your interview using the link below:
+Your interview with RESILIENCESOFT for {{2}} is currently incomplete. You can resume your interview using the link below:
 
-Resume Interview: {{4}}
+Resume Interview: {{3}}
 
-Please complete your interview before {{5}} at {{6}}, as the link will expire thereafter. For any assistance, please contact {{7}}. Wish you all the best for your interview!
+Please complete your interview before {{4}}, as the link will expire thereafter. For any assistance, please contact {{5}}. Wish you all the best for your interview!
 
 Team RESILIENCESOFT`,
   example: [
     "Priya Sharma",
-    "RESILIENCESOFT",
     "MERN Position",
     "https://app.example.com/i/invite/abc123xyz789",
-    "Dec 31, 2026",
-    "11:59 PM",
+    "Dec 31, 2026 at 11:59 PM",
     "+919201996377",
   ],
 };
@@ -242,15 +241,8 @@ export function normalizeWhatsappPhone(raw: string | null | undefined): string |
 
 export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string): string[] {
   const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
-  return [
-    v.name,
-    FOLLOWUP_BRAND,
-    v.position,
-    v.link,
-    date,
-    time,
-    v.supportPhone,
-  ];
+  // Must stay length 5 — Meta rejects mismatches (see interview_incomplete_reminder).
+  return [v.name, v.position, v.link, `${date} at ${time}`, v.supportPhone];
 }
 
 export function renderFollowupEmailText(v: FollowupTemplateVars, timeZone?: string): string {

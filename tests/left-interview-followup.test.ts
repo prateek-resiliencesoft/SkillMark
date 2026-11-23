@@ -10,22 +10,23 @@ import {
   renderFollowupEmailText,
 } from "../src/lib/messaging/templates";
 
-test("follow-up template has seven positional variables and the approved name", () => {
+test("follow-up template has five positional variables and the approved name", () => {
   assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete_reminder");
   const placeholders = WHATSAPP_FOLLOWUP_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
-  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}", "{{6}}", "{{7}}"]);
+  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}"]);
 });
 
 test("follow-up body matches interview_incomplete_reminder wording", () => {
   const body = WHATSAPP_FOLLOWUP_META_TEMPLATE.body;
-  assert.match(body, /Resume Interview: \{\{4\}\}/);
-  assert.match(body, /for \{\{3\}\}/);
-  assert.match(body, /contact \{\{7\}\}/);
+  assert.match(body, /Resume Interview: \{\{3\}\}/);
+  assert.match(body, /for \{\{2\}\}/);
+  assert.match(body, /contact \{\{5\}\}/);
+  assert.match(body, /RESILIENCESOFT/);
   assert.match(body, /Team RESILIENCESOFT/);
   assert.doesNotMatch(body, /🔗|🎉/);
 });
 
-test("follow-up body variables are name, brand, position, link, date, time, phone", () => {
+test("follow-up body variables are name, position, link, expiry, phone", () => {
   const vars = followupBodyVariables({
     name: "Priya Sharma",
     supportPhone: "+919876543210",
@@ -34,14 +35,13 @@ test("follow-up body variables are name, brand, position, link, date, time, phon
     position: "MERN Position",
     organization: "Acme Corp",
   });
-  assert.equal(vars.length, 7);
+  assert.equal(vars.length, 5);
   assert.equal(vars[0], "Priya Sharma");
-  assert.equal(vars[1], FOLLOWUP_BRAND);
-  assert.equal(vars[2], "MERN Position");
-  assert.equal(vars[3], "https://app.example.com/i/invite/abc");
-  assert.equal(vars[4], "Nov 26, 2026");
-  assert.equal(vars[5], "11:59 PM");
-  assert.equal(vars[6], "+919876543210");
+  assert.equal(vars[1], "MERN Position");
+  assert.equal(vars[2], "https://app.example.com/i/invite/abc");
+  assert.equal(vars[3], "Nov 26, 2026 at 11:59 PM");
+  assert.equal(vars[4], "+919876543210");
+  assert.equal(FOLLOWUP_BRAND, "RESILIENCESOFT");
 });
 
 test("follow-up email subject and body brand RESILIENCESOFT", () => {
