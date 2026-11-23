@@ -28,44 +28,46 @@ export type DeclineDeliveryResult = {
 
 export type MediaReviewNoticeDeliveryResult = DeclineDeliveryResult;
 
+type NoticeContext = { name: string; interviewTitle: string };
+
 type NoticeCopy = {
   label: string;
   emailSubject: string;
-  renderText: (name: string) => string;
-  renderHtml: (name: string) => string;
+  renderText: (ctx: NoticeContext) => string;
+  renderHtml: (ctx: NoticeContext) => string;
   waTemplateName: string;
-  waVariables: (name: string) => string[];
+  waVariables: (ctx: NoticeContext) => string[];
 };
 
 const DECLINE_NOTICE: NoticeCopy = {
   label: "decline rejection",
   emailSubject: DECLINE_EMAIL_SUBJECT,
-  renderText: renderDeclineEmailText,
-  renderHtml: declineEmailHtml,
+  renderText: ({ name }) => renderDeclineEmailText(name),
+  renderHtml: ({ name }) => declineEmailHtml(name),
   waTemplateName: WHATSAPP_DECLINE_META_TEMPLATE.name,
-  waVariables: whatsappDeclineBodyVariables,
+  waVariables: ({ name }) => whatsappDeclineBodyVariables(name),
 };
 
 const APPROVAL_NOTICE: NoticeCopy = {
   label: "approval shortlist",
   emailSubject: APPROVAL_EMAIL_SUBJECT,
-  renderText: renderApprovalEmailText,
-  renderHtml: approvalEmailHtml,
+  renderText: ({ name, interviewTitle }) => renderApprovalEmailText(name, interviewTitle),
+  renderHtml: ({ name, interviewTitle }) => approvalEmailHtml(name, interviewTitle),
   waTemplateName: WHATSAPP_APPROVAL_META_TEMPLATE.name,
-  waVariables: whatsappApprovalBodyVariables,
+  waVariables: ({ name, interviewTitle }) => whatsappApprovalBodyVariables(name, interviewTitle),
 };
 
 async function sendNoticeEmail(
   cfg: DeliveryConfig,
   to: string | null | undefined,
-  name: string,
+  ctx: NoticeContext,
   notice: NoticeCopy,
 ): Promise<DeclineChannelOutcome> {
   const provider =
     cfg.defaultEmailProvider || (cfg.brevo && !cfg.resend ? "brevo" : "resend");
   const subject = notice.emailSubject;
-  const text = notice.renderText(name);
-  const html = notice.renderHtml(name);
+  const text = notice.renderText(ctx);
+  const html = notice.renderHtml(ctx);
 
   if (!to?.trim()) return { status: "skipped", error: "No email address" };
 
@@ -76,7 +78,7 @@ async function sendNoticeEmail(
       fromEmail: cfg.brevo.fromEmail,
       fromName: "RESILIENCESOFT",
       toEmail: to,
-      toName: name,
+      toName: ctx.name,
       replyTo: cfg.brevo.replyTo,
       subject,
       html,
@@ -101,7 +103,7 @@ async function sendNoticeEmail(
 async function sendNoticeWhatsapp(
   cfg: DeliveryConfig,
   phoneRaw: string | null | undefined,
-  name: string,
+  ctx: NoticeContext,
   notice: NoticeCopy,
 ): Promise<DeclineChannelOutcome> {
   if (!cfg.resilio) return { status: "failed", error: "ResilioHub WhatsApp is not configured" };
@@ -117,7 +119,7 @@ async function sendNoticeWhatsapp(
     baseUrl: cfg.resilio.baseUrl,
     to,
     templateName: notice.waTemplateName,
-    bodyVariables: notice.waVariables(name),
+    bodyVariables: notice.waVariables(ctx),
   });
   return { status: r.ok ? "sent" : "failed", error: r.error };
 }
@@ -132,7 +134,7 @@ async function sendMediaReviewNotice(
   try {
     const { data: session } = await supabase
       .from("sessions")
-      .select("id, candidateId")
+      .select("id, candidateId, interview:interviews(title)")
       .eq("id", sessionId)
       .maybeSingle();
 
@@ -156,10 +158,16 @@ async function sendMediaReviewNotice(
       return out;
     }
 
-    const name = candidate.name?.trim() || "there";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawTitle = ((session as any).interview?.title as string | undefined) ?? "Interview";
+    const interviewTitle = rawTitle.split(" · ")[0] || "Interview";
+    const ctx: NoticeContext = {
+      name: candidate.name?.trim() || "there",
+      interviewTitle,
+    };
     const cfg = await loadDeliveryConfig(supabase, organizationId);
-    out.email = await sendNoticeEmail(cfg, candidate.email, name, notice);
-    out.whatsapp = await sendNoticeWhatsapp(cfg, candidate.phone, name, notice);
+    out.email = await sendNoticeEmail(cfg, candidate.email, ctx, notice);
+    out.whatsapp = await sendNoticeWhatsapp(cfg, candidate.phone, ctx, notice);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Send failed";
     log.error(`${notice.label} failed`, sessionId, msg);
