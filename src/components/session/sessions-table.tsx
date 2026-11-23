@@ -1,6 +1,6 @@
 "use client";
 
-import { effectiveDurationSeconds } from "@/lib/session-activity";
+import { listDurationSeconds } from "@/lib/session-activity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertDialog,
@@ -182,7 +182,7 @@ function getSortValue(session: SessionRow, key: SortKey): string | number {
     case "messages":
       return session._count.messages;
     case "duration":
-      return effectiveDurationSeconds(session) ?? -1;
+      return listDurationSeconds(session) ?? -1;
     case "date":
       return new Date(session.createdAt).getTime();
   }
@@ -565,8 +565,8 @@ export function SessionsTable({
       case "duration":
         return (
           <span>
-            {effectiveDurationSeconds(session)
-              ? `${Math.max(1, Math.round((effectiveDurationSeconds(session) ?? 0) / 60))}m`
+            {listDurationSeconds(session)
+              ? `${Math.max(1, Math.round((listDurationSeconds(session) ?? 0) / 60))}m`
               : "-"}
           </span>
         );
@@ -614,7 +614,7 @@ export function SessionsTable({
           case "email": record[col.label] = s.participantEmail || ""; break;
           case "status": record[col.label] = s.status; break;
           case "messages": record[col.label] = s._count.messages; break;
-          case "duration": { const d = effectiveDurationSeconds(s); record[col.label] = d ? `${Math.max(1, Math.round(d / 60))}m` : ""; break; }
+          case "duration": { const d = listDurationSeconds(s); record[col.label] = d ? `${Math.max(1, Math.round(d / 60))}m` : ""; break; }
           case "date": record[col.label] = formatDate(s.createdAt); break;
         }
       }

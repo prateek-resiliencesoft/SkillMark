@@ -2,7 +2,7 @@
 "use client";
 
 import { latestTimestamp, timeRangeCutoff } from "@/lib/time-range";
-import { effectiveDurationSeconds } from "@/lib/session-activity";
+import { listDurationSeconds } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useProject } from "@/components/project-provider";
@@ -395,7 +395,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return effectiveDurationSeconds(row.session) ?? -1;
+      return listDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -941,7 +941,7 @@ export default function CandidatesPage() {
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(effectiveDurationSeconds(session))
+              ? formatDuration(listDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -1081,7 +1081,7 @@ export default function CandidatesPage() {
       case "duration":
         return (
           <span>
-            {hasSession ? formatDuration(effectiveDurationSeconds(session)) : "-"}
+            {hasSession ? formatDuration(listDurationSeconds(session)) : "-"}
           </span>
         );
       case "started":
