@@ -25,11 +25,25 @@ export type AiTaskKind = (typeof AI_TASK_KINDS)[number];
 
 export const MAX_KEYS_PER_PROVIDER = 5;
 
+export type AiKeyTier = "free" | "paid";
+
+/** Align tier list to keyCount; missing/invalid → free. */
+export function normalizeKeyTiers(raw: unknown, keyCount: number): AiKeyTier[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out: AiKeyTier[] = [];
+  for (let i = 0; i < keyCount; i++) {
+    out.push(arr[i] === "paid" ? "paid" : "free");
+  }
+  return out;
+}
+
 export type AiProviderStored = {
   /** @deprecated single-key legacy — migrated into apiKeys on read */
   apiKey?: string | null;
   /** Encrypted API keys (max 5). */
   apiKeys?: (string | null)[];
+  /** Parallel to apiKeys: free | paid (default free when missing). */
+  keyTiers?: AiKeyTier[];
   baseUrl?: string | null;
   /** Custom endpoint only: model for chat/reports/etc. */
   textModel?: string | null;
@@ -91,6 +105,7 @@ export function decryptAiProviders(raw: unknown): AiProvidersStored {
     out[id] = {
       apiKeys: plainKeys,
       apiKey: plainKeys[0] ?? null,
+      keyTiers: normalizeKeyTiers(row.keyTiers, plainKeys.length),
       baseUrl: row.baseUrl?.trim() || null,
       ...(id === "custom"
         ? { textModel: row.textModel?.trim() || null, voiceModel: row.voiceModel?.trim() || null }
@@ -121,12 +136,24 @@ function sanitizeRouting(raw: AiRoutingStored): AiRoutingStored {
 /** Masked hints for settings UI (one hint per saved key slot). */
 export function maskAiProviders(raw: unknown): Record<
   AiProviderId,
-  { apiKeyHint: string | null; apiKeyHints: (string | null)[]; baseUrl: string; keyCount: number }
+  {
+    apiKeyHint: string | null;
+    apiKeyHints: (string | null)[];
+    baseUrl: string;
+    keyCount: number;
+    keyTiers: AiKeyTier[];
+  }
 > {
   const plain = decryptAiProviders(raw);
   const out = {} as Record<
     AiProviderId,
-    { apiKeyHint: string | null; apiKeyHints: (string | null)[]; baseUrl: string; keyCount: number }
+    {
+      apiKeyHint: string | null;
+      apiKeyHints: (string | null)[];
+      baseUrl: string;
+      keyCount: number;
+      keyTiers: AiKeyTier[];
+    }
   >;
   for (const id of AI_PROVIDER_IDS) {
     const keys = plain[id]?.apiKeys ?? [];
@@ -136,6 +163,7 @@ export function maskAiProviders(raw: unknown): Record<
       apiKeyHints: hints,
       baseUrl: plain[id]?.baseUrl ?? "",
       keyCount: keys.length,
+      keyTiers: normalizeKeyTiers(plain[id]?.keyTiers, keys.length),
     };
   }
   return out;
@@ -174,6 +202,7 @@ export function mergeAiProvidersPatch(
       if (p.apiKeys === null || (Array.isArray(p.apiKeys) && p.apiKeys.length === 0)) {
         next.apiKeys = [];
         next.apiKey = null;
+        next.keyTiers = [];
       } else {
         const encrypted: string[] = [];
         for (const k of (p.apiKeys ?? []).slice(0, MAX_KEYS_PER_PROVIDER)) {
@@ -186,18 +215,22 @@ export function mergeAiProvidersPatch(
         // Simpler contract: apiKeys is full replacement of plain keys from UI.
         next.apiKeys = encrypted;
         next.apiKey = encrypted[0] ?? null;
+        next.keyTiers = normalizeKeyTiers(undefined, encrypted.length);
       }
     } else if (p.apiKey !== undefined) {
       if (p.apiKey === null || p.apiKey === "") {
         next.apiKeys = [];
         next.apiKey = null;
+        next.keyTiers = [];
       } else {
         const enc = encryptSecret(p.apiKey.trim());
         const existing = normalizeKeyList(prev);
+        const prevTiers = normalizeKeyTiers(prev.keyTiers, existing.length);
         // Replace first / set sole key while preserving extras if present.
         const rest = existing.slice(1);
         next.apiKeys = [enc, ...rest].slice(0, MAX_KEYS_PER_PROVIDER);
         next.apiKey = enc;
+        next.keyTiers = ["free", ...prevTiers.slice(1)].slice(0, next.apiKeys.length);
       }
     }
 
@@ -246,10 +279,12 @@ export function applyKeySlotsPatch(
   // Trim trailing empties that weren't kept
   while (nextEnc.length && !nextEnc[nextEnc.length - 1]) nextEnc.pop();
 
+  const capped = nextEnc.slice(0, MAX_KEYS_PER_PROVIDER);
   current[providerId] = {
     ...prev,
-    apiKeys: nextEnc.slice(0, MAX_KEYS_PER_PROVIDER),
-    apiKey: nextEnc[0] ?? null,
+    apiKeys: capped,
+    apiKey: capped[0] ?? null,
+    keyTiers: normalizeKeyTiers(undefined, capped.length),
     ...(baseUrl !== undefined ? { baseUrl: baseUrl?.trim() || null } : {}),
   };
   return current;
@@ -283,6 +318,8 @@ export type KeySlotInput = {
   keep?: number | null;
   /** New plaintext key; wins over `keep`. */
   value?: string;
+  /** Free/Paid account marker; defaults to free. */
+  tier?: AiKeyTier;
 };
 
 /**
@@ -301,15 +338,21 @@ export function applyKeyOrderPatch(
   ) as AiProvidersStored;
   const prev = current[providerId] ?? {};
   const prevKeys = normalizeKeyList(prev);
+  const prevTiers = normalizeKeyTiers(prev.keyTiers, prevKeys.length);
   const used = new Set<number>();
   const nextEnc: string[] = [];
+  const nextTiers: AiKeyTier[] = [];
   for (const slot of slots) {
     const incoming = (slot.value ?? "").trim();
     if (incoming) {
       nextEnc.push(encryptSecret(incoming));
+      nextTiers.push(slot.tier === "paid" ? "paid" : "free");
     } else if (slot.keep != null && prevKeys[slot.keep] && !used.has(slot.keep)) {
       used.add(slot.keep);
       nextEnc.push(prevKeys[slot.keep]);
+      nextTiers.push(
+        slot.tier === "paid" || slot.tier === "free" ? slot.tier : prevTiers[slot.keep],
+      );
     }
   }
   const capped = nextEnc.slice(0, MAX_KEYS_PER_PROVIDER);
@@ -317,6 +360,7 @@ export function applyKeyOrderPatch(
     ...prev,
     apiKeys: capped,
     apiKey: capped[0] ?? null,
+    keyTiers: nextTiers.slice(0, capped.length),
     ...(baseUrl !== undefined ? { baseUrl: baseUrl?.trim() || null } : {}),
   };
   return current;

@@ -41,13 +41,14 @@ import React, { useEffect, useMemo, useState } from "react";
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
 
 /** One API key row. `keep` = index of the already-saved key it represents (null = new). */
-type KeySlot = { id: string; keep: number | null; value: string };
+type KeySlot = { id: string; keep: number | null; value: string; tier: "free" | "paid" };
 
 let slotCounter = 0;
-const newSlot = (keep: number | null = null): KeySlot => ({
+const newSlot = (keep: number | null = null, tier: "free" | "paid" = "free"): KeySlot => ({
   id: `slot-${++slotCounter}`,
   keep,
   value: "",
+  tier,
 });
 const emptySlots = (): Record<ProviderId, KeySlot[]> => ({
   openai: [newSlot()],
@@ -215,6 +216,7 @@ type ProviderRow = {
   apiKeyHint: string | null;
   apiKeyHints: (string | null)[];
   keyCount: number;
+  keyTiers?: ("free" | "paid")[];
   maxKeys: number;
   baseUrl?: string;
   textModel?: string;
@@ -289,7 +291,9 @@ export default function AiSettingsPage() {
     for (const p of query.data.providers) {
       const id = p.id as ProviderId;
       if ((p.keyCount || 0) > 0) {
-        nextSlots[id] = Array.from({ length: p.keyCount }, (_, i) => newSlot(i));
+        nextSlots[id] = Array.from({ length: p.keyCount }, (_, i) =>
+          newSlot(i, p.keyTiers?.[i] === "paid" ? "paid" : "free"),
+        );
       }
     }
     setKeySlots(nextSlots);
@@ -365,7 +369,11 @@ export default function AiSettingsPage() {
     saveKeys.mutate({
       organizationId: orgId,
       providerId: p.id,
-      slots: (keySlots[p.id] ?? []).map((sl) => ({ keep: sl.keep, value: sl.value.trim() || undefined })),
+      slots: (keySlots[p.id] ?? []).map((sl) => ({
+        keep: sl.keep,
+        value: sl.value.trim() || undefined,
+        tier: sl.tier,
+      })),
       ...(p.needsBaseUrl
         ? {
             baseUrl: customBase.trim() || null,
@@ -589,6 +597,9 @@ export default function AiSettingsPage() {
               <Key className="h-3 w-3" />
               API keys · drag to set failover order (max {maxKeys})
             </Label>
+            <p className="text-[11px] text-muted-foreground">
+              Free = confirmed free account · Paid = confirmed paid account
+            </p>
             <SortableList
               items={slots}
               getKey={(sl) => sl.id}
@@ -636,6 +647,24 @@ export default function AiSettingsPage() {
                       {showKeys[p.id] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     </button>
                   </div>
+                  <select
+                    aria-label="API key type"
+                    value={slot.tier}
+                    disabled={!canEdit || busy}
+                    onChange={(e) => {
+                      const tier = e.target.value === "paid" ? "paid" : "free";
+                      setKeySlots((prev) => ({
+                        ...prev,
+                        [p.id]: (prev[p.id] ?? []).map((x) =>
+                          x.id === slot.id ? { ...x, tier } : x,
+                        ),
+                      }));
+                    }}
+                    className="h-9 w-[5.5rem] shrink-0 rounded-md border bg-background/80 px-1.5 text-xs"
+                  >
+                    <option value="free">Free</option>
+                    <option value="paid">Paid</option>
+                  </select>
                   {canEdit && slots.length > 1 && (
                     <Button
                       type="button"
