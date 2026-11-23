@@ -162,10 +162,14 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 
 /**
  * Meta UTILITY template for incomplete / abandoned interviews (manual Send follow-up
- * or auto when interviews.autoLeftFollowup). Body must match the approved template.
- * Approved WABA expects **5** variables (brand RESILIENCESOFT is fixed in the body):
- * {{1}} name, {{2}} position/title, {{3}} resume link,
- * {{4}} expiry ("Dec 31, 2026 at 11:59 PM"), {{5}} support phone.
+ * or auto when interviews.autoLeftFollowup). Body must match the approved WABA template.
+ *
+ * Exactly 5 body_variables, in this order (screenshot / Meta numbering):
+ * {{1}} candidate name
+ * {{2}} "RESILIENCESOFT For {position}"  (brand + role in one slot)
+ * {{3}} resume invite link
+ * {{4}} expiry ("Nov 30, 2026 at 1:05 PM")
+ * {{5}} support phone
  */
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   name: "interview_incomplete_reminder",
@@ -173,19 +177,23 @@ export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   language: "en",
   body: `Hi {{1}},
 
-Your interview with RESILIENCESOFT for {{2}} is currently incomplete. You can resume your interview using the link below:
+Your interview with {{2}} is currently incomplete.
 
+You can resume your interview using the link below:
 Resume Interview: {{3}}
 
-Please complete your interview before {{4}}, as the link will expire thereafter. For any assistance, please contact {{5}}. Wish you all the best for your interview!
+Please complete your interview before {{4}}, as the link will expire thereafter.
 
+For any assistance, please contact {{5}}.
+
+Wish you all the best for your interview!
 Team RESILIENCESOFT`,
   example: [
-    "Priya Sharma",
-    "MERN Position",
-    "https://app.example.com/i/invite/abc123xyz789",
-    "Dec 31, 2026 at 11:59 PM",
-    "+919201996377",
+    "Prateek",
+    "RESILIENCESOFT For MERN Position",
+    "https://example.com/restart",
+    "2026-12-31 at 23.59",
+    "92019 96377",
   ],
 };
 
@@ -207,23 +215,55 @@ export interface FollowupTemplateVars {
 /** Default zone for the expiry text: no per-org/project timezone setting exists, and the audience is India. */
 export const FOLLOWUP_DEFAULT_TIME_ZONE = "Asia/Kolkata";
 
+/** How far to push link expiry when sending a follow-up and the current deadline is missing/past. */
+export const FOLLOWUP_EXTEND_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Split expiry for display. Date = `YYYY-MM-DD`, time = `HH.mm` (24h, Meta sample style
+ * e.g. `2023-12-31 at 23.59`). Always derived from the live `expiresAt` value.
+ */
 export function followupExpiryParts(
   expiresAt: string | Date,
   timeZone: string = FOLLOWUP_DEFAULT_TIME_ZONE,
 ): { date: string; time: string } {
   const d = typeof expiresAt === "string" ? new Date(expiresAt) : expiresAt;
-  const fmt = (tz: string) => ({
-    date: new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric", year: "numeric" }).format(d),
-    // Newer ICU puts a narrow no-break space before AM/PM; WhatsApp variables want a plain space.
-    time: new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" })
-      .format(d)
-      .replace(/\u202f/g, " "),
-  });
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`Invalid expiresAt: ${String(expiresAt)}`);
+  }
+  const fmt = (tz: string) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const get = (type: Intl.DateTimeFormatPartTypes) =>
+      parts.find((p) => p.type === type)?.value ?? "";
+    let hour = get("hour");
+    // Some engines emit "24" for midnight; Meta-style expects 00–23.
+    if (hour === "24") hour = "00";
+    return {
+      date: `${get("year")}-${get("month")}-${get("day")}`,
+      time: `${hour}.${get("minute")}`,
+    };
+  };
   try {
     return fmt(timeZone);
   } catch {
     return fmt(FOLLOWUP_DEFAULT_TIME_ZONE); // invalid IANA zone
   }
+}
+
+/** Single Meta {{4}} value: `2026-11-30 at 13.05` from the candidate's expiresAt. */
+export function formatFollowupExpiryLabel(
+  expiresAt: string | Date,
+  timeZone?: string,
+): string {
+  const { date, time } = followupExpiryParts(expiresAt, timeZone);
+  return `${date} at ${time}`;
 }
 
 /**
@@ -239,22 +279,40 @@ export function normalizeWhatsappPhone(raw: string | null | undefined): string |
   return /^\+\d{8,15}$/.test(p) ? p : null;
 }
 
+/** {{2}} in Meta: "RESILIENCESOFT For MERN Position" */
+export function followupRolePhrase(position: string): string {
+  const role = position.trim() || "Interview";
+  // Avoid "RESILIENCESOFT For RESILIENCESOFT For …" if title already includes brand.
+  if (/^RESILIENCESOFT\s+For\s+/i.test(role)) return role;
+  return `${FOLLOWUP_BRAND} For ${role}`;
+}
+
 export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string): string[] {
-  const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
-  // Must stay length 5 — Meta rejects mismatches (see interview_incomplete_reminder).
-  return [v.name, v.position, v.link, `${date} at ${time}`, v.supportPhone];
+  // Order is load-bearing — must match Meta slots 1→5 exactly.
+  return [
+    v.name, // {{1}}
+    followupRolePhrase(v.position), // {{2}}
+    v.link, // {{3}} resume URL
+    formatFollowupExpiryLabel(v.expiresAt, timeZone), // {{4}} live link expiry
+    v.supportPhone, // {{5}} contact
+  ];
 }
 
 export function renderFollowupEmailText(v: FollowupTemplateVars, timeZone?: string): string {
-  const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
+  const expiry = formatFollowupExpiryLabel(v.expiresAt, timeZone);
+  const role = followupRolePhrase(v.position);
   return `Hi ${v.name},
 
-Your interview with ${FOLLOWUP_BRAND} for ${v.position} is currently incomplete. You can resume your interview using the link below:
+Your interview with ${role} is currently incomplete.
 
+You can resume your interview using the link below:
 Resume Interview: ${v.link}
 
-Please complete your interview before ${date} at ${time}, as the link will expire thereafter. For any assistance, please contact ${v.supportPhone}. Wish you all the best for your interview!
+Please complete your interview before ${expiry}, as the link will expire thereafter.
 
+For any assistance, please contact ${v.supportPhone}.
+
+Wish you all the best for your interview!
 Team ${FOLLOWUP_BRAND}`;
 }
 
