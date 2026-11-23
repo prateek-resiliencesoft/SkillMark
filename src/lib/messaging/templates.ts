@@ -164,13 +164,16 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
  * Meta UTILITY template for incomplete / abandoned interviews (manual Send follow-up
  * or auto when interviews.autoLeftFollowup). Body must match the approved WABA template.
  *
- * Exactly 5 body_variables, in this order (screenshot / Meta numbering):
+ * body_variables[i] fills {{i+1}}:
  * {{1}} candidate name
- * {{2}} "RESILIENCESOFT For {position}"  (brand + role in one slot)
- * {{3}} resume invite link
- * {{4}} expiry ("Nov 30, 2026 at 1:05 PM")
- * {{5}} support phone
+ * {{2}} "RESILIENCESOFT For {position}"
+ * {{3}} support phone
+ * {{4}} resume invite link
+ * {{5}} expiry ("2026-12-31 at 23:59")
+ *
+ * Reading order in body: Hi {{1}} → with {{2}} → Resume {{4}} → before {{5}} → contact {{3}}
  */
+
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   name: "interview_incomplete_reminder",
   category: "UTILITY",
@@ -180,22 +183,26 @@ export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
 Your interview with {{2}} is currently incomplete.
 
 You can resume your interview using the link below:
-Resume Interview: {{5}}
 
-Please complete your interview before {{3}}, as the link will expire thereafter.
+🔗 Resume Interview: {{4}}
 
-For any assistance, please contact {{4}}.
+Please complete your interview before {{5}}, as the link will expire thereafter.
+
+For any assistance, please contact {{3}}.
 
 Wish you all the best for your interview!
+
 Team RESILIENCESOFT`,
+  // Array index i fills {{i+1}}
   example: [
-    "Prateek",
-    "RESILIENCESOFT For MERN Position",
-    "https://example.com/restart",
-    "2026-12-31 at 23.59",
-    "92019 96377",
+    "Prateek", // {{1}} Candidate Name
+    "RESILIENCESOFT For MERN Position", // {{2}} Interview Name
+    "92019 96377", // {{3}} Contact Number
+    "https://example.com/restart", // {{4}} Resume Link
+    "2026-12-31 at 23:59", // {{5}} Expiry Date
   ],
 };
+
 
 export const FOLLOWUP_EMAIL_SUBJECT = "Regarding Your Interview with RESILIENCESOFT";
 
@@ -257,13 +264,14 @@ export function followupExpiryParts(
   }
 }
 
-/** Single Meta {{4}} value: `2026-11-30 at 13.05` from the candidate's expiresAt. */
+/** Single Meta {{5}} value: `2026-11-30 at 13:05` from the candidate's expiresAt. */
 export function formatFollowupExpiryLabel(
   expiresAt: string | Date,
   timeZone?: string,
 ): string {
   const { date, time } = followupExpiryParts(expiresAt, timeZone);
-  return `${date} at ${time}`;
+  // Meta example uses colon in time (23:59), not a dot.
+  return `${date} at ${time.replace(".", ":")}`;
 }
 
 /**
@@ -288,13 +296,13 @@ export function followupRolePhrase(position: string): string {
 }
 
 export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string): string[] {
-  // Order is load-bearing — must match Meta slots 1→5 exactly.
+  // Index = Meta {{n}} - 1.
   return [
-    v.name, // {{1}}
-    followupRolePhrase(v.position), // {{2}}
-    v.link, // {{3}} resume URL
-    formatFollowupExpiryLabel(v.expiresAt, timeZone), // {{4}} live link expiry
-    v.supportPhone, // {{5}} contact
+    v.name, // {{1}} Candidate Name
+    followupRolePhrase(v.position), // {{2}} Interview Name
+    v.supportPhone, // {{3}} Contact Number
+    v.link, // {{4}} Resume Link
+    formatFollowupExpiryLabel(v.expiresAt, timeZone), // {{5}} Expiry Date
   ];
 }
 
