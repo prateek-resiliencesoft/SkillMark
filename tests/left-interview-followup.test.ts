@@ -1,40 +1,62 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  FOLLOWUP_BRAND,
+  FOLLOWUP_EMAIL_SUBJECT,
   WHATSAPP_FOLLOWUP_META_TEMPLATE,
   followupBodyVariables,
   followupExpiryParts,
   normalizeWhatsappPhone,
+  renderFollowupEmailText,
 } from "../src/lib/messaging/templates";
 
-test("follow-up template has six positional variables and the approved name", () => {
-  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete");
+test("follow-up template has seven positional variables and the approved name", () => {
+  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete_reminder");
   const placeholders = WHATSAPP_FOLLOWUP_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
-  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}", "{{6}}"]);
+  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}", "{{6}}", "{{7}}"]);
 });
 
-test("follow-up body matches the approved interview_incomplete wording", () => {
+test("follow-up body matches interview_incomplete_reminder wording", () => {
   const body = WHATSAPP_FOLLOWUP_META_TEMPLATE.body;
-  assert.match(body, /Restart link: \{\{4\}\}/);
-  assert.match(body, /For support, contact \{\{3\}\}\./);
-  assert.doesNotMatch(body, /left off|resume/i);
+  assert.match(body, /Resume Interview: \{\{4\}\}/);
+  assert.match(body, /for \{\{3\}\}/);
+  assert.match(body, /contact \{\{7\}\}/);
+  assert.match(body, /Team RESILIENCESOFT/);
+  assert.doesNotMatch(body, /🔗|🎉/);
 });
 
-test("follow-up body variables are ordered name, organization, contact, link, expiry date, expiry time", () => {
+test("follow-up body variables are name, brand, position, link, date, time, phone", () => {
   const vars = followupBodyVariables({
     name: "Priya Sharma",
     supportPhone: "+919876543210",
     link: "https://app.example.com/i/invite/abc",
     expiresAt: "2026-11-26T18:29:00.000Z",
+    position: "MERN Position",
     organization: "Acme Corp",
   });
-  assert.equal(vars.length, 6);
+  assert.equal(vars.length, 7);
   assert.equal(vars[0], "Priya Sharma");
-  assert.equal(vars[1], "Acme Corp");
-  assert.equal(vars[2], "+919876543210");
+  assert.equal(vars[1], FOLLOWUP_BRAND);
+  assert.equal(vars[2], "MERN Position");
   assert.equal(vars[3], "https://app.example.com/i/invite/abc");
   assert.equal(vars[4], "Nov 26, 2026");
   assert.equal(vars[5], "11:59 PM");
+  assert.equal(vars[6], "+919876543210");
+});
+
+test("follow-up email subject and body brand RESILIENCESOFT", () => {
+  assert.equal(FOLLOWUP_EMAIL_SUBJECT, "Regarding Your Interview with RESILIENCESOFT");
+  const text = renderFollowupEmailText({
+    name: "prateek",
+    supportPhone: "+919201996377",
+    link: "https://example.com/restart",
+    expiresAt: "2026-12-31T18:29:00.000Z",
+    position: "MERN Position",
+  });
+  assert.match(text, /^Hi prateek,/m);
+  assert.match(text, /RESILIENCESOFT for MERN Position/);
+  assert.match(text, /https:\/\/example.com\/restart/);
+  assert.match(text, /Team RESILIENCESOFT/);
 });
 
 test("expiry parts split into a readable date and time", () => {
@@ -55,7 +77,6 @@ test("expiry honours an explicit timeZone and survives an invalid one", () => {
   assert.deepEqual(followupExpiryParts(iso, "UTC"), { date: "Nov 26, 2026", time: "6:29 PM" });
   assert.deepEqual(followupExpiryParts(iso, "America/Los_Angeles"), { date: "Nov 26, 2026", time: "10:29 AM" });
   assert.deepEqual(followupExpiryParts(iso, "Not/AZone"), { date: "Nov 26, 2026", time: "11:59 PM" });
-  // date rolls over across zones
   assert.equal(followupExpiryParts("2026-11-26T20:00:00Z", "Asia/Kolkata").date, "Nov 27, 2026");
 });
 
@@ -67,11 +88,10 @@ test("normalizeWhatsappPhone", () => {
   assert.equal(n("98765 43210"), "+919876543210");
   assert.equal(n("919876543210"), "+919876543210");
   assert.equal(n("+14155552671"), "+14155552671");
-  // not plausible
-  assert.equal(n("5876543210"), null); // 10 digits, not Indian mobile
+  assert.equal(n("5876543210"), null);
   assert.equal(n("12345"), null);
-  assert.equal(n("+1234567"), null); // 7 digits
-  assert.equal(n("+1234567890123456"), null); // 16 digits
+  assert.equal(n("+1234567"), null);
+  assert.equal(n("+1234567890123456"), null);
   assert.equal(n("abc"), null);
   assert.equal(n(""), null);
   assert.equal(n(null), null);
@@ -98,7 +118,6 @@ test("follow-up counts as sent only for the current invite link", () => {
   assert.equal(s.sent, true);
   assert.equal(s.sentAt, "2026-11-19T10:00:00.000Z");
   assert.equal(needsLeftFollowup(sent, abandoned), false);
-  // A re-issued link (new token) is not covered by the earlier send.
   assert.equal(needsLeftFollowup({ ...sent, inviteToken: "tok2" }, abandoned), true);
 });
 

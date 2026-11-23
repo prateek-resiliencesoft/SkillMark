@@ -88,6 +88,7 @@ export default function NewInterviewPage() {
   const [duration, setDuration] = useState<number | undefined>(undefined);
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>(false);
+  const [autoLeftFollowup, setAutoLeftFollowup] = useState(false);
   const [includePremade, setIncludePremade] = useState(true);
   const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
   const [premadeInterviewType, setPremadeInterviewType] = useState<
@@ -135,6 +136,7 @@ export default function NewInterviewPage() {
         timeLimitMinutes: duration,
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
+        autoLeftFollowup,
       });
 
       const picked = selectedPremadePayload(
@@ -434,6 +436,21 @@ export default function NewInterviewPage() {
                         </p>
                       </div>
                     )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>{isZh ? "未完成跟进" : "Incomplete follow-up"}</Label>
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <Label>{isZh ? "离开时自动跟进" : "Auto follow-up on abandon"}</Label>
+                      <p className="text-xs text-muted-foreground">
+                        {isZh
+                          ? "默认关闭。开启后，候选人中途离开会自动收到未完成提醒。"
+                          : "Off by default. When on, candidates who leave mid-interview get the incomplete reminder automatically."}
+                      </p>
+                    </div>
+                    <Switch checked={autoLeftFollowup} onCheckedChange={setAutoLeftFollowup} />
                   </div>
                 </div>
 

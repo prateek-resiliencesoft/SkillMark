@@ -13,6 +13,8 @@ import { INTEGRITY_SIGNAL_TYPES, mergeIntegritySignals, type IntegritySignal } f
 import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData } from "@/lib/media-review";
+import { setCandidateDecisionStatus } from "../candidate-decision";
+import { sendApprovalShortlist, sendDeclineRejection } from "../decline-rejection";
 import { deleteSessionWithData } from "@/lib/candidate-data-deletion";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
@@ -1633,7 +1635,7 @@ export const sessionRouter = router({
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+          "id, candidateId, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
         )
         .eq("id", input.sessionId)
         .single();
@@ -1646,7 +1648,27 @@ export const sessionRouter = router({
       };
       await requireSessionManager(ctx, interviewData.project.organizationId, interviewData.projectId);
 
-      return applyMediaReview(ctx.supabase, input.sessionId, input.action);
+      const result = await applyMediaReview(ctx.supabase, input.sessionId, input.action);
+      const candidateId = (session as { candidateId?: string | null }).candidateId;
+      if (input.action === "declined") {
+        if (candidateId) await setCandidateDecisionStatus(ctx.supabase, candidateId, "rejected");
+        const delivery = await sendDeclineRejection(
+          ctx.supabase,
+          input.sessionId,
+          interviewData.project.organizationId,
+        );
+        return { ...result, ...delivery };
+      }
+      if (input.action === "approved") {
+        if (candidateId) await setCandidateDecisionStatus(ctx.supabase, candidateId, "approved");
+        const delivery = await sendApprovalShortlist(
+          ctx.supabase,
+          input.sessionId,
+          interviewData.project.organizationId,
+        );
+        return { ...result, ...delivery };
+      }
+      return result;
     }),
 
   /** Reviewer-only flag: mark/unmark a session as doubtful with a remark. Informational only. */

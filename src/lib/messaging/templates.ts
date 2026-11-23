@@ -161,35 +161,48 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 }
 
 /**
- * Meta UTILITY template sent automatically when a candidate leaves a live
- * interview midway (session → ABANDONED). Body must match the approved template.
- * {{1}} candidate name, {{2}} organization name, {{3}} project contact number,
- * {{4}} invite link, {{5}} link expiry date, {{6}} link expiry time.
+ * Meta UTILITY template for incomplete / abandoned interviews (manual Send follow-up
+ * or auto when interviews.autoLeftFollowup). Body must match the approved template.
+ * {{1}} name, {{2}} RESILIENCESOFT, {{3}} position/title, {{4}} resume link,
+ * {{5}} expiry date, {{6}} expiry time, {{7}} support phone.
  */
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
-  name: "interview_incomplete",
+  name: "interview_incomplete_reminder",
   category: "UTILITY",
-  language: "en_US",
-  body: `Hi {{1}}, your interview with {{2}} is incomplete.
-For support, contact {{3}}.
-Restart link: {{4}}
-This link is valid until {{5}} at {{6}}. Please use the link above to continue.`,
+  language: "en",
+  body: `Hi {{1}},
+
+Your interview with {{2}} for {{3}} is currently incomplete. You can resume your interview using the link below:
+
+Resume Interview: {{4}}
+
+Please complete your interview before {{5}} at {{6}}, as the link will expire thereafter. For any assistance, please contact {{7}}. Wish you all the best for your interview!
+
+Team RESILIENCESOFT`,
   example: [
     "Priya Sharma",
-    "Acme Corp",
-    "+919876543210",
+    "RESILIENCESOFT",
+    "MERN Position",
     "https://app.example.com/i/invite/abc123xyz789",
-    "Nov 26, 2026",
+    "Dec 31, 2026",
     "11:59 PM",
+    "+919201996377",
   ],
 };
+
+export const FOLLOWUP_EMAIL_SUBJECT = "Regarding Your Interview with RESILIENCESOFT";
+
+export const FOLLOWUP_BRAND = "RESILIENCESOFT";
 
 export interface FollowupTemplateVars {
   name: string;
   supportPhone: string;
   link: string;
   expiresAt: string | Date;
-  organization: string;
+  /** Interview title / position (e.g. MERN). */
+  position: string;
+  /** Ignored for Meta body — brand is always RESILIENCESOFT. Kept for callers. */
+  organization?: string;
 }
 
 /** Default zone for the expiry text: no per-org/project timezone setting exists, and the audience is India. */
@@ -229,7 +242,28 @@ export function normalizeWhatsappPhone(raw: string | null | undefined): string |
 
 export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string): string[] {
   const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
-  return [v.name, v.organization, v.supportPhone, v.link, date, time];
+  return [
+    v.name,
+    FOLLOWUP_BRAND,
+    v.position,
+    v.link,
+    date,
+    time,
+    v.supportPhone,
+  ];
+}
+
+export function renderFollowupEmailText(v: FollowupTemplateVars, timeZone?: string): string {
+  const { date, time } = followupExpiryParts(v.expiresAt, timeZone);
+  return `Hi ${v.name},
+
+Your interview with ${FOLLOWUP_BRAND} for ${v.position} is currently incomplete. You can resume your interview using the link below:
+
+Resume Interview: ${v.link}
+
+Please complete your interview before ${date} at ${time}, as the link will expire thereafter. For any assistance, please contact ${v.supportPhone}. Wish you all the best for your interview!
+
+Team ${FOLLOWUP_BRAND}`;
 }
 
 /** Preview of the follow-up body with the given values (defaults to the Meta example). */
@@ -264,8 +298,126 @@ export function renderTemplate(template: string, vars: TemplateVars): string {
   );
 }
 
+/**
+ * Meta UTILITY template for candidate rejection on media-review Decline.
+ * {{1}} candidate name. Brand is fixed RESILIENCESOFT (not org name).
+ */
+export const WHATSAPP_DECLINE_META_TEMPLATE = {
+  name: "regarding_your_application_with_resiliencesoft",
+  category: "UTILITY",
+  language: "en",
+  body: `Hi {{1}},
+
+Thank you for your interest in joining RESILIENCESOFT and for taking the time to participate in our selection process. After careful consideration, we regret to inform you that we will not be moving forward with your profile for the current opportunity. However, we encourage you to stay connected with us and apply again for future opportunities that match your skills and experience. We appreciate your time and efforts and wish you all the very best for your future career endeavours.
+
+We hope to connect with you again in the future!
+
+Team RESILIENCESOFT`,
+  example: ["Priya Sharma"],
+};
+
+export const DECLINE_EMAIL_SUBJECT = "Regarding Your Application with RESILIENCESOFT";
+
+export const DECLINE_EMAIL_BODY = `Hi {{name}},
+
+Thank you for your interest in joining RESILIENCESOFT and for taking the time to participate in our selection process. After careful consideration, we regret to inform you that we will not be moving forward with your profile for the current opportunity. However, we encourage you to stay connected with us and apply again for future opportunities that match your skills and experience. We appreciate your time and efforts and wish you all the very best for your future career endeavours.
+
+We hope to connect with you again in the future!
+
+Team RESILIENCESOFT`;
+
+export function whatsappDeclineBodyVariables(name: string): string[] {
+  return [name];
+}
+
+export function renderDeclineEmailText(name: string): string {
+  return DECLINE_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name);
+}
+
+/**
+ * Meta UTILITY template for shortlist notice on media-review Approve.
+ * {{1}} candidate name. Brand is fixed RESILIENCESOFT (not org name).
+ */
+export const WHATSAPP_APPROVAL_META_TEMPLATE = {
+  name: "candidate_next_round_selected",
+  category: "UTILITY",
+  language: "en",
+  body: `Hi {{1}},
+
+Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+
+Team RESILIENCESOFT`,
+  example: ["Priya Sharma"],
+};
+
+export const APPROVAL_EMAIL_SUBJECT = "Congratulations! You've Been Shortlisted – RESILIENCESOFT";
+
+export const APPROVAL_EMAIL_BODY = `Hi {{name}},
+
+Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+
+Team RESILIENCESOFT`;
+
+export function whatsappApprovalBodyVariables(name: string): string[] {
+  return [name];
+}
+
+export function renderApprovalEmailText(name: string): string {
+  return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name);
+}
+
+export type DeclineChannelOutcome = {
+  status: "sent" | "failed" | "skipped";
+  error?: string;
+};
+
+/** Alias used by approve + decline media-review notices. */
+export type MediaReviewChannelOutcome = DeclineChannelOutcome;
+
+function channelLabel(kind: "Email" | "WhatsApp", r: DeclineChannelOutcome): string {
+  if (r.status === "sent") return `${kind} sent`;
+  if (r.status === "skipped") return `${kind} skipped${r.error ? ` (${r.error})` : ""}`;
+  return `${kind} failed${r.error ? ` (${r.error})` : ""}`;
+}
+
+/** Toast fragment; empty string if neither channel reported. */
+export function formatDeclineDeliverySummary(
+  email?: DeclineChannelOutcome,
+  whatsapp?: DeclineChannelOutcome,
+): string {
+  const parts: string[] = [];
+  if (email) parts.push(channelLabel("Email", email));
+  if (whatsapp) parts.push(channelLabel("WhatsApp", whatsapp));
+  return parts.join(" · ");
+}
+
+export const formatMediaReviewDeliverySummary = formatDeclineDeliverySummary;
+
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+function noticeEmailHtml(text: string): string {
+  const paragraphs = escapeHtml(text)
+    .split(/\n{2,}/)
+    .map((p) => `<p style="margin:0 0 16px">${p.split("\n").join("<br>")}</p>`)
+    .join("");
+  return `<!doctype html><html><body style="margin:0;padding:24px;background:#f9fafb;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111827;font-size:15px;line-height:1.55"><div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:28px">${paragraphs}</div></body></html>`;
+}
+
+/** Plain rejection HTML — no invite CTA. */
+export function declineEmailHtml(name: string): string {
+  return noticeEmailHtml(renderDeclineEmailText(name));
+}
+
+/** Plain shortlist HTML — no invite CTA. */
+export function approvalEmailHtml(name: string): string {
+  return noticeEmailHtml(renderApprovalEmailText(name));
+}
+
+/** Incomplete follow-up email HTML — link stays as plain text (no invite CTA button). */
+export function followupEmailHtml(v: FollowupTemplateVars, timeZone?: string): string {
+  return noticeEmailHtml(renderFollowupEmailText(v, timeZone));
+}
 
 /** Plain-text body → simple, spam-filter-friendly HTML with a CTA button. */
 export function emailHtml(body: string, vars: TemplateVars): string {

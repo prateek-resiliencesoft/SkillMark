@@ -29,6 +29,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
+import {
+  formatDeclineDeliverySummary,
+  type DeclineChannelOutcome,
+} from "@/lib/messaging/templates";
 import { buildReportData } from "@/lib/report-data";
 import { isReportStuck } from "@/lib/session-report-policy";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
@@ -119,13 +123,22 @@ function MediaReviewActions({
     onSuccess: (data) => {
       void utils.analysis.getSessionSummary.invalidate({ sessionId });
       void utils.session.listByInterview.invalidate();
-      toast({
-        title:
-          data.status === "approved"
-            ? "Approved — media kept"
-            : data.status === "declined"
+      if (data.status === "declined" || data.status === "approved") {
+        const summary = formatDeclineDeliverySummary(
+          "email" in data ? (data.email as DeclineChannelOutcome | undefined) : undefined,
+          "whatsapp" in data ? (data.whatsapp as DeclineChannelOutcome | undefined) : undefined,
+        );
+        toast({
+          title:
+            data.status === "declined"
               ? "Declined — media cleared (scores kept)"
-              : "Put aside — media auto-clears in 15 days",
+              : "Approved — media kept",
+          description: summary || undefined,
+        });
+        return;
+      }
+      toast({
+        title: "Put aside — media auto-clears in 15 days",
       });
     },
     onError: (err) => {

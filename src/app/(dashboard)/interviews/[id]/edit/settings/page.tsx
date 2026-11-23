@@ -90,6 +90,9 @@ export default function SettingsTab() {
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>((interview as any).headMovementDetectionEnabled ?? false);
   const [integrityChecksEnabled, setIntegrityChecksEnabled] = useState<boolean>((interview as any).integrityChecksEnabled ?? false);
   const [livenessChallengesEnabled, setLivenessChallengesEnabled] = useState<boolean>((interview as any).livenessChallengesEnabled ?? false);
+  const [autoLeftFollowup, setAutoLeftFollowup] = useState<boolean>(
+    (interview as { autoLeftFollowup?: boolean }).autoLeftFollowup ?? false,
+  );
   const integrity = effectiveIntegrityConfig({
     antiCheatingEnabled,
     headMovementDetectionEnabled,
@@ -509,6 +512,24 @@ export default function SettingsTab() {
         </CardContent>
       </Card>
 
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle>Incomplete follow-up</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label>Auto follow-up on abandon</Label>
+              <p className="text-xs text-muted-foreground">
+                When on, candidates who leave mid-interview get the incomplete reminder (WhatsApp + email if
+                configured) with their resume link. Off by default — use Send follow-up manually.
+              </p>
+            </div>
+            <Switch checked={autoLeftFollowup} onCheckedChange={setAutoLeftFollowup} />
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="flex items-end">
         <Button
           onClick={() =>
@@ -530,6 +551,7 @@ export default function SettingsTab() {
                 : null,
               antiCheatingEnabled,
               ...integrity,
+              autoLeftFollowup,
               completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
             })
           }

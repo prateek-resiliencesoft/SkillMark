@@ -175,6 +175,7 @@ export const batchRouter = router({
       followupSentAt: (c.followupSentAt as string | null) ?? null,
       followupSentToken: (c.followupSentToken as string | null) ?? null,
       followupError: (c.followupError as string | null) ?? null,
+      decisionStatus: (c.decisionStatus as string | null) ?? "none",
       status: candidateStatus(c),
       sessionId: (c.session?.id as string | undefined) ?? null,
       session: c.session
@@ -195,16 +196,45 @@ export const batchRouter = router({
       questionCount: (c.interview?.questions?.length as number | undefined) ?? 0,
     }));
 
+    const { data: batchIv } = await ctx.supabase
+      .from("interviews")
+      .select("autoLeftFollowup")
+      .eq("batchId", input.id)
+      .limit(1)
+      .maybeSingle();
+
     return {
       id: batch.id as string,
       name: batch.name as string,
       createdAt: batch.createdAt as string,
       settings: batch.settings as BatchSettings,
       canEdit: role !== "VIEWER",
+      autoLeftFollowup: !!(batchIv as { autoLeftFollowup?: boolean } | null)?.autoLeftFollowup,
       counts: summarize(rows.map((r) => ({ session: { status: r.status === "NOT_STARTED" ? undefined : r.status } }))),
       candidates: rows,
     };
   }),
+
+  /** Toggle auto incomplete follow-up for every interview in this batch (default off). */
+  setAutoLeftFollowup: protectedProcedure
+    .input(z.object({ batchId: z.string(), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+      const { error } = await ctx.supabase
+        .from("interviews")
+        .update({ autoLeftFollowup: input.enabled })
+        .eq("batchId", input.batchId);
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: /autoLeftFollowup|42703|PGRST204/.test(`${error.code} ${error.message}`)
+            ? "Apply db/init/42-auto-followup-decision-status.sql first."
+            : error.message,
+        });
+      }
+      return { ok: true, enabled: input.enabled };
+    }),
 
   /** Generates one CV-tailored interview + candidate invite inside a batch. */
   generateCandidate: protectedProcedure
@@ -279,6 +309,14 @@ export const batchRouter = router({
         ) as typeof generated.questions;
       }
 
+      const { data: siblingIv } = await ctx.supabase
+        .from("interviews")
+        .select("autoLeftFollowup")
+        .eq("batchId", batch.id)
+        .limit(1)
+        .maybeSingle();
+      const inheritAutoFollowup = !!(siblingIv as { autoLeftFollowup?: boolean } | null)?.autoLeftFollowup;
+
       const { data: interview, error: ivError } = await ctx.supabase
         .from("interviews")
         .insert({
@@ -305,6 +343,7 @@ export const batchRouter = router({
           requireInvite: true,
           batchId: batch.id,
           completionNotifyMembers: settings.completionNotifyMembers ?? [],
+          autoLeftFollowup: inheritAutoFollowup,
         })
         .select("id, title")
         .single();

@@ -37,10 +37,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
 import { leftFollowupState, needsLeftFollowup } from "@/lib/left-followup";
 import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/switch";
 import { motion } from "motion/react";
 import {
   ArrowLeft,
@@ -89,6 +91,18 @@ export default function BatchDetailPage() {
   const { currentOrg } = useOrg();
   const utils = trpc.useUtils();
   const batch = trpc.batch.getById.useQuery({ id }, { refetchInterval: 30_000 });
+  const setAutoLeftFollowup = trpc.batch.setAutoLeftFollowup.useMutation({
+    onSuccess: (r) => {
+      void utils.batch.getById.invalidate({ id });
+      toast({
+        title: r.enabled ? "Auto follow-up on" : "Auto follow-up off",
+        description: r.enabled
+          ? "Left-early candidates will get the incomplete reminder automatically."
+          : "Use Send follow-up manually when needed.",
+      });
+    },
+    onError: (err) => toast({ title: "Failed", description: err.message, variant: "destructive" }),
+  });
 
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -287,6 +301,22 @@ export default function BatchDetailPage() {
               Created {new Date(b.createdAt).toLocaleString()} · {invited} of {b.counts.total} invited
             </p>
             {b.settings.roleDescription && <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{b.settings.roleDescription}</p>}
+            {b.canEdit && (
+              <div className="mt-3 flex max-w-xl items-center justify-between gap-3 rounded-lg border p-3">
+                <div>
+                  <Label className="text-sm">Auto follow-up on abandon</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Off by default. When on, left-early candidates in this batch get the incomplete reminder
+                    automatically.
+                  </p>
+                </div>
+                <Switch
+                  checked={!!b.autoLeftFollowup}
+                  disabled={setAutoLeftFollowup.isLoading}
+                  onCheckedChange={(enabled) => setAutoLeftFollowup.mutate({ batchId: id, enabled })}
+                />
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={exportRows}>
@@ -541,6 +571,19 @@ export default function BatchDetailPage() {
                         <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
                           {STATUS_META[c.status].label}
                         </span>
+                        {decisionStatusLabel(c.decisionStatus) ? (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "font-normal",
+                              c.decisionStatus === "approved" && "border-green-600 text-green-700",
+                              c.decisionStatus === "rejected" && "border-red-600 text-red-700",
+                              c.decisionStatus === "followup_sent" && "border-amber-600 text-amber-700",
+                            )}
+                          >
+                            {decisionStatusLabel(c.decisionStatus)}
+                          </Badge>
+                        ) : null}
                         {isInviteExpired(c) && <ExpiredBadge />}
                       </div>
                       {b.canEdit && isInviteExpired(c) && (
