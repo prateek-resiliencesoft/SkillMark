@@ -14,20 +14,21 @@ import {
 
 test("follow-up template has five positional variables and the approved name", () => {
   assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete_reminder");
+  // Appearance order in approved Meta body.
   const placeholders = WHATSAPP_FOLLOWUP_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
-  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{3}}", "{{4}}", "{{5}}"]);
+  assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{4}}", "{{5}}", "{{3}}"]);
 });
 
 test("follow-up body matches interview_incomplete_reminder wording", () => {
   const body = WHATSAPP_FOLLOWUP_META_TEMPLATE.body;
   assert.match(body, /Your interview with \{\{2\}\}/);
-  assert.match(body, /Resume Interview: \{\{3\}\}/);
-  assert.match(body, /before \{\{4\}\}/);
-  assert.match(body, /contact \{\{5\}\}/);
+  assert.match(body, /Resume Interview: \{\{4\}\}/);
+  assert.match(body, /before \{\{5\}\}/);
+  assert.match(body, /contact \{\{3\}\}/);
   assert.match(body, /Team RESILIENCESOFT/);
 });
 
-test("follow-up body variables match Meta slots: name, role phrase, link, expiry, phone", () => {
+test("follow-up body variables match Meta slot numbers", () => {
   const vars = followupBodyVariables({
     name: "Aniket kumar",
     supportPhone: "+917879848993",
@@ -36,11 +37,11 @@ test("follow-up body variables match Meta slots: name, role phrase, link, expiry
     position: "Senior .NET & Python Developer Assessment",
   });
   assert.equal(vars.length, 5);
-  assert.equal(vars[0], "Aniket kumar"); // {{1}} Hi …
+  assert.equal(vars[0], "Aniket kumar"); // {{1}} Candidate Name
   assert.equal(vars[1], "RESILIENCESOFT For Senior .NET & Python Developer Assessment"); // {{2}}
-  assert.equal(vars[2], "https://dev.resiliencesoftinterview.com/i/invite/peccezgy84y4"); // {{3}} Resume
-  assert.equal(vars[3], "2026-11-26 at 23.59"); // {{4}} live expiry (IST)
-  assert.equal(vars[4], "+917879848993"); // {{5}} contact
+  assert.equal(vars[2], "+917879848993"); // {{3}} Contact Number
+  assert.equal(vars[3], "https://dev.resiliencesoftinterview.com/i/invite/peccezgy84y4"); // {{4}} Resume Link
+  assert.equal(vars[4], "2026-11-26 at 23:59"); // {{5}} Expiry Date
   assert.equal(FOLLOWUP_BRAND, "RESILIENCESOFT");
 });
 
@@ -68,12 +69,12 @@ test("expiry parts use Meta-style YYYY-MM-DD and HH.mm in Asia/Kolkata", () => {
   const { date, time } = followupExpiryParts("2026-11-26T18:29:00.000Z");
   assert.equal(date, "2026-11-26");
   assert.equal(time, "23.59");
-  assert.equal(formatFollowupExpiryLabel("2026-11-26T18:29:00.000Z"), "2026-11-26 at 23.59");
+  assert.equal(formatFollowupExpiryLabel("2026-11-26T18:29:00.000Z"), "2026-11-26 at 23:59");
 });
 
 test("expiry label tracks the live expiresAt value (dynamic)", () => {
-  assert.equal(formatFollowupExpiryLabel("2026-12-31T18:29:00.000Z"), "2026-12-31 at 23.59");
-  assert.equal(formatFollowupExpiryLabel("2027-01-15T06:30:00.000Z"), "2027-01-15 at 12.00");
+  assert.equal(formatFollowupExpiryLabel("2026-12-31T18:29:00.000Z"), "2026-12-31 at 23:59");
+  assert.equal(formatFollowupExpiryLabel("2027-01-15T06:30:00.000Z"), "2027-01-15 at 12:00");
 });
 
 test("expiry honours an explicit timeZone and survives an invalid one", () => {
@@ -92,7 +93,7 @@ test("follow-up email uses the same dynamic expiry label", () => {
     expiresAt: "2026-12-31T18:29:00.000Z",
     position: "MERN Position",
   });
-  assert.match(text, /before 2026-12-31 at 23\.59/);
+  assert.match(text, /before 2026-12-31 at 23:59/);
 });
 
 test("normalizeWhatsappPhone", () => {
