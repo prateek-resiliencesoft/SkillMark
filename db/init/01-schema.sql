@@ -566,7 +566,9 @@ CREATE TABLE public.sessions (
     "mediaReviewAt" timestamp with time zone,
     "mediaExpiresAt" timestamp with time zone,
     "mediaClearedAt" timestamp with time zone,
-    "mediaStoragePrefix" text
+    "mediaStoragePrefix" text,
+    "rejectReason" text,
+    "rejectTags" text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 

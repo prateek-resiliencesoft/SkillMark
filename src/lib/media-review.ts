@@ -1,6 +1,7 @@
 import "server-only";
 import { deletePrefixStats, listObjectKeys, objectKey, readFile, statLocalObject, storage } from "@/lib/storage";
 import { createLogger } from "@/lib/logger";
+import { normalizeRejectTags } from "@/lib/reject-tags";
 import { isSafeObjectPath, objectPathFromSignedUrl, pathBelongsToSession } from "@/lib/tenant-storage";
 import type { Context } from "@/server/context";
 
@@ -11,6 +12,13 @@ type Db = Context["supabase"];
 const SET_ASIDE_DAYS = 15;
 
 export type MediaReviewAction = "approved" | "declined" | "set_aside";
+
+export type ApplyMediaReviewOptions = {
+  /** Only for declined. Default false — keep media files. */
+  deleteMedia?: boolean;
+  rejectReason?: string | null;
+  rejectTags?: string[];
+};
 
 type MediaRef = { bucket: "recordings" | "screenshots"; key: string };
 
@@ -318,6 +326,7 @@ export async function applyMediaReview(
   supabase: Db,
   sessionId: string,
   action: MediaReviewAction,
+  opts?: ApplyMediaReviewOptions,
 ): Promise<{ status: MediaReviewAction; mediaExpiresAt: string | null; cleared: number }> {
   const now = new Date();
   const patch: Record<string, unknown> = {
@@ -329,20 +338,30 @@ export async function applyMediaReview(
 
   if (action === "approved") {
     patch.mediaExpiresAt = null;
+    patch.rejectReason = null;
+    patch.rejectTags = [];
   } else if (action === "set_aside") {
     const exp = new Date(now.getTime() + SET_ASIDE_DAYS * 24 * 60 * 60 * 1000);
     patch.mediaExpiresAt = exp.toISOString();
   } else if (action === "declined") {
-    patch.mediaExpiresAt = null;
-    const result = await clearSessionMediaStorage(supabase, sessionId);
-    cleared = result.cleared;
-    // clearSessionMediaStorage already wrote mediaClearedAt; keep review fields
+    const reason =
+      typeof opts?.rejectReason === "string" && opts.rejectReason.trim()
+        ? opts.rejectReason.trim().slice(0, 1000)
+        : null;
+    const tags = normalizeRejectTags(opts?.rejectTags);
+    if (opts?.deleteMedia === true) {
+      const result = await clearSessionMediaStorage(supabase, sessionId);
+      cleared = result.cleared;
+    }
+    // clearSessionMediaStorage may have written mediaClearedAt; always set review + remark fields
     await supabase
       .from("sessions")
       .update({
         mediaReviewStatus: "declined",
         mediaReviewAt: now.toISOString(),
         mediaExpiresAt: null,
+        rejectReason: reason,
+        rejectTags: tags,
       })
       .eq("id", sessionId);
     return { status: action, mediaExpiresAt: null, cleared };

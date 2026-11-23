@@ -209,6 +209,8 @@ export const analysisRouter = router({
           (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
         mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,
         mediaClearedAt,
+        rejectReason: (session as { rejectReason?: string | null }).rejectReason ?? null,
+        rejectTags: (session as { rejectTags?: string[] | null }).rejectTags ?? [],
         doubtful: (session as { integrityDoubtfulAt?: string | null }).integrityDoubtfulAt
           ? {
               at: (session as { integrityDoubtfulAt: string }).integrityDoubtfulAt,
