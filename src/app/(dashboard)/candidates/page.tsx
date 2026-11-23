@@ -46,7 +46,10 @@ import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { formatSessionStatusLabel } from "@/lib/preflight";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
+import { rejectTagLabel } from "@/lib/reject-tags";
 import { trpc } from "@/lib/trpc/client";
+import { cn } from "@/lib/utils";
 import {
     ArrowDown,
     ArrowUp,
@@ -97,6 +100,7 @@ type CandidateRow = {
   followupSentAt: string | null;
   followupSentToken: string | null;
   followupError: string | null;
+  decisionStatus: string | null;
   session: any;
   createdAt: string;
   interviewTitle: string;
@@ -247,6 +251,32 @@ function getSessionStatus(row: UnifiedRow): string {
   const session = row.session;
   if (!session) return "Not Started";
   return session.status;
+}
+
+/** Media-review / recruiter outcome for list badges + filters. */
+function getReviewOutcome(row: UnifiedRow): {
+  kind: "approved" | "rejected" | "put_aside" | "followup_sent" | null;
+  reason: string | null;
+  tags: string[];
+} {
+  const decision = row.type === "candidate" ? row.decisionStatus : null;
+  const media = (row.session as { mediaReviewStatus?: string | null } | null)?.mediaReviewStatus ?? null;
+  const reason = (row.session as { rejectReason?: string | null } | null)?.rejectReason ?? null;
+  const tags = (row.session as { rejectTags?: string[] | null } | null)?.rejectTags ?? [];
+
+  if (decision === "approved" || media === "approved") {
+    return { kind: "approved", reason: null, tags: [] };
+  }
+  if (decision === "rejected" || media === "declined") {
+    return { kind: "rejected", reason, tags: Array.isArray(tags) ? tags : [] };
+  }
+  if (media === "set_aside") {
+    return { kind: "put_aside", reason: null, tags: [] };
+  }
+  if (decision === "followup_sent") {
+    return { kind: "followup_sent", reason: null, tags: [] };
+  }
+  return { kind: null, reason: null, tags: [] };
 }
 
 function getSessionBadgeVariant(
@@ -637,6 +667,7 @@ export default function CandidatesPage() {
       followupSentAt: c.followupSentAt ?? null,
       followupSentToken: c.followupSentToken ?? null,
       followupError: c.followupError ?? null,
+      decisionStatus: (c.decisionStatus as string | null) ?? "none",
       session: c.session,
       createdAt: c.createdAt,
       interviewTitle: c.interview?.title ?? "-",
@@ -679,11 +710,23 @@ export default function CandidatesPage() {
         const s = getSessionStatus(row);
         // Filter on the displayed label: quiet pre-flight sessions read "Not Started" (never abandoned).
         const label = formatSessionStatusLabel(row.session);
+        const review = getReviewOutcome(row);
         if (statusFilter === "EXPIRED") return isRowLinkExpired(row);
         if (statusFilter === "FOLLOWUP_SENT") return rowFollowup(row).sent;
         if (statusFilter === "FOLLOWUP_NOT_SENT") {
           const f = rowFollowup(row);
           return f.relevant && !f.sent;
+        }
+        if (statusFilter === "APPROVED") return review.kind === "approved";
+        if (statusFilter === "REJECTED") return review.kind === "rejected";
+        if (statusFilter === "PUT_ASIDE") return review.kind === "put_aside";
+        if (statusFilter === "DECISION_FOLLOWUP") return review.kind === "followup_sent";
+        if (statusFilter === "PENDING_REVIEW") {
+          return (
+            s === "COMPLETED" &&
+            review.kind === null &&
+            !(row.session as { mediaClearedAt?: string | null } | null)?.mediaClearedAt
+          );
         }
         if (statusFilter === "NOT_STARTED") return label === "Not Started";
         if (statusFilter === "ABANDONED") return label === "Abandoned";
@@ -903,9 +946,21 @@ export default function CandidatesPage() {
           case "source":
             record[col.label] = sourceLabel(row.type);
             break;
-          case "status":
-            record[col.label] = statusLabel(row);
+          case "status": {
+            const review = getReviewOutcome(row);
+            const reviewBit =
+              review.kind === "approved"
+                ? "Approved"
+                : review.kind === "rejected"
+                  ? `Rejected${review.reason ? `: ${review.reason}` : ""}`
+                  : review.kind === "put_aside"
+                    ? "Put aside"
+                    : review.kind === "followup_sent"
+                      ? "Follow-up sent"
+                      : "";
+            record[col.label] = [statusLabel(row), reviewBit].filter(Boolean).join(" · ");
             break;
+          }
           case "followup": {
             const f = rowFollowup(row);
             record[col.label] = !f.relevant
@@ -1055,19 +1110,70 @@ export default function CandidatesPage() {
             {sourceLabel("candidate")}
           </Badge>
         );
-      case "status":
+      case "status": {
+        const review = getReviewOutcome(row);
+        const reviewLabel =
+          review.kind === "approved"
+            ? isZh
+              ? "已通过"
+              : "Approved"
+            : review.kind === "rejected"
+              ? isZh
+                ? "已拒绝"
+                : "Rejected"
+              : review.kind === "put_aside"
+                ? isZh
+                  ? "暂存"
+                  : "Put aside"
+                : review.kind === "followup_sent"
+                  ? decisionStatusLabel("followup_sent")
+                  : null;
         return (
           <div className="flex flex-col items-start gap-0.5">
-            <Badge
-              variant={getSessionBadgeVariant(statusLabel(row))}
-              className="whitespace-nowrap"
-            >
-              {statusLabel(row)}
-            </Badge>
+            <div className="flex flex-wrap items-center gap-1">
+              <Badge
+                variant={getSessionBadgeVariant(statusLabel(row))}
+                className="whitespace-nowrap"
+              >
+                {statusLabel(row)}
+              </Badge>
+              {reviewLabel && (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "whitespace-nowrap text-[10px]",
+                    review.kind === "approved" && "border-green-600 text-green-700",
+                    review.kind === "rejected" && "border-red-600 text-red-700",
+                    review.kind === "put_aside" && "border-amber-600 text-amber-700",
+                    review.kind === "followup_sent" && "border-amber-600 text-amber-700",
+                  )}
+                >
+                  {reviewLabel}
+                </Badge>
+              )}
+            </div>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
             {isRowLinkExpired(row) && <ExpiredBadge />}
+            {review.kind === "rejected" && review.reason ? (
+              <span className="line-clamp-1 max-w-[14rem] text-[10px] text-muted-foreground">
+                {review.reason}
+              </span>
+            ) : null}
+            {review.kind === "rejected" && review.tags.length > 0 ? (
+              <span className="flex flex-wrap gap-0.5">
+                {review.tags.slice(0, 3).map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-red-600/25 px-1 text-[9px] text-muted-foreground"
+                  >
+                    {rejectTagLabel(t)}
+                  </span>
+                ))}
+              </span>
+            ) : null}
           </div>
         );
+      }
       case "followup":
         return c && rowFollowup(row).relevant ? (
           <LeftFollowupAction candidateId={c.id} candidate={c} session={row.session} variant="compact" />
@@ -1166,13 +1272,28 @@ export default function CandidatesPage() {
             setPage(0);
           }}
         >
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger className="w-[190px]">
             <CircleDot className="mr-2 h-4 w-4 text-muted-foreground" />
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">
               {isZh ? "全部状态" : "All Status"}
+            </SelectItem>
+            <SelectItem value="APPROVED">
+              {isZh ? "已通过 / 入选" : "Approved / Selected"}
+            </SelectItem>
+            <SelectItem value="REJECTED">
+              {isZh ? "已拒绝" : "Rejected"}
+            </SelectItem>
+            <SelectItem value="PUT_ASIDE">
+              {isZh ? "暂存" : "Put aside"}
+            </SelectItem>
+            <SelectItem value="PENDING_REVIEW">
+              {isZh ? "待审核" : "Pending review"}
+            </SelectItem>
+            <SelectItem value="DECISION_FOLLOWUP">
+              {isZh ? "已发不完整跟进" : "Incomplete follow-up"}
             </SelectItem>
             <SelectItem value="COMPLETED">
               {isZh ? "已完成" : "Completed"}
