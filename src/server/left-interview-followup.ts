@@ -3,6 +3,7 @@ import { createLogger } from "@/lib/logger";
 import { sendBrevoEmail, sendResendEmail, sendResilioTemplate } from "@/lib/messaging/providers";
 import {
   FOLLOWUP_EMAIL_SUBJECT,
+  FOLLOWUP_EXTEND_MS,
   WHATSAPP_FOLLOWUP_META_TEMPLATE,
   followupBodyVariables,
   followupEmailHtml,
@@ -139,13 +140,22 @@ export async function sendLeftInterviewFollowup(
     if (!candidate?.inviteToken || !phone) {
       return skip("The candidate has no valid WhatsApp number. Add one with a country code, e.g. +91…");
     }
-    const expiresAt = candidate.expiresAt ? String(candidate.expiresAt) : "";
-    const expiryMs = Date.parse(expiresAt);
-    if (!expiresAt || Number.isNaN(expiryMs)) {
-      return skip("The invite link has no expiry date, which the message needs.");
-    }
-    if (expiryMs <= Date.now()) {
-      return skip("The invite link has already expired. Send a new link instead.");
+
+    // Always use a live future deadline in {{4}}. Missing/past → extend 7 days and persist.
+    let expiresAt = candidate.expiresAt ? String(candidate.expiresAt) : "";
+    let expiryMs = Date.parse(expiresAt);
+    if (!expiresAt || Number.isNaN(expiryMs) || expiryMs <= Date.now()) {
+      const next = new Date(Date.now() + FOLLOWUP_EXTEND_MS);
+      expiresAt = next.toISOString();
+      expiryMs = next.getTime();
+      const { error: expErr } = await supabaseAdmin
+        .from("candidates")
+        .update({ expiresAt, updatedAt: new Date().toISOString() })
+        .eq("id", candidateId);
+      if (expErr) {
+        return skip("Could not set a link expiry date for the follow-up message. Extend expiry and try again.");
+      }
+      log.info("extended candidate expiresAt for follow-up", candidateId, expiresAt);
     }
 
     const cfg = await loadDeliveryConfig(supabaseAdmin, String(project.organizationId));
