@@ -394,7 +394,9 @@ export function renderDeclineEmailText(name: string): string {
 
 /**
  * Meta UTILITY template for shortlist notice on media-review Approve.
- * {{1}} candidate name. Brand is fixed RESILIENCESOFT (not org name).
+ * WABA expects exactly 2 body_variables:
+ * {{1}} candidate name
+ * {{2}} "RESILIENCESOFT For {position}" (interview / role)
  */
 export const WHATSAPP_APPROVAL_META_TEMPLATE = {
   name: "candidate_next_round_selected",
@@ -402,26 +404,28 @@ export const WHATSAPP_APPROVAL_META_TEMPLATE = {
   language: "en",
   body: `Hi {{1}},
 
-Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process for {{2}} and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
 
 Team RESILIENCESOFT`,
-  example: ["Priya Sharma"],
+  example: ["Priya Sharma", "RESILIENCESOFT For MERN Position"],
 };
 
 export const APPROVAL_EMAIL_SUBJECT = "Congratulations! You've Been Shortlisted – RESILIENCESOFT";
 
 export const APPROVAL_EMAIL_BODY = `Hi {{name}},
 
-Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process for {{role}} and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
 
 Team RESILIENCESOFT`;
 
-export function whatsappApprovalBodyVariables(name: string): string[] {
-  return [name];
+/** Meta body_variables for approve: [{{1}} name, {{2}} role phrase]. */
+export function whatsappApprovalBodyVariables(name: string, position = "Interview"): string[] {
+  return [name, followupRolePhrase(position)];
 }
 
-export function renderApprovalEmailText(name: string): string {
-  return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name);
+export function renderApprovalEmailText(name: string, position = "Interview"): string {
+  const role = followupRolePhrase(position);
+  return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name).replace(/\{\{\s*role\s*\}\}/g, role);
 }
 
 export type DeclineChannelOutcome = {
@@ -468,8 +472,8 @@ export function declineEmailHtml(name: string): string {
 }
 
 /** Plain shortlist HTML — no invite CTA. */
-export function approvalEmailHtml(name: string): string {
-  return noticeEmailHtml(renderApprovalEmailText(name));
+export function approvalEmailHtml(name: string, position = "Interview"): string {
+  return noticeEmailHtml(renderApprovalEmailText(name, position));
 }
 
 /** Incomplete follow-up email HTML — link stays as plain text (no invite CTA button). */

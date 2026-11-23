@@ -61,11 +61,11 @@ test("formatDeclineDeliverySummary", () => {
   assert.equal(formatDeclineDeliverySummary(undefined, undefined), "");
 });
 
-test("approval Meta template name and single name variable", () => {
+test("approval Meta template name and two variables (name + role)", () => {
   assert.equal(WHATSAPP_APPROVAL_META_TEMPLATE.name, "candidate_next_round_selected");
   assert.equal(WHATSAPP_APPROVAL_META_TEMPLATE.category, "UTILITY");
   const placeholders = WHATSAPP_APPROVAL_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
-  assert.deepEqual(placeholders, ["{{1}}"]);
+  assert.deepEqual(placeholders, ["{{1}}", "{{2}}"]);
   assert.match(WHATSAPP_APPROVAL_META_TEMPLATE.body, /RESILIENCESOFT/);
   assert.match(WHATSAPP_APPROVAL_META_TEMPLATE.body, /shortlisted/i);
   assert.doesNotMatch(WHATSAPP_APPROVAL_META_TEMPLATE.body, /🎉/);
@@ -74,19 +74,23 @@ test("approval Meta template name and single name variable", () => {
 test("approval email subject and body brand RESILIENCESOFT and substitute name", () => {
   assert.equal(APPROVAL_EMAIL_SUBJECT, "Congratulations! You've Been Shortlisted – RESILIENCESOFT");
   assert.match(APPROVAL_EMAIL_BODY, /\{\{name\}\}/);
-  const text = renderApprovalEmailText("prateek");
+  const text = renderApprovalEmailText("prateek", "MERN Position");
   assert.match(text, /^Hi prateek,/m);
+  assert.match(text, /RESILIENCESOFT For MERN Position/);
   assert.match(text, /shortlisted for the next round/i);
   assert.match(text, /Team RESILIENCESOFT/);
   assert.doesNotMatch(text, /\{\{/);
 });
 
-test("whatsappApprovalBodyVariables is just the candidate name", () => {
-  assert.deepEqual(whatsappApprovalBodyVariables("Priya Sharma"), ["Priya Sharma"]);
+test("whatsappApprovalBodyVariables is name and role phrase", () => {
+  assert.deepEqual(whatsappApprovalBodyVariables("Priya Sharma", "MERN Position"), [
+    "Priya Sharma",
+    "RESILIENCESOFT For MERN Position",
+  ]);
 });
 
 test("approvalEmailHtml has no Start interview CTA", () => {
-  const html = approvalEmailHtml("prateek");
+  const html = approvalEmailHtml("prateek", "MERN Position");
   assert.match(html, /prateek/);
   assert.doesNotMatch(html, /Start interview/i);
 });
