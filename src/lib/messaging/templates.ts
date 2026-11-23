@@ -180,11 +180,11 @@ export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
 Your interview with {{2}} is currently incomplete.
 
 You can resume your interview using the link below:
-Resume Interview: {{3}}
+Resume Interview: {{5}}
 
-Please complete your interview before {{4}}, as the link will expire thereafter.
+Please complete your interview before {{3}}, as the link will expire thereafter.
 
-For any assistance, please contact {{5}}.
+For any assistance, please contact {{4}}.
 
 Wish you all the best for your interview!
 Team RESILIENCESOFT`,
