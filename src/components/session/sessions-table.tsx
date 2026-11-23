@@ -59,6 +59,8 @@ import {
   Download01Icon,
 } from "@/components/ui/hugeicon";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { rejectTagLabel } from "@/lib/reject-tags";
+import { cn } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -74,6 +76,9 @@ export interface SessionRow {
   _count: { messages: number };
   integrityDoubtfulAt?: string | null;
   integrityDoubtfulRemark?: string | null;
+  mediaReviewStatus?: string | null;
+  rejectReason?: string | null;
+  rejectTags?: string[] | null;
   interview?: { id: string; title: string };
 }
 
@@ -493,26 +498,68 @@ export function SessionsTable({
             {session.participantEmail || "-"}
           </span>
         );
-      case "status":
+      case "status": {
+        const review = session.mediaReviewStatus;
+        const reviewLabel =
+          review === "approved"
+            ? "Approved"
+            : review === "declined"
+              ? "Rejected"
+              : review === "set_aside"
+                ? "Put aside"
+                : null;
         return (
-          <span className="flex items-center gap-1.5">
-            <Badge
-              variant={session.status === "COMPLETED" ? "default" : "secondary"}
-              className="whitespace-nowrap"
-            >
-              {session.status}
-            </Badge>
-            {session.integrityDoubtfulAt && (
+          <span className="flex flex-col gap-1">
+            <span className="flex flex-wrap items-center gap-1.5">
               <Badge
-                variant="destructive"
+                variant={session.status === "COMPLETED" ? "default" : "secondary"}
                 className="whitespace-nowrap"
-                title={session.integrityDoubtfulRemark ?? "Marked doubtful"}
               >
-                Doubtful
+                {session.status}
               </Badge>
-            )}
+              {session.integrityDoubtfulAt && (
+                <Badge
+                  variant="destructive"
+                  className="whitespace-nowrap"
+                  title={session.integrityDoubtfulRemark ?? "Marked doubtful"}
+                >
+                  Doubtful
+                </Badge>
+              )}
+              {reviewLabel && (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "whitespace-nowrap text-[10px]",
+                    review === "approved" && "border-green-600 text-green-700",
+                    review === "declined" && "border-red-600 text-red-700",
+                    review === "set_aside" && "border-amber-600 text-amber-700",
+                  )}
+                >
+                  {reviewLabel}
+                </Badge>
+              )}
+            </span>
+            {review === "declined" && session.rejectReason ? (
+              <span className="line-clamp-1 max-w-[14rem] text-[10px] text-muted-foreground">
+                {session.rejectReason}
+              </span>
+            ) : null}
+            {review === "declined" && session.rejectTags && session.rejectTags.length > 0 ? (
+              <span className="flex flex-wrap gap-0.5">
+                {session.rejectTags.slice(0, 4).map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-red-600/25 px-1 text-[9px] text-muted-foreground"
+                  >
+                    {rejectTagLabel(t)}
+                  </span>
+                ))}
+              </span>
+            ) : null}
           </span>
         );
+      }
       case "messages":
         return <span>{session._count.messages}</span>;
       case "duration":

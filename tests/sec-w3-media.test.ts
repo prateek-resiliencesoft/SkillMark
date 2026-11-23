@@ -65,7 +65,7 @@ describe("SKILLMARK-CHAINED-SHARED-PREFIX-MEDIA-WIPE", () => {
     }
     const db = w3Db({ sessions: [a, b], candidates: [] });
     const { applyMediaReview } = await import("@/lib/media-review");
-    await applyMediaReview(db as any, SID_A, "declined");
+    await applyMediaReview(db as any, SID_A, "declined", { deleteMedia: true });
 
     assert.equal(onDisk(`${folder}/recordings/a.webm`), false);
     assert.equal(onDisk(`${folder}/images/a.jpg`), false);

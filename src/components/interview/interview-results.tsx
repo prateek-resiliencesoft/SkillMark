@@ -24,6 +24,17 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,6 +44,11 @@ import {
   formatDeclineDeliverySummary,
   type DeclineChannelOutcome,
 } from "@/lib/messaging/templates";
+import {
+  normalizeRejectTags,
+  REJECT_TAG_PRESETS,
+  rejectTagLabel,
+} from "@/lib/reject-tags";
 import { buildReportData } from "@/lib/report-data";
 import { isReportStuck } from "@/lib/session-report-policy";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
@@ -111,14 +127,31 @@ function MediaReviewActions({
   status,
   expiresAt,
   clearedAt,
+  rejectReason,
+  rejectTags,
 }: {
   sessionId: string;
   status?: string;
   expiresAt?: string | null;
   clearedAt?: string | null;
+  rejectReason?: string | null;
+  rejectTags?: string[] | null;
 }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [customTag, setCustomTag] = useState("");
+  const [deleteMedia, setDeleteMedia] = useState(false);
+
+  const resetDeclineForm = () => {
+    setReason("");
+    setTags([]);
+    setCustomTag("");
+    setDeleteMedia(false);
+  };
+
   const mutation = trpc.session.setMediaReview.useMutation({
     onSuccess: (data) => {
       void utils.analysis.getSessionSummary.invalidate({ sessionId });
@@ -131,10 +164,14 @@ function MediaReviewActions({
         toast({
           title:
             data.status === "declined"
-              ? "Declined — media cleared (scores kept)"
+              ? data.cleared
+                ? "Rejected — media cleared (scores kept)"
+                : "Rejected — media kept (scores kept)"
               : "Approved — media kept",
           description: summary || undefined,
         });
+        setDeclineOpen(false);
+        resetDeclineForm();
         return;
       }
       toast({
@@ -148,51 +185,240 @@ function MediaReviewActions({
 
   const current = status ?? "pending";
   const busy = mutation.isLoading;
+  const badgeLabel =
+    current === "approved"
+      ? "Approved"
+      : current === "declined"
+        ? "Rejected"
+        : current === "set_aside"
+          ? "Put aside"
+          : current;
+
+  const togglePreset = (id: string) => {
+    setTags((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : normalizeRejectTags([...prev, id]),
+    );
+  };
+
+  const addCustomTag = () => {
+    const next = normalizeRejectTags([...tags, customTag]);
+    setTags(next);
+    setCustomTag("");
+  };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {current !== "pending" && (
-        <Badge variant="secondary" className="capitalize">
-          {current === "set_aside" ? "Put aside" : current}
-          {current === "set_aside" && expiresAt
-            ? ` · until ${new Date(expiresAt).toLocaleDateString()}`
-            : ""}
-          {clearedAt ? " · media cleared" : ""}
-        </Badge>
-      )}
-      {current === "pending" && !clearedAt && (
-        <>
-          <Button
-            size="sm"
-            disabled={busy}
-            onClick={() => mutation.mutate({ sessionId, action: "approved" })}
-          >
-            {busy && mutation.variables?.action === "approved" ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <UserCheck className="mr-1 h-3.5 w-3.5" />
-            )}
-            Approve
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => mutation.mutate({ sessionId, action: "set_aside" })}
-          >
-            Put aside
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={busy}
-            onClick={() => mutation.mutate({ sessionId, action: "declined" })}
-          >
-            Decline
-          </Button>
-        </>
-      )}
-    </div>
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        {current !== "pending" && (
+          <div className="flex flex-col gap-0.5">
+            <Badge
+              variant="outline"
+              className={cn(
+                "w-fit capitalize",
+                current === "approved" && "border-green-600 text-green-700",
+                current === "declined" && "border-red-600 text-red-700",
+                current === "set_aside" && "border-amber-600 text-amber-700",
+              )}
+            >
+              {badgeLabel}
+              {current === "set_aside" && expiresAt
+                ? ` · until ${new Date(expiresAt).toLocaleDateString()}`
+                : ""}
+              {clearedAt ? " · media cleared" : ""}
+            </Badge>
+            {current === "declined" && rejectReason ? (
+              <span className="max-w-xs line-clamp-2 text-[11px] text-muted-foreground">
+                {rejectReason}
+              </span>
+            ) : null}
+            {current === "declined" && rejectTags && rejectTags.length > 0 ? (
+              <div className="flex flex-wrap gap-0.5">
+                {rejectTags.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-red-600/30 px-1 text-[9px] text-red-700/80"
+                  >
+                    {rejectTagLabel(t)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
+        {current === "pending" && !clearedAt && (
+          <>
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => mutation.mutate({ sessionId, action: "approved" })}
+            >
+              {busy && mutation.variables?.action === "approved" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UserCheck className="mr-1 h-3.5 w-3.5" />
+              )}
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => mutation.mutate({ sessionId, action: "set_aside" })}
+            >
+              Put aside
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={busy}
+              onClick={() => setDeclineOpen(true)}
+            >
+              Decline
+            </Button>
+          </>
+        )}
+      </div>
+
+      <Dialog
+        open={declineOpen}
+        onOpenChange={(open) => {
+          setDeclineOpen(open);
+          if (!open) resetDeclineForm();
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reject candidate</DialogTitle>
+            <DialogDescription>
+              Optional note and tags. Candidate profile and scores stay. Media is deleted only if
+              you check the box below.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="reject-reason" className="text-xs">
+                Reason (optional)
+              </Label>
+              <Textarea
+                id="reject-reason"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Short description of why they were rejected…"
+                maxLength={1000}
+                rows={3}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Tags (optional)</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {REJECT_TAG_PRESETS.map((p) => {
+                  const on = tags.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => togglePreset(p.id)}
+                      className={cn(
+                        "rounded-md border px-2 py-0.5 text-[11px] transition-colors",
+                        on
+                          ? "border-red-600 bg-red-600/10 text-red-700"
+                          : "border-border text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-1.5">
+                <Input
+                  value={customTag}
+                  onChange={(e) => setCustomTag(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      addCustomTag();
+                    }
+                  }}
+                  placeholder="Custom tag"
+                  maxLength={40}
+                  className="h-8 text-xs"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 shrink-0"
+                  disabled={!customTag.trim()}
+                  onClick={addCustomTag}
+                >
+                  Add
+                </Button>
+              </div>
+              {tags.filter((t) => !REJECT_TAG_PRESETS.some((p) => p.id === t)).length > 0 ? (
+                <div className="flex flex-wrap gap-1">
+                  {tags
+                    .filter((t) => !REJECT_TAG_PRESETS.some((p) => p.id === t))
+                    .map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
+                        className="rounded border border-red-600/30 px-1.5 text-[10px] text-red-700"
+                      >
+                        {t} ×
+                      </button>
+                    ))}
+                </div>
+              ) : null}
+            </div>
+            <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+              <Checkbox
+                checked={deleteMedia}
+                onCheckedChange={(v) => setDeleteMedia(v === true)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="font-medium">Also delete media files</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Removes recordings and uploaded media for this session only. Scores and candidate
+                  profile stay.
+                </span>
+              </span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => setDeclineOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy}
+              onClick={() =>
+                mutation.mutate({
+                  sessionId,
+                  action: "declined",
+                  rejectReason: reason.trim() || undefined,
+                  rejectTags: tags,
+                  deleteMedia,
+                })
+              }
+            >
+              {busy && mutation.variables?.action === "declined" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              Confirm reject
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -879,6 +1105,8 @@ function SessionDetailBody({
             status={(summary.data as { mediaReviewStatus?: string } | undefined)?.mediaReviewStatus}
             expiresAt={(summary.data as { mediaExpiresAt?: string | null } | undefined)?.mediaExpiresAt}
             clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}
+            rejectReason={(summary.data as { rejectReason?: string | null } | undefined)?.rejectReason}
+            rejectTags={(summary.data as { rejectTags?: string[] | null } | undefined)?.rejectTags}
           />
           {canRetranscribe && !captureFailure && (
             <Button

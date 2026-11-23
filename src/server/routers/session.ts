@@ -1623,12 +1623,15 @@ export const sessionRouter = router({
       return { success: true };
     }),
 
-  /** Approve / decline / put-aside session media. Decline clears object storage; DB scores stay. */
+  /** Approve / decline / put-aside session media. Decline optionally clears object storage; DB scores stay. */
   setMediaReview: protectedProcedure
     .input(
       z.object({
         sessionId: z.string(),
         action: z.enum(["approved", "declined", "set_aside"]),
+        rejectReason: z.string().trim().max(1000).optional(),
+        rejectTags: z.array(z.string().max(40)).max(12).optional(),
+        deleteMedia: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1648,7 +1651,18 @@ export const sessionRouter = router({
       };
       await requireSessionManager(ctx, interviewData.project.organizationId, interviewData.projectId);
 
-      const result = await applyMediaReview(ctx.supabase, input.sessionId, input.action);
+      const result = await applyMediaReview(
+        ctx.supabase,
+        input.sessionId,
+        input.action,
+        input.action === "declined"
+          ? {
+              deleteMedia: input.deleteMedia === true,
+              rejectReason: input.rejectReason,
+              rejectTags: input.rejectTags,
+            }
+          : undefined,
+      );
       const candidateId = (session as { candidateId?: string | null }).candidateId;
       if (input.action === "declined") {
         if (candidateId) await setCandidateDecisionStatus(ctx.supabase, candidateId, "rejected");
