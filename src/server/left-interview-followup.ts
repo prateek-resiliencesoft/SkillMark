@@ -1,20 +1,30 @@
 import "server-only";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createLogger } from "@/lib/logger";
-import { sendResilioTemplate } from "@/lib/messaging/providers";
-import { followupBodyVariables, normalizeWhatsappPhone, WHATSAPP_FOLLOWUP_META_TEMPLATE } from "@/lib/messaging/templates";
+import { sendBrevoEmail, sendResendEmail, sendResilioTemplate } from "@/lib/messaging/providers";
+import {
+  FOLLOWUP_EMAIL_SUBJECT,
+  WHATSAPP_FOLLOWUP_META_TEMPLATE,
+  followupBodyVariables,
+  followupEmailHtml,
+  normalizeWhatsappPhone,
+  renderFollowupEmailText,
+  type FollowupTemplateVars,
+} from "@/lib/messaging/templates";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { inviteLink } from "./batch-access";
-import { loadDeliveryConfig } from "./invite-delivery";
+import { setCandidateDecisionStatus } from "./candidate-decision";
 import { claimFollowup, releaseFollowup } from "./followup-claim";
+import { loadDeliveryConfig } from "./invite-delivery";
 
 const log = createLogger("left-interview-followup");
 
-export type LeftFollowupResult = { status: "sent" | "failed" | "skipped"; error?: string };
+export type LeftFollowupResult = {
+  status: "sent" | "failed" | "skipped";
+  error?: string;
+  email?: "sent" | "failed" | "skipped";
+  whatsapp?: "sent" | "failed" | "skipped";
+};
 
-/**
- * Why the follow-up was not sent (null clears it), so the dashboard can explain it.
- * Best-effort: needs migration 38; without it the send/skip still behaves the same.
- */
 async function recordFollowupError(candidateId: string, message: string | null): Promise<void> {
   const { error } = await supabaseAdmin
     .from("candidates")
@@ -25,18 +35,52 @@ async function recordFollowupError(candidateId: string, message: string | null):
   }
 }
 
+async function sendFollowupEmail(
+  organizationId: string,
+  to: string | null | undefined,
+  name: string,
+  vars: FollowupTemplateVars,
+): Promise<"sent" | "failed" | "skipped"> {
+  if (!to?.trim()) return "skipped";
+  const cfg = await loadDeliveryConfig(supabaseAdmin, organizationId);
+  const provider =
+    cfg.defaultEmailProvider || (cfg.brevo && !cfg.resend ? "brevo" : "resend");
+  const subject = FOLLOWUP_EMAIL_SUBJECT;
+  const text = renderFollowupEmailText(vars);
+  const html = followupEmailHtml(vars);
+
+  if (provider === "brevo") {
+    if (!cfg.brevo) return "failed";
+    const r = await sendBrevoEmail({
+      apiKey: cfg.brevo.apiKey,
+      fromEmail: cfg.brevo.fromEmail,
+      fromName: "RESILIENCESOFT",
+      toEmail: to,
+      toName: name,
+      replyTo: cfg.brevo.replyTo,
+      subject,
+      html,
+      text,
+    });
+    return r.ok ? "sent" : "failed";
+  }
+  if (!cfg.resend) return "failed";
+  const r = await sendResendEmail({
+    apiKey: cfg.resend.apiKey,
+    from: cfg.resend.from,
+    replyTo: cfg.resend.replyTo,
+    to,
+    subject,
+    text,
+    html,
+  });
+  return r.ok ? "sent" : "failed";
+}
+
 /**
- * WhatsApp follow-up for a candidate who left a live interview (session → ABANDONED).
- * Runs automatically on each ABANDONED transition, and manually from the dashboard
- * (`manual: true`) for candidates it did not reach. Sent at most once per candidate per
- * invite link (atomic claim on candidates.followupSentToken, migration 37). Not sent when:
- *  - the project has no valid contact number (the template needs it),
- *  - the candidate has no valid phone (normalised to E.164),
- *  - the invite link has no expiry or already expired,
- *  - ResilioHub WhatsApp is not configured,
- *  - already sent for this invite, or migration 37 is missing.
- * The reason is saved on the candidate (followupError). A failed send releases the claim
- * so it can be retried. Never throws.
+ * Incomplete-interview follow-up (`interview_incomplete_reminder`).
+ * Manual from dashboard always; auto only when interviews.autoLeftFollowup
+ * (see notifyCandidateLeftInterview). WhatsApp primary; email additive.
  */
 export async function sendLeftInterviewFollowup(
   sessionId: string,
@@ -65,10 +109,16 @@ export async function sendLeftInterviewFollowup(
 
     const { data: interview } = await supabaseAdmin
       .from("interviews")
-      .select("projectId")
+      .select("projectId, title, autoLeftFollowup")
       .eq("id", session.interviewId)
       .maybeSingle();
     if (!interview?.projectId) return skip("This interview has no project.");
+
+    if (!opts.manual && !interview.autoLeftFollowup) {
+      // Default-off: silent skip so the dashboard does not show a false follow-up error.
+      log.info("skip — autoLeftFollowup off", sessionId);
+      return { status: "skipped" };
+    }
 
     const { data: project } = await supabaseAdmin
       .from("projects")
@@ -82,7 +132,7 @@ export async function sendLeftInterviewFollowup(
 
     const { data: candidate } = await supabaseAdmin
       .from("candidates")
-      .select("name, phone, inviteToken, expiresAt")
+      .select("name, email, phone, inviteToken, expiresAt")
       .eq("id", candidateId)
       .maybeSingle();
     const phone = normalizeWhatsappPhone(candidate?.phone);
@@ -124,46 +174,58 @@ export async function sendLeftInterviewFollowup(
       };
     }
 
-    let ok = false;
+    const title = String(interview.title ?? "Interview").split(" · ")[0] || "Interview";
+    const vars: FollowupTemplateVars = {
+      name: String(candidate.name ?? ""),
+      supportPhone,
+      link: inviteLink(candidate.inviteToken),
+      expiresAt,
+      position: title,
+    };
+
+    let waOk = false;
     let sendError: string | undefined;
+    let emailStatus: "sent" | "failed" | "skipped" = "skipped";
     try {
       const r = await sendResilioTemplate({
         apiKey: cfg.resilio.apiKey,
         baseUrl: cfg.resilio.baseUrl,
         to: phone,
         templateName: WHATSAPP_FOLLOWUP_META_TEMPLATE.name,
-        bodyVariables: followupBodyVariables({
-          name: String(candidate.name ?? ""),
-          supportPhone,
-          link: inviteLink(candidate.inviteToken),
-          expiresAt,
-          organization: cfg.organizationName,
-        }),
+        bodyVariables: followupBodyVariables(vars),
       });
-      ok = r.ok;
+      waOk = r.ok;
       sendError = r.error;
       if (!r.ok) log.error("left-interview follow-up failed", sessionId, r.error);
+
+      emailStatus = await sendFollowupEmail(
+        String(project.organizationId),
+        candidate.email,
+        String(candidate.name ?? ""),
+        vars,
+      );
     } catch (err) {
       sendError = err instanceof Error ? err.message : "WhatsApp send failed.";
       log.error("left-interview follow-up threw", sessionId, sendError);
     } finally {
-      if (!ok) await releaseFollowup(supabaseAdmin, candidateId, candidate.inviteToken).catch(() => undefined);
+      if (!waOk) await releaseFollowup(supabaseAdmin, candidateId, candidate.inviteToken).catch(() => undefined);
     }
 
-    if (ok) {
+    if (waOk) {
       await recordFollowupError(candidateId, null);
-      return { status: "sent" };
+      await setCandidateDecisionStatus(supabaseAdmin, candidateId, "followup_sent");
+      return { status: "sent", whatsapp: "sent", email: emailStatus };
     }
     const error = sendError ?? "WhatsApp send failed.";
     await recordFollowupError(candidateId, error);
-    return { status: "failed", error };
+    return { status: "failed", error, whatsapp: "failed", email: emailStatus };
   } catch (err) {
     log.error("sendLeftInterviewFollowup", err instanceof Error ? err.message : err);
     return { status: "failed", error: err instanceof Error ? err.message : "Follow-up failed." };
   }
 }
 
-/** Automatic send, fired when a live session becomes ABANDONED. Never throws. */
+/** Automatic send when session → ABANDONED; no-op unless interviews.autoLeftFollowup. */
 export async function notifyCandidateLeftInterview(sessionId: string): Promise<void> {
-  await sendLeftInterviewFollowup(sessionId);
+  await sendLeftInterviewFollowup(sessionId, { manual: false });
 }

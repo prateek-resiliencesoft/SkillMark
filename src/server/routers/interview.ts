@@ -408,6 +408,7 @@ export const interviewRouter = router({
         headMovementDetectionEnabled: z.boolean().default(false),
         integrityChecksEnabled: z.boolean().default(false),
         livenessChallengesEnabled: z.boolean().default(false),
+        autoLeftFollowup: z.boolean().default(false),
         completionNotifyMembers: z
           .array(
             z.object({
@@ -692,6 +693,7 @@ export const interviewRouter = router({
         headMovementDetectionEnabled: z.boolean().optional(),
         integrityChecksEnabled: z.boolean().optional(),
         livenessChallengesEnabled: z.boolean().optional(),
+        autoLeftFollowup: z.boolean().optional(),
         completionNotifyMembers: z
           .array(
             z.object({

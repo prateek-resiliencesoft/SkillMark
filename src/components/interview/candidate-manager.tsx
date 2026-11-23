@@ -50,8 +50,10 @@ import { exportToXlsx } from "@/lib/export-xlsx";
 import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
+import { cn } from "@/lib/utils";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -119,6 +121,7 @@ type CandidateRow = {
   followupSentAt: string | null;
   followupSentToken: string | null;
   followupError: string | null;
+  decisionStatus: string | null;
   session: any;
   createdAt: string;
   hasResume?: boolean;
@@ -659,6 +662,7 @@ export function CandidateManager({
         followupSentAt: c.followupSentAt ?? null,
         followupSentToken: c.followupSentToken ?? null,
         followupError: c.followupError ?? null,
+        decisionStatus: (c as { decisionStatus?: string | null }).decisionStatus ?? "none",
         session: c.session,
         createdAt: c.createdAt,
         hasResume: !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName),
@@ -1354,6 +1358,19 @@ export function CandidateManager({
                           >
                             {statusLabel}
                           </Badge>
+                          {row.type === "candidate" && decisionStatusLabel(row.decisionStatus) ? (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "whitespace-nowrap font-normal",
+                                row.decisionStatus === "approved" && "border-green-600 text-green-700",
+                                row.decisionStatus === "rejected" && "border-red-600 text-red-700",
+                                row.decisionStatus === "followup_sent" && "border-amber-600 text-amber-700",
+                              )}
+                            >
+                              {decisionStatusLabel(row.decisionStatus)}
+                            </Badge>
+                          ) : null}
                           <QuitEarlyBadge session={row.session} />
                           {neverReachedFirstQuestion(row.session) ? (
                             <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
