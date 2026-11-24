@@ -96,7 +96,8 @@ interface CvRow {
 
 const ACCEPT = ".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp";
 const MAX_FILES = 200;
-const PARSE_CONCURRENCY = 3;
+/** Native PDF text is cheap now; keep this modest so profile LLM calls don't stampede. */
+const PARSE_CONCURRENCY = 5;
 const GENERATE_CONCURRENCY = 2;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 

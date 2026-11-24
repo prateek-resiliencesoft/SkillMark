@@ -221,17 +221,14 @@ export function ResumeImportDialog({
       setIsParsing(true);
       abortRef.current = false;
       const queue = (only ?? entries).filter((e) => e.status !== "done");
-      // Sequential with a short pause: free-tier AI keys are rate-limited per minute.
-      const concurrency = 1;
+      // Modest parallelism — FailoverProvider already walks keys on 429.
+      const concurrency = 3;
       const worker = async () => {
-        let first = true;
         for (let e = queue.shift(); e && !abortRef.current; e = queue.shift()) {
-          if (!first) await new Promise((r) => setTimeout(r, 1500));
-          first = false;
           await parseEntry(e);
         }
       };
-      await Promise.all(Array.from({ length: concurrency }, worker));
+      await Promise.all(Array.from({ length: Math.min(concurrency, queue.length || 1) }, worker));
       setIsParsing(false);
     },
     [entries, parseEntry],
