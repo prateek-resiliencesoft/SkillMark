@@ -3,7 +3,7 @@
  * the settings UI uses it for grouping/warnings and the server re-checks the same rules.
  */
 
-export type ProviderCapId = "openai" | "gemini" | "nvidia" | "anthropic" | "grok" | "custom";
+export type ProviderCapId = "openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom";
 
 export type ProviderCaps = {
   /** Can run live voice interviews (realtime speech in / speech out). */
@@ -73,17 +73,17 @@ export const PROVIDER_CAPS: Record<ProviderCapId, ProviderCaps> = {
     ],
     usedFor: ["Chat interviews", "Reports & scoring", "CV parsing", "Question generation"],
   },
-  grok: {
+  groq: {
     voice: false,
-    summary: "Text only. Fast reasoning from xAI — strong backup.",
+    summary: "Text only. Ultra-fast inference — strong backup.",
     pros: [
-      "Strong chat and coding reasoning via Grok models",
+      "Very low latency on Llama / GPT-OSS and other hosted models",
       "OpenAI-compatible API — drop-in for text workloads",
       "Good backup when OpenAI / Gemini / Claude are rate limited",
     ],
     limits: [
-      "No realtime voice in this app — Grok cannot run voice interviews here",
-      "Use Gemini or OpenAI for voice; keep Grok for chat, reports and CV work",
+      "No realtime voice in this app — Groq cannot run voice interviews here",
+      "Use Gemini or OpenAI for voice; keep Groq for chat, reports and CV work",
     ],
     usedFor: ["Chat interviews", "Reports & scoring", "CV parsing", "Question generation"],
   },
@@ -120,8 +120,8 @@ export function voiceBlockedReason(id: string): string | null {
   if (id === "nvidia") {
     return "NVIDIA doesn't offer a realtime voice model here, so it can't run voice interviews. Use Gemini or OpenAI for voice — keep NVIDIA as a text backup.";
   }
-  if (id === "grok") {
-    return "Grok (xAI) is text-only in this app, so it can't run voice interviews. Use Gemini or OpenAI for voice — keep Grok for chat interviews, reports and CV parsing.";
+  if (id === "groq") {
+    return "Groq is text-only in this app, so it can't run voice interviews. Use Gemini or OpenAI for voice — keep Groq for chat interviews, reports and CV parsing.";
   }
   return null;
 }
@@ -150,8 +150,8 @@ const TEXT_ONLY = [
   /deepseek/i,
   /gemma/i,
   /phi[-\d]/i,
-  /grok-\d/i,
   /(^|[-_/])gpt-(3|4|4o|4\.1|5)(-mini|-nano|-turbo)?$/i,
+  /gpt-oss/i,
   /gemini-[\d.]+-(flash|pro)(-lite)?$/i,
   /embed/i,
 ];

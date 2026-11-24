@@ -109,12 +109,12 @@ function providerInstance(
       defaultModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
     });
   }
-  if (id === "grok") {
+  if (id === "groq") {
     return new CompatibleOpenAIProvider({
-      id: "grok",
-      name: "Grok (xAI)",
-      models: grokModels(),
-      defaultModel: process.env.XAI_MODEL || process.env.GROK_MODEL || "grok-4.7",
+      id: "groq",
+      name: "Groq",
+      models: groqModels(),
+      defaultModel: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
       apiKey,
       baseURL: baseUrl,
     });
@@ -256,7 +256,16 @@ export function modelFitsProvider(provider: LLMProvider, model?: string | null):
   if (id === "openai") return /^(gpt-|o[1-9]|chatgpt|text-embedding|ft:)/.test(m);
   if (id === "anthropic") return m.startsWith("claude");
   if (id === "nvidia") return m.includes("/") || m.startsWith("meta") || m.startsWith("nvidia");
-  if (id === "grok") return m.startsWith("grok");
+  if (id === "groq") {
+    return (
+      m.includes("/") ||
+      m.startsWith("llama") ||
+      m.startsWith("gemma") ||
+      m.startsWith("mixtral") ||
+      m.startsWith("qwen") ||
+      m.includes("gpt-oss")
+    );
+  }
   if (id === "kimi") return m.includes("moonshot") || m.includes("kimi");
   if (id === "minimax") return m.toLowerCase().includes("minimax");
   return false;
@@ -409,9 +418,11 @@ function nvidiaModels() {
   return Array.from(new Set([d, "meta/llama-3.1-8b-instruct", "meta/llama-3.1-70b-instruct"]));
 }
 
-function grokModels() {
-  const d = process.env.XAI_MODEL || process.env.GROK_MODEL || "grok-4.7";
-  return Array.from(new Set([d, "grok-4.7", "grok-4.6", "grok-4.5"]));
+function groqModels() {
+  const d = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+  return Array.from(
+    new Set([d, "openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]),
+  );
 }
 
 function customModels() {
@@ -433,7 +444,7 @@ function buildFromCreds(creds: ResolvedAiCredentials): Map<string, LLMProvider> 
   return map;
 }
 
-const SETTINGS_ORDER: AiProviderId[] = ["openai", "gemini", "nvidia", "anthropic", "grok", "custom"];
+const SETTINGS_ORDER: AiProviderId[] = ["openai", "gemini", "nvidia", "anthropic", "groq", "custom"];
 const LEGACY_ORDER = ["kimi", "minimax"] as const;
 
 function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials): LLMProvider {
@@ -451,7 +462,7 @@ function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials
     if (id === "minimax" && process.env.MINIMAX_API_KEY) return map.get(id)!;
   }
   throw new Error(
-    "No LLM provider configured. Add an API key in Project Settings → AI, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / XAI_API_KEY in .env.",
+    "No LLM provider configured. Add an API key in Project Settings → AI, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / GROQ_API_KEY in .env.",
   );
 }
 
@@ -498,10 +509,10 @@ function resolveEmptyCreds(): ResolvedAiCredentials {
       apiKeys: keyOrEmpty(process.env.ANTHROPIC_API_KEY),
       from: process.env.ANTHROPIC_API_KEY ? "env" : "none",
     },
-    grok: {
-      apiKeys: keyOrEmpty(process.env.XAI_API_KEY || process.env.GROK_API_KEY),
-      baseUrl: process.env.XAI_BASE_URL || "https://api.x.ai/v1",
-      from: process.env.XAI_API_KEY || process.env.GROK_API_KEY ? "env" : "none",
+    groq: {
+      apiKeys: keyOrEmpty(process.env.GROQ_API_KEY),
+      baseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
+      from: process.env.GROQ_API_KEY ? "env" : "none",
     },
     custom: {
       apiKeys: keyOrEmpty(process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY),
@@ -521,7 +532,7 @@ export async function resolveProvider(opts?: {
   const chain = await resolveProviderChain(opts?.organizationId, opts?.task ?? "standard");
   if (!chain.length) {
     throw new Error(
-      "No LLM provider configured. Add an API key in Settings → AI Providers, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / XAI_API_KEY in .env.",
+      "No LLM provider configured. Add an API key in Settings → AI Providers, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / GROQ_API_KEY in .env.",
     );
   }
   // Do NOT reorder by interview.llmProvider — that forced Gemini model ids onto OpenAI after

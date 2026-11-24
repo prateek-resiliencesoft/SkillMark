@@ -38,7 +38,7 @@ import {
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
-type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "grok" | "custom";
+type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom";
 
 /** One API key row. `keep` = index of the already-saved key it represents (null = new). */
 type KeySlot = { id: string; keep: number | null; value: string; tier: "free" | "paid" };
@@ -55,7 +55,7 @@ const emptySlots = (): Record<ProviderId, KeySlot[]> => ({
   gemini: [newSlot()],
   nvidia: [newSlot()],
   anthropic: [newSlot()],
-  grok: [newSlot()],
+  groq: [newSlot()],
   custom: [newSlot()],
 });
 
@@ -116,16 +116,15 @@ function AnthropicLogo({ className }: { className?: string }) {
   );
 }
 
-function GrokLogo({ className }: { className?: string }) {
-  // xAI / X mark (Simple Icons "x")
+function GroqLogo({ className }: { className?: string }) {
   return (
     <svg
       role="img"
       viewBox="0 0 24 24"
       fill="currentColor"
-      className={cn("h-5 w-5 text-foreground", className)}
+      className={cn("h-5 w-5 text-[#F55036]", className)}
     >
-      <path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z" />
+      <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.5 14.25h-2.25v-1.35c0-.62-.5-1.12-1.12-1.12H10.9c-1.45 0-2.62-1.18-2.62-2.63V8.55c0-.41.34-.75.75-.75h2.25c.41 0 .75.34.75.75v2.4c0 .21.17.38.38.38h1.72c1.45 0 2.62 1.17 2.62 2.62v2.55c0 .41-.34.75-.75.75z" />
     </svg>
   );
 }
@@ -196,15 +195,15 @@ const PROVIDERS: ProviderMeta[] = [
     keyPlaceholder: "sk-ant-...",
   },
   {
-    id: "grok",
-    name: "Grok (xAI)",
-    hint: "Grok 4.7 / 4.6 / 4.5 text models",
-    howTo: "Sign in to the xAI Console, open API Keys, create a key, then paste it here.",
-    consoleUrl: "https://console.x.ai/team/default/api-keys",
-    consoleLabel: "xAI Console",
-    logo: GrokLogo,
-    badgeContainer: "bg-zinc-950 text-white dark:bg-zinc-900 border-zinc-700 shadow-sm",
-    keyPlaceholder: "xai-...",
+    id: "groq",
+    name: "Groq",
+    hint: "Ultra-fast Llama / GPT-OSS inference",
+    howTo: "Sign in to GroqCloud, open API Keys, create a key, then paste it here.",
+    consoleUrl: "https://console.groq.com/keys",
+    consoleLabel: "GroqCloud API keys",
+    logo: GroqLogo,
+    badgeContainer: "bg-[#F55036]/10 border-[#F55036]/30 shadow-sm",
+    keyPlaceholder: "gsk_...",
   },
   {
     id: "custom",
@@ -238,7 +237,7 @@ const PROVIDER_SHORT: Record<ProviderId, string> = {
   gemini: "Gemini",
   nvidia: "NVIDIA",
   anthropic: "Anthropic",
-  grok: "Grok",
+  groq: "Groq",
   custom: "Custom",
 };
 
@@ -302,7 +301,7 @@ export default function AiSettingsPage() {
     gemini: false,
     nvidia: false,
     anthropic: false,
-    grok: false,
+    groq: false,
     custom: false,
   });
   const [customBase, setCustomBase] = useState("");
@@ -794,7 +793,7 @@ export default function AiSettingsPage() {
 
   const voiceProviders = PROVIDERS.filter((p) => p.id === "openai" || p.id === "gemini");
   const textProviders = PROVIDERS.filter(
-    (p) => p.id === "anthropic" || p.id === "nvidia" || p.id === "grok",
+    (p) => p.id === "anthropic" || p.id === "nvidia" || p.id === "groq",
   );
   const customProvider = PROVIDERS.find((p) => p.id === "custom")!;
 
