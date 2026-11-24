@@ -21,6 +21,10 @@
 		header_up X-Forwarded-For {remote_host}
 	}
 
+	# Round 2 live video: LiveKit signaling (WebSocket + /rtc/validate).
+	@livekit path /rtc /rtc/*
+	reverse_proxy @livekit livekit:7880
+
 	reverse_proxy app:3000 {
 		header_up Host {host}
 		header_up -CF-Connecting-IP
@@ -29,6 +33,12 @@
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
 	}
+}
+
+# Self-hosted Langfuse (AI traces). 502 until the "langfuse" compose profile is enabled.
+{$LANGFUSE_DOMAIN:langfuse.localhost} {
+	encode gzip
+	reverse_proxy langfuse-web:3000
 }
 
 # Landing www → apex

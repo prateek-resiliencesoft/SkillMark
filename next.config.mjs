@@ -11,6 +11,12 @@ const nextConfig = {
       "ws",
       "bufferutil",
       "utf-8-validate",
+      "@langchain/core",
+      "@langchain/langgraph",
+      "@langfuse/core",
+      "@langfuse/otel",
+      "@langfuse/tracing",
+      "@opentelemetry/sdk-trace-node",
     ],
   },
   eslint: {

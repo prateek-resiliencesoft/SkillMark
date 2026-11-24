@@ -1,0 +1,19 @@
+# LiveKit SFU for round 2 live interviews (docker-compose.prod.yml → livekit).
+# API keys come from LIVEKIT_KEYS ("<key>: <secret>") in the container env.
+# Signaling (WebSocket) goes through Caddy at wss://<site>/rtc → livekit:7880.
+# Media needs these ports open on the host firewall:
+#   7881/tcp (ICE over TCP), 3478/udp (embedded TURN), 50000-50200/udp (RTP).
+port: 7880
+log_level: info
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50200
+  use_external_ip: true
+turn:
+  enabled: true
+  udp_port: 3478
+room:
+  empty_timeout: 600
+  departure_timeout: 120
+  max_participants: 12
