@@ -1,14 +1,13 @@
 /**
  * Layout-aware document → Markdown extraction (server-only).
  *
- * Uses [Docling](https://github.com/docling-project/docling) as a **local Python
- * library** (`scripts/docling_extract.py`) — no HTTP URL required:
- *   PDF: Docling fast (OCR off) → Docling OCR → pdf-parse → vision
+ * Fast path first (bulk CV must finish under ~75s including profile LLM):
+ *   PDF:  pdf-parse → Docling OCR (only if thin/scanned) → vision
  *   DOCX: mammoth → Docling if thin
  *   Image: Docling OCR → vision
  *
- * Optional: `DOCLING_SERVE_URL` is a fallback if the Python package is missing.
- * Install: `pip install -r requirements-docling.txt`
+ * Docling = local Python (`scripts/docling_extract.py`); optional Serve URL
+ * if the package is missing. Install: `pip install -r requirements-docling.txt`
  *
  * Nothing here guesses: unreadable input is reported in `warnings` so callers
  * can flag the document for human review.
@@ -122,9 +121,12 @@ export async function extractDocument(
 /*  Docling (local Python library first; optional Serve fallback)      */
 /* ------------------------------------------------------------------ */
 
-/** Cap Docling so a hung job cannot eat the whole parse-cv budget. */
-const DOCLING_FAST_BUDGET_MS = 30_000;
-const DOCLING_OCR_BUDGET_MS = 60_000;
+/**
+ * Keep Docling short — cold model load alone can exceed the parse-cv budget.
+ * Native text is preferred; Docling is only for thin/scanned leftovers.
+ */
+const DOCLING_FAST_BUDGET_MS = 12_000;
+const DOCLING_OCR_BUDGET_MS = 20_000;
 
 type DoclingOpts = {
   /** false = born-digital fast path (skip OCR). true = scan/image OCR. */
@@ -356,16 +358,7 @@ async function extractPdf(
 ): Promise<ExtractedDocument> {
   const warnings: string[] = [];
 
-  // Docling Serve: fast born-digital pass (OCR off), then OCR if thin.
-  signal?.throwIfAborted();
-  const doclingFast = await tryDocling(buffer, fileName, signal, { ocr: false });
-  if (doclingFast) return doclingFast;
-
-  signal?.throwIfAborted();
-  const doclingOcr = await tryDocling(buffer, fileName, signal, { ocr: true });
-  if (doclingOcr) return doclingOcr;
-
-  // No Docling / Docling failed — local pdf-parse, then vision.
+  // 1) Native text layer first — most digital CVs finish in ms (no Docling cold start).
   let pages: string[] = [];
   let numPages = 0;
 
@@ -394,7 +387,14 @@ async function extractPdf(
     };
   }
 
-  // Still unreadable: ask the vision model to read the PDF.
+  // 2) Thin / scanned: short Docling OCR attempt (must not burn the whole 75s budget).
+  signal?.throwIfAborted();
+  const viaDocling = await tryDocling(buffer, fileName, signal, { ocr: true });
+  if (viaDocling && viaDocling.markdown.length >= Math.max(textChars, MIN_CHARS_PER_PAGE)) {
+    return { ...viaDocling, pages: numPages || viaDocling.pages, warnings };
+  }
+
+  // 3) Vision LLM last resort.
   const visions = await getVisionClients(organizationId);
   if (!visions.length) {
     warnings.push(
