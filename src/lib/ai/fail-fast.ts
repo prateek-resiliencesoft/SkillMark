@@ -26,8 +26,9 @@ export function isAbortError(err: unknown): boolean {
   return (
     e?.name === "AbortError" ||
     e?.name === "TimeoutError" ||
+    e?.name === "APIUserAbortError" ||
     e?.code === "ABORT_ERR" ||
-    /request was aborted|operation was aborted|timed out/i.test(e?.message ?? "")
+    /request was aborted|operation was aborted|timed out|apiuserabort/i.test(e?.message ?? "")
   );
 }
 

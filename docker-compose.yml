@@ -34,16 +34,5 @@ services:
     ports:
       - "127.0.0.1:${POSTGREST_PORT:-3001}:3000"
 
-  # Optional HTTP fallback only — prefer local: pip install -r requirements-docling.txt
-  # docker compose --profile docling up -d  +  DOCLING_SERVE_URL=http://127.0.0.1:5001
-  docling:
-    profiles: ["docling"]
-    image: quay.io/docling-project/docling-serve-cpu:latest
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${DOCLING_PORT:-5001}:5001"
-    environment:
-      DOCLING_SERVE_ENABLE_UI: "0"
-
 volumes:
   skillmark-pg:

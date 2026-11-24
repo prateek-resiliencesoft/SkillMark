@@ -1,30 +1,18 @@
 /**
- * Layout-aware document → Markdown extraction (server-only).
+ * Document → Markdown extraction (server-only).
  *
- * Fast path first (bulk CV must finish under ~75s including profile LLM):
- *   PDF:  pdf-parse → Docling OCR (only if thin/scanned) → vision
- *   DOCX: mammoth → Docling if thin
- *   Image: Docling OCR → vision
- *
- * Docling = local Python (`scripts/docling_extract.py`); optional Serve URL
- * if the package is missing. Install: `pip install -r requirements-docling.txt`
- *
- * Nothing here guesses: unreadable input is reported in `warnings` so callers
- * can flag the document for human review.
+ *   PDF:  pdf-parse (text layer) → vision AI if scanned/thin
+ *   DOCX: mammoth
+ *   Image: vision AI
  */
 import { configuredGeminiModel } from "@/lib/ai/gemini-models";
 import { unwrappingFetch } from "@/lib/ai/providers/compatible";
 import "server-only";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
 import { assertZipWithinLimits, htmlToMarkdown, normalise } from "@/lib/documents/docx-safety";
-import { budgetSignal, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
+import { budgetSignal, isAbortError, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
 import { classifyAiFailure, isAuthError, isQuotaError, keyChainExhaustedError } from "@/lib/ai/key-chain";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -60,7 +48,7 @@ const MAX_PDF_PAGES = 50;
 const MIN_CHARS_PER_PAGE = 80;
 const MAX_VISION_IMAGE_PX = 2000;
 
-export type ExtractionMethod = "docling" | "docx" | "pdf-text" | "vision" | "plain-text";
+export type ExtractionMethod = "docx" | "pdf-text" | "vision" | "plain-text";
 
 export interface ExtractedDocument {
   markdown: string;
@@ -100,200 +88,20 @@ export async function extractDocument(
   options?.signal?.throwIfAborted();
 
   if (kind === "docx") {
-    const native = await extractDocx(buffer);
-    if (native.markdown.trim().length >= MIN_CHARS_PER_PAGE) return native;
-    const viaDocling = await tryDocling(buffer, fileName, options?.signal, { ocr: true });
-    if (viaDocling && viaDocling.markdown.length > native.markdown.length) return viaDocling;
-    return native;
+    return extractDocx(buffer);
   }
 
   if (kind === "pdf") {
     return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
   }
 
-  // Images need OCR — Docling before vision LLM.
-  const viaDocling = await tryDocling(buffer, fileName, options?.signal, { ocr: true });
-  if (viaDocling && viaDocling.markdown.trim().length >= MIN_CHARS_PER_PAGE) return viaDocling;
   return extractImage(buffer, options?.organizationId, options?.signal);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Docling (local Python library first; optional Serve fallback)      */
-/* ------------------------------------------------------------------ */
-
-/**
- * Keep Docling short — cold model load alone can exceed the parse-cv budget.
- * Native text is preferred; Docling is only for thin/scanned leftovers.
- */
-const DOCLING_FAST_BUDGET_MS = 12_000;
-const DOCLING_OCR_BUDGET_MS = 20_000;
-
-type DoclingOpts = {
-  /** false = born-digital fast path (skip OCR). true = scan/image OCR. */
-  ocr: boolean;
-};
-
-/** Cached: null = not probed, true/false = import docling works. */
-let doclingPythonOk: boolean | null = null;
-
-function doclingPythonBin(): string {
-  if (process.env.DOCLING_PYTHON?.trim()) return process.env.DOCLING_PYTHON.trim();
-  // Prefer project venv when present (PEP 668 / local install).
-  const venvPy = path.join(process.cwd(), ".venv-docling", "bin", "python");
-  if (existsSync(venvPy)) return venvPy;
-  return "python3";
-}
-
-function doclingScriptPath(): string {
-  return path.join(process.cwd(), "scripts", "docling_extract.py");
-}
-
-function runProcess(
-  cmd: string,
-  args: string[],
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const onAbort = () => {
-      child.kill("SIGKILL");
-      reject(signal?.reason ?? new Error("Aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`Docling timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stdout.on("data", (c: Buffer) => {
-      stdout += c.toString("utf8");
-    });
-    child.stderr.on("data", (c: Buffer) => {
-      stderr += c.toString("utf8");
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      reject(err);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
-
-async function probeDoclingPython(): Promise<boolean> {
-  if (process.env.DOCLING_DISABLE === "1") {
-    doclingPythonOk = false;
-    return false;
-  }
-  if (doclingPythonOk != null) return doclingPythonOk;
-  try {
-    const r = await runProcess(
-      doclingPythonBin(),
-      ["-c", "import docling"],
-      undefined,
-      15_000,
-    );
-    doclingPythonOk = r.code === 0;
-  } catch {
-    doclingPythonOk = false;
-  }
-  if (!doclingPythonOk) {
-    log.warn(
-      "Docling Python package not available — install with: pip install -r requirements-docling.txt",
-    );
-  }
-  return doclingPythonOk;
-}
-
-/** Local Docling via `scripts/docling_extract.py`. */
-async function extractWithDoclingPython(
-  buffer: Buffer,
-  fileName: string,
-  signal: AbortSignal | undefined,
-  opts: DoclingOpts,
-): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "skillmark-docling-"));
-  const ext = path.extname(fileName) || ".pdf";
-  const safeExt = /^\.(pdf|docx|png|jpe?g|webp|tiff?|bmp)$/i.test(ext) ? ext : ".pdf";
-  const filePath = path.join(dir, `doc${safeExt}`);
-  await writeFile(filePath, buffer);
-  try {
-    const args = [
-      doclingScriptPath(),
-      filePath,
-      `--max-pages=${MAX_PDF_PAGES}`,
-      ...(opts.ocr ? ["--ocr"] : []),
-    ];
-    const budget = budgetSignal(opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS, signal);
-    const r = await runProcess(doclingPythonBin(), args, budget, opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS);
-    if (r.code !== 0) {
-      if (/No module named ['"]docling['"]/i.test(r.stderr)) doclingPythonOk = false;
-      throw new Error(r.stderr.trim() || `docling_extract exited ${r.code}`);
-    }
-    return normalise(r.stdout);
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-/** Optional HTTP fallback when Python Docling is missing. */
-async function extractWithDoclingServe(
-  buffer: Buffer,
-  fileName: string,
-  signal: AbortSignal | undefined,
-  opts: DoclingOpts,
-): Promise<string> {
-  const base = process.env.DOCLING_SERVE_URL!.replace(/\/$/, "");
-  const form = new FormData();
-  form.append("files", new Blob([new Uint8Array(buffer)]), fileName);
-  form.append("to_formats", "md");
-  form.append("do_ocr", opts.ocr ? "true" : "false");
-  form.append("force_ocr", "false");
-  form.append("table_mode", "fast");
-  form.append("image_export_mode", "placeholder");
-  form.append("page_range", JSON.stringify([1, MAX_PDF_PAGES]));
-
-  const res = await fetch(`${base}/v1/convert/file`, {
-    method: "POST",
-    body: form,
-    headers: process.env.DOCLING_SERVE_API_KEY ? { "X-Api-Key": process.env.DOCLING_SERVE_API_KEY } : undefined,
-    signal: budgetSignal(opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS, signal),
-  });
-  if (!res.ok) throw new Error(`Docling HTTP ${res.status}`);
-  const json = (await res.json()) as { document?: { md_content?: string }; status?: string };
-  return normalise(json.document?.md_content ?? "");
-}
-
-/** Soft Docling attempt — never throws unless the caller signal aborted. */
-async function tryDocling(
-  buffer: Buffer,
-  fileName: string,
-  signal: AbortSignal | undefined,
-  opts: DoclingOpts,
-): Promise<ExtractedDocument | null> {
-  try {
-    let md = "";
-    if (await probeDoclingPython()) {
-      md = await extractWithDoclingPython(buffer, fileName, signal, opts);
-    } else if (process.env.DOCLING_SERVE_URL?.trim()) {
-      md = await extractWithDoclingServe(buffer, fileName, signal, opts);
-    } else {
-      return null;
-    }
-    if (md.trim().length < MIN_CHARS_PER_PAGE) return null;
-    return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    log.warn(`Docling ${opts.ocr ? "OCR" : "fast"} failed, continuing:`, err);
-    return null;
-  }
-}
+/** Vision LLM only when pdf-parse finds little text (scanned PDF). */
+const CV_VISION_BUDGET_MS = 20_000;
+/** Enough markdown from pdf-parse to skip AI vision. */
+const MIN_CHARS_GOOD_EXTRACT = 120;
 
 /* ------------------------------------------------------------------ */
 /*  DOCX                                                               */
@@ -357,11 +165,10 @@ async function extractPdf(
   signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
   const warnings: string[] = [];
+  signal?.throwIfAborted();
 
-  // 1) Native text layer first — most digital CVs finish in ms (no Docling cold start).
   let pages: string[] = [];
   let numPages = 0;
-
   try {
     const parsed = await pdfParse(buffer, { pagerender: renderPdfPage, max: MAX_PDF_PAGES });
     numPages = parsed.numpages;
@@ -377,35 +184,34 @@ async function extractPdf(
 
   const scannedPages = pages.filter((p) => p.length < MIN_CHARS_PER_PAGE).length;
   const textChars = pages.reduce((n, p) => n + p.length, 0);
+  const textMarkdown = () =>
+    normalise(
+      pages.length
+        ? pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")
+        : "",
+    );
 
-  if (pages.length > 0 && scannedPages === 0) {
-    return {
-      markdown: normalise(pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")),
-      method: "pdf-text",
-      pages: numPages,
-      warnings,
-    };
+  if (textChars >= MIN_CHARS_GOOD_EXTRACT) {
+    if (scannedPages > 0) {
+      warnings.push(`${scannedPages} page(s) look scanned; used available text layer.`);
+    }
+    log.info(`PDF extract via pdf-parse: ${fileName} chars=${textChars}`);
+    return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
   }
 
-  // 2) Thin / scanned: short Docling OCR attempt (must not burn the whole 75s budget).
+  // Vision only for scanned / empty text-layer PDFs.
   signal?.throwIfAborted();
-  const viaDocling = await tryDocling(buffer, fileName, signal, { ocr: true });
-  if (viaDocling && viaDocling.markdown.length >= Math.max(textChars, MIN_CHARS_PER_PAGE)) {
-    return { ...viaDocling, pages: numPages || viaDocling.pages, warnings };
-  }
-
-  // 3) Vision LLM last resort.
   const visions = await getVisionClients(organizationId);
   if (!visions.length) {
     warnings.push(
-      `${scannedPages || "All"} page(s) look scanned and no vision model is configured (Settings → AI OpenAI/Gemini, or OPENAI_API_KEY) — review manually.`,
+      "PDF has little text and no vision model is configured — review manually.",
     );
-    return { markdown: normalise(pages.join("\n\n")), method: "pdf-text", pages: numPages, warnings };
+    return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
   }
 
+  const visionSignal = budgetSignal(CV_VISION_BUDGET_MS, signal);
   try {
-    // Gemini's OpenAI-compat rejects `type:file`; use native generateContent + inline PDF.
-    const md = await withVisionFailover(visions, signal, async (vision, callSignal) =>
+    const md = await withVisionFailover(visions, visionSignal, async (vision, callSignal) =>
       vision.kind === "gemini"
         ? geminiPdfToMarkdown(vision.apiKey, vision.model, buffer, callSignal)
         : visionToMarkdown(vision, callSignal, [
@@ -418,18 +224,23 @@ async function extractPdf(
             },
           ]),
     );
-    // Keep whichever reading has more content; vision may skip clean text pages.
-    if (md.length >= textChars) {
-      return { markdown: md, method: "vision", pages: numPages, warnings };
+    if (md.trim().length >= MIN_CHARS_PER_PAGE) {
+      log.info(`PDF extract via vision AI: ${fileName} chars=${md.length}`);
+      return { markdown: md, method: "vision", pages: numPages || 1, warnings };
     }
   } catch (err) {
-    // Budget spent, or no key can serve vision and there is no text layer to fall back on.
-    if (signal?.aborted || (classifyAiFailure(err) && !textChars)) throw err;
-    log.warn("Vision PDF extraction failed:", err);
-    warnings.push("Scanned pages could not be read by the vision model — review manually.");
+    if (isAbortError(err) || signal?.aborted || visionSignal.aborted) {
+      log.warn("Vision PDF timed out — using pdf-parse leftover");
+      warnings.push("Vision timed out — used pdf-parse text if any.");
+    } else if (classifyAiFailure(err) && !textChars) {
+      throw err;
+    } else {
+      log.warn("Vision PDF extraction failed:", err);
+      warnings.push("Vision could not read this PDF — review manually.");
+    }
   }
-  if (scannedPages > 0) warnings.push(`${scannedPages} page(s) have no text layer and may be incomplete.`);
-  return { markdown: normalise(pages.join("\n\n")), method: "pdf-text", pages: numPages, warnings };
+
+  return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
 }
 
 /* ------------------------------------------------------------------ */
@@ -448,7 +259,7 @@ async function extractImage(
       method: "vision",
       pages: 1,
       warnings: [
-        "Image CVs need a vision model (Settings → AI OpenAI/Gemini, OPENAI_API_KEY, or DOCLING_SERVE_URL) — review manually.",
+        "Image CVs need a vision model (Settings → AI OpenAI/Gemini or OPENAI_API_KEY) — review manually.",
       ],
     };
   }
@@ -605,8 +416,3 @@ async function geminiPdfToMarkdown(
   return normalise(text.replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""));
 }
 
-/* ------------------------------------------------------------------ */
-
-function countPages(md: string): number {
-  return Math.max(1, (md.match(/<!-- page/g) ?? []).length);
-}
