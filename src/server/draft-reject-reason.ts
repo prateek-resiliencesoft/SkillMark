@@ -1,9 +1,9 @@
 import "server-only";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import {
-  DRAFT_REJECT_REASON_MAX,
   buildDraftRejectReasonPrompt,
   fallbackDraftRejectReason,
+  finalizeDraftRejectReason,
   parseDraftRejectReasonInput,
 } from "@/lib/draft-reject-reason";
 import { createLogger } from "@/lib/logger";
@@ -29,16 +29,22 @@ export async function draftRejectReason(opts: {
     const res = await provider.generateResponse({
       messages: [{ role: "user", content: prompt }],
       model: generatorModel,
-      temperature: 0.4,
-      maxTokens: 256,
+      temperature: 0.35,
+      // Thinking models burn tokens before visible text; 256 was cutting mid-sentence.
+      maxTokens: 700,
     });
-    const text = (res.content ?? "")
-      .replace(/<think>[\s\S]*?<\/think>/g, "")
-      .trim()
-      .replace(/^["']|["']$/g, "")
-      .slice(0, DRAFT_REJECT_REASON_MAX);
+    let text = finalizeDraftRejectReason(res.content ?? "");
+    let usedFallback = false;
+    // Too short / still truncated → local polite template (never ship a fragment).
+    if (text.length < 80 || !/[.!?]$/.test(text)) {
+      const fb = fallbackDraftRejectReason(text || draft, tags);
+      if (fb.length >= 80) {
+        text = fb;
+        usedFallback = true;
+      }
+    }
     if (!text) throw new Error("AI returned an empty reason");
-    return { reason: text, usedFallback: false };
+    return { reason: text, usedFallback };
   } catch (err) {
     log.warn("draftRejectReason AI failed — using local fallback", err);
     return {

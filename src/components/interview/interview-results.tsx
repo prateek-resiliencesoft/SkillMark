@@ -324,9 +324,9 @@ function MediaReviewActions({
                 id="reject-reason"
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Short description of why they were rejected…"
+                placeholder="Clear, polite note the candidate will read…"
                 maxLength={1000}
-                rows={3}
+                rows={5}
               />
               <div className="flex justify-end">
                 <Button
