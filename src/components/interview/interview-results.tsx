@@ -186,6 +186,14 @@ function MediaReviewActions({
   const draftMutation = trpc.session.draftRejectReason.useMutation({
     onSuccess: (data) => {
       setReason(data.reason);
+      if (data.usedFallback) {
+        toast({
+          title: "Draft ready (AI busy)",
+          description:
+            "Used your text/tags locally. Add another key under Settings → AI and set Question generation priority so the next draft can failover.",
+        });
+        return;
+      }
       toast({ title: "AI draft ready — edit if needed" });
     },
     onError: (err) => {

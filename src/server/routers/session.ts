@@ -1714,12 +1714,11 @@ export const sessionRouter = router({
       await requireSessionManager(ctx, interviewData.project.organizationId, interviewData.projectId);
 
       try {
-        const reason = await draftRejectReason({
+        return await draftRejectReason({
           organizationId: interviewData.project.organizationId,
           draft: input.draft,
           tags: input.tags,
         });
-        return { reason };
       } catch (err) {
         const msg = err instanceof Error ? err.message : "AI draft failed";
         if (msg.includes("Provide a reason draft")) {
