@@ -28,6 +28,7 @@ import {
   ScrollText,
   Settings2,
   ShieldCheck,
+  Sparkles,
   Users,
   Wallpaper,
 } from "lucide-react";
@@ -51,6 +52,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: "/admin/organizations", label: "Organizations", icon: Building2 },
       { href: "/admin/people", label: "People", icon: Users },
       { href: "/admin/feedback", label: "Feedback", icon: MessageSquareText },
+      { href: "/admin/ai", label: "AI Triage", icon: Sparkles },
       { href: "/admin/storage", label: "Stored Files", icon: HardDrive },
     ],
   },

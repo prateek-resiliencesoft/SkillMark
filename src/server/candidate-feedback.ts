@@ -115,7 +115,22 @@ export async function submitFeedback(
     if (isMissingTable(error)) throw new FeedbackError("UNAVAILABLE", "Feedback is not available right now.", 503);
     throw error;
   }
-  return { id: (data?.id as string | undefined) ?? null };
+  const id = (data?.id as string | undefined) ?? null;
+  if (id) {
+    void import("@/lib/bug-triage/enqueue")
+      .then(({ enqueueFeedbackTriage }) =>
+        enqueueFeedbackTriage({
+          id,
+          rating: input.rating,
+          tags: input.tags,
+          comment: input.comment,
+          sessionId: ctx.sessionId,
+          organizationId: ctx.organizationId,
+        }),
+      )
+      .catch(() => {});
+  }
+  return { id };
 }
 
 export type FeedbackRow = {
