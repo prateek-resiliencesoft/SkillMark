@@ -55,13 +55,21 @@ export async function POST(req: Request) {
   }
 }
 
+/** Extract budget: pdf-parse (+ rare vision); profile uses rest of PARSE_CV. */
+const EXTRACT_BUDGET_MS = 45_000;
+
 async function parseFile(
   file: File,
   opts: { defaultCountryCode?: string; organizationId?: string; signal: AbortSignal },
 ): Promise<Response> {
   const { defaultCountryCode, organizationId, signal } = opts;
   const buffer = Buffer.from(await file.arrayBuffer());
-  const doc = await extractDocument(buffer, file.name, file.type, { organizationId, signal });
+  // Cap extraction so scanned-PDF vision cannot starve extractCandidateProfile.
+  const extractSignal = budgetSignal(EXTRACT_BUDGET_MS, signal);
+  const doc = await extractDocument(buffer, file.name, file.type, {
+    organizationId,
+    signal: extractSignal,
+  });
   if (!doc.markdown.trim()) {
     return Response.json(
       { error: doc.warnings[0] ?? "No readable text found in this document", warnings: doc.warnings },
@@ -69,6 +77,8 @@ async function parseFile(
     );
   }
 
+  signal.throwIfAborted();
+  log.info(`parse-cv extract done method=${doc.method} pages=${doc.pages} file=${file.name}`);
   const { profile, reviewFlags } = await extractCandidateProfile(doc.markdown, {
     defaultCountryCode,
     organizationId,

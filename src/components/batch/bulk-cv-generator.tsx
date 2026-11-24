@@ -96,7 +96,7 @@ interface CvRow {
 
 const ACCEPT = ".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp";
 const MAX_FILES = 200;
-/** Keep modest — profile LLM + rare Docling OCR still compete for CPU/GPU. */
+/** Keep modest — profile LLM + rare vision OCR compete for API budget. */
 const PARSE_CONCURRENCY = 3;
 const GENERATE_CONCURRENCY = 2;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;

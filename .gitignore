@@ -59,9 +59,6 @@ public/vad/
 # graphify (generated locally; do not commit — embeds machine paths)
 graphify-out/
 
-# Local Docling Python venv (pip install -r requirements-docling.txt)
-.venv-docling/
-
 # documentation & documents: never push to GitHub (anchored so src/content/docs and src/components/docs stay tracked)
 /docs/
 *.pdf

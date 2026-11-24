@@ -6,10 +6,13 @@
  * model can't back up are dropped and flagged rather than kept as guesses.
  */
 import { extractJson } from "@/lib/ai/extract-json";
-import { AI_CALL_TIMEOUT_MS, budgetSignal } from "@/lib/ai/fail-fast";
+import { AI_CALL_TIMEOUT_MS, budgetSignal, isAbortError } from "@/lib/ai/fail-fast";
 import { classifyAiFailure } from "@/lib/ai/key-chain";
 import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
 import type { LLMProvider } from "@/lib/ai/types";
+
+/** Cap one profile LLM call so Gemini 503/slow paths fall back before parse-cv's 75s budget dies. */
+const PROFILE_CALL_TIMEOUT_MS = Math.min(AI_CALL_TIMEOUT_MS, 22_000);
 
 export interface ReviewFlag {
   field: string;
@@ -149,21 +152,21 @@ export async function extractCandidateProfile(
   }
 
   let lastErr: unknown;
-  // Variants: normal → jsonMode → strict compact. Then next model/provider.
+  // Keep to two variants — a third "strict" pass often burns the parse-cv budget after Gemini 503s.
   const variants: { strict: boolean; jsonMode: boolean }[] = [
     { strict: false, jsonMode: false },
     { strict: false, jsonMode: true },
-    { strict: true, jsonMode: false },
   ];
 
   for (const attempt of attempts) {
     for (const variant of variants) {
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) {
+        return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
+      }
       try {
         const res = await generateProfileJson(attempt.provider, attempt.model, source, {
           ...variant,
-          // Per call cap, never beyond the overall deadline.
-          signal: budgetSignal(AI_CALL_TIMEOUT_MS, options.signal),
+          signal: budgetSignal(PROFILE_CALL_TIMEOUT_MS, options.signal),
         });
         const raw = extractJson<Record<string, unknown>>(
           res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
@@ -171,35 +174,86 @@ export async function extractCandidateProfile(
         return validateProfile(raw, source, options.defaultCountryCode);
       } catch (err) {
         lastErr = err;
-        if (options.signal?.aborted) throw err;
-        // Every key already failed with quota/auth: other models/variants hit the same wall.
-        if (classifyAiFailure(err)) throw err;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
-          throw new Error(
-            "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
+        if (options.signal?.aborted || isAbortError(err)) {
+          return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
+        }
+        // Quota/auth: still try heuristic so bulk upload is not a hard 504.
+        if (classifyAiFailure(err)) {
+          return heuristicCandidateProfile(
+            source,
+            options.defaultCountryCode,
+            "AI quota/auth failed — used text heuristics",
           );
         }
-        if (!isRetryableProfileError(msg, err)) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
+          return heuristicCandidateProfile(
+            source,
+            options.defaultCountryCode,
+            "AI key rejected — used text heuristics",
+          );
+        }
+        if (!isRetryableProfileError(msg, err)) {
+          return heuristicCandidateProfile(source, options.defaultCountryCode, msg.slice(0, 120));
+        }
         // else try next variant / model
       }
     }
   }
 
-  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  if (isDeadModelError(msg)) {
-    throw new Error(
-      `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
-    );
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "");
+  return heuristicCandidateProfile(
+    source,
+    options.defaultCountryCode,
+    isDeadModelError(msg)
+      ? `AI model unavailable (${generatorModel}) — used text heuristics`
+      : "AI profile failed — used text heuristics",
+  );
+}
+
+/**
+ * Fast no-LLM contact scrape so parse-cv still returns usable fields when Gemini is slow/503.
+ */
+export function heuristicCandidateProfile(
+  source: string,
+  defaultCountryCode?: string,
+  reason = "Used text heuristics",
+): { profile: CandidateProfile; reviewFlags: ReviewFlag[] } {
+  const emailMatch = source.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  const phoneMatch = source.match(/(?:\+?\d[\d\s()./-]{7,}\d)/);
+  const lines = source
+    .split(/\n/)
+    .map((l) => l.replace(/^#+\s*/, "").replace(/[*_`]+/g, "").trim())
+    .filter(Boolean);
+  let name: string | null = null;
+  for (const line of lines.slice(0, 10)) {
+    if (EMAIL_RE.test(line)) continue;
+    if (/https?:\/\//i.test(line)) continue;
+    if (/\d{6,}/.test(line)) continue;
+    if (line.length < 3 || line.length > 60) continue;
+    if (!/[A-Za-z]/.test(line)) continue;
+    name = line.split(/[|,•·]/)[0]?.trim() || line;
+    break;
   }
-  if (/\b400\b|no body|invalid.?argument|max.?tokens/i.test(msg)) {
-    throw new Error(
-      `AI rejected the CV parse request (400). Try a shorter CV or change the resume model in Settings → AI. Detail: ${msg}`,
-    );
-  }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error(msg || "Failed to parse CV profile");
+  const { profile, reviewFlags } = validateProfile(
+    {
+      name,
+      email: emailMatch?.[0] ?? null,
+      phone: phoneMatch?.[0] ?? null,
+      location: null,
+      headline: null,
+      totalExperienceYears: null,
+      techStack: [],
+      experience: [],
+      projects: [],
+      education: [],
+      summary: null,
+    },
+    source,
+    defaultCountryCode,
+  );
+  reviewFlags.unshift({ field: "document", reason });
+  return { profile, reviewFlags };
 }
 
 /* ------------------------------------------------------------------ */
