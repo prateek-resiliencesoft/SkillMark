@@ -201,7 +201,10 @@ const TEXT_TASKS: Record<string, { title: string; hint: string }> = {
   heavy: { title: "Heavy / multi-level", hint: "Deep probes · deep follow-ups" },
   report: { title: "Reports & scoring", hint: "Post-interview analysis" },
   resume: { title: "Resume / CV parse", hint: "PDF extraction & profiling" },
-  generate: { title: "Question generation", hint: "AI interview builder" },
+  generate: {
+    title: "Question generation",
+    hint: "AI interview builder · reject-reason draft",
+  },
 };
 
 const PROVIDER_SHORT: Record<ProviderId, string> = {
@@ -819,7 +822,9 @@ export default function AiSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Provider priority</h2>
             <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-              {canEdit ? "Drag to reorder. " : ""}Top of each list is tried first; the rest are backups.
+              {canEdit ? "Drag to reorder. " : ""}Top of each list is tried first; the rest are
+              backups. Reject-reason AI draft uses <span className="font-medium">Question generation</span>{" "}
+              — keep a second provider with a key so Gemini quota does not block drafts.
             </p>
           </div>
           {canEdit && (
