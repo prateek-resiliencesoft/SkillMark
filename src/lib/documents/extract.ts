@@ -1,11 +1,14 @@
 /**
  * Layout-aware document → Markdown extraction (server-only).
  *
- * Tiered so the expensive path only runs when the cheap one can't read the file:
- *   1. Native text layers — DOCX via mammoth, PDF via pdf-parse (fast, local).
- *   2. Docling Serve (optional, DOCLING_SERVE_URL) — OCR / layout when native
- *      text is thin or missing (scans, image CVs).
- *   3. Vision LLM — last resort for images and PDFs still unreadable.
+ * Uses [Docling](https://github.com/docling-project/docling) as a **local Python
+ * library** (`scripts/docling_extract.py`) — no HTTP URL required:
+ *   PDF: Docling fast (OCR off) → Docling OCR → pdf-parse → vision
+ *   DOCX: mammoth → Docling if thin
+ *   Image: Docling OCR → vision
+ *
+ * Optional: `DOCLING_SERVE_URL` is a fallback if the Python package is missing.
+ * Install: `pip install -r requirements-docling.txt`
  *
  * Nothing here guesses: unreadable input is reported in `warnings` so callers
  * can flag the document for human review.
@@ -13,6 +16,11 @@
 import { configuredGeminiModel } from "@/lib/ai/gemini-models";
 import { unwrappingFetch } from "@/lib/ai/providers/compatible";
 import "server-only";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
@@ -92,11 +100,10 @@ export async function extractDocument(
 
   options?.signal?.throwIfAborted();
 
-  // Cheap native path first — most digital CVs never need Docling/vision.
   if (kind === "docx") {
     const native = await extractDocx(buffer);
     if (native.markdown.trim().length >= MIN_CHARS_PER_PAGE) return native;
-    const viaDocling = await tryDocling(buffer, fileName, options?.signal);
+    const viaDocling = await tryDocling(buffer, fileName, options?.signal, { ocr: true });
     if (viaDocling && viaDocling.markdown.length > native.markdown.length) return viaDocling;
     return native;
   }
@@ -105,34 +112,156 @@ export async function extractDocument(
     return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
   }
 
-  // Images: Docling OCR (if configured) before burning a vision LLM call.
-  const viaDocling = await tryDocling(buffer, fileName, options?.signal);
+  // Images need OCR — Docling before vision LLM.
+  const viaDocling = await tryDocling(buffer, fileName, options?.signal, { ocr: true });
   if (viaDocling && viaDocling.markdown.trim().length >= MIN_CHARS_PER_PAGE) return viaDocling;
   return extractImage(buffer, options?.organizationId, options?.signal);
 }
 
 /* ------------------------------------------------------------------ */
-/*  Docling Serve                                                      */
+/*  Docling (local Python library first; optional Serve fallback)      */
 /* ------------------------------------------------------------------ */
 
-/** Cap Docling so a hung OCR job cannot eat the whole parse-cv budget. */
-const DOCLING_BUDGET_MS = 45_000;
+/** Cap Docling so a hung job cannot eat the whole parse-cv budget. */
+const DOCLING_FAST_BUDGET_MS = 30_000;
+const DOCLING_OCR_BUDGET_MS = 60_000;
 
-async function extractWithDocling(buffer: Buffer, fileName: string, signal?: AbortSignal): Promise<string> {
+type DoclingOpts = {
+  /** false = born-digital fast path (skip OCR). true = scan/image OCR. */
+  ocr: boolean;
+};
+
+/** Cached: null = not probed, true/false = import docling works. */
+let doclingPythonOk: boolean | null = null;
+
+function doclingPythonBin(): string {
+  if (process.env.DOCLING_PYTHON?.trim()) return process.env.DOCLING_PYTHON.trim();
+  // Prefer project venv when present (PEP 668 / local install).
+  const venvPy = path.join(process.cwd(), ".venv-docling", "bin", "python");
+  if (existsSync(venvPy)) return venvPy;
+  return "python3";
+}
+
+function doclingScriptPath(): string {
+  return path.join(process.cwd(), "scripts", "docling_extract.py");
+}
+
+function runProcess(
+  cmd: string,
+  args: string[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const onAbort = () => {
+      child.kill("SIGKILL");
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`Docling timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.stdout.on("data", (c: Buffer) => {
+      stdout += c.toString("utf8");
+    });
+    child.stderr.on("data", (c: Buffer) => {
+      stderr += c.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+async function probeDoclingPython(): Promise<boolean> {
+  if (process.env.DOCLING_DISABLE === "1") {
+    doclingPythonOk = false;
+    return false;
+  }
+  if (doclingPythonOk != null) return doclingPythonOk;
+  try {
+    const r = await runProcess(
+      doclingPythonBin(),
+      ["-c", "import docling"],
+      undefined,
+      15_000,
+    );
+    doclingPythonOk = r.code === 0;
+  } catch {
+    doclingPythonOk = false;
+  }
+  if (!doclingPythonOk) {
+    log.warn(
+      "Docling Python package not available — install with: pip install -r requirements-docling.txt",
+    );
+  }
+  return doclingPythonOk;
+}
+
+/** Local Docling via `scripts/docling_extract.py`. */
+async function extractWithDoclingPython(
+  buffer: Buffer,
+  fileName: string,
+  signal: AbortSignal | undefined,
+  opts: DoclingOpts,
+): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "skillmark-docling-"));
+  const ext = path.extname(fileName) || ".pdf";
+  const safeExt = /^\.(pdf|docx|png|jpe?g|webp|tiff?|bmp)$/i.test(ext) ? ext : ".pdf";
+  const filePath = path.join(dir, `doc${safeExt}`);
+  await writeFile(filePath, buffer);
+  try {
+    const args = [
+      doclingScriptPath(),
+      filePath,
+      `--max-pages=${MAX_PDF_PAGES}`,
+      ...(opts.ocr ? ["--ocr"] : []),
+    ];
+    const budget = budgetSignal(opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS, signal);
+    const r = await runProcess(doclingPythonBin(), args, budget, opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS);
+    if (r.code !== 0) {
+      if (/No module named ['"]docling['"]/i.test(r.stderr)) doclingPythonOk = false;
+      throw new Error(r.stderr.trim() || `docling_extract exited ${r.code}`);
+    }
+    return normalise(r.stdout);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/** Optional HTTP fallback when Python Docling is missing. */
+async function extractWithDoclingServe(
+  buffer: Buffer,
+  fileName: string,
+  signal: AbortSignal | undefined,
+  opts: DoclingOpts,
+): Promise<string> {
   const base = process.env.DOCLING_SERVE_URL!.replace(/\/$/, "");
   const form = new FormData();
   form.append("files", new Blob([new Uint8Array(buffer)]), fileName);
   form.append("to_formats", "md");
-  // Only used as fallback for thin/scanned input — OCR on, but fast tables.
-  form.append("do_ocr", "true");
+  form.append("do_ocr", opts.ocr ? "true" : "false");
+  form.append("force_ocr", "false");
   form.append("table_mode", "fast");
   form.append("image_export_mode", "placeholder");
+  form.append("page_range", JSON.stringify([1, MAX_PDF_PAGES]));
 
   const res = await fetch(`${base}/v1/convert/file`, {
     method: "POST",
     body: form,
     headers: process.env.DOCLING_SERVE_API_KEY ? { "X-Api-Key": process.env.DOCLING_SERVE_API_KEY } : undefined,
-    signal: budgetSignal(DOCLING_BUDGET_MS, signal),
+    signal: budgetSignal(opts.ocr ? DOCLING_OCR_BUDGET_MS : DOCLING_FAST_BUDGET_MS, signal),
   });
   if (!res.ok) throw new Error(`Docling HTTP ${res.status}`);
   const json = (await res.json()) as { document?: { md_content?: string }; status?: string };
@@ -143,16 +272,23 @@ async function extractWithDocling(buffer: Buffer, fileName: string, signal?: Abo
 async function tryDocling(
   buffer: Buffer,
   fileName: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  opts: DoclingOpts,
 ): Promise<ExtractedDocument | null> {
-  if (!process.env.DOCLING_SERVE_URL) return null;
   try {
-    const md = await extractWithDocling(buffer, fileName, signal);
+    let md = "";
+    if (await probeDoclingPython()) {
+      md = await extractWithDoclingPython(buffer, fileName, signal, opts);
+    } else if (process.env.DOCLING_SERVE_URL?.trim()) {
+      md = await extractWithDoclingServe(buffer, fileName, signal, opts);
+    } else {
+      return null;
+    }
     if (md.trim().length < MIN_CHARS_PER_PAGE) return null;
     return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
   } catch (err) {
     if (signal?.aborted) throw err;
-    log.warn("Docling failed, continuing with native/vision:", err);
+    log.warn(`Docling ${opts.ocr ? "OCR" : "fast"} failed, continuing:`, err);
     return null;
   }
 }
@@ -219,6 +355,17 @@ async function extractPdf(
   signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
   const warnings: string[] = [];
+
+  // Docling Serve: fast born-digital pass (OCR off), then OCR if thin.
+  signal?.throwIfAborted();
+  const doclingFast = await tryDocling(buffer, fileName, signal, { ocr: false });
+  if (doclingFast) return doclingFast;
+
+  signal?.throwIfAborted();
+  const doclingOcr = await tryDocling(buffer, fileName, signal, { ocr: true });
+  if (doclingOcr) return doclingOcr;
+
+  // No Docling / Docling failed — local pdf-parse, then vision.
   let pages: string[] = [];
   let numPages = 0;
 
@@ -238,7 +385,6 @@ async function extractPdf(
   const scannedPages = pages.filter((p) => p.length < MIN_CHARS_PER_PAGE).length;
   const textChars = pages.reduce((n, p) => n + p.length, 0);
 
-  // Mostly text: done — skip Docling and vision (biggest bulk-upload win).
   if (pages.length > 0 && scannedPages === 0) {
     return {
       markdown: normalise(pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")),
@@ -246,13 +392,6 @@ async function extractPdf(
       pages: numPages,
       warnings,
     };
-  }
-
-  // Thin / scanned text layer: Docling OCR before burning a vision LLM call.
-  signal?.throwIfAborted();
-  const viaDocling = await tryDocling(buffer, fileName, signal);
-  if (viaDocling && viaDocling.markdown.length >= Math.max(textChars, MIN_CHARS_PER_PAGE)) {
-    return { ...viaDocling, pages: numPages || viaDocling.pages, warnings };
   }
 
   // Still unreadable: ask the vision model to read the PDF.

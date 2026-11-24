@@ -1,0 +1,4 @@
+# Local Docling PDF/CV extraction (no Docling Serve URL required).
+# Install: python3 -m pip install -r requirements-docling.txt
+# https://github.com/docling-project/docling
+docling>=2.50.0,<3
