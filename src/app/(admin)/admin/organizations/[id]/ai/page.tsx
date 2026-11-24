@@ -25,7 +25,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
+type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "grok" | "custom";
 
 export default function AdminOrgAiPage() {
   const { id } = useParams<{ id: string }>();

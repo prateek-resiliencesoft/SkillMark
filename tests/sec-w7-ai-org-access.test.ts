@@ -46,7 +46,7 @@ describe("platform env keys never go to a tenant baseUrl", () => {
       } as any);
       assert.deepEqual(creds.custom.apiKeys, ["ollama"]);
       assert.equal(creds.custom.untrustedBaseUrl, true);
-      for (const id of ["openai", "gemini", "nvidia", "anthropic"] as const) {
+      for (const id of ["openai", "gemini", "nvidia", "anthropic", "grok"] as const) {
         assert.notEqual(creds[id].baseUrl, "https://attacker.example/v1", id);
       }
       assert.deepEqual(creds.openai.apiKeys, ["sk-platform-openai"]);

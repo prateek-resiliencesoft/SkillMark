@@ -7,7 +7,7 @@ import { configuredGeminiModel } from "./gemini-models";
 import { checkVoiceModel, isVoiceCapableProvider } from "./capabilities";
 import { splitKeyList } from "./key-chain";
 
-export const AI_PROVIDER_IDS = ["openai", "gemini", "nvidia", "anthropic", "custom"] as const;
+export const AI_PROVIDER_IDS = ["openai", "gemini", "nvidia", "anthropic", "grok", "custom"] as const;
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
 
 /** Workload buckets used for provider priority / backup routing. */
@@ -69,6 +69,7 @@ export type ResolvedAiCredentials = Record<AiProviderId, ResolvedProviderCreds>;
 
 const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/";
 const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
+const GROK_BASE = "https://api.x.ai/v1";
 
 type Db = Context["supabase"];
 
@@ -411,19 +412,20 @@ export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCrede
     gemini: pick(keysOf("gemini"), ["GEMINI_API_KEY", "GOOGLE_API_KEY"], undefined, GEMINI_BASE),
     nvidia: pick(keysOf("nvidia"), ["NVIDIA_API_KEY", "NGC_API_KEY"], undefined, NVIDIA_BASE),
     anthropic: pick(keysOf("anthropic"), ["ANTHROPIC_API_KEY"]),
+    grok: pick(keysOf("grok"), ["XAI_API_KEY", "GROK_API_KEY"], process.env.XAI_BASE_URL, GROK_BASE),
     custom: customResolved,
   };
 }
 
 /** Default provider priority when org has not set routing for a task. */
 export const DEFAULT_TASK_ROUTING: Record<AiTaskKind, AiProviderId[]> = {
-  screening: ["gemini", "openai", "anthropic", "nvidia", "custom"],
-  standard: ["openai", "gemini", "anthropic", "nvidia", "custom"],
-  heavy: ["openai", "anthropic", "gemini", "nvidia", "custom"],
-  interview: ["openai", "gemini", "anthropic", "nvidia", "custom"],
-  report: ["openai", "gemini", "anthropic", "nvidia", "custom"],
-  resume: ["gemini", "openai", "anthropic", "nvidia", "custom"],
-  generate: ["openai", "gemini", "anthropic", "nvidia", "custom"],
+  screening: ["gemini", "openai", "anthropic", "grok", "nvidia", "custom"],
+  standard: ["openai", "gemini", "anthropic", "grok", "nvidia", "custom"],
+  heavy: ["openai", "anthropic", "gemini", "grok", "nvidia", "custom"],
+  interview: ["openai", "gemini", "anthropic", "grok", "nvidia", "custom"],
+  report: ["openai", "gemini", "anthropic", "grok", "nvidia", "custom"],
+  resume: ["gemini", "openai", "anthropic", "grok", "nvidia", "custom"],
+  generate: ["openai", "gemini", "anthropic", "grok", "nvidia", "custom"],
   voice: ["openai", "gemini"],
 };
 
@@ -438,6 +440,8 @@ export function defaultModelForProvider(id: AiProviderId): string {
       return process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
     case "anthropic":
       return process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+    case "grok":
+      return process.env.XAI_MODEL || process.env.GROK_MODEL || "grok-4.7";
     case "custom":
       return process.env.CUSTOM_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
   }
@@ -448,6 +452,7 @@ export const DEFAULT_PROVIDER_MODELS: Record<AiProviderId, string> = {
   gemini: defaultModelForProvider("gemini"),
   nvidia: defaultModelForProvider("nvidia"),
   anthropic: defaultModelForProvider("anthropic"),
+  grok: defaultModelForProvider("grok"),
   custom: defaultModelForProvider("custom"),
 };
 

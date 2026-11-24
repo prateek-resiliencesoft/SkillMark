@@ -38,7 +38,7 @@ import {
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
-type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "custom";
+type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "grok" | "custom";
 
 /** One API key row. `keep` = index of the already-saved key it represents (null = new). */
 type KeySlot = { id: string; keep: number | null; value: string; tier: "free" | "paid" };
@@ -55,6 +55,7 @@ const emptySlots = (): Record<ProviderId, KeySlot[]> => ({
   gemini: [newSlot()],
   nvidia: [newSlot()],
   anthropic: [newSlot()],
+  grok: [newSlot()],
   custom: [newSlot()],
 });
 
@@ -111,6 +112,20 @@ function AnthropicLogo({ className }: { className?: string }) {
       className={cn("h-5 w-5 text-[#D97757]", className)}
     >
       <path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z" />
+    </svg>
+  );
+}
+
+function GrokLogo({ className }: { className?: string }) {
+  // xAI / X mark (Simple Icons "x")
+  return (
+    <svg
+      role="img"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={cn("h-5 w-5 text-foreground", className)}
+    >
+      <path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z" />
     </svg>
   );
 }
@@ -181,6 +196,17 @@ const PROVIDERS: ProviderMeta[] = [
     keyPlaceholder: "sk-ant-...",
   },
   {
+    id: "grok",
+    name: "Grok (xAI)",
+    hint: "Grok 4.7 / 4.6 / 4.5 text models",
+    howTo: "Sign in to the xAI Console, open API Keys, create a key, then paste it here.",
+    consoleUrl: "https://console.x.ai/team/default/api-keys",
+    consoleLabel: "xAI Console",
+    logo: GrokLogo,
+    badgeContainer: "bg-zinc-950 text-white dark:bg-zinc-900 border-zinc-700 shadow-sm",
+    keyPlaceholder: "xai-...",
+  },
+  {
     id: "custom",
     name: "Custom / Local Endpoint",
     hint: "Ollama, vLLM, LiteLLM, or any OpenAI-compatible server",
@@ -212,6 +238,7 @@ const PROVIDER_SHORT: Record<ProviderId, string> = {
   gemini: "Gemini",
   nvidia: "NVIDIA",
   anthropic: "Anthropic",
+  grok: "Grok",
   custom: "Custom",
 };
 
@@ -275,6 +302,7 @@ export default function AiSettingsPage() {
     gemini: false,
     nvidia: false,
     anthropic: false,
+    grok: false,
     custom: false,
   });
   const [customBase, setCustomBase] = useState("");
@@ -765,7 +793,9 @@ export default function AiSettingsPage() {
   };
 
   const voiceProviders = PROVIDERS.filter((p) => p.id === "openai" || p.id === "gemini");
-  const textProviders = PROVIDERS.filter((p) => p.id === "anthropic" || p.id === "nvidia");
+  const textProviders = PROVIDERS.filter(
+    (p) => p.id === "anthropic" || p.id === "nvidia" || p.id === "grok",
+  );
   const customProvider = PROVIDERS.find((p) => p.id === "custom")!;
 
   return (
