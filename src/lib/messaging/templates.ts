@@ -393,6 +393,49 @@ export function renderDeclineEmailText(name: string): string {
 }
 
 /**
+ * Meta UTILITY template when decline includes a candidate-facing reason.
+ * {{1}} candidate name · {{2}} reason sentence(s).
+ */
+export const WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE = {
+  name: "rejection_notice_with_reason",
+  category: "UTILITY",
+  language: "en",
+  body: `Application Update
+
+Hi {{1}}, Thank you for your interest in RESILIENCESOFT and for taking the time to apply. After careful consideration, we regret to inform you that we will not be moving forward with your application. {{2}} We encourage you to explore future opportunities that may be a better fit for your profile. Wishing you all the best,
+
+RESILIENCESOFT Recruitment Team`,
+  example: [
+    "John Doe",
+    "We have decided to move forward with candidates whose salary expectations align with our budget.",
+  ],
+};
+
+export const DECLINE_WITH_REASON_EMAIL_SUBJECT = "Application Update";
+
+export const DECLINE_WITH_REASON_EMAIL_BODY = `Application Update
+
+Hi {{name}}, Thank you for your interest in RESILIENCESOFT and for taking the time to apply. After careful consideration, we regret to inform you that we will not be moving forward with your application. {{reason}} We encourage you to explore future opportunities that may be a better fit for your profile. Wishing you all the best,
+
+RESILIENCESOFT Recruitment Team`;
+
+export function whatsappDeclineWithReasonBodyVariables(name: string, reason: string): string[] {
+  return [name, reason];
+}
+
+export function renderDeclineWithReasonEmailText(name: string, reason: string): string {
+  return DECLINE_WITH_REASON_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name).replace(
+    /\{\{\s*reason\s*\}\}/g,
+    reason,
+  );
+}
+
+/** True when decline should use the with-reason notice templates. */
+export function hasDeclineReason(reason?: string | null): boolean {
+  return Boolean(reason?.trim());
+}
+
+/**
  * Meta UTILITY template for shortlist notice on media-review Approve.
  * WABA expects exactly 2 body_variables:
  * {{1}} candidate name
@@ -469,6 +512,11 @@ function noticeEmailHtml(text: string): string {
 /** Plain rejection HTML — no invite CTA. */
 export function declineEmailHtml(name: string): string {
   return noticeEmailHtml(renderDeclineEmailText(name));
+}
+
+/** Rejection HTML with candidate-facing reason — no invite CTA. */
+export function declineWithReasonEmailHtml(name: string, reason: string): string {
+  return noticeEmailHtml(renderDeclineWithReasonEmailText(name, reason));
 }
 
 /** Plain shortlist HTML — no invite CTA. */

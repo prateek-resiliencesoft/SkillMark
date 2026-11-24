@@ -183,8 +183,19 @@ function MediaReviewActions({
     },
   });
 
+  const draftMutation = trpc.session.draftRejectReason.useMutation({
+    onSuccess: (data) => {
+      setReason(data.reason);
+      toast({ title: "AI draft ready — edit if needed" });
+    },
+    onError: (err) => {
+      toast({ title: "AI draft failed", description: err.message, variant: "destructive" });
+    },
+  });
+
   const current = status ?? "pending";
   const busy = mutation.isLoading;
+  const canAiDraft = Boolean(reason.trim() || tags.length > 0);
   const badgeLabel =
     current === "approved"
       ? "Approved"
@@ -290,8 +301,9 @@ function MediaReviewActions({
           <DialogHeader>
             <DialogTitle>Reject candidate</DialogTitle>
             <DialogDescription>
-              Optional note and tags. Candidate profile and scores stay. Media is deleted only if
-              you check the box below.
+              Optional note and tags. If a reason is filled, the candidate gets that reason in their
+              rejection notice. Profile and scores stay. Media deletes only if you check the box
+              below.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -307,6 +319,27 @@ function MediaReviewActions({
                 maxLength={1000}
                 rows={3}
               />
+              <div className="flex justify-end">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  disabled={!canAiDraft || busy || draftMutation.isLoading}
+                  onClick={() =>
+                    draftMutation.mutate({
+                      sessionId,
+                      draft: reason.trim() || undefined,
+                      tags,
+                    })
+                  }
+                >
+                  {draftMutation.isLoading ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  AI draft
+                </Button>
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Tags (optional)</Label>
