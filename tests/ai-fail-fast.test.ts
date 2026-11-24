@@ -126,26 +126,28 @@ describe("key chain exhaustion tagging", () => {
 });
 
 describe("extractCandidateProfile fail-fast", () => {
-  it("every key out of quota: one pass over the chain, no model/variant retries, fast", async () => {
+  it("every key out of quota: one pass over the chain, then heuristic profile (no hard throw)", async () => {
     const keys = [fake("g1", reject(429), ["a", "b", "c", "d"]), fake("g2", reject(429)), fake("g3", reject(429))];
     const provider = chainOf(...keys);
     const t0 = Date.now();
-    const err = await extractCandidateProfile(CV, { models: { provider, generatorModel: "a" } }).catch((e) => e);
+    const { profile, reviewFlags } = await extractCandidateProfile(CV, {
+      models: { provider, generatorModel: "a" },
+    });
     assert.ok(Date.now() - t0 < 1000);
-    assert.equal(classifyAiFailure(err), "quota");
+    // Failover walks each key once; quota/auth then falls back to text heuristics (no throw).
     assert.deepEqual(keys.map((k) => k.calls), [1, 1, 1]);
-    const info = describeAiFailure(err);
-    assert.equal(info?.status, 429);
-    assert.equal(info?.error, AI_QUOTA_MESSAGE);
+    assert.equal(profile.email, "jane@example.com");
+    assert.ok(reviewFlags.some((f) => /quota\/auth failed|heuristics/i.test(f.reason)));
   });
 
-  it("every key rejected with 403: fails once with a 503 JSON-able error", async () => {
+  it("every key rejected with 403: one pass then heuristic profile (no hard 503 throw)", async () => {
     const keys = [fake("g1", reject(403)), fake("g2", reject(403))];
-    const err = await extractCandidateProfile(CV, { models: { provider: chainOf(...keys), generatorModel: "m1" } }).catch((e) => e);
+    const { profile, reviewFlags } = await extractCandidateProfile(CV, {
+      models: { provider: chainOf(...keys), generatorModel: "m1" },
+    });
     assert.deepEqual(keys.map((k) => k.calls), [1, 1]);
-    const info = describeAiFailure(err);
-    assert.equal(info?.status, 503);
-    assert.equal(info?.code, "AI_AUTH_FAILED");
+    assert.equal(profile.email, "jane@example.com");
+    assert.ok(reviewFlags.some((f) => /quota\/auth failed|heuristics/i.test(f.reason)));
   });
 
   it("forwards signal + maxRetries 0 and still returns a profile when a key works", async () => {
