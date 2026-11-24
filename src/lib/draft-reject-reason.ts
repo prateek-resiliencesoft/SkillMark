@@ -5,17 +5,17 @@ const MAX_REASON = 1000;
 /** Polite candidate-facing lines when org AI keys are down (quota / 503). */
 const TAG_FALLBACK_REASON: Record<string, string> = {
   cheating:
-    "We identified concerns regarding assessment integrity during the selection process.",
+    "Thank you for completing the assessment. After review, we identified concerns regarding assessment integrity, so we will not be moving forward with your application for this role.",
   low_score:
-    "Your overall assessment results did not meet the threshold required for this role.",
+    "Thank you for taking the time to complete the assessment. Your overall results did not meet the threshold required for this role at this time, so we will not be moving forward with your application.",
   incomplete:
-    "The interview was incomplete, so we are unable to proceed with your application at this time.",
+    "Thank you for your interest. The interview was incomplete, so we are unable to evaluate your application fully and will not be moving forward at this time.",
   integrity:
-    "We identified concerns related to assessment integrity during the process.",
+    "Thank you for completing the assessment. We identified concerns related to assessment integrity during the process, so we will not be moving forward with your application.",
   culture_fit:
-    "We have decided to move forward with candidates whose profiles more closely match our current team needs.",
+    "Thank you for interviewing with us. After careful consideration, we are moving forward with candidates whose profiles more closely match our current team needs.",
   other:
-    "After careful review, we will not be moving forward with your application for this opportunity.",
+    "Thank you for your interest in this opportunity. After careful review, we will not be moving forward with your application at this time. We wish you every success in your search.",
 };
 
 export function parseDraftRejectReasonInput(input: {
@@ -32,19 +32,47 @@ export function parseDraftRejectReasonInput(input: {
 
 export function buildDraftRejectReasonPrompt(draft: string, tags: string[]): string {
   const tagLine = tags.length
-    ? `Tags: ${tags.map((t) => rejectTagLabel(t)).join(", ")}`
+    ? `Tags (use as theme, do not quote ids): ${tags.map((t) => rejectTagLabel(t)).join(", ")}`
     : "Tags: (none)";
   const draftLine = draft
-    ? `Rough draft:\n${draft}`
-    : "Rough draft: (none — invent a polite reason from the tags only)";
-  return `You write one short rejection reason for a job candidate email.
+    ? `Rough notes from recruiter (polish into final copy; do not copy unfinished fragments):\n${draft}`
+    : "Rough notes: (none — write a complete polite reason from the tags only)";
+  return `You write the rejection reason that a candidate will read in their rejection notice email/WhatsApp.
+
 Rules:
-- Output ONLY the reason sentence(s), no greeting, no sign-off, no quotes.
-- Polite, professional, candidate-friendly. No insults, no PII invention.
-- 1-2 sentences, max ~400 characters.
-- Suitable to insert after: "we will not be moving forward with your application."
+- Output ONLY the finished reason text. No greeting, sign-off, subject line, quotes, labels, or markdown.
+- Polite, clear, and professional. No insults, blame, or invented personal details.
+- Write 2–3 COMPLETE sentences that each end with a period (or ? / !). Never stop mid-sentence or mid-word.
+- Target length: 180–420 characters. Must be at least 120 characters. Do not exceed 500 characters.
+- Briefly thank them, state the decision clearly, and (when tags allow) give a soft high-level reason without harsh detail.
+- Suitable to stand alone after notifying them we will not move forward.
+
 ${tagLine}
 ${draftLine}`;
+}
+
+/**
+ * Drop a trailing truncated clause so the UI never shows mid-sentence cutoffs
+ * like "your final score did".
+ */
+export function finalizeDraftRejectReason(raw: string): string {
+  let text = raw
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .trim()
+    .replace(/^["'`]|["'`]$/g, "")
+    .replace(/\s+/g, " ")
+    .slice(0, MAX_REASON);
+
+  if (!text) return "";
+
+  if (!/[.!?]$/.test(text)) {
+    const lastStop = Math.max(text.lastIndexOf("."), text.lastIndexOf("!"), text.lastIndexOf("?"));
+    if (lastStop >= 80) {
+      text = text.slice(0, lastStop + 1).trim();
+    }
+  }
+
+  return text.slice(0, MAX_REASON);
 }
 
 /**
@@ -52,12 +80,21 @@ ${draftLine}`;
  * otherwise compose from known reject tags.
  */
 export function fallbackDraftRejectReason(draft: string, tags: string[]): string {
-  if (draft.trim()) return draft.trim().slice(0, MAX_REASON);
+  const cleaned = finalizeDraftRejectReason(draft);
+  if (cleaned.length >= 40 && /[.!?]$/.test(cleaned)) return cleaned;
+  if (cleaned.length >= 40) {
+    // Recruiter typed something incomplete — still prefer it over ignoring them,
+    // but append a closing sentence so the notice is not a fragment.
+    return `${cleaned.replace(/[.!?,;:\s]+$/, "")}. We will not be moving forward with your application at this time.`.slice(
+      0,
+      MAX_REASON,
+    );
+  }
   const lines = tags
-    .map((t) => TAG_FALLBACK_REASON[t] ?? `We noted concerns related to ${rejectTagLabel(t).toLowerCase()}.`)
+    .map((t) => TAG_FALLBACK_REASON[t] ?? `Thank you for your interest. We noted concerns related to ${rejectTagLabel(t).toLowerCase()}, so we will not be moving forward with your application.`)
     .filter(Boolean);
   const unique = [...new Set(lines)].slice(0, 2);
-  return (unique.join(" ") || TAG_FALLBACK_REASON.other).slice(0, MAX_REASON);
+  return finalizeDraftRejectReason(unique.join(" ") || TAG_FALLBACK_REASON.other);
 }
 
 export const DRAFT_REJECT_REASON_MAX = MAX_REASON;
