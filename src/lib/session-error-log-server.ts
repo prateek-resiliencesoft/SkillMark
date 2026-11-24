@@ -36,11 +36,26 @@ export async function recordSessionErrors(
   if (!rows.length) return;
   try {
     const { supabaseAdmin } = await import("@/lib/supabase/admin");
-    const { error } = await supabaseAdmin.from("session_error_logs").insert(rows);
+    const { data: inserted, error } = await supabaseAdmin.from("session_error_logs").insert(rows).select("id, sessionId, category, severity, source, message, signature");
     if (error) {
       log.warn(`Could not store session error log: ${error.message}`);
       return;
     }
+    void import("@/lib/bug-triage/enqueue")
+      .then(({ enqueueErrorLogTriage }) =>
+        enqueueErrorLogTriage(
+          (inserted ?? rows).map((r, i) => ({
+            id: (r as { id?: string }).id ?? null,
+            sessionId: r.sessionId ?? rows[i]?.sessionId,
+            category: r.category ?? rows[i]?.category,
+            severity: r.severity ?? rows[i]?.severity,
+            source: r.source ?? rows[i]?.source,
+            message: r.message ?? rows[i]?.message,
+            signature: (r as { signature?: string }).signature ?? rows[i]?.signature,
+          })),
+        ),
+      )
+      .catch(() => {});
     if (opts.reopenGroups === false) return;
     // A group marked resolved that errors again goes back to open.
     const signatures = Array.from(new Set(rows.map((r) => r.signature)));
