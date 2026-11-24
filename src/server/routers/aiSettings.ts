@@ -100,7 +100,7 @@ export const aiSettingsRouter = router({
         gemini: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
         nvidia: !!(process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY),
         anthropic: !!process.env.ANTHROPIC_API_KEY,
-        grok: !!(process.env.XAI_API_KEY || process.env.GROK_API_KEY),
+        groq: !!process.env.GROQ_API_KEY,
         custom: !!(process.env.CUSTOM_LLM_BASE_URL || process.env.CUSTOM_LLM_API_KEY),
       },
     };
@@ -218,7 +218,7 @@ export const aiSettingsRouter = router({
             gemini: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
             nvidia: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
             anthropic: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
-            grok: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
+            groq: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
             custom: z.object({ apiKey: z.string().max(500).nullable().optional(), baseUrl: z.string().max(500).nullable().optional() }).optional(),
           })
           .optional(),
@@ -227,7 +227,7 @@ export const aiSettingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
       const providers = { ...(input.providers ?? {}) };
-      for (const id of ["openai", "gemini", "nvidia", "anthropic", "grok"] as const) {
+      for (const id of ["openai", "gemini", "nvidia", "anthropic", "groq"] as const) {
         if (providers[id]) providers[id] = { ...providers[id], baseUrl: undefined };
       }
       await validateCustomBaseUrl(providers.custom?.baseUrl);

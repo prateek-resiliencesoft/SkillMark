@@ -17,7 +17,7 @@ describe("provider voice capability", () => {
     assert.equal(isVoiceCapableProvider("custom"), true);
     assert.equal(isVoiceCapableProvider("anthropic"), false);
     assert.equal(isVoiceCapableProvider("nvidia"), false);
-    assert.equal(isVoiceCapableProvider("grok"), false);
+    assert.equal(isVoiceCapableProvider("groq"), false);
   });
 
   it("explains why Anthropic is blocked and points to Gemini/OpenAI", () => {
@@ -28,8 +28,8 @@ describe("provider voice capability", () => {
     assert.equal(voiceBlockedReason("openai"), null);
   });
 
-  it("explains why Grok is blocked for voice", () => {
-    const msg = voiceBlockedReason("grok") ?? "";
+  it("explains why Groq is blocked for voice", () => {
+    const msg = voiceBlockedReason("groq") ?? "";
     assert.match(msg, /text-only/i);
     assert.match(msg, /Gemini/);
     assert.match(msg, /OpenAI/);
@@ -44,7 +44,7 @@ describe("checkVoiceModel", () => {
   });
 
   it("rejects known text models with a specific reason", () => {
-    for (const m of ["claude-sonnet-4", "llama3.1:8b", "gpt-4o-mini", "gemini-2.5-flash", "mistral-7b", "grok-4.7"]) {
+    for (const m of ["claude-sonnet-4", "llama3.1:8b", "gpt-4o-mini", "gemini-2.5-flash", "mistral-7b", "openai/gpt-oss-20b"]) {
       const r = checkVoiceModel(m);
       assert.equal(r.ok, false, m);
     }
@@ -80,7 +80,7 @@ describe("applyCustomModelsPatch / routing", () => {
 
   it("strips text-only providers from a stored voice priority list", () => {
     const routing = getStoredRouting({
-      routing: { voice: ["anthropic", "openai", "nvidia", "grok", "gemini"] },
+      routing: { voice: ["anthropic", "openai", "nvidia", "groq", "gemini"] },
     });
     assert.deepEqual(routing.voice, ["openai", "gemini"]);
   });
