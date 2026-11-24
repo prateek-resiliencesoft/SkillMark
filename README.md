@@ -419,7 +419,7 @@ Resiliencesoft Interview AI/
 
 Resiliencesoft Interview AI uses a pluggable LLM provider architecture. Configure keys in **Project Settings → AI** (encrypted per organization) **or** via `.env`. Org keys win; empty org key falls back to env.
 
-You need **at least one** provider. Default pick order: OpenAI → Gemini → NVIDIA → Anthropic → Custom/local → Kimi → MiniMax.
+You need **at least one** provider. Default pick order: OpenAI → Gemini → NVIDIA → Anthropic → Grok → Custom/local → Kimi → MiniMax.
 
 ### Providers (Settings → AI)
 
@@ -429,6 +429,7 @@ You need **at least one** provider. Default pick order: OpenAI → Gemini → NV
 | **Google Gemini** | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | OpenAI-compatible Gemini endpoint |
 | **NVIDIA** | `NVIDIA_API_KEY` or `NGC_API_KEY` | NVIDIA NIM |
 | **Anthropic** | `ANTHROPIC_API_KEY` | Claude Messages API |
+| **Grok (xAI)** | `XAI_API_KEY` or `GROK_API_KEY` | Text-only; OpenAI-compatible `api.x.ai` |
 | **Custom / local** | `CUSTOM_LLM_API_KEY`, `CUSTOM_LLM_BASE_URL` | Ollama, LiteLLM, vLLM, etc. |
 
 Legacy env-only (not shown in Settings UI): `KIMI_API_KEY`, `MINIMAX_API_KEY`.
