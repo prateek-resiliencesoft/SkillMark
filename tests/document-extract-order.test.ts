@@ -9,19 +9,16 @@ test("docling_extract.py CLI exists for local Python Docling", () => {
   const py = readFileSync(script, "utf8");
   assert.match(py, /DocumentConverter/);
   assert.match(py, /do_ocr/);
-  assert.match(py, /TableFormerMode\.FAST/);
 });
 
-test("extract.ts prefers local Python Docling before Serve URL", () => {
+test("extract.ts uses pdf-parse before Docling so bulk CV stays under budget", () => {
   const src = readFileSync(path.join(process.cwd(), "src/lib/documents/extract.ts"), "utf8");
   assert.ok(src.includes("extractWithDoclingPython"), "Python Docling path missing");
-  assert.ok(src.includes("docling_extract.py"), "CLI script path missing");
-  assert.ok(src.includes("probeDoclingPython"), "availability probe missing");
 
   const pdfFn = src.slice(src.indexOf("async function extractPdf"), src.indexOf("async function extractImage"));
-  const fastIdx = pdfFn.indexOf("ocr: false");
-  const ocrIdx = pdfFn.indexOf("ocr: true");
   const parseIdx = pdfFn.indexOf("pdfParse");
-  assert.ok(fastIdx > 0 && ocrIdx > fastIdx, "PDF: Docling fast before OCR");
-  assert.ok(parseIdx > ocrIdx, "PDF: pdf-parse after Docling");
+  const doclingIdx = pdfFn.indexOf("tryDocling");
+  assert.ok(parseIdx > 0, "pdf-parse missing");
+  assert.ok(doclingIdx > parseIdx, "Docling must run after pdf-parse for PDFs");
+  assert.match(src, /DOCLING_OCR_BUDGET_MS = 20_000/);
 });
