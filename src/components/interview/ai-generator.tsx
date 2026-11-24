@@ -1,5 +1,7 @@
 "use client";
 
+import { ReasoningTimeline } from "@/components/ai/reasoning-timeline";
+import type { ReasoningStep } from "@/lib/ai/graph/types";
 import { QUESTION_TYPE_STYLES, QuestionCard } from "@/components/interview/question-card";
 import {
   PremadeQuestionPicker,
@@ -311,6 +313,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const [streamPhase, setStreamPhase] = useState<"idle" | "thinking" | "writing">("idle");
   const [thinkingText, setThinkingText] = useState("");
   const [contentText, setContentText] = useState("");
+  const [steps, setSteps] = useState<ReasoningStep[]>([]);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const streamEndRef = useRef<HTMLDivElement>(null);
@@ -388,6 +391,15 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
           if (payload.text) {
             setContentText((prev) => prev + payload.text);
           }
+        } else if (payload.type === "step") {
+          const st = payload.step as ReasoningStep;
+          setSteps((prev) => {
+            const i = prev.findIndex((x) => x.id === st.id);
+            if (i < 0) return [...prev, st];
+            const next = prev.slice();
+            next[i] = st;
+            return next;
+          });
         } else if (payload.type === "done") {
           result = payload.data as GeneratedInterview;
         } else if (payload.type === "error") {
@@ -468,6 +480,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setStreamPhase("idle");
     setThinkingText("");
     setContentText("");
+    setSteps([]);
     setResult(null);
     setEditableCriteria([]);
     setEditableQuestions([]);
@@ -527,6 +540,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setStreamPhase("idle");
     setThinkingText("");
     setContentText("");
+    setSteps([]);
     try {
       const response = await fetch("/api/ai/refine", {
         method: "POST",
@@ -1186,9 +1200,13 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       </Card>
 
       {/* Streaming display (generation only — refine stream is rendered inside the result card) */}
-      {generating && (thinkingText || contentText) && (
+      {!generating && !refining && result && steps.length > 0 && (
+        <ReasoningTimeline steps={steps} title="How these questions were built" collapsible defaultOpen={false} />
+      )}
+      {generating && (thinkingText || contentText || steps.length > 0) && (
         <Card className="border-dashed">
           <CardContent className="space-y-3 pt-4 pb-3">
+            <ReasoningTimeline steps={steps} title="What the AI is doing" className="border-0 bg-transparent p-0" />
             {/* Thinking section */}
             {thinkingText && (
               <div>
@@ -1553,9 +1571,10 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               </AiButton>
 
               {/* Refine streaming display */}
-              {refining && (thinkingText || contentText) && (
+              {refining && (thinkingText || contentText || steps.length > 0) && (
                 <Card className="border-dashed">
                   <CardContent className="space-y-3 pt-4 pb-3">
+                    <ReasoningTimeline steps={steps} title="What the AI is doing" className="border-0 bg-transparent p-0" />
                     {thinkingText && (
                       <div>
                         <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">

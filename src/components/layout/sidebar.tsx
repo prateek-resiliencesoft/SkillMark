@@ -29,6 +29,7 @@ import {
   LayoutDashboardIcon,
   MessageSquareIcon,
   PlayCircleIcon,
+  CameraVideoIcon,
   Files01Icon,
   HelpCircleIcon,
   Folder01Icon,
@@ -206,6 +207,7 @@ export function Sidebar({
     { name: t("sidebar.interviews"), href: "/interviews", icon: createHugeicon(MessageSquareIcon) },
     { name: t("sidebar.batches"), href: "/batches", icon: createHugeicon(Files01Icon) },
     { name: t("sidebar.sessions"), href: "/candidates", icon: createHugeicon(PlayCircleIcon) },
+    { name: "Round 2", href: "/round-two", icon: createHugeicon(CameraVideoIcon) },
     { name: t("sidebar.questions"), href: "/questions", icon: createHugeicon(HelpCircleIcon) },
   ];
 
@@ -221,6 +223,7 @@ export function Sidebar({
       "/interviews",
       "/batches",
       "/candidates",
+      "/round-two",
       "/questions",
       "/settings",
       "/organizations",
