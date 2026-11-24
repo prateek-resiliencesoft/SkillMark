@@ -5,15 +5,21 @@ import {
   APPROVAL_EMAIL_SUBJECT,
   DECLINE_EMAIL_BODY,
   DECLINE_EMAIL_SUBJECT,
+  DECLINE_WITH_REASON_EMAIL_BODY,
+  DECLINE_WITH_REASON_EMAIL_SUBJECT,
   WHATSAPP_APPROVAL_META_TEMPLATE,
   WHATSAPP_DECLINE_META_TEMPLATE,
+  WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE,
   approvalEmailHtml,
   declineEmailHtml,
+  declineWithReasonEmailHtml,
   formatDeclineDeliverySummary,
   renderApprovalEmailText,
   renderDeclineEmailText,
+  renderDeclineWithReasonEmailText,
   whatsappApprovalBodyVariables,
   whatsappDeclineBodyVariables,
+  whatsappDeclineWithReasonBodyVariables,
 } from "../src/lib/messaging/templates";
 
 test("decline Meta template name and single name variable", () => {
@@ -92,5 +98,42 @@ test("whatsappApprovalBodyVariables is name and role phrase", () => {
 test("approvalEmailHtml has no Start interview CTA", () => {
   const html = approvalEmailHtml("prateek", "MERN Position");
   assert.match(html, /prateek/);
+  assert.doesNotMatch(html, /Start interview/i);
+});
+
+test("with-reason Meta template name and name+reason variables", () => {
+  assert.equal(WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.name, "rejection_notice_with_reason");
+  assert.equal(WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.category, "UTILITY");
+  const placeholders = WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
+  assert.deepEqual(placeholders, ["{{1}}", "{{2}}"]);
+  assert.match(WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.body, /RESILIENCESOFT/);
+  assert.match(WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.body, /Recruitment Team/);
+});
+
+test("with-reason email subject Application Update and substitutes name+reason", () => {
+  assert.equal(DECLINE_WITH_REASON_EMAIL_SUBJECT, "Application Update");
+  assert.match(DECLINE_WITH_REASON_EMAIL_BODY, /\{\{name\}\}/);
+  assert.match(DECLINE_WITH_REASON_EMAIL_BODY, /\{\{reason\}\}/);
+  const text = renderDeclineWithReasonEmailText(
+    "John Doe",
+    "We have decided to move forward with candidates whose salary expectations align with our budget.",
+  );
+  assert.match(text, /^Hi John Doe,/m);
+  assert.match(text, /salary expectations align with our budget/);
+  assert.match(text, /RESILIENCESOFT Recruitment Team/);
+  assert.doesNotMatch(text, /\{\{/);
+});
+
+test("whatsappDeclineWithReasonBodyVariables is name then reason", () => {
+  assert.deepEqual(
+    whatsappDeclineWithReasonBodyVariables("Priya Sharma", "Skills did not match the role requirements."),
+    ["Priya Sharma", "Skills did not match the role requirements."],
+  );
+});
+
+test("declineWithReasonEmailHtml escapes reason and has no Start interview CTA", () => {
+  const html = declineWithReasonEmailHtml("prateek", "Budget <script>alert(1)</script>");
+  assert.match(html, /prateek/);
+  assert.match(html, /&lt;script&gt;/);
   assert.doesNotMatch(html, /Start interview/i);
 });

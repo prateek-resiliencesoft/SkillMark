@@ -15,6 +15,7 @@ import { createLogger } from "@/lib/logger";
 import { applyMediaReview, archiveSessionData } from "@/lib/media-review";
 import { setCandidateDecisionStatus } from "../candidate-decision";
 import { sendApprovalShortlist, sendDeclineRejection } from "../decline-rejection";
+import { draftRejectReason } from "../draft-reject-reason";
 import { deleteSessionWithData } from "@/lib/candidate-data-deletion";
 import { candidateMediaPrefix } from "@/lib/storage-paths";
 import { TRPCError } from "@trpc/server";
@@ -1670,6 +1671,7 @@ export const sessionRouter = router({
           ctx.supabase,
           input.sessionId,
           interviewData.project.organizationId,
+          { reason: input.rejectReason },
         );
         return { ...result, ...delivery };
       }
@@ -1683,6 +1685,48 @@ export const sessionRouter = router({
         return { ...result, ...delivery };
       }
       return result;
+    }),
+
+  /** AI-polish reject reason from draft and/or tags (candidate-facing copy). */
+  draftRejectReason: protectedProcedure
+    .input(
+      z.object({
+        sessionId: z.string(),
+        draft: z.string().trim().max(1000).optional(),
+        tags: z.array(z.string().max(40)).max(12).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
+        .eq("id", input.sessionId)
+        .single();
+
+      if (!session) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const interviewData = session.interview as unknown as {
+        projectId: string;
+        project: { organizationId: string };
+      };
+      await requireSessionManager(ctx, interviewData.project.organizationId, interviewData.projectId);
+
+      try {
+        const reason = await draftRejectReason({
+          organizationId: interviewData.project.organizationId,
+          draft: input.draft,
+          tags: input.tags,
+        });
+        return { reason };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "AI draft failed";
+        if (msg.includes("Provide a reason draft")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: msg });
+        }
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: msg });
+      }
     }),
 
   /** Reviewer-only flag: mark/unmark a session as doubtful with a remark. Informational only. */

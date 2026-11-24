@@ -199,8 +199,8 @@ const COLUMNS: ColumnDef[] = [
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
   { key: "decision", label: "Decision", sortKey: "decision", defaultVisible: true },
-  { key: "link", label: "Link", sortKey: "link", defaultVisible: true },
-  { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: true },
+  { key: "link", label: "Link", sortKey: "link", defaultVisible: false },
+  { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: false },
   { key: "score", label: "Score", sortKey: "score", defaultVisible: true },
   {
     key: "duration",
@@ -1126,8 +1126,11 @@ export default function CandidatesPage() {
         );
       case "decision": {
         const review = getReviewOutcome(row);
+        // Incomplete follow-up is tracked in Follow-up column / filters — not Decision.
+        if (!review || review === "followup_sent") {
+          return <span className="text-muted-foreground">-</span>;
+        }
         const label = reviewOutcomeLabel(review, isZh);
-        if (!label) return <span className="text-muted-foreground">-</span>;
         return (
           <Badge
             variant="outline"
@@ -1136,7 +1139,6 @@ export default function CandidatesPage() {
               review === "approved" && "border-green-600 text-green-700",
               review === "rejected" && "border-red-600 text-red-700",
               review === "put_aside" && "border-amber-600 text-amber-700",
-              review === "followup_sent" && "border-amber-600 text-amber-700",
             )}
           >
             {label}
