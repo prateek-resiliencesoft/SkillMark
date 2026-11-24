@@ -1,14 +1,37 @@
 /**
- * Superadmin AI bug triage: settings, buckets, chat.
+ * Superadmin AI bug triage: settings, buckets, chat, platform AI keys.
  */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { AI_PROVIDER_IDS } from "@/lib/ai/credentials";
+import {
+  clearPlatformProvider,
+  getPlatformAiSettingsView,
+  savePlatformProviderKeys,
+} from "@/lib/ai/platform-credentials";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { bugTriageChat } from "@/lib/bug-triage/chat";
 import { getBugBucketDetail, listBugBuckets } from "@/lib/bug-triage/list";
 import { loadBugTriageSettings, saveBugTriageSettings } from "@/lib/bug-triage/settings";
 import { BUG_SEVERITIES } from "@/lib/bug-triage/types";
 import { writePlatformAudit } from "../tenant";
 import { platformProcedure, router } from "../trpc";
+
+const providerIdSchema = z.enum(AI_PROVIDER_IDS);
+
+async function validateCustomBaseUrl(baseUrl: string | null | undefined): Promise<void> {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return;
+  try {
+    const url = await assertSafeRemoteUrl(trimmed);
+    if (url.hash) throw new Error("URL must not contain a fragment");
+  } catch (err) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Custom endpoint URL is not allowed: ${(err as Error).message}. Use a public https:// address.`,
+    });
+  }
+}
 
 export const bugTriageRouter = router({
   settingsGet: platformProcedure.query(() => loadBugTriageSettings()),
@@ -75,4 +98,68 @@ export const bugTriageRouter = router({
       }),
     )
     .mutation(({ input }) => bugTriageChat(input.messages)),
+
+  /** Platform LLM keys used by triage/chat when no org context (env is fallback). */
+  platformAiGet: platformProcedure.query(async () => {
+    try {
+      return await getPlatformAiSettingsView();
+    } catch (err) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: err instanceof Error ? err.message : "Could not load platform AI keys.",
+      });
+    }
+  }),
+
+  platformAiSaveKeys: platformProcedure
+    .input(
+      z.object({
+        providerId: providerIdSchema,
+        keySlots: z.array(z.string().max(500)).max(5),
+        baseUrl: z.string().max(500).nullable().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        if (input.providerId === "custom") await validateCustomBaseUrl(input.baseUrl);
+        await savePlatformProviderKeys({
+          providerId: input.providerId,
+          keySlots: input.keySlots,
+          baseUrl: input.providerId === "custom" ? input.baseUrl : undefined,
+        });
+        await writePlatformAudit(ctx.supabase, {
+          actorId: ctx.user.id,
+          action: "platform_ai.save_keys",
+          targetType: "platform_ai_providers",
+          targetId: input.providerId,
+        });
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof TRPCError) throw err;
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err instanceof Error ? err.message : "Could not save platform AI keys.",
+        });
+      }
+    }),
+
+  platformAiClearProvider: platformProcedure
+    .input(z.object({ providerId: providerIdSchema }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await clearPlatformProvider(input.providerId);
+        await writePlatformAudit(ctx.supabase, {
+          actorId: ctx.user.id,
+          action: "platform_ai.clear_provider",
+          targetType: "platform_ai_providers",
+          targetId: input.providerId,
+        });
+        return { ok: true };
+      } catch (err) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: err instanceof Error ? err.message : "Could not clear provider.",
+        });
+      }
+    }),
 });

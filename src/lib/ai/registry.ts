@@ -57,6 +57,14 @@ async function loadCredsPair(organizationId?: string | null) {
       .eq("organizationId", organizationId)
       .maybeSingle();
     orgPlain = decryptAiProviders(data?.aiProviders);
+  } else {
+    // Platform ops / bug triage (no org): use superadmin-configured keys, then env.
+    try {
+      const { loadPlatformAiPlain } = await import("@/lib/ai/platform-credentials");
+      orgPlain = await loadPlatformAiPlain();
+    } catch {
+      orgPlain = decryptAiProviders({});
+    }
   }
   return {
     merged: resolveCredentials(orgPlain),
