@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getSessionOverallScore,
+  getSessionScoreBreakdown,
   usesQuestionEvaluationScore,
 } from "../src/lib/session-score";
 
@@ -47,4 +48,25 @@ test("getSessionOverallScore returns null when no valid scores exist", () => {
 
   assert.equal(getSessionOverallScore(insights), null);
   assert.equal(usesQuestionEvaluationScore(insights), false);
+});
+
+test("getSessionScoreBreakdown splits questions, skills and coding", () => {
+  const breakdown = getSessionScoreBreakdown({
+    questionEvaluations: [
+      { question: "Tell me about yourself", score: 8 },
+      { question: "System design", score: 6 },
+    ],
+    criteriaEvaluations: [{ name: "Communication", score: 7 }],
+    codeEvaluations: [
+      { snippetLabel: "two-sum.py", language: "python", score: 9 },
+    ],
+  });
+
+  assert.equal(breakdown.overall, 7);
+  assert.equal(breakdown.source, "questions");
+  assert.equal(breakdown.questions.avg, 7);
+  assert.equal(breakdown.criteria.avg, 7);
+  assert.equal(breakdown.coding.avg, 9);
+  assert.equal(breakdown.coding.items[0]?.label, "two-sum.py");
+  assert.match(breakdown.questions.items[0]?.label ?? "", /^Q1\./);
 });

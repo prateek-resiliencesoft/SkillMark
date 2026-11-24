@@ -54,6 +54,7 @@ import { isReportStuck } from "@/lib/session-report-policy";
 import { PdfBuilderDialog } from "@/components/report/pdf-builder-dialog";
 import { IntegrityAssessmentCard } from "@/components/report/integrity-assessment-card";
 import {
+  ReportCoding,
   ReportHero,
   ReportIntegrity,
   ReportQuestions,
@@ -1283,6 +1284,7 @@ function SessionDetailBody({
 
             <ReportSummary data={report} />
             <ReportSkills data={report} />
+            <ReportCoding data={report} />
             <ReportStrengths data={report} />
 
             <ReportQuestions data={report} />

@@ -11,6 +11,7 @@ import {
   StatTile,
 } from "@/components/report/report-visuals";
 import { SessionErrorLogButton } from "@/components/session/session-error-log";
+import { ScoreDistributionChips } from "@/components/session/score-with-breakdown";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ReportData } from "@/lib/report-data";
@@ -23,6 +24,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Code2,
   FileText,
   HelpCircle,
   MessageSquareQuote,
@@ -33,7 +35,7 @@ import {
   ThumbsUp,
   TriangleAlert,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -46,6 +48,22 @@ import {
 /** Hero: candidate, animated overall gauge, recommendation and key stat tiles. */
 export function ReportHero({ data }: { data: ReportData }) {
   const strikeTone = data.disqualified ? "danger" : data.integrityStrikes > 0 ? "warn" : "default";
+  const distribution = useMemo(
+    () => ({
+      overall: data.overallScore,
+      source: data.scoreDistribution.source,
+      questions: { avg: data.scoreDistribution.questions, items: data.questions.map((q) => ({ label: `Q${q.index}. ${q.question}`, score: q.score })) },
+      criteria: { avg: data.scoreDistribution.skills, items: data.criteria.map((c) => ({ label: c.name, score: c.score })) },
+      coding: { avg: data.scoreDistribution.coding, items: data.coding.map((c) => ({ label: c.label, score: c.score })) },
+    }),
+    [data],
+  );
+  const sourceNote =
+    data.scoreDistribution.source === "questions"
+      ? "Overall is the average of question scores"
+      : data.scoreDistribution.source === "criteria"
+        ? "Overall is the average of skill scores"
+        : null;
   return (
     <Reveal>
       <Card className="overflow-hidden">
@@ -82,9 +100,13 @@ export function ReportHero({ data }: { data: ReportData }) {
               </div>
             </div>
             {data.overallScore !== null && (
-              <div className="flex flex-col items-center">
+              <div className="flex flex-col items-center gap-2">
                 <ScoreGauge score={Number(data.overallScore.toFixed(1))} />
-                <p className="mt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">Overall score</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Overall score</p>
+                <ScoreDistributionChips breakdown={distribution} />
+                {sourceNote && (
+                  <p className="max-w-[14rem] text-center text-[11px] text-muted-foreground">{sourceNote}</p>
+                )}
               </div>
             )}
           </CardContent>
@@ -237,6 +259,46 @@ export function ReportStrengths({ data }: { data: ReportData }) {
       {col("Strengths", data.strengths, true)}
       {col("Concerns", data.concerns, false)}
     </div>
+  );
+}
+
+/** Coding round scores from `insights.codeEvaluations`. */
+export function ReportCoding({ data }: { data: ReportData }) {
+  if (data.coding.length === 0) return null;
+  return (
+    <Reveal>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Code2 className="h-4 w-4 text-primary" /> Coding round
+            <Badge variant="secondary" className="ml-1 font-normal">{data.coding.length}</Badge>
+            {data.scoreDistribution.coding !== null && (
+              <span className="ml-auto text-sm font-semibold tabular-nums" style={{ color: scoreColor(data.scoreDistribution.coding) }}>
+                avg {data.scoreDistribution.coding.toFixed(1)}/10
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {data.coding.map((c, i) => (
+            <div key={`${c.label}-${i}`} className="rounded-lg border p-3">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="font-medium">{c.label}</span>
+                {c.language && <Badge variant="outline" className="font-normal">{c.language}</Badge>}
+                <ScoreChip score={c.score} />
+              </div>
+              {c.question && (
+                <p className="mb-1.5 text-xs text-muted-foreground">
+                  <span className="font-semibold uppercase tracking-wide">Question · </span>
+                  {c.question}
+                </p>
+              )}
+              {c.evaluation && <ExpandableText text={c.evaluation} className="text-sm" lines={3} />}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </Reveal>
   );
 }
 
