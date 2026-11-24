@@ -55,6 +55,7 @@ import { LeftFollowupAction } from "@/components/candidates/left-followup-action
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { cn } from "@/lib/utils";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { trpc } from "@/lib/trpc/client";
 import {
     ArrowDown,
@@ -1289,24 +1290,9 @@ export function CandidateManager({
                           {c?.createdAt ? formatDate(c.createdAt) : "-"}
                         </span>
                       ),
-                      score: (() => {
-                        const sv = getSessionScore(row);
-                        if (sv === null)
-                          return (
-                            <span className="text-muted-foreground">-</span>
-                          );
-                        const sc =
-                          sv >= 7
-                            ? "text-green-700 dark:text-green-400"
-                            : sv >= 4
-                              ? "text-amber-700 dark:text-amber-400"
-                              : "text-red-700 dark:text-red-400";
-                        return (
-                          <span className={`font-semibold ${sc}`}>
-                            {sv.toFixed(1)}/10
-                          </span>
-                        );
-                      })(),
+                      score: (
+                        <ScoreWithBreakdown insights={session?.insights} />
+                      ),
                       duration: hasSession
                         ? formatDuration(listDurationSeconds(session))
                         : "-",

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { countStrikes, MAX_STRIKES } from "@/lib/head-movement";
-import { getSessionOverallScore } from "@/lib/session-score";
+import { getSessionOverallScore, getSessionScoreBreakdown } from "@/lib/session-score";
 import { interviewLanguageLabel } from "@/lib/interview-language";
 
 export type Recommendation = "hire" | "maybe" | "no";
@@ -15,6 +15,14 @@ export interface ReportQuestion {
   answerExcerpt: string | null;
 }
 
+export interface ReportCoding {
+  label: string;
+  language: string | null;
+  question: string | null;
+  score: number;
+  evaluation: string;
+}
+
 export interface ReportData {
   title: string;
   participantName: string;
@@ -27,10 +35,18 @@ export interface ReportData {
   language: string | null;
   durationMinutes: number | null;
   overallScore: number | null;
+  /** Averages that make up / accompany the overall score. */
+  scoreDistribution: {
+    questions: number | null;
+    skills: number | null;
+    coding: number | null;
+    source: "questions" | "criteria" | null;
+  };
   recommendation: Recommendation | null;
   summary: string | null;
   criteria: { name: string; score: number; reasoning: string }[];
   questions: ReportQuestion[];
+  coding: ReportCoding[];
   questionsAnswered: number;
   strengths: string[];
   concerns: string[];
@@ -171,6 +187,25 @@ export function buildReportData(d: any): ReportData {
   }));
 
   const overall = getSessionOverallScore({ questionEvaluations: qes as any, criteriaEvaluations: criteria });
+  const breakdown = getSessionScoreBreakdown(obj);
+  const coding: ReportCoding[] = (Array.isArray(obj.codeEvaluations) ? obj.codeEvaluations : [])
+    .map((c: any, i: number) => {
+      const score = Number(c?.score);
+      if (!Number.isFinite(score)) return null;
+      const label =
+        String(c?.snippetLabel ?? "").trim() ||
+        String(c?.question ?? "").trim() ||
+        (c?.language ? `${c.language} snippet` : "") ||
+        `Coding ${i + 1}`;
+      return {
+        label,
+        language: c?.language ? String(c.language) : null,
+        question: c?.question ? String(c.question) : null,
+        score,
+        evaluation: String(c?.evaluation ?? ""),
+      } satisfies ReportCoding;
+    })
+    .filter(Boolean) as ReportCoding[];
   const log = (d?.antiCheatingLog ?? []) as { type: string }[];
   const counts = new Map<string, number>();
   for (const v of log) {
@@ -191,10 +226,17 @@ export function buildReportData(d: any): ReportData {
     language: d?.interviewLanguage ? interviewLanguageLabel(d.interviewLanguage, d?.language) : null,
     durationMinutes: d?.totalDurationSeconds != null ? Math.max(1, Math.round(d.totalDurationSeconds / 60)) : null,
     overallScore: overall,
+    scoreDistribution: {
+      questions: breakdown.questions.avg,
+      skills: breakdown.criteria.avg,
+      coding: breakdown.coding.avg,
+      source: breakdown.source,
+    },
     recommendation: recommendationFor(overall, disqualified),
     summary: d?.summary ?? null,
     criteria,
     questions,
+    coding,
     questionsAnswered: questions.length || messages.filter((m) => m.role === "USER").length,
     strengths: uniq([...questions.flatMap((q) => q.highlights), ...criteria.filter((c) => c.score >= 7).map((c) => c.name)], 6),
     concerns: uniq([...questions.flatMap((q) => q.improvements), ...criteria.filter((c) => c.score < 5).map((c) => c.name)], 6),

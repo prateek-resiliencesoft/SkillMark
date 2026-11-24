@@ -71,11 +71,33 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
         )}
       </div>
     ) : null,
-    scores: data.criteria.length || data.questions.length ? (
+    scores: data.criteria.length || data.questions.length || data.coding.length ? (
       <div data-pdf-block style={card}>
         <H>Scores at a glance</H>
+        {(data.scoreDistribution.questions != null || data.scoreDistribution.skills != null || data.scoreDistribution.coding != null) && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {([
+              ["Questions", data.scoreDistribution.questions],
+              ["Skills", data.scoreDistribution.skills],
+              ["Coding", data.scoreDistribution.coding],
+            ] as const)
+              .filter(([, avg]) => avg != null)
+              .map(([label, avg]) => (
+                <span key={label} style={{ fontSize: fs - 1, border: "1px solid #e5e7eb", borderRadius: 999, padding: "2px 8px" }}>
+                  <span style={{ color: "#6b7280" }}>{label} </span>
+                  <strong style={{ color: scoreColor(avg!) }}>{avg!.toFixed(1)}</strong>
+                </span>
+              ))}
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 130, paddingTop: 6 }}>
-          {(data.criteria.length ? data.criteria.map((c) => ({ n: c.name, s: c.score })) : data.questions.map((q) => ({ n: `Q${q.index}`, s: q.score }))).slice(0, 14).map((x, i) => (
+          {(data.criteria.length
+            ? data.criteria.map((c) => ({ n: c.name, s: c.score }))
+            : [
+                ...data.questions.map((q) => ({ n: `Q${q.index}`, s: q.score })),
+                ...data.coding.map((c, i) => ({ n: c.label || `Code ${i + 1}`, s: c.score })),
+              ]
+          ).slice(0, 14).map((x, i) => (
             <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}>
               <div style={{ fontSize: fs - 2, fontWeight: 700, color: scoreColor(x.s) }}>{x.s}</div>
               <div style={{ width: "70%", height: `${x.s * 9}px`, background: scoreColor(x.s), borderRadius: "4px 4px 0 0", opacity: 0.85 }} />

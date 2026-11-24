@@ -19,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
 import { PreflightProgress } from "@/components/candidates/preflight-progress";
@@ -412,7 +413,12 @@ export function CandidateDetailSheet({
                     {neverReachedFirstQuestion(c?.session ?? null) ? (
                       <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
                     ) : null}
-                    {score != null && <Badge variant="outline" className="text-[11px]">Score {Math.round(score)}</Badge>}
+                    {score != null && (
+                      <ScoreWithBreakdown
+                        insights={c?.session?.insights}
+                        variant="badge"
+                      />
+                    )}
                     <SendPill label="WhatsApp" status={c.whatsappStatus} at={c.whatsappSentAt} />
                     <SendPill label="Email" status={c.emailStatus} at={c.emailSentAt} />
                   </div>

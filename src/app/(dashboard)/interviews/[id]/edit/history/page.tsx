@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { trpc } from "@/lib/trpc/client";
 import { useParams } from "next/navigation";
 
@@ -46,12 +46,6 @@ export default function InterviewHistoryPage() {
             </thead>
             <tbody>
               {rows.map((row) => {
-                const score = getSessionOverallScore(
-                  row.insights as {
-                    questionEvaluations?: { score?: number | string | null }[] | null;
-                    criteriaEvaluations?: { score?: number | string | null }[] | null;
-                  } | null,
-                );
                 return (
                   <tr key={row.id} className="border-b last:border-0">
                     <td className="px-4 py-3">
@@ -61,7 +55,10 @@ export default function InterviewHistoryPage() {
                       ) : null}
                     </td>
                     <td className="px-4 py-3">
-                      {score == null ? "No score" : score.toFixed(1)}
+                      <ScoreWithBreakdown
+                        insights={row.insights}
+                        empty={<span className="text-muted-foreground">No score</span>}
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <Badge variant="outline" className="text-[10px] font-normal">

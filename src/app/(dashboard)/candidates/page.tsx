@@ -44,6 +44,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { formatSessionStatusLabel } from "@/lib/preflight";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { decisionStatusLabel } from "@/lib/candidate-decision";
@@ -1062,22 +1063,8 @@ export default function CandidatesPage() {
             {c?.createdAt ? formatDate(c.createdAt) : "-"}
           </span>
         );
-      case "score": {
-        const scoreVal = getSessionScore(row);
-        if (scoreVal === null)
-          return <span className="text-muted-foreground">-</span>;
-        const scoreColor =
-          scoreVal >= 7
-            ? "text-green-700 dark:text-green-400"
-            : scoreVal >= 4
-              ? "text-amber-700 dark:text-amber-400"
-              : "text-red-700 dark:text-red-400";
-        return (
-          <span className={`font-semibold ${scoreColor}`}>
-            {scoreVal.toFixed(1)}/10
-          </span>
-        );
-      }
+      case "score":
+        return <ScoreWithBreakdown insights={session?.insights} />;
       case "duration":
         return (
           <span>
