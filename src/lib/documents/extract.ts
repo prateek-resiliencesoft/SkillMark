@@ -2,11 +2,10 @@
  * Layout-aware document → Markdown extraction (server-only).
  *
  * Tiered so the expensive path only runs when the cheap one can't read the file:
- *   1. Docling Serve (optional, DOCLING_SERVE_URL) — layout-aware parsing with
- *      reading order, multi-column, tables and built-in OCR for scans.
- *   2. Native text layers — DOCX via mammoth (keeps headings/lists/tables),
- *      PDF via pdf-parse page by page.
- *   3. Vision LLM — only for images and PDF pages without a usable text layer.
+ *   1. Native text layers — DOCX via mammoth, PDF via pdf-parse (fast, local).
+ *   2. Docling Serve (optional, DOCLING_SERVE_URL) — OCR / layout when native
+ *      text is thin or missing (scans, image CVs).
+ *   3. Vision LLM — last resort for images and PDFs still unreadable.
  *
  * Nothing here guesses: unreadable input is reported in `warnings` so callers
  * can flag the document for human review.
@@ -91,21 +90,24 @@ export async function extractDocument(
     return { markdown: normalise(buffer.toString("utf8")), method: "plain-text", pages: 1, warnings: [] };
   }
 
-  if (process.env.DOCLING_SERVE_URL) {
-    try {
-      const md = await extractWithDocling(buffer, fileName, options?.signal);
-      if (md.trim().length >= MIN_CHARS_PER_PAGE) {
-        return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
-      }
-    } catch (err) {
-      if (options?.signal?.aborted) throw err;
-      log.warn("Docling failed, falling back to native extraction:", err);
-    }
+  options?.signal?.throwIfAborted();
+
+  // Cheap native path first — most digital CVs never need Docling/vision.
+  if (kind === "docx") {
+    const native = await extractDocx(buffer);
+    if (native.markdown.trim().length >= MIN_CHARS_PER_PAGE) return native;
+    const viaDocling = await tryDocling(buffer, fileName, options?.signal);
+    if (viaDocling && viaDocling.markdown.length > native.markdown.length) return viaDocling;
+    return native;
   }
 
-  options?.signal?.throwIfAborted();
-  if (kind === "docx") return extractDocx(buffer);
-  if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
+  if (kind === "pdf") {
+    return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
+  }
+
+  // Images: Docling OCR (if configured) before burning a vision LLM call.
+  const viaDocling = await tryDocling(buffer, fileName, options?.signal);
+  if (viaDocling && viaDocling.markdown.trim().length >= MIN_CHARS_PER_PAGE) return viaDocling;
   return extractImage(buffer, options?.organizationId, options?.signal);
 }
 
@@ -113,24 +115,46 @@ export async function extractDocument(
 /*  Docling Serve                                                      */
 /* ------------------------------------------------------------------ */
 
+/** Cap Docling so a hung OCR job cannot eat the whole parse-cv budget. */
+const DOCLING_BUDGET_MS = 45_000;
+
 async function extractWithDocling(buffer: Buffer, fileName: string, signal?: AbortSignal): Promise<string> {
   const base = process.env.DOCLING_SERVE_URL!.replace(/\/$/, "");
   const form = new FormData();
   form.append("files", new Blob([new Uint8Array(buffer)]), fileName);
   form.append("to_formats", "md");
+  // Only used as fallback for thin/scanned input — OCR on, but fast tables.
   form.append("do_ocr", "true");
-  form.append("table_mode", "accurate");
+  form.append("table_mode", "fast");
   form.append("image_export_mode", "placeholder");
 
   const res = await fetch(`${base}/v1/convert/file`, {
     method: "POST",
     body: form,
     headers: process.env.DOCLING_SERVE_API_KEY ? { "X-Api-Key": process.env.DOCLING_SERVE_API_KEY } : undefined,
-    signal: budgetSignal(120_000, signal),
+    signal: budgetSignal(DOCLING_BUDGET_MS, signal),
   });
   if (!res.ok) throw new Error(`Docling HTTP ${res.status}`);
   const json = (await res.json()) as { document?: { md_content?: string }; status?: string };
   return normalise(json.document?.md_content ?? "");
+}
+
+/** Soft Docling attempt — never throws unless the caller signal aborted. */
+async function tryDocling(
+  buffer: Buffer,
+  fileName: string,
+  signal?: AbortSignal,
+): Promise<ExtractedDocument | null> {
+  if (!process.env.DOCLING_SERVE_URL) return null;
+  try {
+    const md = await extractWithDocling(buffer, fileName, signal);
+    if (md.trim().length < MIN_CHARS_PER_PAGE) return null;
+    return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    log.warn("Docling failed, continuing with native/vision:", err);
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,7 +238,7 @@ async function extractPdf(
   const scannedPages = pages.filter((p) => p.length < MIN_CHARS_PER_PAGE).length;
   const textChars = pages.reduce((n, p) => n + p.length, 0);
 
-  // Mostly text: done, no vision call.
+  // Mostly text: done — skip Docling and vision (biggest bulk-upload win).
   if (pages.length > 0 && scannedPages === 0) {
     return {
       markdown: normalise(pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")),
@@ -224,7 +248,14 @@ async function extractPdf(
     };
   }
 
-  // Some or all pages are scans: ask the vision model to read the PDF.
+  // Thin / scanned text layer: Docling OCR before burning a vision LLM call.
+  signal?.throwIfAborted();
+  const viaDocling = await tryDocling(buffer, fileName, signal);
+  if (viaDocling && viaDocling.markdown.length >= Math.max(textChars, MIN_CHARS_PER_PAGE)) {
+    return { ...viaDocling, pages: numPages || viaDocling.pages, warnings };
+  }
+
+  // Still unreadable: ask the vision model to read the PDF.
   const visions = await getVisionClients(organizationId);
   if (!visions.length) {
     warnings.push(
