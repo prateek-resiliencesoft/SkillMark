@@ -7,24 +7,28 @@
  * the app, which stores them, fans them out to the panel and drives the copilot.
  *
  * Env: ROUND2_APP_URL, ROUND2_AGENT_SECRET, LIVEKIT_AGENT_URL | LIVEKIT_URL,
- *      ROUND2_STT_API_KEY | OPENAI_API_KEY, ROUND2_STT_BASE_URL, ROUND2_STT_MODEL
+ *      ROUND2_STT_BASE_URL, ROUND2_STT_MODEL, ROUND2_STT_API_KEY
+ *      (falls back to OPENAI_API_KEY for OpenAI, GROQ_API_KEY for Groq), ROUND2_VAD_RMS
  */
 import { AudioStream, Room, RoomEvent, TrackKind, type RemoteParticipant, type RemoteTrack } from "@livekit/rtc-node";
+import { resolveSttConfig, segmentTimes } from "../src/lib/round-two/stt-config";
 
 const APP_URL = (process.env.ROUND2_APP_URL || "http://localhost:3000").replace(/\/$/, "");
 const SECRET = process.env.ROUND2_AGENT_SECRET || "";
 const LIVEKIT_URL = process.env.LIVEKIT_AGENT_URL || process.env.LIVEKIT_URL || "";
-const STT_KEY = process.env.ROUND2_STT_API_KEY || process.env.OPENAI_API_KEY || "";
-const STT_BASE = (process.env.ROUND2_STT_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-const STT_MODEL = process.env.ROUND2_STT_MODEL || "gpt-4o-mini-transcribe";
+const STT = resolveSttConfig(process.env);
+const STT_KEY = STT.apiKey;
+const STT_BASE = STT.baseUrl;
+const STT_MODEL = STT.model;
 const POLL_MS = 5_000;
 
 const SAMPLE_RATE = 16_000;
-const SPEECH_RMS = Number(process.env.ROUND2_VAD_RMS || 600);
+const SPEECH_RMS = Number(process.env.ROUND2_VAD_RMS || 300);
 const END_SILENCE_MS = 700;
 const MAX_UTTERANCE_MS = 15_000;
 const MIN_SPEECH_MS = 350;
 const PREROLL_MS = 200;
+const LEVEL_LOG_MS = 30_000;
 
 type LiveRoom = { roundTwoId: string; room: string; token: string };
 
@@ -81,6 +85,7 @@ async function postSegment(seg: { roundTwoId: string; identity: string; name: st
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) log("transcript post failed", res.status, await res.text().catch(() => ""));
+  else log("segment saved", seg.identity, `${seg.text.length} chars`);
 }
 
 /** Reads one audio track, cuts utterances on silence and transcribes them in order. */
@@ -98,6 +103,10 @@ async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant:
   let silenceMs = 0;
   let startedAt = 0;
   let speaking = false;
+  let peakRms = 0;
+  let frames = 0;
+  let utterances = 0;
+  let lastLevelLog = Date.now();
 
   const flush = () => {
     if (!speaking) return;
@@ -109,6 +118,7 @@ async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant:
     chunks = [];
     speechMs = totalMs = silenceMs = 0;
     if (spoke < MIN_SPEECH_MS) return;
+    utterances++;
     const len = parts.reduce((n, p) => n + p.length, 0);
     const pcm = new Int16Array(len);
     let off = 0;
@@ -120,7 +130,7 @@ async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant:
       try {
         const text = await transcribe(pcm);
         if (!text) return;
-        await postSegment({ roundTwoId, identity: participant.identity, name: participant.name || participant.identity, text, startedAt: start, endedAt: end });
+        await postSegment({ roundTwoId, identity: participant.identity, name: participant.name || participant.identity, text, ...segmentTimes(start, end) });
       } catch (e) {
         log("stt error", participant.identity, e instanceof Error ? e.message : e);
       }
@@ -133,7 +143,16 @@ async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant:
       if (done || !frame) break;
       const samples = new Int16Array(frame.data);
       const ms = (frame.samplesPerChannel / frame.sampleRate) * 1000;
-      const loud = rms(samples) >= SPEECH_RMS;
+      const level = rms(samples);
+      const loud = level >= SPEECH_RMS;
+      frames++;
+      if (level > peakRms) peakRms = level;
+      if (Date.now() - lastLevelLog >= LEVEL_LOG_MS) {
+        log("audio", participant.identity, `frames=${frames} peakRms=${Math.round(peakRms)} threshold=${SPEECH_RMS} utterances=${utterances}`);
+        lastLevelLog = Date.now();
+        frames = 0;
+        peakRms = 0;
+      }
 
       if (!speaking) {
         preroll.push(samples);
@@ -250,8 +269,8 @@ async function poll() {
 async function main() {
   if (!SECRET || SECRET.length < 16) throw new Error("ROUND2_AGENT_SECRET (16+ chars) is required");
   if (!LIVEKIT_URL) throw new Error("LIVEKIT_AGENT_URL or LIVEKIT_URL is required");
-  if (!STT_KEY) throw new Error("ROUND2_STT_API_KEY or OPENAI_API_KEY is required");
-  log(`polling ${APP_URL} · livekit ${LIVEKIT_URL} · stt ${STT_BASE} (${STT_MODEL})`);
+  if (!STT_KEY) throw new Error(`ROUND2_STT_API_KEY is required for ${STT_BASE}`);
+  log(`polling ${APP_URL} · livekit ${LIVEKIT_URL} · stt ${STT.provider} ${STT_BASE} (${STT_MODEL}) · vad ${SPEECH_RMS}`);
   await poll();
   const timer = setInterval(() => void poll(), POLL_MS);
   const shutdown = async () => {

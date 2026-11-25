@@ -2,6 +2,7 @@
 
 import { ParticipantTile, useTracks, type TrackReferenceOrPlaceholder } from "@livekit/components-react";
 import { Track } from "livekit-client";
+import { LK_THEME } from "@/components/round-two/room/lk-theme";
 import { CANDIDATE_IDENTITY_PREFIX } from "@/lib/round-two/types";
 import { cn } from "@/lib/utils";
 
