@@ -73,7 +73,13 @@ export default function RoundTwoInvitePage() {
             ) : (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Sign in with the invited address <strong>{info.data.emailHint}</strong> to join.
+                  {info.data.kind === "partner" || !info.data.emailHint
+                    ? "Sign in with Google or your ResilienceSoft Interview account to join the panel."
+                    : (
+                      <>
+                        Sign in with the invited address <strong>{info.data.emailHint}</strong> to join.
+                      </>
+                    )}
                 </p>
                 <Button className="w-full" asChild>
                   <a href={`/api/auth/google/start?next=${encodeURIComponent(next)}`}>Continue with Google</a>

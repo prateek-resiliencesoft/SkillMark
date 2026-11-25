@@ -47,11 +47,68 @@ const planItemSchema = z.object({
 const candidateLink = (token: string) => `${appBaseUrl()}/r2/c/${token}`;
 const interviewerLink = (token: string) => `${appBaseUrl()}/r2/join/${token}`;
 
-/** Never send token hashes or raw context to the browser beyond what the panel needs. */
+type RoundShareFields = RoundRow & {
+  candidateTokenHash?: string;
+  candidateInviteToken?: string | null;
+  partnerInviteToken?: string | null;
+  partnerInviteTokenHash?: string | null;
+};
+
+/** Never send token hashes or raw invite secrets to the browser. */
 function publicRound(r: RoundRow) {
-  const { candidateTokenHash: _c, ...rest } = r as RoundRow & { candidateTokenHash?: string };
+  const row = r as RoundShareFields;
+  const {
+    candidateTokenHash: _c,
+    candidateInviteToken: _ci,
+    partnerInviteToken: _pi,
+    partnerInviteTokenHash: _ph,
+    ...rest
+  } = row;
   void _c;
+  void _ci;
+  void _pi;
+  void _ph;
   return { ...rest, questionPlan: normalizePlan(r.questionPlan), round1Context: (r.round1Context ?? {}) as Round1Context };
+}
+
+async function persistCandidateToken(
+  db: import("../context").Context["supabase"],
+  roundId: string,
+  token: string,
+): Promise<string> {
+  const { error } = await db
+    .from("round_two_interviews")
+    .update({ candidateTokenHash: hashRoundToken(token), candidateInviteToken: token, updatedAt: new Date().toISOString() })
+    .eq("id", roundId);
+  if (error && /candidateInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+    // Pre-migration 49: hash-only still works for auth; host can't re-reveal until migrated.
+    await db.from("round_two_interviews").update({ candidateTokenHash: hashRoundToken(token), updatedAt: new Date().toISOString() }).eq("id", roundId);
+  } else if (error) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+  }
+  return candidateLink(token);
+}
+
+async function ensurePartnerToken(
+  db: import("../context").Context["supabase"],
+  round: RoundShareFields,
+): Promise<string> {
+  if (round.partnerInviteToken) return interviewerLink(round.partnerInviteToken);
+  const token = newRoundToken();
+  const patch = {
+    partnerInviteToken: token,
+    partnerInviteTokenHash: hashRoundToken(token),
+    updatedAt: new Date().toISOString(),
+  };
+  const { error } = await db.from("round_two_interviews").update(patch).eq("id", round.id);
+  if (error && /partnerInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Apply db migration 49 (round-two share tokens) to enable partner invite links.",
+    });
+  }
+  if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+  return interviewerLink(token);
 }
 
 async function profileName(db: import("../context").Context["supabase"], userId: string, fallback: string): Promise<string> {
@@ -331,7 +388,9 @@ export const roundTwoRouter = router({
       const sessionId = input.sessionId ?? (c.sessionId as string | null) ?? null;
       const round1Context = await buildRound1Context(ctx.supabase, iv.project.organizationId, candidateId, sessionId);
       const id = crypto.randomUUID();
-      const { error } = await ctx.supabase.from("round_two_interviews").insert({
+      const candToken = newRoundToken();
+      const partnerToken = newRoundToken();
+      const baseRow = {
         id,
         organizationId: iv.project.organizationId,
         projectId: iv.projectId,
@@ -341,9 +400,28 @@ export const roundTwoRouter = router({
         title: `Round 2 · ${iv.title}`,
         status: "draft",
         livekitRoom: `r2-${id}`,
-        candidateTokenHash: hashRoundToken(newRoundToken()),
+        candidateTokenHash: hashRoundToken(candToken),
+        candidateInviteToken: candToken,
+        partnerInviteToken: partnerToken,
+        partnerInviteTokenHash: hashRoundToken(partnerToken),
         round1Context,
-      });
+      };
+      let { error } = await ctx.supabase.from("round_two_interviews").insert(baseRow);
+      if (error && /candidateInviteToken|partnerInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+        ({ error } = await ctx.supabase.from("round_two_interviews").insert({
+          id: baseRow.id,
+          organizationId: baseRow.organizationId,
+          projectId: baseRow.projectId,
+          candidateId: baseRow.candidateId,
+          sourceSessionId: baseRow.sourceSessionId,
+          hostUserId: baseRow.hostUserId,
+          title: baseRow.title,
+          status: baseRow.status,
+          livekitRoom: baseRow.livekitRoom,
+          candidateTokenHash: baseRow.candidateTokenHash,
+          round1Context: baseRow.round1Context,
+        }));
+      }
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       const hostEmail = ctx.user.email.toLowerCase();
       await ctx.supabase.from("round_two_participants").insert({
@@ -509,19 +587,39 @@ export const roundTwoRouter = router({
       const r = access.round;
       if (!isOpenRound(r.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "This interview is already closed" });
       const token = newRoundToken();
-      const { data: updated, error } = await ctx.supabase
+      const partnerToken = (r as RoundShareFields).partnerInviteToken ?? newRoundToken();
+      const schedulePatch = {
+        title: input.title,
+        scheduledAt: input.scheduledAt,
+        durationMin: input.durationMin,
+        status: r.status === "draft" ? "scheduled" : r.status,
+        candidateTokenHash: hashRoundToken(token),
+        candidateInviteToken: token,
+        partnerInviteToken: partnerToken,
+        partnerInviteTokenHash: hashRoundToken(partnerToken),
+        updatedAt: new Date().toISOString(),
+      };
+      let { data: updated, error } = await ctx.supabase
         .from("round_two_interviews")
-        .update({
-          title: input.title,
-          scheduledAt: input.scheduledAt,
-          durationMin: input.durationMin,
-          status: r.status === "draft" ? "scheduled" : r.status,
-          candidateTokenHash: hashRoundToken(token),
-          updatedAt: new Date().toISOString(),
-        })
+        .update(schedulePatch)
         .eq("id", r.id)
         .select("*")
         .single();
+      if (error && /candidateInviteToken|partnerInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+        ({ data: updated, error } = await ctx.supabase
+          .from("round_two_interviews")
+          .update({
+            title: schedulePatch.title,
+            scheduledAt: schedulePatch.scheduledAt,
+            durationMin: schedulePatch.durationMin,
+            status: schedulePatch.status,
+            candidateTokenHash: schedulePatch.candidateTokenHash,
+            updatedAt: schedulePatch.updatedAt,
+          })
+          .eq("id", r.id)
+          .select("*")
+          .single());
+      }
       if (error || !updated) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error?.message });
       const round = updated as RoundRow;
       const hostName = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
@@ -591,57 +689,157 @@ export const roundTwoRouter = router({
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
     assertCanManage(access);
     const token = newRoundToken();
-    await ctx.supabase.from("round_two_interviews").update({ candidateTokenHash: hashRoundToken(token) }).eq("id", input.id);
-    return { candidateLink: candidateLink(token) };
+    const link = await persistCandidateToken(ctx.supabase, input.id, token);
+    return { candidateLink: link };
+  }),
+
+  /**
+   * Host-visible candidate + partner invite links for the live room / detail page.
+   * Reuses stored tokens when present so a previously emailed candidate link stays valid.
+   */
+  ensureShareLinks: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    assertCanManage(access);
+    if (!isOpenRound(access.round.status)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "This interview is closed" });
+    }
+    let row: RoundShareFields | null = null;
+    {
+      const full = await ctx.supabase
+        .from("round_two_interviews")
+        .select('id, "candidateInviteToken", "partnerInviteToken", "partnerInviteTokenHash"')
+        .eq("id", input.id)
+        .maybeSingle();
+      if (full.error && /candidateInviteToken|partnerInviteToken|42703|PGRST204/.test(`${full.error.code} ${full.error.message}`)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Apply db migration 49 (round-two share tokens) to enable invite links in the room.",
+        });
+      }
+      if (full.error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: full.error.message });
+      row = full.data as RoundShareFields | null;
+    }
+    const share = { ...(access.round as RoundShareFields), ...(row ?? {}) };
+    let candToken = share.candidateInviteToken?.trim() || "";
+    if (!candToken) {
+      candToken = newRoundToken();
+      await persistCandidateToken(ctx.supabase, input.id, candToken);
+    }
+    const partnerLink = await ensurePartnerToken(ctx.supabase, share);
+    return {
+      candidateLink: candidateLink(candToken),
+      partnerLink,
+    };
   }),
 
   /** Pre-login view of an interviewer invite (title + which email it's for). */
   inviteInfo: publicProcedure.input(z.object({ token: z.string().min(10).max(200) })).query(async ({ ctx, input }) => {
+    const hash = hashRoundToken(input.token);
     const { data: p } = await ctx.supabase
       .from("round_two_participants")
       .select('email, role, status, round:round_two_interviews!inner(id, title, status, "scheduledAt", "durationMin", "organizationId")')
-      .eq("inviteTokenHash", hashRoundToken(input.token))
+      .eq("inviteTokenHash", hash)
       .maybeSingle();
-    if (!p || p.status === "revoked") return null;
-    const round = p.round as unknown as { id: string; title: string; status: string; scheduledAt: string | null; durationMin: number; organizationId: string };
-    const { data: org } = await ctx.supabase.from("organizations").select("name").eq("id", round.organizationId).maybeSingle();
-    const [user, domain] = (p.email as string).split("@");
+    if (p && p.status !== "revoked") {
+      const round = p.round as unknown as { id: string; title: string; status: string; scheduledAt: string | null; durationMin: number; organizationId: string };
+      const { data: org } = await ctx.supabase.from("organizations").select("name").eq("id", round.organizationId).maybeSingle();
+      const [user, domain] = (p.email as string).split("@");
+      return {
+        title: round.title,
+        status: round.status,
+        scheduledAt: round.scheduledAt,
+        durationMin: round.durationMin,
+        organizationName: (org?.name as string | undefined) ?? "",
+        role: p.role as string,
+        kind: "email" as const,
+        emailHint: `${user.slice(0, 2)}${"•".repeat(Math.max(1, user.length - 2))}@${domain}`,
+        signedInEmail: ctx.user?.email ?? null,
+      };
+    }
+    const { data: byPartner } = await ctx.supabase
+      .from("round_two_interviews")
+      .select('id, title, status, "scheduledAt", "durationMin", "organizationId"')
+      .eq("partnerInviteTokenHash", hash)
+      .maybeSingle();
+    if (!byPartner || !isOpenRound(String(byPartner.status))) return null;
+    const { data: org } = await ctx.supabase.from("organizations").select("name").eq("id", byPartner.organizationId).maybeSingle();
     return {
-      title: round.title,
-      status: round.status,
-      scheduledAt: round.scheduledAt,
-      durationMin: round.durationMin,
+      title: byPartner.title as string,
+      status: byPartner.status as string,
+      scheduledAt: byPartner.scheduledAt as string | null,
+      durationMin: byPartner.durationMin as number,
       organizationName: (org?.name as string | undefined) ?? "",
-      role: p.role as string,
-      emailHint: `${user.slice(0, 2)}${"•".repeat(Math.max(1, user.length - 2))}@${domain}`,
+      role: "interviewer",
+      kind: "partner" as const,
+      emailHint: null as string | null,
       signedInEmail: ctx.user?.email ?? null,
     };
   }),
 
-  /** Bind an interviewer invite to the signed-in account (email must match). */
+  /** Bind an interviewer invite to the signed-in account (email must match, unless partner link). */
   acceptInvite: protectedProcedure.input(z.object({ token: z.string().min(10).max(200) })).mutation(async ({ ctx, input }) => {
+    const hash = hashRoundToken(input.token);
     const { data: p } = await ctx.supabase
       .from("round_two_participants")
       .select('id, "roundTwoId", email, status, "userId"')
-      .eq("inviteTokenHash", hashRoundToken(input.token))
+      .eq("inviteTokenHash", hash)
       .maybeSingle();
-    if (!p || p.status === "revoked") throw new TRPCError({ code: "NOT_FOUND", message: "This invite is no longer valid" });
-    if ((p.email as string).toLowerCase() !== ctx.user.email.toLowerCase()) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: `This invite was sent to a different email address. Sign in with that address, or ask the host to invite ${ctx.user.email}.`,
-      });
+    if (p && p.status !== "revoked") {
+      if ((p.email as string).toLowerCase() !== ctx.user.email.toLowerCase()) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `This invite was sent to a different email address. Sign in with that address, or ask the host to invite ${ctx.user.email}.`,
+        });
+      }
+      if (p.userId && p.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Invite already used" });
+      await ctx.supabase
+        .from("round_two_participants")
+        .update({
+          userId: ctx.user.id,
+          status: p.status === "joined" ? "joined" : "accepted",
+          name: await profileName(ctx.supabase, ctx.user.id, ctx.user.email),
+        })
+        .eq("id", p.id);
+      return { roundTwoId: p.roundTwoId as string };
     }
-    if (p.userId && p.userId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Invite already used" });
-    await ctx.supabase
+
+    const { data: round } = await ctx.supabase
+      .from("round_two_interviews")
+      .select("id, status")
+      .eq("partnerInviteTokenHash", hash)
+      .maybeSingle();
+    if (!round || !isOpenRound(String(round.status))) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "This invite is no longer valid" });
+    }
+    const email = ctx.user.email.toLowerCase();
+    const name = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
+    const { data: existing } = await ctx.supabase
       .from("round_two_participants")
-      .update({
+      .select("id, role, status")
+      .eq("roundTwoId", round.id)
+      .ilike("email", email)
+      .maybeSingle();
+    if (existing?.role === "host") return { roundTwoId: round.id as string };
+    if (existing) {
+      if (existing.status === "revoked") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Your access to this interview was revoked" });
+      }
+      await ctx.supabase
+        .from("round_two_participants")
+        .update({ userId: ctx.user.id, status: existing.status === "joined" ? "joined" : "accepted", name, role: "interviewer" })
+        .eq("id", existing.id);
+    } else {
+      const { error } = await ctx.supabase.from("round_two_participants").insert({
+        roundTwoId: round.id,
         userId: ctx.user.id,
-        status: p.status === "joined" ? "joined" : "accepted",
-        name: await profileName(ctx.supabase, ctx.user.id, ctx.user.email),
-      })
-      .eq("id", p.id);
-    return { roundTwoId: p.roundTwoId as string };
+        email,
+        name,
+        role: "interviewer",
+        status: "accepted",
+      });
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+    }
+    return { roundTwoId: round.id as string };
   }),
 
   /** LiveKit token for a panelist. First panel join flips the round to live. */

@@ -72,7 +72,14 @@ export default function RoundTwoDetailPage() {
     onError: onErr,
   });
   const revoke = trpc.roundTwo.revokeParticipant.useMutation({ onSuccess: refresh, onError: onErr });
-  const rotate = trpc.roundTwo.rotateCandidateLink.useMutation({ onSuccess: (r) => setNewLink(r.candidateLink), onError: onErr });
+  const shareLinks = trpc.roundTwo.ensureShareLinks.useMutation({ onError: onErr });
+  const rotate = trpc.roundTwo.rotateCandidateLink.useMutation({
+    onSuccess: (r) => {
+      setNewLink(r.candidateLink);
+      shareLinks.mutate({ id });
+    },
+    onError: onErr,
+  });
   const end = trpc.roundTwo.end.useMutation({ onSuccess: refresh, onError: onErr });
   const cancel = trpc.roundTwo.cancel.useMutation({ onSuccess: refresh, onError: onErr });
   const retry = trpc.roundTwo.retryReport.useMutation({ onSuccess: refresh, onError: onErr });
@@ -247,19 +254,35 @@ export default function RoundTwoDetailPage() {
           {canManage && open && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Candidate link</CardTitle>
+                <CardTitle className="text-base">Invite links</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2">
+              <CardContent className="space-y-3">
                 <p className="text-xs text-muted-foreground">
-                  Links are only shown once. Generating a new one disables the old link.
+                  Candidate link for the interviewee; partner link for any panelist to join. Rotating the candidate
+                  link disables the previous one.
                 </p>
-                {newLink ? (
-                  <CopyField value={newLink} />
-                ) : (
-                  <Button size="sm" variant="outline" onClick={() => rotate.mutate({ id })} disabled={rotate.isLoading}>
-                    <Link2 className="mr-1.5 h-3.5 w-3.5" /> Generate new link
-                  </Button>
+                {(newLink || shareLinks.data) && (
+                  <>
+                    <CopyField label="Candidate" value={(newLink ?? shareLinks.data?.candidateLink)!} />
+                    {shareLinks.data?.partnerLink && (
+                      <CopyField label="Partner / panelist" value={shareLinks.data.partnerLink} />
+                    )}
+                  </>
                 )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => shareLinks.mutate({ id })}
+                    disabled={shareLinks.isLoading}
+                  >
+                    <Link2 className="mr-1.5 h-3.5 w-3.5" />
+                    {shareLinks.data || newLink ? "Refresh links" : "Show links"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => rotate.mutate({ id })} disabled={rotate.isLoading}>
+                    Rotate candidate link
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )}
