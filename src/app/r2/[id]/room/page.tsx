@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { R2_ROOM_OPTIONS, r2CameraCapture } from "@/lib/round-two/media";
 import { CANDIDATE_IDENTITY_PREFIX, DATA_TOPICS } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
 import {
@@ -136,8 +137,9 @@ export default function PanelRoomPage() {
       serverUrl={conn.url}
       token={conn.token}
       connect
+      options={R2_ROOM_OPTIONS}
       audio={conn.choices.audioEnabled ? { deviceId: conn.choices.audioDeviceId } : false}
-      video={conn.choices.videoEnabled ? { deviceId: conn.choices.videoDeviceId } : false}
+      video={conn.choices.videoEnabled ? r2CameraCapture(conn.choices.videoDeviceId) : false}
       onDisconnected={() => {
         void info.refetch().then((r) => setLeft(r.data?.round.status === "live" ? "left" : "ended"));
       }}
