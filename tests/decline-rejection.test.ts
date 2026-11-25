@@ -13,6 +13,7 @@ import {
   approvalEmailHtml,
   declineEmailHtml,
   declineWithReasonEmailHtml,
+  formatApprovalNextRoundDetails,
   formatDeclineDeliverySummary,
   renderApprovalEmailText,
   renderDeclineEmailText,
@@ -67,7 +68,7 @@ test("formatDeclineDeliverySummary", () => {
   assert.equal(formatDeclineDeliverySummary(undefined, undefined), "");
 });
 
-test("approval Meta template name and two variables (name + role)", () => {
+test("approval Meta template name and two variables (name + next-round details)", () => {
   assert.equal(WHATSAPP_APPROVAL_META_TEMPLATE.name, "candidate_next_round_selected");
   assert.equal(WHATSAPP_APPROVAL_META_TEMPLATE.category, "UTILITY");
   const placeholders = WHATSAPP_APPROVAL_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
@@ -77,28 +78,41 @@ test("approval Meta template name and two variables (name + role)", () => {
   assert.doesNotMatch(WHATSAPP_APPROVAL_META_TEMPLATE.body, /🎉/);
 });
 
-test("approval email subject and body brand RESILIENCESOFT and substitute name", () => {
+test("approval email subject and body brand RESILIENCESOFT and substitute name + details", () => {
   assert.equal(APPROVAL_EMAIL_SUBJECT, "Congratulations! You've Been Shortlisted – RESILIENCESOFT");
   assert.match(APPROVAL_EMAIL_BODY, /\{\{name\}\}/);
-  const text = renderApprovalEmailText("prateek", "MERN Position");
+  assert.match(APPROVAL_EMAIL_BODY, /\{\{details\}\}/);
+  const text = renderApprovalEmailText("prateek", "na");
   assert.match(text, /^Hi prateek,/m);
-  assert.match(text, /RESILIENCESOFT For MERN Position/);
+  assert.match(text, /^na$/m);
   assert.match(text, /shortlisted for the next round/i);
   assert.match(text, /Team RESILIENCESOFT/);
   assert.doesNotMatch(text, /\{\{/);
 });
 
-test("whatsappApprovalBodyVariables is name and role phrase", () => {
-  assert.deepEqual(whatsappApprovalBodyVariables("Priya Sharma", "MERN Position"), [
-    "Priya Sharma",
-    "RESILIENCESOFT For MERN Position",
-  ]);
+test("whatsappApprovalBodyVariables is name and next-round details (default na)", () => {
+  assert.deepEqual(whatsappApprovalBodyVariables("Priya Sharma"), ["Priya Sharma", "na"]);
+  assert.deepEqual(
+    whatsappApprovalBodyVariables("Priya Sharma", "Next round: Mon 10am. Join: https://x.test/r2"),
+    ["Priya Sharma", "Next round: Mon 10am. Join: https://x.test/r2"],
+  );
 });
 
 test("approvalEmailHtml has no Start interview CTA", () => {
-  const html = approvalEmailHtml("prateek", "MERN Position");
+  const html = approvalEmailHtml("prateek", "na");
   assert.match(html, /prateek/);
   assert.doesNotMatch(html, /Start interview/i);
+});
+
+test("formatApprovalNextRoundDetails includes join link and duration", () => {
+  const text = formatApprovalNextRoundDetails({
+    scheduledAt: "2026-12-01T10:00:00.000Z",
+    durationMin: 45,
+    candidateLink: "https://app.example/r2/c/tok",
+  });
+  assert.match(text, /Join: https:\/\/app\.example\/r2\/c\/tok/);
+  assert.match(text, /45 min/);
+  assert.match(text, /^Next round:/);
 });
 
 test("with-reason Meta template name and name+reason variables", () => {

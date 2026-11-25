@@ -8,11 +8,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import {
+  APPROVAL_NEXT_ROUND_NA,
+  formatApprovalNextRoundDetails,
+  formatDeclineDeliverySummary,
+  type DeclineChannelOutcome,
+} from "@/lib/messaging/templates";
 import type { QuestionPlanItem } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
 import { Check, Copy, Loader2, Plus, Video, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Person = { email: string; role: "interviewer" | "observer" };
 type ScheduleResult = {
@@ -58,12 +64,15 @@ export function CreateRoundTwoSheet({
   candidateId,
   sessionId,
   candidateName,
+  /** After approve-now: send shortlist WA/email on schedule (link) or on dismiss (na). */
+  sendShortlistOnSchedule = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   candidateId?: string;
   sessionId?: string;
   candidateName?: string | null;
+  sendShortlistOnSchedule?: boolean;
 }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
@@ -81,12 +90,43 @@ export function CreateRoundTwoSheet({
   const [role, setRole] = useState<Person["role"]>("interviewer");
   const [emailCandidate, setEmailCandidate] = useState(true);
   const [result, setResult] = useState<ScheduleResult | null>(null);
+  const shortlistSentRef = useRef(false);
+  const sendShortlistFlagRef = useRef(sendShortlistOnSchedule);
+
+  useEffect(() => {
+    sendShortlistFlagRef.current = sendShortlistOnSchedule;
+  }, [sendShortlistOnSchedule]);
+
+  const shortlistNotice = trpc.session.sendApprovalShortlistNotice.useMutation({
+    onSuccess: (delivery) => {
+      const summary = formatDeclineDeliverySummary(
+        delivery.email as DeclineChannelOutcome | undefined,
+        delivery.whatsapp as DeclineChannelOutcome | undefined,
+      );
+      if (summary) toast({ title: "Shortlist notice", description: summary });
+    },
+    onError: (err) =>
+      toast({ title: "Shortlist notice failed", description: err.message, variant: "destructive" }),
+  });
+
+  const sendShortlist = (nextRoundDetails: string) => {
+    if (!sessionId || shortlistSentRef.current) return;
+    shortlistSentRef.current = true;
+    shortlistNotice.mutate({ sessionId, nextRoundDetails });
+  };
+
+  const finishWithoutSchedule = () => {
+    if (sendShortlistFlagRef.current && !shortlistSentRef.current) {
+      sendShortlist(APPROVAL_NEXT_ROUND_NA);
+    }
+    onOpenChange(false);
+  };
 
   const draft = trpc.roundTwo.createDraft.useMutation({
     onSuccess: (d) => setRoundId(d.id),
     onError: (err) => {
       toast({ title: "Couldn't start round 2", description: err.message, variant: "destructive" });
-      onOpenChange(false);
+      finishWithoutSchedule();
     },
   });
   const round = trpc.roundTwo.get.useQuery({ id: roundId ?? "" }, { enabled: !!roundId });
@@ -96,6 +136,16 @@ export function CreateRoundTwoSheet({
       setResult(r);
       void utils.roundTwo.watchlist.invalidate();
       void utils.roundTwo.list.invalidate();
+      void utils.roundTwo.forCandidate.invalidate();
+      if (sendShortlistFlagRef.current && sessionId) {
+        sendShortlist(
+          formatApprovalNextRoundDetails({
+            scheduledAt: when ? new Date(when).toISOString() : null,
+            durationMin,
+            candidateLink: r.candidateLink,
+          }),
+        );
+      }
     },
     onError: (err) => toast({ title: "Couldn't schedule", description: err.message, variant: "destructive" }),
   });
@@ -113,8 +163,17 @@ export function CreateRoundTwoSheet({
       setPlan([]);
       setResult(null);
       setPeople([]);
+      shortlistSentRef.current = false;
     }
   }, [open]);
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next && sendShortlistFlagRef.current && !shortlistSentRef.current && !result) {
+      sendShortlist(APPROVAL_NEXT_ROUND_NA);
+    }
+    if (!next) onOpenChange(false);
+    else onOpenChange(true);
+  };
 
   const loaded = round.data?.round;
   useEffect(() => {
@@ -160,7 +219,7 @@ export function CreateRoundTwoSheet({
   const busy = schedule.isLoading || updatePlan.isLoading;
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={handleOpenChange}>
       <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-5xl">
         <SheetHeader className="border-b px-6 py-4">
           <SheetTitle>Schedule round 2{candidateName ? ` · ${candidateName}` : ""}</SheetTitle>

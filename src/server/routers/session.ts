@@ -1633,6 +1633,10 @@ export const sessionRouter = router({
         rejectReason: z.string().trim().max(1000).optional(),
         rejectTags: z.array(z.string().max(40)).max(12).optional(),
         deleteMedia: z.boolean().optional(),
+        /** Skip shortlist WA/email (Create Round 2 now — send after schedule). */
+        deferShortlist: z.boolean().optional(),
+        /** Template {{2}}: next-round details or "na". Ignored when deferShortlist. */
+        nextRoundDetails: z.string().trim().max(500).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1677,14 +1681,48 @@ export const sessionRouter = router({
       }
       if (input.action === "approved") {
         if (candidateId) await setCandidateDecisionStatus(ctx.supabase, candidateId, "approved");
+        if (input.deferShortlist) {
+          return { ...result, shortlistDeferred: true as const };
+        }
         const delivery = await sendApprovalShortlist(
           ctx.supabase,
           input.sessionId,
           interviewData.project.organizationId,
+          { nextRoundDetails: input.nextRoundDetails ?? "na" },
         );
         return { ...result, ...delivery };
       }
       return result;
+    }),
+
+  /** Send (or re-send) shortlist notice with optional Round 2 details in {{2}}. */
+  sendApprovalShortlistNotice: protectedProcedure
+    .input(
+      z.object({
+        sessionId: z.string(),
+        nextRoundDetails: z.string().trim().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { data: session } = await ctx.supabase
+        .from("sessions")
+        .select(
+          "id, interview:interviews!inner(projectId, project:projects!inner(organizationId))",
+        )
+        .eq("id", input.sessionId)
+        .single();
+      if (!session) throw new TRPCError({ code: "NOT_FOUND" });
+      const interviewData = session.interview as unknown as {
+        projectId: string;
+        project: { organizationId: string };
+      };
+      await requireSessionManager(ctx, interviewData.project.organizationId, interviewData.projectId);
+      return sendApprovalShortlist(
+        ctx.supabase,
+        input.sessionId,
+        interviewData.project.organizationId,
+        { nextRoundDetails: input.nextRoundDetails ?? "na" },
+      );
     }),
 
   /** AI-polish reject reason from draft and/or tags (candidate-facing copy). */
