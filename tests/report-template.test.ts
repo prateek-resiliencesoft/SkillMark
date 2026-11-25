@@ -93,3 +93,27 @@ test("report data: recommendation, bullets, answer excerpt", () => {
   assert.equal(d.recommendation, "no");
   assert.deepEqual(d.strengths, ["A"]);
 });
+
+test("buildReportData marks excluded/null preset questions as null score without coercing to 0", () => {
+  const d = buildReportData({
+    status: "COMPLETED",
+    insights: {
+      questionEvaluations: [
+        { question: "Tell me about yourself", score: null, excludeFromScore: true, evaluation: "Clear intro", highlights: ["Clear"], improvements: [] },
+        { question: "Technical preset", score: 7, excludeFromScore: true, evaluation: "Good", highlights: [], improvements: [] },
+        { question: "Compare GetX vs BLoC", score: 6, evaluation: "Decent", highlights: [], improvements: ["More depth"] },
+      ],
+    },
+    messages: [],
+  });
+  assert.equal(d.questions.length, 3);
+  assert.equal(d.questions[0]?.score, null);
+  assert.equal(d.questions[0]?.excludeFromScore, true);
+  assert.equal(d.questions[0]?.evaluation, "Clear intro");
+  assert.equal(d.questions[1]?.score, null);
+  assert.equal(d.questions[1]?.excludeFromScore, true);
+  assert.equal(d.questions[2]?.score, 6);
+  assert.equal(d.questions[2]?.excludeFromScore, false);
+  assert.equal(d.overallScore, 6);
+  assert.equal(d.scoreDistribution.questions, 6);
+});

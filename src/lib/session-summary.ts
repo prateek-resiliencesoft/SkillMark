@@ -24,9 +24,9 @@ import {
   profileToResumeText,
   type CandidateProfile,
 } from "@/lib/documents/cv-profile";
-import { loadAutoIncludePremade } from "@/lib/auto-include-premade";
+import { loadAllBankQuestionsForExclusion } from "@/lib/auto-include-premade";
 import { createLogger } from "@/lib/logger";
-import { collectExcludedScoreTexts } from "@/lib/premade-sections";
+import { collectExcludedScoreTexts, isQuestionTextExcluded } from "@/lib/premade-sections";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { applyQuestionScoreExclusions } from "@/lib/session-score";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -312,6 +312,23 @@ function buildSummaryGraph() {
     const { provider, reportModel } = await resolveTaskModels(st.organizationId, "report");
     const promptTranscript = boundTranscript(st.textMessages);
     ctx.signal?.throwIfAborted();
+    let bankPremade: Array<{ text: string; sectionName: string }> = [];
+    if (st.organizationId) {
+      try {
+        bankPremade = await loadAllBankQuestionsForExclusion(supabaseAdmin, st.organizationId);
+      } catch (err) {
+        log.warn(
+          `Could not load question bank for score exclusions (session ${st.sessionId}):`,
+          err,
+        );
+      }
+    }
+    const excludedTexts = collectExcludedScoreTexts(st.questions, bankPremade);
+    const promptQuestions =
+      st.questions?.map((q) => ({
+        ...q,
+        excludeFromScore: isQuestionTextExcluded(q.text, excludedTexts, q),
+      })) ?? null;
     const drawingsInput = st.drawings.length > 0 ? st.drawings : null;
     const codeInput = st.code.length > 0 ? st.code : null;
     const build = (drawings: Drawing[] | null) => {
@@ -320,7 +337,7 @@ function buildSummaryGraph() {
         promptTranscript,
         st.objective,
         st.assessmentCriteria,
-        st.questions,
+        promptQuestions,
         st.language,
         drawings,
         codeInput,
@@ -379,18 +396,6 @@ function buildSummaryGraph() {
     }
     // Round Presets / bank Qs never count toward overall — only AI complementary Qs.
     if (Array.isArray(insightsData.questionEvaluations)) {
-      let bankPremade: Awaited<ReturnType<typeof loadAutoIncludePremade>> = [];
-      if (st.organizationId) {
-        try {
-          bankPremade = await loadAutoIncludePremade(supabaseAdmin, st.organizationId);
-        } catch (err) {
-          log.warn(
-            `Could not load question bank for score exclusions (session ${st.sessionId}):`,
-            err,
-          );
-        }
-      }
-      const excludedTexts = collectExcludedScoreTexts(st.questions, bankPremade);
       insightsData.questionEvaluations = applyQuestionScoreExclusions(
         insightsData.questionEvaluations as Array<{ question?: string; score?: unknown }>,
         excludedTexts,

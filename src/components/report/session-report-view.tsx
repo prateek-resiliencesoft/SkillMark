@@ -52,7 +52,7 @@ export function ReportHero({ data }: { data: ReportData }) {
     () => ({
       overall: data.overallScore,
       source: data.scoreDistribution.source,
-      questions: { avg: data.scoreDistribution.questions, items: data.questions.map((q) => ({ label: `Q${q.index}. ${q.question}`, score: q.score })) },
+      questions: { avg: data.scoreDistribution.questions, items: data.questions.filter((q): q is typeof q & { score: number } => q.score !== null && !q.excludeFromScore).map((q) => ({ label: `Q${q.index}. ${q.question}`, score: q.score })) },
       criteria: { avg: data.scoreDistribution.skills, items: data.criteria.map((c) => ({ label: c.name, score: c.score })) },
       coding: { avg: data.scoreDistribution.coding, items: data.coding.map((c) => ({ label: c.label, score: c.score })) },
     }),
@@ -318,6 +318,7 @@ export function ReportQuestions({ data }: { data: ReportData }) {
         <CardContent className="space-y-2">
           {data.questions.map((q, i) => {
             const isOpen = open === i;
+            const unscored = q.excludeFromScore || q.score === null;
             return (
               <div key={i} className="overflow-hidden rounded-lg border">
                 <button
@@ -328,13 +329,19 @@ export function ReportQuestions({ data }: { data: ReportData }) {
                 >
                   <span
                     className="h-8 w-1 shrink-0 rounded-full"
-                    style={{ backgroundColor: scoreColor(q.score) }}
+                    style={{ backgroundColor: unscored ? "hsl(var(--muted-foreground) / 0.3)" : scoreColor(q.score!) }}
                     aria-hidden
                   />
                   <span className="flex-1 text-sm font-medium">
                     <span className="text-muted-foreground">Q{q.index}.</span> {q.question}
                   </span>
-                  <ScoreChip score={q.score} />
+                  {unscored ? (
+                    <Badge variant="outline" className="shrink-0 text-xs font-normal text-muted-foreground">
+                      Not scored
+                    </Badge>
+                  ) : (
+                    <ScoreChip score={q.score!} />
+                  )}
                   <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-180")} />
                 </button>
                 <AnimatePresence initial={false}>

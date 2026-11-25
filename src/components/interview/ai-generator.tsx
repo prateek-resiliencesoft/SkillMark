@@ -515,16 +515,27 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
         throw new Error(errBody.error || "Generation failed");
       }
 
+      const prevExcluded = new Set(
+        editableQuestions
+          .filter((q) => q.validationRules?.excludeFromScore === true)
+          .map((q) => q.text.trim().toLowerCase()),
+      );
       const data = await consumeStream(response);
       setResult(data);
       setEditableCriteria(data.assessmentCriteria ?? []);
-      setEditableQuestions(data.questions.map((q, i) => ({
-        ...q,
-        order: i + 1,
-        starterCode: q.starterCode
-          ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
-          : undefined,
-      })));
+      setEditableQuestions(data.questions.map((q, i) => {
+        const keepExcluded =
+          q.validationRules?.excludeFromScore === true ||
+          prevExcluded.has((q.text ?? "").trim().toLowerCase());
+        return {
+          ...q,
+          order: i + 1,
+          ...(keepExcluded ? { validationRules: { excludeFromScore: true } } : {}),
+          starterCode: q.starterCode
+            ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
+            : undefined,
+        };
+      }));
     } catch {
       toast({ title: "Generation failed", description: "Please try again or create the interview manually.", variant: "destructive" });
     } finally {

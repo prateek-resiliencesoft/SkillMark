@@ -94,7 +94,7 @@ export function applyQuestionScoreExclusions<
         normalizeMatchText(q) === normalizeMatchText(needle) || textsOverlap(q, needle),
     );
     if (!hit) return entry;
-    return { ...entry, excludeFromScore: true as const };
+    return { ...entry, score: null, excludeFromScore: true as const };
   });
 }
 
@@ -103,11 +103,17 @@ function asInsights(raw: unknown): SessionScoreInsights {
   return raw as SessionScoreInsights;
 }
 
+function hasUnscoredQuestionEvaluations(insights: SessionScoreInsights): boolean {
+  return Array.isArray(insights?.questionEvaluations) && insights.questionEvaluations.length > 0;
+}
+
 export function getSessionOverallScore(
   insights: SessionScoreInsights,
 ): number | null {
   const questionScore = averageScore(insights?.questionEvaluations);
   if (questionScore !== null) return questionScore;
+  // When questionEvaluations exists (e.g. only preset/bank Qs, zero AI Qs), don't leak criteria marks as overall.
+  if (hasUnscoredQuestionEvaluations(insights)) return null;
   return averageScore(insights?.criteriaEvaluations);
 }
 
@@ -144,7 +150,7 @@ export function getSessionScoreBreakdown(raw: unknown): SessionScoreBreakdown {
   if (questionAvg !== null) {
     overall = questionAvg;
     source = "questions";
-  } else if (criteriaAvg !== null) {
+  } else if (!hasUnscoredQuestionEvaluations(insights) && criteriaAvg !== null) {
     overall = criteriaAvg;
     source = "criteria";
   }

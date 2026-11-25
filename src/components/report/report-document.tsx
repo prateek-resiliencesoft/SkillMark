@@ -94,7 +94,7 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
           {(data.criteria.length
             ? data.criteria.map((c) => ({ n: c.name, s: c.score }))
             : [
-                ...data.questions.map((q) => ({ n: `Q${q.index}`, s: q.score })),
+                ...data.questions.filter((q): q is typeof q & { score: number } => q.score !== null && !q.excludeFromScore).map((q) => ({ n: `Q${q.index}`, s: q.score })),
                 ...data.coding.map((c, i) => ({ n: c.label || `Code ${i + 1}`, s: c.score })),
               ]
           ).slice(0, 14).map((x, i) => (
@@ -141,11 +141,17 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
     questions: data.questions.length ? (
       <div>
         <div data-pdf-block><H>Per-question details</H></div>
-        {data.questions.map((q) => (
-          <div key={q.index} data-pdf-block style={{ ...card, marginBottom: compact ? 6 : 10, borderLeft: classic ? undefined : `4px solid ${scoreColor(q.score)}` }}>
+        {data.questions.map((q) => {
+          const unscored = q.excludeFromScore || q.score === null;
+          return (
+          <div key={q.index} data-pdf-block style={{ ...card, marginBottom: compact ? 6 : 10, borderLeft: classic ? undefined : `4px solid ${unscored ? "#d1d5db" : scoreColor(q.score!)}` }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontWeight: 600 }}>
               <span>Q{q.index}. {q.question}</span>
-              <span style={{ color: scoreColor(q.score), whiteSpace: "nowrap" }}>{q.score}/10</span>
+              {unscored ? (
+                <span style={{ color: "#6b7280", fontWeight: 500, fontSize: fs - 1, whiteSpace: "nowrap" }}>Not scored</span>
+              ) : (
+                <span style={{ color: scoreColor(q.score!), whiteSpace: "nowrap" }}>{q.score}/10</span>
+              )}
             </div>
             {q.answerExcerpt && !compact && (
               <div style={{ marginTop: 6, padding: "6px 10px", background: "#f9fafb", borderLeft: `2px solid ${accent}`, fontStyle: "italic", color: "#4b5563" }}>
@@ -154,7 +160,8 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
             )}
             {q.evaluation && <div style={{ marginTop: 6, color: "#374151" }}>{q.evaluation}</div>}
           </div>
-        ))}
+          );
+        })}
       </div>
     ) : null,
     transcript: data.transcript.length ? (

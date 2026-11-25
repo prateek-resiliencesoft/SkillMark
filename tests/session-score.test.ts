@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   collectExcludedScoreTexts,
+  isQuestionTextExcluded,
   shouldExcludePremadeFromScore,
 } from "../src/lib/premade-sections";
 import {
@@ -155,4 +156,50 @@ test("preset score 0 with excludeFromScore does not pull overall down", () => {
     }),
     8,
   );
+});
+
+test("applyQuestionScoreExclusions clears numeric score to null", () => {
+  const evals = applyQuestionScoreExclusions(
+    [
+      { question: "Describe a technical project trade-off", score: 4 },
+      { question: "Explain Riverpod vs BLoC", score: 6 },
+    ],
+    ["Describe a technical project trade-off"],
+  );
+  assert.equal(evals[0]?.excludeFromScore, true);
+  assert.equal(evals[0]?.score, null);
+  assert.equal(evals[1]?.excludeFromScore, undefined);
+  assert.equal(evals[1]?.score, 6);
+});
+
+test("zero AI questions (only preset questions) returns null overall even if criteria exist", () => {
+  const insights = {
+    questionEvaluations: [
+      { question: "Introduce yourself", score: null, excludeFromScore: true },
+      { question: "Technical trade-offs", score: 7, excludeFromScore: true },
+    ],
+    criteriaEvaluations: [{ name: "Communication", score: 8 }],
+  };
+  assert.equal(getSessionOverallScore(insights), null);
+  const breakdown = getSessionScoreBreakdown(insights);
+  assert.equal(breakdown.overall, null);
+  assert.equal(breakdown.source, null);
+  assert.equal(breakdown.questions.avg, null);
+  assert.equal(breakdown.questions.items.length, 0);
+});
+
+test("isQuestionTextExcluded detects flag, section desc, and bank text", () => {
+  assert.equal(
+    isQuestionTextExcluded("Any", [], { validationRules: { excludeFromScore: true } }),
+    true,
+  );
+  assert.equal(
+    isQuestionTextExcluded("Any", [], { description: "From Technical Round section" }),
+    true,
+  );
+  assert.equal(
+    isQuestionTextExcluded("Tell me about performance bottlenecks", ["Tell me about performance bottlenecks"]),
+    true,
+  );
+  assert.equal(isQuestionTextExcluded("Compare GetX vs BLoC", ["Notice period?"]), false);
 });

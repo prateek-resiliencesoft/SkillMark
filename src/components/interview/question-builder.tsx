@@ -28,7 +28,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import type { PremadeBankQuestion } from "@/lib/premade-sections";
+import { excludeFromScoreValidationRules, type PremadeBankQuestion } from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import { QUESTION_TYPE_STYLES } from "@/components/interview/question-card";
@@ -338,6 +338,7 @@ export function QuestionBuilder({
                           | null
                           | undefined,
                         skipIf: q.skipIf ?? undefined,
+                        validationRules: excludeFromScoreValidationRules(q.sectionName) ?? undefined,
                       });
                     }}
                   />
@@ -789,6 +790,7 @@ function ImportQuestionsDialog({
       description: q.description,
       options: q.options,
       starterCode: q.starterCode,
+      validationRules: excludeFromScoreValidationRules(q.sectionName) ?? undefined,
       interview: { id: "bank", title: `Round: ${q.sectionName}` },
     }));
 
@@ -834,6 +836,7 @@ function ImportQuestionsDialog({
           type: q.type as "OPEN_ENDED" | "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "CODING" | "WHITEBOARD" | "RESEARCH",
           options: q.options ?? undefined,
           starterCode: q.starterCode as { language: string; code: string } | null | undefined,
+          validationRules: (q as { validationRules?: unknown }).validationRules ?? undefined,
         })
       )
     );
