@@ -12,6 +12,7 @@ import {
   userIdentity,
 } from "@/lib/round-two/types";
 import { buildGoogleAuthUrl, pkcePair, signOAuthState, verifyOAuthState } from "@/lib/google-oauth";
+import { resolveSttConfig, segmentTimes } from "@/lib/round-two/stt-config";
 
 describe("round two identities", () => {
   it("maps LiveKit identities to transcript speaker roles", () => {
@@ -140,5 +141,33 @@ describe("google oauth helpers", () => {
     assert.deepEqual(await verifyOAuthState(token), { state: "s1", verifier: "v1", next: "/r2/join/abc" });
     assert.equal(await verifyOAuthState(token.slice(0, -2) + "xx"), null);
     assert.equal(await verifyOAuthState(null), null);
+  });
+});
+
+describe("round two agent STT config", () => {
+  it("defaults to OpenAI with the OpenAI key", () => {
+    const c = resolveSttConfig({ OPENAI_API_KEY: "sk-o" });
+    assert.equal(c.provider, "openai");
+    assert.equal(c.baseUrl, "https://api.openai.com/v1");
+    assert.equal(c.model, "gpt-4o-mini-transcribe");
+    assert.equal(c.apiKey, "sk-o");
+  });
+
+  it("uses a Whisper model on Groq and never sends the OpenAI key there", () => {
+    const c = resolveSttConfig({ ROUND2_STT_BASE_URL: "https://api.groq.com/openai/v1/", OPENAI_API_KEY: "sk-o" });
+    assert.equal(c.provider, "groq");
+    assert.equal(c.baseUrl, "https://api.groq.com/openai/v1");
+    assert.equal(c.model, "whisper-large-v3-turbo");
+    assert.equal(c.apiKey, "");
+    assert.equal(resolveSttConfig({ ROUND2_STT_BASE_URL: "https://api.groq.com/openai/v1", GROQ_API_KEY: "gsk" }).apiKey, "gsk");
+    assert.equal(
+      resolveSttConfig({ ROUND2_STT_BASE_URL: "https://api.groq.com/openai/v1", ROUND2_STT_API_KEY: "k", ROUND2_STT_MODEL: "whisper-large-v3" }).model,
+      "whisper-large-v3",
+    );
+  });
+
+  it("rounds fractional utterance timestamps to whole ms", () => {
+    assert.deepEqual(segmentTimes(1700000000000.4, 1700000001234.6), { startedAt: 1700000000000, endedAt: 1700000001235 });
+    assert.deepEqual(segmentTimes(10.6, 10.2), { startedAt: 11, endedAt: 11 });
   });
 });

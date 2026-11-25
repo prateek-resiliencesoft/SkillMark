@@ -1,6 +1,7 @@
 "use client";
 
 import "@livekit/components-styles";
+import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
 import { PanelSidebar, ScorecardTab } from "@/components/round-two/room/panel-sidebar";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { RoomShareLinks } from "@/components/round-two/room/share-links";
@@ -23,7 +24,6 @@ import {
   LiveKitRoom,
   PreJoin,
   RoomAudioRenderer,
-  StartAudio,
   useDataChannel,
   useRemoteParticipants,
   useRoomContext,
@@ -106,13 +106,13 @@ export default function PanelRoomPage() {
 
   if (!conn) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6" data-lk-theme="default">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6 text-foreground">
         <div className="text-center">
           <h1 className="text-xl font-bold">{candidate?.name ?? "Candidate"} · round 2</h1>
           <p className="text-sm text-muted-foreground">{round.title}</p>
           {!info.data.liveKitConfigured && <p className="mt-2 text-sm text-destructive">Live video is not configured on this server.</p>}
         </div>
-        <div className="w-full max-w-lg">
+        <div className="w-full max-w-lg overflow-hidden rounded-xl" {...LK_THEME}>
           <PreJoin
             defaults={{ username: info.data.participants.find((p) => p.role === info.data.myRole)?.name ?? "" }}
             joinLabel={join.isLoading ? "Joining…" : "Join interview"}
@@ -142,12 +142,11 @@ export default function PanelRoomPage() {
         void info.refetch().then((r) => setLeft(r.data?.round.status === "live" ? "left" : "ended"));
       }}
       onError={(err) => toast({ title: "Connection problem", description: err.message, variant: "destructive" })}
-      className="h-screen"
-      data-lk-theme="default"
+      className="!h-[100dvh] overflow-hidden !bg-background text-foreground"
     >
       <PanelRoom id={id} />
       <RoomAudioRenderer />
-      <StartAudio label="Click to enable audio" />
+      <AudioUnlock />
     </LiveKitRoom>
   );
 }
@@ -233,7 +232,7 @@ function PanelRoom({ id }: { id: string }) {
         </div>
       </div>
 
-      <aside className="min-h-0 border-l bg-card">
+      <aside className="min-h-0 min-w-0 overflow-hidden border-t bg-card text-card-foreground lg:border-l lg:border-t-0">
         <PanelSidebar
           roundTwoId={id}
           plan={round.questionPlan}

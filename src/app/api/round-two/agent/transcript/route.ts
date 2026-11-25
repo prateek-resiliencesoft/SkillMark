@@ -13,9 +13,9 @@ const Segment = z.object({
   identity: z.string().min(1).max(200),
   name: z.string().max(200).optional(),
   text: z.string().trim().min(1).max(8000),
-  /** Epoch ms of utterance start / end. */
-  startedAt: z.number().int().positive(),
-  endedAt: z.number().int().positive(),
+  /** Epoch ms of utterance start / end (fractional values are rounded). */
+  startedAt: z.number().positive().transform(Math.round),
+  endedAt: z.number().positive().transform(Math.round),
 });
 
 /** Agent posts one final STT utterance; app stores it, fans out to the panel, nudges the copilot. */

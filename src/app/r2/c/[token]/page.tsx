@@ -1,6 +1,7 @@
 "use client";
 
 import "@livekit/components-styles";
+import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { VideoStage } from "@/components/round-two/room/stage";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,6 @@ import {
   LiveKitRoom,
   PreJoin,
   RoomAudioRenderer,
-  StartAudio,
   useLocalParticipant,
   useLocalParticipantPermissions,
   useRoomContext,
@@ -86,12 +86,11 @@ export default function CandidateRoundTwoPage() {
         audio={false}
         video={false}
         onDisconnected={() => setLeft(true)}
-        className="h-screen"
-        data-lk-theme="default"
+        className="!h-[100dvh] overflow-hidden !bg-background text-foreground"
       >
         <CandidateRoom choices={conn.choices} />
         <RoomAudioRenderer />
-        <StartAudio label="Click to enable audio" />
+        <AudioUnlock />
       </LiveKitRoom>
     );
   }
@@ -104,7 +103,7 @@ export default function CandidateRoundTwoPage() {
   const closed = info.status !== "scheduled" && info.status !== "live";
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6" data-lk-theme="default">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6 text-foreground">
       <div className="max-w-lg text-center">
         <h1 className="text-xl font-bold">Hi {info.candidateName}</h1>
         <p className="text-sm text-muted-foreground">
@@ -122,7 +121,7 @@ export default function CandidateRoundTwoPage() {
           <p className="max-w-lg text-center text-sm text-muted-foreground">
             Check your camera and microphone below. Use a quiet place and a laptop if you can.
           </p>
-          <label className="flex max-w-lg items-start gap-2 rounded-lg border p-3 text-sm">
+          <label className="flex max-w-lg items-start gap-2 rounded-lg border bg-card p-3 text-sm text-card-foreground">
             <Checkbox className="mt-0.5" checked={consent} onCheckedChange={(v) => setConsent(v === true)} />
             <span>
               I understand this interview is conducted live by the hiring team and that the conversation is transcribed with
@@ -130,7 +129,7 @@ export default function CandidateRoundTwoPage() {
             </span>
           </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <div className={consent ? "w-full max-w-lg" : "pointer-events-none w-full max-w-lg opacity-50"}>
+          <div className={consent ? "w-full max-w-lg overflow-hidden rounded-xl" : "pointer-events-none w-full max-w-lg overflow-hidden rounded-xl opacity-50"} {...LK_THEME}>
             <PreJoin
               defaults={{ username: info.candidateName }}
               userLabel="Your name"
@@ -146,7 +145,7 @@ export default function CandidateRoundTwoPage() {
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">{children}</div>;
+  return <div className="flex h-full min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-center text-foreground">{children}</div>;
 }
 
 /** Lobby until the host admits (publish permission arrives), then the call. */

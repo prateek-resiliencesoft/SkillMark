@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { MonitorUp, MonitorX, PhoneOff } from "lucide-react";
 import { useState } from "react";
+import { LK_THEME } from "./lk-theme";
 
 const SHARE_OPTIONS: ScreenShareCaptureOptions = {
   audio: false,
@@ -54,7 +55,7 @@ export function RoomControls({ onLeave, leaveLabel = "Leave", guardScreenShare }
   };
 
   return (
-    <div className="flex items-center justify-center gap-2" data-lk-theme="default">
+    <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 bg-transparent" {...LK_THEME}>
       {canPublish && (
         <>
           <TrackToggle source={Track.Source.Microphone} showIcon className="lk-button" />
