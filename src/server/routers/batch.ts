@@ -146,7 +146,7 @@ export const batchRouter = router({
     const { data: candidates, error } = await ctx.supabase
       .from("candidates")
       .select(
-        "*, session:sessions!candidates_sessionId_fkey(id, status, startedAt, completedAt, createdAt, interviewBeganAt, lastHeartbeatAt, lastActivityAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
+        "*, session:sessions!candidates_sessionId_fkey(id, status, reportStatus, startedAt, completedAt, createdAt, interviewBeganAt, lastHeartbeatAt, lastActivityAt, totalDurationSeconds, insights, endReason), interview:interviews(id, title, questions(id))",
       )
       .eq("batchId", input.id)
       .order("createdAt", { ascending: true });

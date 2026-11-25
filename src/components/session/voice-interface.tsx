@@ -749,12 +749,14 @@ export function VoiceInterface({
     const id = setInterval(() => {
       if (reconnectingRef.current) return;
       setRemainingSeconds((prev) => {
-        if (prev === null) return null;
+        if (prev === null || prev <= 0) return prev;
         return prev <= 1 ? 0 : prev - 1;
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [remainingSeconds]);
+    // Start once when countdown becomes active — do not rebind every second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remainingSeconds !== null && remainingSeconds > 0]);
 
   // ── Whiteboard persistence ──────────────────────────────────────
   /** Persist a single drawing to the backend. */

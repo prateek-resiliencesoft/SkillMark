@@ -136,7 +136,10 @@ function MyIntegrationsInner() {
   const [tab, setTab] = useState(params.get("tab") ?? "rest");
   const forms = trpc.interviewForm.list.useQuery({ organizationId: currentOrg?.id ?? "" }, { enabled: !!currentOrg?.id });
   const keys = trpc.apiKey.list.useQuery();
-  const logs = trpc.interviewForm.usageLogs.useQuery({ organizationId: currentOrg?.id ?? "", limit: 50 }, { enabled: !!currentOrg?.id, refetchInterval: 20000 });
+  const logs = trpc.interviewForm.usageLogs.useQuery(
+    { organizationId: currentOrg?.id ?? "", limit: 50 },
+    { enabled: !!currentOrg?.id, staleTime: 15_000, refetchInterval: 45_000 },
+  );
   const all = (forms.data ?? []) as any[];
   const published = all.filter((f) => f.status === "published" || f.id === selected);
   const active = selected ?? published[0]?.id ?? null;

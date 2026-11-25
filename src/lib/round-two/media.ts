@@ -5,8 +5,12 @@ import {
   type VideoCaptureOptions,
 } from "livekit-client";
 
-/** Target capture/publish for Round 2 rooms: 1920×1080 @ 60fps (best-effort; camera may negotiate down). */
-export const R2_VIDEO_PRESET = new VideoPreset(1920, 1080, 4_500_000, 60);
+/**
+ * Round 2 camera: 1080p.
+ * Publish at 30fps — 60fps software encode freezes typical laptops while LiveKit + React
+ * also run. Capture still asks for 1080p; adaptiveStream/dynacast downshift for weak links.
+ */
+export const R2_VIDEO_PRESET = new VideoPreset(1920, 1080, 2_800_000, 30);
 
 export const R2_VIDEO_CAPTURE: VideoCaptureOptions = {
   resolution: R2_VIDEO_PRESET.resolution,
@@ -27,9 +31,10 @@ export const R2_ROOM_OPTIONS: RoomOptions = {
   publishDefaults: {
     videoEncoding: R2_VIDEO_PRESET.encoding,
     videoSimulcastLayers: [
-      new VideoPreset(640, 360, 450_000, 30),
-      new VideoPreset(1280, 720, 1_700_000, 30),
+      new VideoPreset(640, 360, 400_000, 20),
+      new VideoPreset(1280, 720, 1_400_000, 30),
     ],
-    screenShareEncoding: ScreenSharePresets.h1080fps30.encoding,
+    screenShareEncoding: ScreenSharePresets.h1080fps15.encoding,
+    degradationPreference: "maintain-resolution",
   },
 };

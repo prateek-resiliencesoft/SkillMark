@@ -302,7 +302,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
 
   const bankListQuery = trpc.questionBank.list.useQuery(
     { organizationId: bankOrgId },
-    { enabled: !!bankOrgId, staleTime: 10_000, refetchOnMount: "always" },
+    { enabled: !!bankOrgId, staleTime: 30_000 },
   );
   const enabledPremadeQuestions = useMemo(
     () => flattenEnabledBankList(bankListQuery.data).questions,

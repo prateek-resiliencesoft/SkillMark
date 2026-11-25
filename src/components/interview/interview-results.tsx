@@ -899,11 +899,30 @@ function SessionDetailBody({
 }) {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
-  const summary = trpc.analysis.getSessionSummary.useQuery({ sessionId });
-  const completeSession = trpc.session.complete.useMutation();
-  const [generating, setGenerating] = useState(false);
   const [autoWaitUntil, setAutoWaitUntil] = useState(0);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const summary = trpc.analysis.getSessionSummary.useQuery(
+    { sessionId },
+    {
+      refetchInterval: (data) => {
+        const row = data as {
+          summary?: string | null;
+          status?: string | null;
+          reportStatus?: string | null;
+          insights?: { captureFailure?: unknown } | null;
+        } | undefined;
+        if (!row || row.summary) return false;
+        if (row.status !== "COMPLETED" && row.status !== "ABANDONED") return false;
+        if (row.insights && typeof row.insights === "object" && row.insights.captureFailure) return false;
+        const rs = row.reportStatus;
+        if (rs === "PENDING" || rs === "GENERATING") return 8_000;
+        if (autoWaitUntil > Date.now()) return 8_000;
+        return false;
+      },
+    },
+  );
+  const completeSession = trpc.session.complete.useMutation();
+  const [generating, setGenerating] = useState(false);
   const [retranscribing, setRetranscribing] = useState(false);
   const [showRetranscribeConfirm, setShowRetranscribeConfirm] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
@@ -989,14 +1008,11 @@ function SessionDetailBody({
       !isReportStuck(summary.data, nowTick)) ||
       autoWaitUntil > nowTick);
   const reportFailed = reportStatus === "FAILED" && !reportPending;
+  // Tick only for stuck-report UI; refetch is handled by the query interval above.
   useEffect(() => {
     if (!reportPending) return;
-    const t = setInterval(() => {
-      setNowTick(Date.now());
-      void summary.refetch();
-    }, 5000);
+    const t = setInterval(() => setNowTick(Date.now()), 8_000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportPending]);
 
   const handleRetranscribe = useCallback(async () => {

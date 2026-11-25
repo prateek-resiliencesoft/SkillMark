@@ -23,7 +23,18 @@ export default function RoundTwoPage() {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const watchlist = trpc.roundTwo.watchlist.useQuery({ projectId: projectId ?? "" }, { enabled: !!projectId });
-  const rounds = trpc.roundTwo.list.useQuery({ projectId: projectId ?? "" }, { enabled: !!projectId, refetchInterval: 20_000 });
+  const rounds = trpc.roundTwo.list.useQuery(
+    { projectId: projectId ?? "" },
+    {
+      enabled: !!projectId,
+      staleTime: 15_000,
+      refetchInterval: (data) =>
+        Array.isArray(data) &&
+        data.some((r) => r.status === "live" || r.reportStatus === "pending" || r.reportStatus === "generating")
+          ? 20_000
+          : false,
+    },
+  );
   const dismiss = trpc.roundTwo.dismissFromWatchlist.useMutation({
     onSuccess: () => void utils.roundTwo.watchlist.invalidate(),
     onError: (err) => toast({ title: "Failed", description: err.message, variant: "destructive" }),

@@ -13,7 +13,7 @@ import { useEffect, useState } from "react";
  */
 export function RoomShareLinks({ roundTwoId }: { roundTwoId: string }) {
   const { toast } = useToast();
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [links, setLinks] = useState<{ candidateLink: string; partnerLink: string } | null>(null);
   const ensure = trpc.roundTwo.ensureShareLinks.useMutation({
     onSuccess: (r) => setLinks(r),

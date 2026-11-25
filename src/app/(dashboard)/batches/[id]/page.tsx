@@ -90,7 +90,25 @@ export default function BatchDetailPage() {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
   const utils = trpc.useUtils();
-  const batch = trpc.batch.getById.useQuery({ id }, { refetchInterval: 30_000 });
+  const batch = trpc.batch.getById.useQuery(
+    { id },
+    {
+      staleTime: 15_000,
+      refetchInterval: (data) => {
+        const rows = (data as { candidates?: { session?: { status?: string; reportStatus?: string } | null }[] } | undefined)
+          ?.candidates;
+        if (!rows?.length) return false;
+        return rows.some(
+          (c) =>
+            c.session?.status === "IN_PROGRESS" ||
+            c.session?.reportStatus === "PENDING" ||
+            c.session?.reportStatus === "GENERATING",
+        )
+          ? 30_000
+          : false;
+      },
+    },
+  );
   const setAutoLeftFollowup = trpc.batch.setAutoLeftFollowup.useMutation({
     onSuccess: (r) => {
       void utils.batch.getById.invalidate({ id });

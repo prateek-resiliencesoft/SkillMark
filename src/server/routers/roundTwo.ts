@@ -282,6 +282,7 @@ export const roundTwoRouter = router({
       .neq("status", "draft")
       .order("createdAt", { ascending: false })
       .limit(200);
+    // Strip full report blob — list only needs recommendation string.
     return (data ?? []).map((r) => ({
       id: r.id as string,
       title: r.title as string,
@@ -476,21 +477,22 @@ export const roundTwoRouter = router({
         .select('id, "speakerRole", "speakerName", text, "startMs", "endMs"')
         .eq("roundTwoId", r.id)
         .order("startMs", { ascending: false })
-        .limit(400),
+        // Live UI only — keep payload small; full transcript still in report/ended view.
+        .limit(120),
       ctx.supabase
         .from("round_two_ai_events")
         .select("id, kind, trigger, payload, \"createdAt\"")
         .eq("roundTwoId", r.id)
         .eq("kind", "suggestions")
         .order("createdAt", { ascending: false })
-        .limit(15),
+        .limit(10),
       ctx.supabase
         .from("round_two_notes")
         .select('id, "authorUserId", "authorName", body, visibility, kind, "offsetMs", "createdAt"')
         .eq("roundTwoId", r.id)
         .or(`visibility.eq.shared,authorUserId.eq.${ctx.user.id}`)
-        .order("createdAt", { ascending: true })
-        .limit(500),
+        .order("createdAt", { ascending: false })
+        .limit(80),
       ctx.supabase
         .from("round_two_ai_events")
         .select('kind, payload, "createdAt"')
@@ -500,6 +502,7 @@ export const roundTwoRouter = router({
         .limit(10),
     ]);
     const transcript = (segs ?? []).reverse();
+    const notesAsc = [...(notes ?? [])].reverse();
     const latestScores = (aiMeta ?? []).find((e) => e.kind === "scores");
     const latestSuggestionAt = (events ?? [])[0]?.createdAt as string | undefined;
     // Show an error only if nothing succeeded after it (per stage).
@@ -536,7 +539,7 @@ export const roundTwoRouter = router({
       liveScores: latestScores ? { ...(latestScores.payload as LiveScoring), at: latestScores.createdAt as string } : null,
       liveScoringEnabled: liveScoringEnabled(),
       aiError,
-      notes: notes ?? [],
+      notes: notesAsc,
       style: { round1: styleR1, round2: styleR2, notes: compareStyle(styleR1, styleR2) },
     };
   }),
