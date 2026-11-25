@@ -133,7 +133,7 @@ export type VoiceSaveOps = {
     interviewTitle: string,
     objective?: string | null,
     language?: string | null,
-    questions?: { text: string; order: number; type?: string }[] | null,
+    questions?: { text: string; order: number; type?: string; description?: string | null; validationRules?: unknown }[] | null,
     assessmentCriteria?: { name: string; description: string }[] | null,
   ) => Promise<void>;
   log: {

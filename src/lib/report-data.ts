@@ -8,7 +8,8 @@ export type Recommendation = "hire" | "maybe" | "no";
 export interface ReportQuestion {
   index: number;
   question: string;
-  score: number;
+  score: number | null;
+  excludeFromScore?: boolean;
   evaluation: string;
   highlights: string[];
   improvements: string[];
@@ -176,15 +177,21 @@ export function buildReportData(d: any): ReportData {
       return String(a.id ?? "").localeCompare(String(b.id ?? ""));
     });
   const messages = rawMessages.map((m) => ({ role: String(m.role), content: String(m.content ?? "") }));
-  const questions: ReportQuestion[] = qes.map((q, i) => ({
-    index: i + 1,
-    question: String(q?.question ?? ""),
-    score: Number(q?.score) || 0,
-    evaluation: String(q?.evaluation ?? ""),
-    highlights: (q?.highlights ?? []).map(String),
-    improvements: (q?.improvements ?? []).map(String),
-    answerExcerpt: findAnswerExcerpt(String(q?.question ?? ""), messages),
-  }));
+  const questions: ReportQuestion[] = qes.map((q, i) => {
+    const excluded = q?.excludeFromScore === true;
+    const rawScore = q?.score == null ? NaN : Number(q.score);
+    const score = excluded || !Number.isFinite(rawScore) ? null : rawScore;
+    return {
+      index: i + 1,
+      question: String(q?.question ?? ""),
+      score,
+      excludeFromScore: excluded || score === null,
+      evaluation: String(q?.evaluation ?? ""),
+      highlights: (q?.highlights ?? []).map(String),
+      improvements: (q?.improvements ?? []).map(String),
+      answerExcerpt: findAnswerExcerpt(String(q?.question ?? ""), messages),
+    };
+  });
 
   const overall = getSessionOverallScore({ questionEvaluations: qes as any, criteriaEvaluations: criteria });
   const breakdown = getSessionScoreBreakdown(obj);

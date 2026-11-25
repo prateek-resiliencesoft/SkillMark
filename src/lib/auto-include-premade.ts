@@ -73,3 +73,34 @@ export async function resolvePremadeQuestions(
   }
   return loadAutoIncludePremade(supabase, organizationId);
 }
+
+/**
+ * Load ALL Question Bank items in the org (even if a section/item toggle was
+ * later disabled) so historical reports still exclude preset/bank questions.
+ */
+export async function loadAllBankQuestionsForExclusion(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  organizationId: string,
+): Promise<Array<{ text: string; sectionName: string }>> {
+  const { data: sections, error: secErr } = await supabase
+    .from("question_bank_sections")
+    .select("id, name")
+    .eq("organizationId", organizationId);
+  if (secErr || !sections?.length) return [];
+
+  const secMap = new Map<string, string>(
+    (sections as Array<{ id: string; name: string }>).map((s) => [s.id, s.name]),
+  );
+
+  const { data: items, error: itemsErr } = await supabase
+    .from("question_bank_items")
+    .select("text, sectionId")
+    .eq("organizationId", organizationId);
+  if (itemsErr || !items?.length) return [];
+
+  return (items as Array<{ text: string; sectionId: string }>).map((q) => ({
+    text: q.text,
+    sectionName: secMap.get(q.sectionId) ?? "Preset",
+  }));
+}

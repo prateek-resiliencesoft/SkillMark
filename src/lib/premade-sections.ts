@@ -1,4 +1,4 @@
-import { parseSkipIf, type QuestionSkipIf } from "@/lib/question-conditions";
+import { normalizeMatchText, parseSkipIf, textsOverlap, type QuestionSkipIf } from "@/lib/question-conditions";
 
 /** Map interview type → question-bank section name keywords. */
 const TYPE_KEYWORDS: Record<string, string[]> = {
@@ -147,6 +147,26 @@ export function collectExcludedScoreTexts(
     if (shouldExcludePremadeFromScore(p.sectionName)) out.push(text);
   }
   return out;
+}
+
+
+/** True if a question row matches any excluded preset/bank source. */
+export function isQuestionTextExcluded(
+  text: string | null | undefined,
+  excludedTexts: string[],
+  opts?: { description?: string | null; validationRules?: unknown },
+): boolean {
+  if (hasExcludeFromScoreFlag(opts?.validationRules)) return true;
+  const desc = typeof opts?.description === "string" ? opts.description.trim() : "";
+  const m = desc.match(FROM_SECTION_RE);
+  if (m?.[1] && shouldExcludePremadeFromScore(m[1])) return true;
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t || excludedTexts.length === 0) return false;
+  const nt = normalizeMatchText(t);
+  return excludedTexts.some((ex) => {
+    const ne = ex.trim();
+    return !!ne && (nt === normalizeMatchText(ne) || textsOverlap(t, ne));
+  });
 }
 
 export type PremadeQuestionPayload = {

@@ -52,7 +52,7 @@ export function buildSummaryPrompt(
   messages: { role: string; content: string }[],
   objective?: string | null,
   assessmentCriteria?: { name: string; description: string }[] | null,
-  questions?: { text: string; order: number; type?: string }[] | null,
+  questions?: { text: string; order: number; type?: string; excludeFromScore?: boolean }[] | null,
   language?: string | null,
   whiteboardDrawings?: WhiteboardDrawingInput[] | null,
   codeSnippets?: CodeSnippetInput[] | null,
@@ -70,7 +70,7 @@ export function buildSummaryPrompt(
   // ── Questions section ──────────────────────────────────────────
   const questionsSection =
     questions && questions.length > 0
-      ? `\n\nInterview Questions:\n${questions.map((q, i) => `${i + 1}. ${q.type ? `[${q.type}] ` : ""}${q.text}`).join("\n")}`
+      ? `\n\nInterview Questions:\n${questions.map((q, i) => `${i + 1}. ${q.type ? `[${q.type}] ` : ""}${q.excludeFromScore ? "[PRESET / NOT SCORED] " : ""}${q.text}`).join("\n")}`
       : "";
 
   // ── Whiteboard drawings section (text context) ─────────────────
@@ -112,7 +112,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
 
   const criteriaEvalInstruction =
     assessmentCriteria && assessmentCriteria.length > 0
-      ? `7. Evaluate the participant against EACH assessment criterion with a score (1-10) and reasoning\n`
+      ? `7. Evaluate the participant against EACH assessment criterion with a score (1-10) and reasoning based ONLY on their AI-generated technical question answers (and code/whiteboard if present) — do NOT let [PRESET / NOT SCORED] / bank question answers raise or lower these skill scores\n`
       : "";
 
   const criteriaJsonField =
@@ -154,7 +154,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
   // ── Per-question evaluation section ────────────────────────────
   const questionEvalInstruction =
     questions && questions.length > 0
-      ? `6. For EACH interview question, evaluate the participant's response: how well they addressed the question, key strengths, areas for improvement, and a score (1-10). For Round Preset / bank / screening / logistics questions (CTC, salary, relocate, commitment, name/address, or any fixed bank wording), still write a brief evaluation but set "score" to null. Only assign numeric scores to AI-generated complementary skill questions.\n`
+      ? `6. For EACH interview question, evaluate the participant's response: how well they addressed the question, key strengths, areas for improvement, and a score (1-10). For any [PRESET / NOT SCORED] / Round Preset / bank / screening / logistics question (including Technical Round presets or fixed bank wording), still write a brief evaluation, highlights, and improvements, but set "score" to null. Only assign numeric scores (1-10) to AI-generated complementary technical questions, and do NOT factor [PRESET / NOT SCORED] answers into overall performance.\n`
       : "";
 
   const questionEvalJsonField =
