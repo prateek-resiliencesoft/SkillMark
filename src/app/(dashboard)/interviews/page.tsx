@@ -88,6 +88,12 @@ import {
   type InterviewTemplate,
 } from "@/lib/interview-templates";
 import { useProject } from "@/components/project-provider";
+import { RoundFilterSegments } from "@/components/round-two/round-filter-segments";
+import {
+  clampRoundFilter,
+  interviewMatchesRound,
+  type RoundFilterValue,
+} from "@/lib/round-two/round-filter";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -192,11 +198,16 @@ export default function InterviewsPage() {
     { limit: 100, projectId: projectId ?? undefined },
     { enabled: !!projectId },
   );
+  const roundMeta = trpc.roundTwo.projectRoundMeta.useQuery(
+    { projectId: projectId ?? "" },
+    { enabled: !!projectId },
+  );
 
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
   const [searchQuery, setSearchQuery] = useState("");
   const [timeRange, setTimeRange] = useState<string>("ALL");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [roundFilter, setRoundFilter] = useState<RoundFilterValue>("ALL");
   const [sortKey, setSortKey] = useState<SortKey | null>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
@@ -256,8 +267,18 @@ export default function InterviewsPage() {
     { value: "INVITE_ONLY", label: t("interviews.inviteOnly") },
   ] as const;
 
+  const maxRound = roundMeta.data?.maxRound ?? 1;
+  const effectiveRoundFilter = clampRoundFilter(roundFilter, maxRound);
+  const r2InterviewIds = useMemo(
+    () => new Set(roundMeta.data?.r2InterviewIds ?? []),
+    [roundMeta.data?.r2InterviewIds],
+  );
+
   const isFiltering =
-    searchQuery.trim() || timeRange !== "ALL" || statusFilter !== "ALL";
+    searchQuery.trim() ||
+    timeRange !== "ALL" ||
+    statusFilter !== "ALL" ||
+    effectiveRoundFilter !== "ALL";
 
   const formatDate = useCallback(
     (date: Date | string) => {
@@ -369,6 +390,16 @@ export default function InterviewsPage() {
       );
     }
 
+    if (effectiveRoundFilter !== "ALL") {
+      result = result.filter((iv) =>
+        interviewMatchesRound(
+          { id: iv.id, sessionCount: iv._count?.sessions ?? 0 },
+          effectiveRoundFilter,
+          r2InterviewIds,
+        ),
+      );
+    }
+
     if (sortKey) {
       result = [...result].sort((a, b) => {
         let aVal: string | number;
@@ -419,7 +450,16 @@ export default function InterviewsPage() {
     }
 
     return result;
-  }, [interviews.data, searchQuery, statusFilter, timeRange, sortKey, sortDir]);
+  }, [
+    interviews.data,
+    searchQuery,
+    statusFilter,
+    timeRange,
+    sortKey,
+    sortDir,
+    effectiveRoundFilter,
+    r2InterviewIds,
+  ]);
 
   const totalPages = Math.max(
     1,
@@ -639,6 +679,15 @@ export default function InterviewsPage() {
             ))}
           </SelectContent>
         </Select>
+
+        <RoundFilterSegments
+          value={effectiveRoundFilter}
+          maxRound={maxRound}
+          onChange={(v) => {
+            setRoundFilter(v);
+            setPage(0);
+          }}
+        />
 
         <Button
           variant="outline"

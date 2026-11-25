@@ -76,6 +76,12 @@ import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { leftFollowupState } from "@/lib/left-followup";
 import { isLinkExpired } from "@/lib/session-link";
+import { RoundFilterSegments } from "@/components/round-two/round-filter-segments";
+import {
+  candidateMatchesRound,
+  clampRoundFilter,
+  type RoundFilterValue,
+} from "@/lib/round-two/round-filter";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -536,6 +542,7 @@ export default function CandidatesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [timeRange, setTimeRange] = useState("ALL");
+  const [roundFilter, setRoundFilter] = useState<RoundFilterValue>("ALL");
   const [sortKey, setSortKey] = useState<SortKey | null>("recent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
@@ -631,6 +638,16 @@ export default function CandidatesPage() {
     { limit: 200, projectId: projectId ?? undefined },
     { enabled: !!projectId, refetchInterval: (data) => livePollInterval(data) },
   );
+  const roundMeta = trpc.roundTwo.projectRoundMeta.useQuery(
+    { projectId: projectId ?? "" },
+    { enabled: !!projectId },
+  );
+  const maxRound = roundMeta.data?.maxRound ?? 1;
+  const effectiveRoundFilter = clampRoundFilter(roundFilter, maxRound);
+  const r2CandidateIds = useMemo(
+    () => new Set(roundMeta.data?.r2CandidateIds ?? []),
+    [roundMeta.data?.r2CandidateIds],
+  );
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
     onSuccess: () => invalidateAll(),
@@ -699,7 +716,10 @@ export default function CandidatesPage() {
   );
 
   const isFiltering =
-    searchQuery.trim() || statusFilter !== "ALL" || timeRange !== "ALL";
+    searchQuery.trim() ||
+    statusFilter !== "ALL" ||
+    timeRange !== "ALL" ||
+    effectiveRoundFilter !== "ALL";
 
   // ── Filter + Sort ──
   const processedRows = useMemo(() => {
@@ -756,6 +776,19 @@ export default function CandidatesPage() {
       });
     }
 
+    if (effectiveRoundFilter !== "ALL") {
+      result = result.filter((row) =>
+        candidateMatchesRound(
+          {
+            id: row.id,
+            hasSession: !!row.session,
+          },
+          effectiveRoundFilter,
+          r2CandidateIds,
+        ),
+      );
+    }
+
     if (sortKey) {
       result = [...result].sort((a, b) => {
         const va = getSortValue(a, sortKey);
@@ -769,7 +802,17 @@ export default function CandidatesPage() {
     }
 
     return result;
-  }, [candidates, walkIns, searchQuery, statusFilter, timeRange, sortKey, sortDir]);
+  }, [
+    candidates,
+    walkIns,
+    searchQuery,
+    statusFilter,
+    timeRange,
+    sortKey,
+    sortDir,
+    effectiveRoundFilter,
+    r2CandidateIds,
+  ]);
 
   // ── Pagination ──
   const totalPages = Math.max(1, Math.ceil(processedRows.length / pageSize));
@@ -1279,6 +1322,15 @@ export default function CandidatesPage() {
             </SelectItem>
           </SelectContent>
         </Select>
+
+        <RoundFilterSegments
+          value={effectiveRoundFilter}
+          maxRound={maxRound}
+          onChange={(v) => {
+            setRoundFilter(v);
+            setPage(0);
+          }}
+        />
 
         <Button
           variant="outline"
