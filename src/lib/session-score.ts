@@ -78,7 +78,10 @@ function namedFrom(
 /** Mark screening/HR (etc.) evals so overall avg only uses technical + genuine Qs. */
 export function applyQuestionScoreExclusions<
   T extends { question?: string; excludeFromScore?: boolean },
->(evaluations: T[] | null | undefined, excludedTexts: string[]): T[] {
+>(
+  evaluations: T[] | null | undefined,
+  excludedTexts: string[],
+): Array<T & { excludeFromScore?: boolean }> {
   if (!Array.isArray(evaluations) || evaluations.length === 0) return evaluations ?? [];
   const needles = excludedTexts.map((t) => t.trim()).filter(Boolean);
   if (needles.length === 0) return evaluations;
@@ -91,7 +94,7 @@ export function applyQuestionScoreExclusions<
         normalizeMatchText(q) === normalizeMatchText(needle) || textsOverlap(q, needle),
     );
     if (!hit) return entry;
-    return { ...entry, excludeFromScore: true };
+    return { ...entry, excludeFromScore: true as const };
   });
 }
 
