@@ -154,7 +154,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
   // ── Per-question evaluation section ────────────────────────────
   const questionEvalInstruction =
     questions && questions.length > 0
-      ? `6. For EACH interview question, evaluate the participant's response: how well they addressed the question, key strengths, areas for improvement, and a score (1-10). For screening/logistics/fit questions (CTC, salary, relocation, notice period, commitment, name/address/availability — not technical skill), still write a brief evaluation but set "score" to null; only assign numeric scores to technical / role-skill questions.\n`
+      ? `6. For EACH interview question, evaluate the participant's response: how well they addressed the question, key strengths, areas for improvement, and a score (1-10). For Round Preset / bank / screening / logistics questions (CTC, salary, relocate, commitment, name/address, or any fixed bank wording), still write a brief evaluation but set "score" to null. Only assign numeric scores to AI-generated complementary skill questions.\n`
       : "";
 
   const questionEvalJsonField =

@@ -91,16 +91,13 @@ export function sectionsMatchingInterviewType<T extends { id: string; name: stri
 }
 
 /**
- * Premade bank Qs count toward overall score only from Technical Round.
- * Screening / HR / other bank rounds are logistics / fit — not scored.
+ * Any Round Preset / bank Q (non-empty sectionName) is out of overall score.
  * Empty/missing sectionName = genuine AI complementary Q → scored.
  */
 export function shouldExcludePremadeFromScore(
   sectionName: string | null | undefined,
 ): boolean {
-  const name = (sectionName ?? "").trim().toLowerCase();
-  if (!name) return false;
-  return !TYPE_KEYWORDS.technical.some((k) => name.includes(k));
+  return (sectionName ?? "").trim().length > 0;
 }
 
 /** Parse `validationRules.excludeFromScore` stamped at question insert. */
@@ -111,7 +108,7 @@ export function hasExcludeFromScoreFlag(validationRules: unknown): boolean {
   return (validationRules as { excludeFromScore?: unknown }).excludeFromScore === true;
 }
 
-/** Stamp for non-technical premade rows (reuse questions.validationRules jsonb). */
+/** Stamp for all premade bank rows (reuse questions.validationRules jsonb). */
 export function excludeFromScoreValidationRules(
   sectionName: string | null | undefined,
 ): { excludeFromScore: true } | null {
@@ -122,7 +119,7 @@ const FROM_SECTION_RE = /^From (.+) section$/i;
 
 /**
  * Texts that must not contribute to overall score: stamped flag, "From X section"
- * description, or premade bank rows from non-technical rounds.
+ * description, or any premade bank row with a section name.
  */
 export function collectExcludedScoreTexts(
   questions: Array<{

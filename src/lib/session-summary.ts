@@ -186,7 +186,15 @@ const SummaryState = Annotation.Root({
   interviewTitle: Annotation<string>(),
   objective: Annotation<string | null>(),
   language: Annotation<string | null>(),
-  questions: Annotation<{ text: string; order: number; type?: string }[] | null>(),
+  questions: Annotation<
+    {
+      text: string;
+      order: number;
+      type?: string;
+      description?: string | null;
+      validationRules?: unknown;
+    }[] | null
+  >(),
   assessmentCriteria: Annotation<{ name: string; description: string }[] | null>(),
   messages: Annotation<Msg[]>(),
   drawings: Annotation<Drawing[]>(),
@@ -369,6 +377,29 @@ function buildSummaryGraph() {
     for (const k of ["criteriaEvaluations", "questionEvaluations", "researchFindings", "toneAnalysis", "codeEvaluations"] as const) {
       if (parsed[k]) insightsData[k] = parsed[k];
     }
+    // Round Presets / bank Qs never count toward overall — only AI complementary Qs.
+    if (Array.isArray(insightsData.questionEvaluations)) {
+      let bankPremade: Awaited<ReturnType<typeof loadAutoIncludePremade>> = [];
+      if (st.organizationId) {
+        try {
+          bankPremade = await loadAutoIncludePremade(supabaseAdmin, st.organizationId);
+        } catch (err) {
+          log.warn(
+            `Could not load question bank for score exclusions (session ${st.sessionId}):`,
+            err,
+          );
+        }
+      }
+      const excludedTexts = collectExcludedScoreTexts(st.questions, bankPremade);
+      insightsData.questionEvaluations = applyQuestionScoreExclusions(
+        insightsData.questionEvaluations as Array<{ question?: string; score?: unknown }>,
+        excludedTexts,
+      );
+      const skipped = (
+        insightsData.questionEvaluations as Array<{ excludeFromScore?: boolean }>
+      ).filter((e) => e.excludeFromScore).length;
+      if (skipped > 0) ctx.note(`Excluded ${skipped} preset/bank question score(s) from overall`);
+    }
     if (st.evidence.length) {
       insightsData.evidence = st.evidence.slice(0, 60).map((e) => ({ class: e.class, text: e.text, attributes: e.attributes }));
     }
@@ -429,7 +460,13 @@ export async function generateSessionSummary(
   interviewTitle: string,
   objective?: string | null,
   language?: string | null,
-  questions?: { text: string; order: number; type?: string }[] | null,
+  questions?: {
+    text: string;
+    order: number;
+    type?: string;
+    description?: string | null;
+    validationRules?: unknown;
+  }[] | null,
   assessmentCriteria?: { name: string; description: string }[] | null,
   opts: SummaryRunOptions = {},
 ): Promise<SummaryOutcome> {
