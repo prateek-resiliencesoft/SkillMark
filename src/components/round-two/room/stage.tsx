@@ -11,7 +11,8 @@ function key(t: TrackReferenceOrPlaceholder) {
 
 /**
  * Video stage: one large focus tile (any screen share, else the candidate, else the
- * first remote) plus a strip of everyone else.
+ * first remote) plus an overlay strip of everyone else.
+ * Filmstrip is absolute so joining / mute / sidebar clicks never resize the main tile.
  */
 export function VideoStage({ className }: { className?: string }) {
   const tracks = useTracks(
@@ -31,18 +32,21 @@ export function VideoStage({ className }: { className?: string }) {
   const others = visible.filter((t) => !focus || key(t) !== key(focus));
 
   return (
-    <div className={cn("flex min-h-0 flex-col gap-2", className)}>
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-black">
+    <div className={cn("relative min-h-0 flex-1 overflow-hidden", className)}>
+      <div className="absolute inset-0 overflow-hidden rounded-xl bg-black">
         {focus ? (
-          <ParticipantTile trackRef={focus} className="h-full w-full" />
+          <ParticipantTile trackRef={focus} className="h-full w-full [&_video]:object-contain" />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-white/60">Waiting for others to join…</div>
         )}
       </div>
       {others.length > 0 && (
-        <div className="flex h-28 shrink-0 gap-2 overflow-x-auto">
+        <div className="pointer-events-none absolute inset-x-2 bottom-2 z-10 flex h-24 gap-2 overflow-x-auto">
           {others.map((t) => (
-            <div key={key(t)} className="aspect-video h-full shrink-0 overflow-hidden rounded-lg bg-black">
+            <div
+              key={key(t)}
+              className="pointer-events-auto aspect-video h-full shrink-0 overflow-hidden rounded-lg bg-black/90 ring-1 ring-white/20"
+            >
               <ParticipantTile trackRef={t} className="h-full w-full" />
             </div>
           ))}

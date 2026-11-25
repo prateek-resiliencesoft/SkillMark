@@ -179,8 +179,10 @@ function CandidateRoom({ choices }: { choices: LocalUserChoices }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 bg-background p-3">
-      <VideoStage className="min-h-0 flex-1" />
-      <RoomControls onLeave={() => void room.disconnect()} />
+      <VideoStage className="min-h-[240px] flex-1" />
+      <div className="shrink-0">
+        <RoomControls onLeave={() => void room.disconnect()} />
+      </div>
     </div>
   );
 }
