@@ -4,6 +4,7 @@
 #
 #   docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
 #   docker compose -f docker-compose.dev.yml --env-file .env.dev --profile voice up -d
+#   docker compose -f docker-compose.dev.yml --env-file .env.dev --profile video up -d
 name: skillmark-dev
 
 x-log: &log
@@ -80,6 +81,7 @@ services:
     environment:
       POSTGREST_URL: http://rest:3000
       STORAGE_DIR: /app/storage
+      LIVEKIT_API_URL: http://livekit:7880
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: "0.0.0.0"
@@ -119,6 +121,50 @@ services:
       VOICE_RELAY_PROVIDER: ${VOICE_RELAY_PROVIDER:-auto}
     ports:
       - "127.0.0.1:8182:8082"
+    <<: *log
+
+
+  # Round 2 live video. The waker starts this profile on /round-two, /r2, /rtc, or /api/round-two.
+  # Media ports are offset from production on the same host.
+  livekit:
+    image: livekit/livekit-server:v1.9
+    profiles: ["video"]
+    restart: "no"
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: "0.40"
+    oom_score_adj: 800
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-}: ${LIVEKIT_API_SECRET:-}"
+    volumes:
+      - ./src/livekit.dev.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "127.0.0.1:7280:7880"
+      - "7883:7883/tcp"
+      - "3479:3479/udp"
+      - "50300-50350:50300-50350/udp"
+    <<: *log
+
+  # Hidden transcriber for live round-2 rooms. Needs ROUND2_AGENT_SECRET (16+ chars)
+  # and ROUND2_STT_API_KEY or OPENAI_API_KEY in .env.dev.
+  round2-agent:
+    image: skillmark-voice:dev
+    profiles: ["video"]
+    restart: "no"
+    mem_limit: 192m
+    memswap_limit: 192m
+    cpus: "0.40"
+    oom_score_adj: 800
+    depends_on:
+      - app
+      - livekit
+    env_file:
+      - .env.dev
+    environment:
+      ROUND2_APP_URL: http://app:3000
+      LIVEKIT_AGENT_URL: ws://livekit:7880
+    entrypoint: ["npx", "tsx", "server/round-two-agent.ts"]
     <<: *log
 
 volumes:

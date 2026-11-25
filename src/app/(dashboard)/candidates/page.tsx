@@ -145,6 +145,7 @@ type SortKey =
   | "finished"
   | "source"
   | "status"
+  | "round"
   | "decision"
   | "link"
   | "followup"
@@ -206,6 +207,7 @@ const COLUMNS: ColumnDef[] = [
   },
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
+  { key: "round", label: "Round", sortKey: "round", defaultVisible: true },
   { key: "decision", label: "Decision", sortKey: "decision", defaultVisible: true },
   { key: "link", label: "Link", sortKey: "link", defaultVisible: false },
   { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: false },
@@ -369,7 +371,25 @@ function getSessionScore(row: UnifiedRow): number | null {
   );
 }
 
-function getSortValue(row: UnifiedRow, key: SortKey): string | number {
+function rowHasRound2(row: UnifiedRow, r2Ids: Set<string>): boolean {
+  return row.type === "candidate" && r2Ids.has(row.id);
+}
+
+function formatRoundExport(
+  row: UnifiedRow,
+  r2Ids: Set<string>,
+  isZh: boolean,
+): string {
+  const parts = [isZh ? "第1轮" : "Round 1"];
+  if (rowHasRound2(row, r2Ids)) parts.push(isZh ? "第2轮" : "Round 2");
+  return parts.join(isZh ? "、" : " · ");
+}
+
+function getSortValue(
+  row: UnifiedRow,
+  key: SortKey,
+  r2Ids?: Set<string>,
+): string | number {
   const c = getCandidateField(row);
   switch (key) {
     case "interview":
@@ -414,6 +434,8 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return row.type === "walkin" ? "Walk-in" : "Invited";
     case "status":
       return getSessionStatus(row);
+    case "round":
+      return rowHasRound2(row, r2Ids ?? new Set()) ? 2 : 1;
     case "decision":
       return getReviewOutcome(row) ?? "";
     case "followup": {
@@ -490,6 +512,7 @@ export default function CandidatesPage() {
     experience: isZh ? "经验" : "Experience",
     notes: isZh ? "备注" : "Notes",
     status: isZh ? "状态" : "Status",
+    round: isZh ? "轮次" : "Round",
     decision: isZh ? "决定" : "Decision",
     score: isZh ? "分数" : "Score",
     duration: isZh ? "时长" : "Duration",
@@ -793,8 +816,8 @@ export default function CandidatesPage() {
 
     if (sortKey) {
       result = [...result].sort((a, b) => {
-        const va = getSortValue(a, sortKey);
-        const vb = getSortValue(b, sortKey);
+        const va = getSortValue(a, sortKey, r2CandidateIds);
+        const vb = getSortValue(b, sortKey, r2CandidateIds);
         const cmp =
           typeof va === "number" && typeof vb === "number"
             ? va - vb
@@ -1005,6 +1028,9 @@ export default function CandidatesPage() {
           case "status":
             record[col.label] = statusLabel(row);
             break;
+          case "round":
+            record[col.label] = formatRoundExport(row, r2CandidateIds, isZh);
+            break;
           case "decision":
             record[col.label] = reviewOutcomeLabel(getReviewOutcome(row), isZh);
             break;
@@ -1031,7 +1057,15 @@ export default function CandidatesPage() {
       return record;
     });
     exportToXlsx(rows, `sessions-${new Date().toISOString().slice(0, 10)}`);
-  }, [dynamicColumns, frozenCol, isZh, processedRows, sourceLabel, statusLabel]);
+  }, [
+    dynamicColumns,
+    frozenCol,
+    isZh,
+    processedRows,
+    r2CandidateIds,
+    sourceLabel,
+    statusLabel,
+  ]);
 
   // ── Cell values ──
   function getCellValue(row: UnifiedRow, key: string): JSX.Element | string {
@@ -1165,6 +1199,27 @@ export default function CandidatesPage() {
             </Badge>
             <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
             {isRowLinkExpired(row) && <ExpiredBadge />}
+          </div>
+        );
+      }
+      case "round": {
+        const hasR2 = rowHasRound2(row, r2CandidateIds);
+        return (
+          <div className="flex flex-wrap items-center gap-1">
+            <Badge
+              variant="outline"
+              className="whitespace-nowrap text-xs font-normal"
+            >
+              {isZh ? "第1轮" : "Round 1"}
+            </Badge>
+            {hasR2 && (
+              <Badge
+                variant="outline"
+                className="whitespace-nowrap border-primary/40 text-xs font-normal text-primary"
+              >
+                {isZh ? "第2轮" : "Round 2"}
+              </Badge>
+            )}
           </div>
         );
       }
