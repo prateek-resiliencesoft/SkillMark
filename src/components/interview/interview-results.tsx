@@ -44,7 +44,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import {
-  APPROVAL_NEXT_ROUND_NA,
+  APPROVAL_NEXT_ROUND_PENDING,
   formatApprovalNextRoundDetails,
   previewApprovalWhatsapp,
   previewDeclineWhatsapp,
@@ -246,7 +246,7 @@ function MediaReviewActions({
   const busy = mutation.isLoading;
   const canAiDraft = Boolean(reason.trim() || tags.length > 0);
   const who = (candidateName ?? "").trim() || "Candidate";
-  const approvalLaterPreview = previewApprovalWhatsapp(who, APPROVAL_NEXT_ROUND_NA);
+  const approvalLaterPreview = previewApprovalWhatsapp(who, APPROVAL_NEXT_ROUND_PENDING);
   const approvalRoundTwoPreview = previewApprovalWhatsapp(
     who,
     formatApprovalNextRoundDetails({
@@ -385,8 +385,8 @@ function MediaReviewActions({
           <DialogHeader>
             <DialogTitle>Approve candidate</DialogTitle>
             <DialogDescription>
-              Create Round 2 now (shortlist WhatsApp {"{{2}}"} gets join link after you schedule), or
-              later (WhatsApp {"{{2}}"} = na — details to follow).
+              Create Round 2 now — schedule first, then WhatsApp gets join link + time. Or later —
+              approve now and say round cleared (details soon).
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -394,23 +394,20 @@ function MediaReviewActions({
               <Button
                 className="h-auto w-full justify-start gap-3 px-3 py-3 text-left"
                 disabled={busy}
-                onClick={() =>
-                  mutation.mutate({
-                    sessionId,
-                    action: "approved",
-                    deferShortlist: true,
-                  })
-                }
+                onClick={() => {
+                  // Close dialog then open sheet (Radix focus trap needs a tick).
+                  setApproveOpen(false);
+                  window.setTimeout(() => {
+                    setApproveOnSchedule(true);
+                    setRoundTwoOpen(true);
+                  }, 50);
+                }}
               >
-                {busy && mutation.variables?.deferShortlist ? (
-                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-                ) : (
-                  <Video className="mt-0.5 h-4 w-4 shrink-0" />
-                )}
+                <Video className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                   <span className="block text-sm font-medium">Create Round 2 now</span>
                   <span className="block text-xs font-normal text-primary-foreground/80">
-                    WhatsApp sends after you schedule — {"{{2}}"} includes time + join link.
+                    Opens Round 2 planner. Approve + WhatsApp only after schedule succeeds.
                   </span>
                 </span>
               </Button>
@@ -426,11 +423,11 @@ function MediaReviewActions({
                     sessionId,
                     action: "approved",
                     deferShortlist: false,
-                    nextRoundDetails: APPROVAL_NEXT_ROUND_NA,
+                    nextRoundDetails: APPROVAL_NEXT_ROUND_PENDING,
                   })
                 }
               >
-                {busy && mutation.variables?.action === "approved" && !mutation.variables?.deferShortlist ? (
+                {busy && mutation.variables?.action === "approved" ? (
                   <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
                 ) : (
                   <UserCheck className="mt-0.5 h-4 w-4 shrink-0" />
@@ -438,7 +435,7 @@ function MediaReviewActions({
                 <span>
                   <span className="block text-sm font-medium">Later — inform only</span>
                   <span className="block text-xs font-normal text-muted-foreground">
-                    Sends WhatsApp now with {"{{2}}"} = na.
+                    Sends shortlist now. Join link comes when you schedule Round 2 later.
                   </span>
                 </span>
               </Button>
@@ -460,6 +457,8 @@ function MediaReviewActions({
           if (!open) setApproveOnSchedule(false);
         }}
         sessionId={sessionId}
+        candidateId={candidateId ?? undefined}
+        candidateName={candidateName}
         approveAndNotifyOnSchedule={approveOnSchedule}
       />
 

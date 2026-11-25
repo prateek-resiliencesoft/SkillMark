@@ -82,16 +82,20 @@ test("approval email subject and body brand RESILIENCESOFT and substitute name +
   assert.equal(APPROVAL_EMAIL_SUBJECT, "Congratulations! You've Been Shortlisted – RESILIENCESOFT");
   assert.match(APPROVAL_EMAIL_BODY, /\{\{name\}\}/);
   assert.match(APPROVAL_EMAIL_BODY, /\{\{details\}\}/);
-  const text = renderApprovalEmailText("prateek", "na");
+  const text = renderApprovalEmailText("prateek");
   assert.match(text, /^Hi prateek,/m);
-  assert.match(text, /^na$/m);
+  assert.doesNotMatch(text, /\bna\b/);
+  assert.match(text, /Further details regarding your next round will be shared shortly/);
   assert.match(text, /shortlisted for the next round/i);
   assert.match(text, /Team RESILIENCESOFT/);
   assert.doesNotMatch(text, /\{\{/);
 });
 
-test("whatsappApprovalBodyVariables is name and next-round details (default na)", () => {
-  assert.deepEqual(whatsappApprovalBodyVariables("Priya Sharma"), ["Priya Sharma", "na"]);
+test("whatsappApprovalBodyVariables is name and next-round details (no literal na)", () => {
+  const [name, details] = whatsappApprovalBodyVariables("Priya Sharma");
+  assert.equal(name, "Priya Sharma");
+  assert.doesNotMatch(details, /^na$/i);
+  assert.match(details, /Further details regarding your next round will be shared shortly/);
   assert.deepEqual(
     whatsappApprovalBodyVariables("Priya Sharma", "Next round: Mon 10am. Join: https://x.test/r2"),
     ["Priya Sharma", "Next round: Mon 10am. Join: https://x.test/r2"],
@@ -99,9 +103,10 @@ test("whatsappApprovalBodyVariables is name and next-round details (default na)"
 });
 
 test("approvalEmailHtml has no Start interview CTA", () => {
-  const html = approvalEmailHtml("prateek", "na");
+  const html = approvalEmailHtml("prateek");
   assert.match(html, /prateek/);
   assert.doesNotMatch(html, /Start interview/i);
+  assert.doesNotMatch(html, />\s*na\s*</);
 });
 
 test("formatApprovalNextRoundDetails includes join link and duration", () => {
