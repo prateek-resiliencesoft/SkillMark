@@ -514,6 +514,37 @@ export function formatApprovalNextRoundDetails(opts: {
   return `Next round: ${when}${dur}. Join: ${opts.candidateLink}`.slice(0, 500);
 }
 
+/** Fill Meta `{{1}}`…`{{n}}` for recruiter previews (client-safe). */
+export function fillWhatsappTemplateBody(body: string, variables: string[]): string {
+  return body.replace(/\{\{(\d+)\}\}/g, (m, i: string) => {
+    const v = variables[Number(i) - 1];
+    return v != null && String(v).length > 0 ? String(v) : m;
+  });
+}
+
+/** Exact WhatsApp text for Approve shortlist ({{2}} = details or "na"). */
+export function previewApprovalWhatsapp(
+  name: string,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+): string {
+  return fillWhatsappTemplateBody(
+    WHATSAPP_APPROVAL_META_TEMPLATE.body,
+    whatsappApprovalBodyVariables(name || "Candidate", nextRoundDetails),
+  );
+}
+
+/** Exact WhatsApp text for Decline (with or without reason). */
+export function previewDeclineWhatsapp(name: string, reason?: string | null): string {
+  const who = name || "Candidate";
+  if (hasDeclineReason(reason)) {
+    return fillWhatsappTemplateBody(
+      WHATSAPP_DECLINE_WITH_REASON_META_TEMPLATE.body,
+      whatsappDeclineWithReasonBodyVariables(who, reason!.trim()),
+    );
+  }
+  return fillWhatsappTemplateBody(WHATSAPP_DECLINE_META_TEMPLATE.body, whatsappDeclineBodyVariables(who));
+}
+
 export type DeclineChannelOutcome = {
   status: "sent" | "failed" | "skipped";
   error?: string;

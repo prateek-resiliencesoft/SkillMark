@@ -45,6 +45,9 @@ import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import {
   APPROVAL_NEXT_ROUND_NA,
+  formatApprovalNextRoundDetails,
+  previewApprovalWhatsapp,
+  previewDeclineWhatsapp,
   formatDeclineDeliverySummary,
   type DeclineChannelOutcome,
 } from "@/lib/messaging/templates";
@@ -128,6 +131,23 @@ interface CodeEvaluation {
   evaluation?: string;
 }
 
+function WhatsappPreview({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="space-y-1.5 rounded-lg border bg-muted/40 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+        {label}
+      </div>
+      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed text-muted-foreground">
+        {text}
+      </pre>
+      <p className="text-[11px] text-muted-foreground">
+        Sent on WhatsApp when the candidate has a phone with country code and WhatsApp is configured.
+      </p>
+    </div>
+  );
+}
+
 function MediaReviewActions({
   sessionId,
   candidateId,
@@ -136,6 +156,7 @@ function MediaReviewActions({
   clearedAt,
   rejectReason,
   rejectTags,
+  candidateName,
 }: {
   sessionId: string;
   candidateId?: string | null;
@@ -144,6 +165,7 @@ function MediaReviewActions({
   clearedAt?: string | null;
   rejectReason?: string | null;
   rejectTags?: string[] | null;
+  candidateName?: string | null;
 }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
@@ -234,6 +256,17 @@ function MediaReviewActions({
   const current = status ?? "pending";
   const busy = mutation.isLoading;
   const canAiDraft = Boolean(reason.trim() || tags.length > 0);
+  const who = (candidateName ?? "").trim() || "Candidate";
+  const approvalLaterPreview = previewApprovalWhatsapp(who, APPROVAL_NEXT_ROUND_NA);
+  const approvalRoundTwoPreview = previewApprovalWhatsapp(
+    who,
+    formatApprovalNextRoundDetails({
+      scheduledAt: null,
+      durationMin: 45,
+      candidateLink: "[Round 2 join link]",
+    }),
+  );
+  const declineWaPreview = previewDeclineWhatsapp(who, reason);
   const badgeLabel =
     current === "approved"
       ? "Approved"
@@ -359,50 +392,73 @@ function MediaReviewActions({
       </div>
 
       <Dialog open={approveOpen} onOpenChange={setApproveOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Approve candidate</DialogTitle>
             <DialogDescription>
-              Create Round 2 now (shortlist message includes the join link after you schedule), or
-              later (send shortlist with details to follow).
+              Create Round 2 now (shortlist WhatsApp {"{{2}}"} gets join link after you schedule), or
+              later (WhatsApp {"{{2}}"} = na — details to follow).
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="flex-col gap-2 sm:flex-col sm:space-x-0">
-            <Button
-              disabled={busy}
-              onClick={() =>
-                mutation.mutate({
-                  sessionId,
-                  action: "approved",
-                  deferShortlist: true,
-                })
-              }
-            >
-              {busy && mutation.variables?.deferShortlist ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Video className="mr-1 h-3.5 w-3.5" />
-              )}
-              Create Round 2 now
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                mutation.mutate({
-                  sessionId,
-                  action: "approved",
-                  deferShortlist: false,
-                  nextRoundDetails: APPROVAL_NEXT_ROUND_NA,
-                })
-              }
-            >
-              {busy && mutation.variables?.action === "approved" && !mutation.variables?.deferShortlist ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <UserCheck className="mr-1 h-3.5 w-3.5" />
-              )}
-              Later — inform only
+          <div className="grid gap-3">
+            <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+              <Button
+                className="h-auto w-full justify-start gap-3 px-3 py-3 text-left"
+                disabled={busy}
+                onClick={() =>
+                  mutation.mutate({
+                    sessionId,
+                    action: "approved",
+                    deferShortlist: true,
+                  })
+                }
+              >
+                {busy && mutation.variables?.deferShortlist ? (
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                ) : (
+                  <Video className="mt-0.5 h-4 w-4 shrink-0" />
+                )}
+                <span>
+                  <span className="block text-sm font-medium">Create Round 2 now</span>
+                  <span className="block text-xs font-normal text-primary-foreground/80">
+                    WhatsApp sends after you schedule — {"{{2}}"} includes time + join link.
+                  </span>
+                </span>
+              </Button>
+              <WhatsappPreview label="WhatsApp after you schedule (preview)" text={approvalRoundTwoPreview} />
+            </div>
+            <div className="space-y-2 rounded-lg border p-3">
+              <Button
+                variant="outline"
+                className="h-auto w-full justify-start gap-3 px-3 py-3 text-left"
+                disabled={busy}
+                onClick={() =>
+                  mutation.mutate({
+                    sessionId,
+                    action: "approved",
+                    deferShortlist: false,
+                    nextRoundDetails: APPROVAL_NEXT_ROUND_NA,
+                  })
+                }
+              >
+                {busy && mutation.variables?.action === "approved" && !mutation.variables?.deferShortlist ? (
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+                ) : (
+                  <UserCheck className="mt-0.5 h-4 w-4 shrink-0" />
+                )}
+                <span>
+                  <span className="block text-sm font-medium">Later — inform only</span>
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Sends WhatsApp now with {"{{2}}"} = na.
+                  </span>
+                </span>
+              </Button>
+              <WhatsappPreview label="WhatsApp on inform only" text={approvalLaterPreview} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" disabled={busy} onClick={() => setApproveOpen(false)}>
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -425,7 +481,7 @@ function MediaReviewActions({
           if (!open) resetDeclineForm();
         }}
       >
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Reject candidate</DialogTitle>
             <DialogDescription>
@@ -435,6 +491,14 @@ function MediaReviewActions({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
+            <WhatsappPreview
+              label={
+                reason.trim()
+                  ? "WhatsApp message (with your reason)"
+                  : "WhatsApp message the candidate will get on decline"
+              }
+              text={declineWaPreview}
+            />
             <div className="space-y-1.5">
               <Label htmlFor="reject-reason" className="text-xs">
                 Reason (optional)
@@ -1269,6 +1333,7 @@ function SessionDetailBody({
             clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}
             rejectReason={(summary.data as { rejectReason?: string | null } | undefined)?.rejectReason}
             rejectTags={(summary.data as { rejectTags?: string[] | null } | undefined)?.rejectTags}
+            candidateName={summary.data?.participantName}
           />
           {canRetranscribe && !captureFailure && (
             <Button
