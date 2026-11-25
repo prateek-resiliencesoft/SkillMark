@@ -9,7 +9,6 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import {
-  APPROVAL_NEXT_ROUND_NA,
   formatApprovalNextRoundDetails,
   formatDeclineDeliverySummary,
   type DeclineChannelOutcome,
@@ -64,15 +63,18 @@ export function CreateRoundTwoSheet({
   candidateId,
   sessionId,
   candidateName,
-  /** After approve-now: send shortlist WA/email on schedule (link) or on dismiss (na). */
-  sendShortlistOnSchedule = false,
+  /**
+   * Create-Round-2-now path: do NOT approve until schedule succeeds.
+   * On success → approve + shortlist with join link. On fail/dismiss → nothing.
+   */
+  approveAndNotifyOnSchedule = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   candidateId?: string;
   sessionId?: string;
   candidateName?: string | null;
-  sendShortlistOnSchedule?: boolean;
+  approveAndNotifyOnSchedule?: boolean;
 }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
@@ -90,43 +92,44 @@ export function CreateRoundTwoSheet({
   const [role, setRole] = useState<Person["role"]>("interviewer");
   const [emailCandidate, setEmailCandidate] = useState(true);
   const [result, setResult] = useState<ScheduleResult | null>(null);
-  const shortlistSentRef = useRef(false);
-  const sendShortlistFlagRef = useRef(sendShortlistOnSchedule);
+  const approvedRef = useRef(false);
+  const approveFlagRef = useRef(approveAndNotifyOnSchedule);
 
   useEffect(() => {
-    sendShortlistFlagRef.current = sendShortlistOnSchedule;
-  }, [sendShortlistOnSchedule]);
+    approveFlagRef.current = approveAndNotifyOnSchedule;
+  }, [approveAndNotifyOnSchedule]);
 
-  const shortlistNotice = trpc.session.sendApprovalShortlistNotice.useMutation({
-    onSuccess: (delivery) => {
-      const summary = formatDeclineDeliverySummary(
-        delivery.email as DeclineChannelOutcome | undefined,
-        delivery.whatsapp as DeclineChannelOutcome | undefined,
+  const approveMutation = trpc.session.setMediaReview.useMutation({
+    onSuccess: (data) => {
+      void utils.analysis.getSessionSummary.invalidate(
+        sessionId ? { sessionId } : undefined,
       );
-      if (summary) toast({ title: "Shortlist notice", description: summary });
+      void utils.session.listByInterview.invalidate();
+      void utils.roundTwo.forCandidate.invalidate();
+      void utils.roundTwo.projectRoundMeta.invalidate();
+      const summary = formatDeclineDeliverySummary(
+        "email" in data ? (data.email as DeclineChannelOutcome | undefined) : undefined,
+        "whatsapp" in data ? (data.whatsapp as DeclineChannelOutcome | undefined) : undefined,
+      );
+      toast({
+        title: "Approved — Round 2 scheduled",
+        description: summary || undefined,
+      });
     },
     onError: (err) =>
-      toast({ title: "Shortlist notice failed", description: err.message, variant: "destructive" }),
+      toast({
+        title: "Round 2 scheduled, but approve/shortlist failed",
+        description: err.message,
+        variant: "destructive",
+      }),
   });
-
-  const sendShortlist = (nextRoundDetails: string) => {
-    if (!sessionId || shortlistSentRef.current) return;
-    shortlistSentRef.current = true;
-    shortlistNotice.mutate({ sessionId, nextRoundDetails });
-  };
-
-  const finishWithoutSchedule = () => {
-    if (sendShortlistFlagRef.current && !shortlistSentRef.current) {
-      sendShortlist(APPROVAL_NEXT_ROUND_NA);
-    }
-    onOpenChange(false);
-  };
 
   const draft = trpc.roundTwo.createDraft.useMutation({
     onSuccess: (d) => setRoundId(d.id),
     onError: (err) => {
       toast({ title: "Couldn't start round 2", description: err.message, variant: "destructive" });
-      finishWithoutSchedule();
+      // Fail closed: no approve, no template.
+      onOpenChange(false);
     },
   });
   const round = trpc.roundTwo.get.useQuery({ id: roundId ?? "" }, { enabled: !!roundId });
@@ -137,14 +140,19 @@ export function CreateRoundTwoSheet({
       void utils.roundTwo.watchlist.invalidate();
       void utils.roundTwo.list.invalidate();
       void utils.roundTwo.forCandidate.invalidate();
-      if (sendShortlistFlagRef.current && sessionId) {
-        sendShortlist(
-          formatApprovalNextRoundDetails({
+      void utils.roundTwo.projectRoundMeta.invalidate();
+      if (approveFlagRef.current && sessionId && !approvedRef.current) {
+        approvedRef.current = true;
+        approveMutation.mutate({
+          sessionId,
+          action: "approved",
+          deferShortlist: false,
+          nextRoundDetails: formatApprovalNextRoundDetails({
             scheduledAt: when ? new Date(when).toISOString() : null,
             durationMin,
             candidateLink: r.candidateLink,
           }),
-        );
+        });
       }
     },
     onError: (err) => toast({ title: "Couldn't schedule", description: err.message, variant: "destructive" }),
@@ -163,16 +171,13 @@ export function CreateRoundTwoSheet({
       setPlan([]);
       setResult(null);
       setPeople([]);
-      shortlistSentRef.current = false;
+      approvedRef.current = false;
     }
   }, [open]);
 
   const handleOpenChange = (next: boolean) => {
-    if (!next && sendShortlistFlagRef.current && !shortlistSentRef.current && !result) {
-      sendShortlist(APPROVAL_NEXT_ROUND_NA);
-    }
-    if (!next) onOpenChange(false);
-    else onOpenChange(true);
+    // Dismiss / fail before schedule → candidate stays unapproved, no template.
+    onOpenChange(next);
   };
 
   const loaded = round.data?.round;

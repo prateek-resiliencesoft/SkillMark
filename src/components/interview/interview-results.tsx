@@ -176,7 +176,7 @@ function MediaReviewActions({
   const [customTag, setCustomTag] = useState("");
   const [deleteMedia, setDeleteMedia] = useState(false);
   const [roundTwoOpen, setRoundTwoOpen] = useState(false);
-  const [shortlistOnSchedule, setShortlistOnSchedule] = useState(false);
+  const [approveOnSchedule, setApproveOnSchedule] = useState(false);
 
   const roundTwo = trpc.roundTwo.forCandidate.useQuery(
     { candidateId: candidateId ?? "" },
@@ -195,11 +195,8 @@ function MediaReviewActions({
       void utils.analysis.getSessionSummary.invalidate({ sessionId });
       void utils.session.listByInterview.invalidate();
       void utils.roundTwo.forCandidate.invalidate();
+      void utils.roundTwo.projectRoundMeta.invalidate();
       if (data.status === "declined" || data.status === "approved") {
-        const deferred =
-          data.status === "approved" &&
-          "shortlistDeferred" in data &&
-          data.shortlistDeferred === true;
         const summary = formatDeclineDeliverySummary(
           "email" in data ? (data.email as DeclineChannelOutcome | undefined) : undefined,
           "whatsapp" in data ? (data.whatsapp as DeclineChannelOutcome | undefined) : undefined,
@@ -210,20 +207,12 @@ function MediaReviewActions({
               ? data.cleared
                 ? "Rejected — media cleared (scores kept)"
                 : "Rejected — media kept (scores kept)"
-              : deferred
-                ? "Approved — create Round 2 next"
-                : "Approved — media kept",
-          description: deferred
-            ? "Shortlist message sends after you schedule Round 2 (or when you close without scheduling)."
-            : summary || undefined,
+              : "Approved — media kept",
+          description: summary || undefined,
         });
         setDeclineOpen(false);
         setApproveOpen(false);
         resetDeclineForm();
-        if (deferred) {
-          setShortlistOnSchedule(true);
-          setRoundTwoOpen(true);
-        }
         return;
       }
       toast({
@@ -373,7 +362,7 @@ function MediaReviewActions({
             size="sm"
             variant="outline"
             onClick={() => {
-              setShortlistOnSchedule(false);
+              setApproveOnSchedule(false);
               setRoundTwoOpen(true);
             }}
           >
@@ -468,10 +457,10 @@ function MediaReviewActions({
         open={roundTwoOpen}
         onOpenChange={(open) => {
           setRoundTwoOpen(open);
-          if (!open) setShortlistOnSchedule(false);
+          if (!open) setApproveOnSchedule(false);
         }}
         sessionId={sessionId}
-        sendShortlistOnSchedule={shortlistOnSchedule}
+        approveAndNotifyOnSchedule={approveOnSchedule}
       />
 
       <Dialog

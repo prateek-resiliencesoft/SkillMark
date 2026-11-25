@@ -28,6 +28,7 @@ import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
+import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -416,8 +417,18 @@ export function CandidateDetailSheet({
                   <SheetDescription className="truncate">{c.interview?.title}</SheetDescription>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
-                      {sessionLabel}
+                      Round 1 · {sessionLabel}
                     </span>
+                    {existingRoundTwo ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="text-[11px] text-muted-foreground">Round 2</span>
+                        <RoundTwoStatusBadge status={existingRoundTwo.status} />
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-muted-foreground/30 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        Round 2 · None
+                      </span>
+                    )}
                     <QuitEarlyBadge session={c?.session} />
                     {neverReachedFirstQuestion(c?.session ?? null) ? (
                       <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
@@ -695,17 +706,20 @@ export function CandidateDetailSheet({
                     </h4>
                     {existingRoundTwo && existingRoundTwo.status !== "draft" ? (
                       <div className="space-y-2">
-                        <p className="text-xs text-muted-foreground">
-                          {existingRoundTwo.status === "scheduled"
-                            ? existingRoundTwo.scheduledAt
-                              ? `Scheduled for ${fmt(existingRoundTwo.scheduledAt)}`
-                              : "Scheduled"
-                            : existingRoundTwo.status === "live"
-                              ? "Live now"
-                              : existingRoundTwo.status === "ended"
-                                ? "Ended"
-                                : `Status: ${existingRoundTwo.status}`}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <RoundTwoStatusBadge status={existingRoundTwo.status} />
+                          <p className="text-xs text-muted-foreground">
+                            {existingRoundTwo.status === "scheduled"
+                              ? existingRoundTwo.scheduledAt
+                                ? `Scheduled for ${fmt(existingRoundTwo.scheduledAt)}`
+                                : "Scheduled"
+                              : existingRoundTwo.status === "live"
+                                ? "Live now"
+                                : existingRoundTwo.status === "ended"
+                                  ? "Ended"
+                                  : null}
+                          </p>
+                        </div>
                         <Button size="sm" variant="outline" asChild>
                           <Link href={`/round-two/${existingRoundTwo.id}`}>
                             Open round 2 <ExternalLink className="ml-1.5 h-3 w-3" />

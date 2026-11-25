@@ -77,6 +77,7 @@ import { LeftFollowupAction } from "@/components/candidates/left-followup-action
 import { leftFollowupState } from "@/lib/left-followup";
 import { isLinkExpired } from "@/lib/session-link";
 import { RoundFilterSegments } from "@/components/round-two/round-filter-segments";
+import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import {
   candidateMatchesRound,
   clampRoundFilter,
@@ -648,6 +649,7 @@ export default function CandidatesPage() {
     () => new Set(roundMeta.data?.r2CandidateIds ?? []),
     [roundMeta.data?.r2CandidateIds],
   );
+  const r2ByCandidateId = roundMeta.data?.r2ByCandidateId ?? {};
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
     onSuccess: () => invalidateAll(),
@@ -1141,7 +1143,18 @@ export default function CandidatesPage() {
             {sourceLabel("candidate")}
           </Badge>
         );
-      case "status":
+      case "status": {
+        // Round 2 filter → show live-panel status, not Round 1 session labels.
+        if (effectiveRoundFilter === 2 && row.type === "candidate") {
+          const r2 = r2ByCandidateId[row.id];
+          return r2 ? (
+            <div className="flex flex-col items-start gap-0.5">
+              <RoundTwoStatusBadge status={r2.status} />
+            </div>
+          ) : (
+            <span className="text-muted-foreground">-</span>
+          );
+        }
         return (
           <div className="flex flex-col items-start gap-0.5">
             <Badge
@@ -1154,6 +1167,7 @@ export default function CandidatesPage() {
             {isRowLinkExpired(row) && <ExpiredBadge />}
           </div>
         );
+      }
       case "decision": {
         const review = getReviewOutcome(row);
         // Incomplete follow-up is tracked in Follow-up column / filters — not Decision.

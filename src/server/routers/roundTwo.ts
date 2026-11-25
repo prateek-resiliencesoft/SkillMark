@@ -243,12 +243,25 @@ export const roundTwoRouter = router({
       }
       const { data: rounds } = await ctx.supabase
         .from("round_two_interviews")
-        .select('candidateId')
+        .select('id, "candidateId", status, "scheduledAt", "createdAt"')
         .eq("projectId", input.projectId)
+        .order("createdAt", { ascending: false })
         .limit(1000);
-      const r2CandidateIds = [
-        ...new Set((rounds ?? []).map((r) => r.candidateId as string).filter(Boolean)),
-      ];
+      /** Latest R2 per candidate (rows already newest-first). */
+      const r2ByCandidateId: Record<
+        string,
+        { id: string; status: string; scheduledAt: string | null }
+      > = {};
+      for (const r of rounds ?? []) {
+        const cid = r.candidateId as string;
+        if (!cid || r2ByCandidateId[cid]) continue;
+        r2ByCandidateId[cid] = {
+          id: r.id as string,
+          status: r.status as string,
+          scheduledAt: (r.scheduledAt as string | null) ?? null,
+        };
+      }
+      const r2CandidateIds = Object.keys(r2ByCandidateId);
       let r2InterviewIds: string[] = [];
       if (r2CandidateIds.length > 0) {
         const { data: cands } = await ctx.supabase
@@ -263,6 +276,7 @@ export const roundTwoRouter = router({
         maxRound: deriveMaxRound(r2CandidateIds),
         r2CandidateIds,
         r2InterviewIds,
+        r2ByCandidateId,
       };
     }),
 
