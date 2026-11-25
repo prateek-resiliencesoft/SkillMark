@@ -128,10 +128,10 @@ export function enforceExactPremadeQuestions<
 
   for (const pm of premade) {
     if (!pm?.text?.trim()) continue;
-    // Inline (avoid cycle with premade-sections): non-tech bank rounds skip overall score.
-    const section = (pm.sectionName ?? "").trim().toLowerCase();
-    const scoreRules =
-      section && !section.includes("tech") ? { excludeFromScore: true as const } : null;
+    // Inline (avoid cycle with premade-sections): any bank/preset round skips overall score.
+    const scoreRules = (pm.sectionName ?? "").trim()
+      ? { excludeFromScore: true as const }
+      : null;
     let hit = questions.findIndex(
       (q, i) => !usedGenerated.has(i) && textsOverlap(q.text, pm.text),
     );

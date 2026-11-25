@@ -76,10 +76,11 @@ test("getSessionScoreBreakdown splits questions, skills and coding", () => {
   assert.match(breakdown.questions.items[0]?.label ?? "", /^Q1\./);
 });
 
-test("shouldExcludePremadeFromScore: screening/HR out, technical/empty in", () => {
+test("shouldExcludePremadeFromScore: any bank section out, empty in (AI complementary)", () => {
   assert.equal(shouldExcludePremadeFromScore("Screening Round"), true);
   assert.equal(shouldExcludePremadeFromScore("HR Round"), true);
-  assert.equal(shouldExcludePremadeFromScore("Technical Round"), false);
+  assert.equal(shouldExcludePremadeFromScore("Technical Round"), true);
+  assert.equal(shouldExcludePremadeFromScore("Custom Preset"), true);
   assert.equal(shouldExcludePremadeFromScore(""), false);
   assert.equal(shouldExcludePremadeFromScore(undefined), false);
 });
@@ -122,7 +123,7 @@ test("getSessionOverallScore skips excludeFromScore entries already on insights"
   assert.equal(getSessionOverallScore(insights), 4);
 });
 
-test("collectExcludedScoreTexts uses flag, From-section desc, and non-tech bank", () => {
+test("collectExcludedScoreTexts uses flag, From-section desc, and all bank sections", () => {
   const texts = collectExcludedScoreTexts(
     [
       { text: "stamped CTC", validationRules: { excludeFromScore: true } },
@@ -137,8 +138,21 @@ test("collectExcludedScoreTexts uses flag, From-section desc, and non-tech bank"
   );
   assert.ok(texts.includes("stamped CTC"));
   assert.ok(texts.includes("desc relocate"));
+  assert.ok(texts.includes("tech design"));
   assert.ok(texts.includes("bank HR culture"));
-  assert.ok(!texts.includes("tech design"));
-  assert.ok(!texts.includes("bank tech arch"));
+  assert.ok(texts.includes("bank tech arch"));
   assert.ok(!texts.includes("genuine AI Q"));
+});
+
+test("preset score 0 with excludeFromScore does not pull overall down", () => {
+  assert.equal(
+    getSessionOverallScore({
+      questionEvaluations: [
+        { question: "CTC?", score: 0, excludeFromScore: true },
+        { question: "System design", score: 8 },
+        { question: "Tech bank Q", score: 0, excludeFromScore: true },
+      ],
+    }),
+    8,
+  );
 });
