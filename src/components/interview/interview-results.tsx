@@ -13,12 +13,7 @@ import { CvViewerPanel } from "@/components/session/cv-viewer-panel";
 import { SessionRow, SessionsTable } from "@/components/session/sessions-table";
 import { ResizableSplit } from "@/components/ui/resizable-split";
 import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,6 +44,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { STRIKE_LABEL } from "@/lib/head-movement";
 import {
+  APPROVAL_NEXT_ROUND_NA,
   formatDeclineDeliverySummary,
   type DeclineChannelOutcome,
 } from "@/lib/messaging/templates";
@@ -134,6 +130,7 @@ interface CodeEvaluation {
 
 function MediaReviewActions({
   sessionId,
+  candidateId,
   status,
   expiresAt,
   clearedAt,
@@ -141,6 +138,7 @@ function MediaReviewActions({
   rejectTags,
 }: {
   sessionId: string;
+  candidateId?: string | null;
   status?: string;
   expiresAt?: string | null;
   clearedAt?: string | null;
@@ -150,12 +148,18 @@ function MediaReviewActions({
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const [declineOpen, setDeclineOpen] = useState(false);
+  const [approveOpen, setApproveOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState("");
   const [deleteMedia, setDeleteMedia] = useState(false);
   const [roundTwoOpen, setRoundTwoOpen] = useState(false);
-  const scheduleAfterApprove = useRef(false);
+  const [shortlistOnSchedule, setShortlistOnSchedule] = useState(false);
+
+  const roundTwo = trpc.roundTwo.forCandidate.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: !!candidateId },
+  );
 
   const resetDeclineForm = () => {
     setReason("");
@@ -168,7 +172,12 @@ function MediaReviewActions({
     onSuccess: (data) => {
       void utils.analysis.getSessionSummary.invalidate({ sessionId });
       void utils.session.listByInterview.invalidate();
+      void utils.roundTwo.forCandidate.invalidate();
       if (data.status === "declined" || data.status === "approved") {
+        const deferred =
+          data.status === "approved" &&
+          "shortlistDeferred" in data &&
+          data.shortlistDeferred === true;
         const summary = formatDeclineDeliverySummary(
           "email" in data ? (data.email as DeclineChannelOutcome | undefined) : undefined,
           "whatsapp" in data ? (data.whatsapp as DeclineChannelOutcome | undefined) : undefined,
@@ -179,13 +188,18 @@ function MediaReviewActions({
               ? data.cleared
                 ? "Rejected — media cleared (scores kept)"
                 : "Rejected — media kept (scores kept)"
-              : "Approved — media kept",
-          description: summary || undefined,
+              : deferred
+                ? "Approved — create Round 2 next"
+                : "Approved — media kept",
+          description: deferred
+            ? "Shortlist message sends after you schedule Round 2 (or when you close without scheduling)."
+            : summary || undefined,
         });
         setDeclineOpen(false);
+        setApproveOpen(false);
         resetDeclineForm();
-        if (data.status === "approved" && scheduleAfterApprove.current) {
-          scheduleAfterApprove.current = false;
+        if (deferred) {
+          setShortlistOnSchedule(true);
           setRoundTwoOpen(true);
         }
         return;
@@ -244,6 +258,19 @@ function MediaReviewActions({
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="w-fit border-muted-foreground/40 text-muted-foreground">
+          Round 1 · {current === "approved" ? "Approved" : "Completed"}
+        </Badge>
+        {roundTwo.data ? (
+          <div className="flex items-center gap-1">
+            <span className="text-[11px] text-muted-foreground">Round 2</span>
+            <RoundTwoStatusBadge status={roundTwo.data.status} />
+          </div>
+        ) : (
+          <Badge variant="outline" className="w-fit border-muted-foreground/30 text-muted-foreground">
+            Round 2 · None
+          </Badge>
+        )}
         {current !== "pending" && (
           <div className="flex flex-col gap-0.5">
             <Badge
@@ -282,11 +309,7 @@ function MediaReviewActions({
         )}
         {current === "pending" && !clearedAt && (
           <>
-            <Button
-              size="sm"
-              disabled={busy}
-              onClick={() => mutation.mutate({ sessionId, action: "approved" })}
-            >
+            <Button size="sm" disabled={busy} onClick={() => setApproveOpen(true)}>
               {busy && mutation.variables?.action === "approved" ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
               ) : (
@@ -294,24 +317,6 @@ function MediaReviewActions({
               )}
               Approve
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" disabled={busy} className="-ml-1.5 px-1.5" aria-label="More approve options">
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem
-                  onClick={() => {
-                    scheduleAfterApprove.current = true;
-                    mutation.mutate({ sessionId, action: "approved" });
-                  }}
-                >
-                  <Video className="mr-2 h-3.5 w-3.5" />
-                  Approve and schedule round 2
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
             <Button
               size="sm"
               variant="outline"
@@ -330,15 +335,88 @@ function MediaReviewActions({
             </Button>
           </>
         )}
-        {current === "approved" && (
-          <Button size="sm" variant="outline" onClick={() => setRoundTwoOpen(true)}>
+        {current === "approved" && !roundTwo.data && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setShortlistOnSchedule(false);
+              setRoundTwoOpen(true);
+            }}
+          >
             <Video className="mr-1 h-3.5 w-3.5" />
             Schedule round 2
           </Button>
         )}
+        {current === "approved" && roundTwo.data && (
+          <Button size="sm" variant="outline" asChild>
+            <a href={`/round-two/${roundTwo.data.id}`}>
+              <Video className="mr-1 h-3.5 w-3.5" />
+              Open round 2
+            </a>
+          </Button>
+        )}
       </div>
 
-      <CreateRoundTwoSheet open={roundTwoOpen} onOpenChange={setRoundTwoOpen} sessionId={sessionId} />
+      <Dialog open={approveOpen} onOpenChange={setApproveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Approve candidate</DialogTitle>
+            <DialogDescription>
+              Create Round 2 now (shortlist message includes the join link after you schedule), or
+              later (send shortlist with details to follow).
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col gap-2 sm:flex-col sm:space-x-0">
+            <Button
+              disabled={busy}
+              onClick={() =>
+                mutation.mutate({
+                  sessionId,
+                  action: "approved",
+                  deferShortlist: true,
+                })
+              }
+            >
+              {busy && mutation.variables?.deferShortlist ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Video className="mr-1 h-3.5 w-3.5" />
+              )}
+              Create Round 2 now
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() =>
+                mutation.mutate({
+                  sessionId,
+                  action: "approved",
+                  deferShortlist: false,
+                  nextRoundDetails: APPROVAL_NEXT_ROUND_NA,
+                })
+              }
+            >
+              {busy && mutation.variables?.action === "approved" && !mutation.variables?.deferShortlist ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UserCheck className="mr-1 h-3.5 w-3.5" />
+              )}
+              Later — inform only
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <CreateRoundTwoSheet
+        open={roundTwoOpen}
+        onOpenChange={(open) => {
+          setRoundTwoOpen(open);
+          if (!open) setShortlistOnSchedule(false);
+        }}
+        sessionId={sessionId}
+        sendShortlistOnSchedule={shortlistOnSchedule}
+      />
 
       <Dialog
         open={declineOpen}
@@ -1185,6 +1263,7 @@ function SessionDetailBody({
           <DoubtfulMark sessionId={sessionId} doubtful={summary.data?.doubtful} />
           <MediaReviewActions
             sessionId={sessionId}
+            candidateId={summary.data?.candidateId}
             status={(summary.data as { mediaReviewStatus?: string } | undefined)?.mediaReviewStatus}
             expiresAt={(summary.data as { mediaExpiresAt?: string | null } | undefined)?.mediaExpiresAt}
             clearedAt={(summary.data as { mediaClearedAt?: string | null } | undefined)?.mediaClearedAt}

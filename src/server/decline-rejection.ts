@@ -34,7 +34,13 @@ export type DeclineDeliveryResult = {
 
 export type MediaReviewNoticeDeliveryResult = DeclineDeliveryResult;
 
-type NoticeContext = { name: string; interviewTitle: string; reason?: string };
+type NoticeContext = {
+  name: string;
+  interviewTitle: string;
+  reason?: string;
+  /** Approve shortlist {{2}}: next-round details or "na". */
+  nextRoundDetails?: string;
+};
 
 type NoticeCopy = {
   label: string;
@@ -66,10 +72,10 @@ const DECLINE_NOTICE_WITH_REASON: NoticeCopy = {
 const APPROVAL_NOTICE: NoticeCopy = {
   label: "approval shortlist",
   emailSubject: APPROVAL_EMAIL_SUBJECT,
-  renderText: ({ name, interviewTitle }) => renderApprovalEmailText(name, interviewTitle),
-  renderHtml: ({ name, interviewTitle }) => approvalEmailHtml(name, interviewTitle),
+  renderText: ({ name, nextRoundDetails }) => renderApprovalEmailText(name, nextRoundDetails),
+  renderHtml: ({ name, nextRoundDetails }) => approvalEmailHtml(name, nextRoundDetails),
   waTemplateName: WHATSAPP_APPROVAL_META_TEMPLATE.name,
-  waVariables: ({ name, interviewTitle }) => whatsappApprovalBodyVariables(name, interviewTitle),
+  waVariables: ({ name, nextRoundDetails }) => whatsappApprovalBodyVariables(name, nextRoundDetails),
 };
 
 async function sendNoticeEmail(
@@ -144,7 +150,7 @@ async function sendMediaReviewNotice(
   sessionId: string,
   organizationId: string,
   notice: NoticeCopy,
-  reason?: string,
+  opts?: { reason?: string; nextRoundDetails?: string },
 ): Promise<MediaReviewNoticeDeliveryResult> {
   const out: MediaReviewNoticeDeliveryResult = {};
   try {
@@ -180,7 +186,8 @@ async function sendMediaReviewNotice(
     const ctx: NoticeContext = {
       name: candidate.name?.trim() || "there",
       interviewTitle,
-      reason,
+      reason: opts?.reason,
+      nextRoundDetails: opts?.nextRoundDetails,
     };
     const cfg = await loadDeliveryConfig(supabase, organizationId);
     out.email = await sendNoticeEmail(cfg, candidate.email, ctx, notice);
@@ -204,13 +211,9 @@ export async function sendDeclineRejection(
 ): Promise<DeclineDeliveryResult> {
   const reason = opts?.reason?.trim() || "";
   const notice = hasDeclineReason(reason) ? DECLINE_NOTICE_WITH_REASON : DECLINE_NOTICE;
-  return sendMediaReviewNotice(
-    supabase,
-    sessionId,
-    organizationId,
-    notice,
-    reason || undefined,
-  );
+  return sendMediaReviewNotice(supabase, sessionId, organizationId, notice, {
+    reason: reason || undefined,
+  });
 }
 
 /** Never throws. Best-effort shortlist notice after media Approve. */
@@ -218,6 +221,9 @@ export async function sendApprovalShortlist(
   supabase: Db,
   sessionId: string,
   organizationId: string,
+  opts?: { nextRoundDetails?: string },
 ): Promise<MediaReviewNoticeDeliveryResult> {
-  return sendMediaReviewNotice(supabase, sessionId, organizationId, APPROVAL_NOTICE);
+  return sendMediaReviewNotice(supabase, sessionId, organizationId, APPROVAL_NOTICE, {
+    nextRoundDetails: opts?.nextRoundDetails?.trim() || "na",
+  });
 }

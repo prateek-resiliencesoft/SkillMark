@@ -439,7 +439,7 @@ export function hasDeclineReason(reason?: string | null): boolean {
  * Meta UTILITY template for shortlist notice on media-review Approve.
  * WABA expects exactly 2 body_variables:
  * {{1}} candidate name
- * {{2}} "RESILIENCESOFT For {position}" (interview / role)
+ * {{2}} next-round details (link + time) OR "na" when Round 2 not scheduled yet
  */
 export const WHATSAPP_APPROVAL_META_TEMPLATE = {
   name: "candidate_next_round_selected",
@@ -447,28 +447,71 @@ export const WHATSAPP_APPROVAL_META_TEMPLATE = {
   language: "en",
   body: `Hi {{1}},
 
-Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process for {{2}} and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+Congratulations!
+
+We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round.
+
+Our team will share the further details and next steps with you shortly.
+
+{{2}}
+
+We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
 
 Team RESILIENCESOFT`,
-  example: ["Priya Sharma", "RESILIENCESOFT For MERN Position"],
+  example: ["Priya Sharma", "na"],
 };
 
 export const APPROVAL_EMAIL_SUBJECT = "Congratulations! You've Been Shortlisted – RESILIENCESOFT";
 
 export const APPROVAL_EMAIL_BODY = `Hi {{name}},
 
-Congratulations! We are pleased to inform you that you have successfully cleared the current round of our selection process for {{role}} and have been shortlisted for the next round. Our team will share the further details and next steps with you shortly. Further details regarding your next round will be shared with you shortly. We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
+Congratulations!
+
+We are pleased to inform you that you have successfully cleared the current round of our selection process and have been shortlisted for the next round.
+
+Our team will share the further details and next steps with you shortly.
+
+{{details}}
+
+We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
 
 Team RESILIENCESOFT`;
 
-/** Meta body_variables for approve: [{{1}} name, {{2}} role phrase]. */
-export function whatsappApprovalBodyVariables(name: string, position = "Interview"): string[] {
-  return [name, followupRolePhrase(position)];
+/** Placeholder when Round 2 is not created yet (Later path). */
+export const APPROVAL_NEXT_ROUND_NA = "na";
+
+/** Meta body_variables for approve: [{{1}} name, {{2}} next-round details | na]. */
+export function whatsappApprovalBodyVariables(
+  name: string,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+): string[] {
+  const details = (nextRoundDetails || APPROVAL_NEXT_ROUND_NA).trim() || APPROVAL_NEXT_ROUND_NA;
+  return [name, details.slice(0, 500)];
 }
 
-export function renderApprovalEmailText(name: string, position = "Interview"): string {
-  const role = followupRolePhrase(position);
-  return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name).replace(/\{\{\s*role\s*\}\}/g, role);
+export function renderApprovalEmailText(
+  name: string,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+): string {
+  const details = (nextRoundDetails || APPROVAL_NEXT_ROUND_NA).trim() || APPROVAL_NEXT_ROUND_NA;
+  return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name).replace(
+    /\{\{\s*details\s*\}\}/g,
+    details,
+  );
+}
+
+/** Build {{2}} text after Round 2 is scheduled. */
+export function formatApprovalNextRoundDetails(opts: {
+  scheduledAt?: string | null;
+  durationMin?: number | null;
+  candidateLink: string;
+}): string {
+  const when = opts.scheduledAt
+    ? formatDateTime(opts.scheduledAt)
+    : "Time to be confirmed";
+  const dur =
+    opts.durationMin && opts.durationMin > 0 ? ` (${opts.durationMin} min)` : "";
+  return `Next round: ${when}${dur}. Join: ${opts.candidateLink}`.slice(0, 500);
 }
 
 export type DeclineChannelOutcome = {
@@ -520,8 +563,11 @@ export function declineWithReasonEmailHtml(name: string, reason: string): string
 }
 
 /** Plain shortlist HTML — no invite CTA. */
-export function approvalEmailHtml(name: string, position = "Interview"): string {
-  return noticeEmailHtml(renderApprovalEmailText(name, position));
+export function approvalEmailHtml(
+  name: string,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+): string {
+  return noticeEmailHtml(renderApprovalEmailText(name, nextRoundDetails));
 }
 
 /** Incomplete follow-up email HTML — link stays as plain text (no invite CTA button). */
