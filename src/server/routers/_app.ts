@@ -24,6 +24,8 @@ import { errorLogsRouter } from "./error-logs";
 import { bugTriageRouter } from "./bug-triage";
 import { billingRouter } from "./billing";
 import { statusRouter } from "./status";
+import { aiRunsRouter } from "./aiRuns";
+import { roundTwoRouter } from "./roundTwo";
 import { landingRouter } from "@landing/server/router";
 
 export const appRouter = router({
@@ -52,6 +54,8 @@ export const appRouter = router({
   bugTriage: bugTriageRouter,
   billing: billingRouter,
   status: statusRouter,
+  roundTwo: roundTwoRouter,
+  aiRuns: aiRunsRouter,
   landing: landingRouter,
 });
 

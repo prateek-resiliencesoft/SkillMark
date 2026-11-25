@@ -34,6 +34,15 @@ export async function setCandidateDecisionStatus(
     if (error && !/decisionStatus|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
       log.error("decisionStatus update failed", candidateId, error.message);
     }
+    if (status === "approved") {
+      const { error: wlError } = await supabase
+        .from("candidates")
+        .update({ watchlistedAt: new Date().toISOString(), watchlistDismissedAt: null })
+        .eq("id", candidateId);
+      if (wlError && !/watchlist|42703|PGRST204/.test(`${wlError.code} ${wlError.message}`)) {
+        log.error("watchlist update failed", candidateId, wlError.message);
+      }
+    }
   } catch (err) {
     log.error("setCandidateDecisionStatus", candidateId, err instanceof Error ? err.message : err);
   }

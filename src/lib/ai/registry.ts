@@ -14,6 +14,7 @@ import { CompatibleOpenAIProvider } from "./providers/compatible";
 import { KimiProvider } from "./providers/kimi";
 import { MinimaxProvider } from "./providers/minimax";
 import { OpenAIProvider } from "./providers/openai";
+import { tracedGenerate, tracedStream } from "./tracing";
 import type { LLMProvider } from "./types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -346,7 +347,12 @@ export class FailoverProvider implements LLMProvider {
       const e = this.chain[i];
       this.last = e;
       try {
-        const res = await e.provider.generateResponse({ ...params, model: this.modelForEntry(i, params.model) });
+        const model = this.modelForEntry(i, params.model);
+        const res = await tracedGenerate(
+          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          params,
+          () => e.provider.generateResponse({ ...params, model }),
+        );
         this.served = { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, failover: i > 0 };
         log.info(
           `AI call served by ${e.provider.id} (${e.source} key #${e.keyIndex + 1})${i > 0 ? " after failover" : ""}`,
@@ -377,7 +383,12 @@ export class FailoverProvider implements LLMProvider {
       this.last = e;
       let yielded = false;
       try {
-        for await (const t of e.provider.streamResponse({ ...params, model: this.modelForEntry(i, params.model) })) {
+        const model = this.modelForEntry(i, params.model);
+        for await (const t of tracedStream(
+          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          params,
+          () => e.provider.streamResponse({ ...params, model }),
+        )) {
           yielded = true;
           yield t;
         }

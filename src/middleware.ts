@@ -16,7 +16,11 @@ const PROTECTED = [
   "/integrations",
   "/admin",
   "/batches",
+  "/round-two",
 ];
+
+/** Round 2 room pages need a session; candidate (/r2/c/) and invite (/r2/join/) pages handle auth themselves. */
+const ROOM_PATH = /^\/r2\/[0-9a-f-]{36}\/room\/?$/i;
 
 const AUTH_PAGES = ["/login", "/register"];
 
@@ -49,7 +53,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // Protected app routes require a session
-  if (!user && PROTECTED.some((p) => path === p || path.startsWith(p + "/"))) {
+  if (!user && (PROTECTED.some((p) => path === p || path.startsWith(p + "/")) || ROOM_PATH.test(path))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = `?next=${encodeURIComponent(path + request.nextUrl.search)}`;

@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { AiRunHistory } from "@/components/ai/reasoning-timeline";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
@@ -11,6 +12,13 @@ import { SessionErrorLogButton } from "@/components/session/session-error-log";
 import { CvViewerPanel } from "@/components/session/cv-viewer-panel";
 import { SessionRow, SessionsTable } from "@/components/session/sessions-table";
 import { ResizableSplit } from "@/components/ui/resizable-split";
+import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -89,6 +97,7 @@ import {
   Tags,
   UserCheck,
   Users,
+  Video,
   Volume2,
   X,
 } from "lucide-react";
@@ -145,6 +154,8 @@ function MediaReviewActions({
   const [tags, setTags] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState("");
   const [deleteMedia, setDeleteMedia] = useState(false);
+  const [roundTwoOpen, setRoundTwoOpen] = useState(false);
+  const scheduleAfterApprove = useRef(false);
 
   const resetDeclineForm = () => {
     setReason("");
@@ -173,6 +184,10 @@ function MediaReviewActions({
         });
         setDeclineOpen(false);
         resetDeclineForm();
+        if (data.status === "approved" && scheduleAfterApprove.current) {
+          scheduleAfterApprove.current = false;
+          setRoundTwoOpen(true);
+        }
         return;
       }
       toast({
@@ -279,6 +294,24 @@ function MediaReviewActions({
               )}
               Approve
             </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" disabled={busy} className="-ml-1.5 px-1.5" aria-label="More approve options">
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem
+                  onClick={() => {
+                    scheduleAfterApprove.current = true;
+                    mutation.mutate({ sessionId, action: "approved" });
+                  }}
+                >
+                  <Video className="mr-2 h-3.5 w-3.5" />
+                  Approve and schedule round 2
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               size="sm"
               variant="outline"
@@ -297,7 +330,15 @@ function MediaReviewActions({
             </Button>
           </>
         )}
+        {current === "approved" && (
+          <Button size="sm" variant="outline" onClick={() => setRoundTwoOpen(true)}>
+            <Video className="mr-1 h-3.5 w-3.5" />
+            Schedule round 2
+          </Button>
+        )}
       </div>
+
+      <CreateRoundTwoSheet open={roundTwoOpen} onOpenChange={setRoundTwoOpen} sessionId={sessionId} />
 
       <Dialog
         open={declineOpen}
@@ -1280,6 +1321,17 @@ function SessionDetailBody({
                   )}
                 </CardContent>
               </Card>
+            )}
+
+            {!pdfCapture && (
+              <AiRunHistory
+                subjectType="session"
+                subjectId={sessionId}
+                flows={["round1-summary"]}
+                limit={1}
+                live={generating || reportPending}
+                className="no-print"
+              />
             )}
 
             <ReportSummary data={report} />
