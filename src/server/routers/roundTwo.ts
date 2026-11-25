@@ -180,6 +180,35 @@ export const roundTwoRouter = router({
       return { ok: true };
     }),
 
+  /** Latest round 2 for a candidate (draft or live), for the session-list side panel. */
+  forCandidate: protectedProcedure.input(z.object({ candidateId: z.string() })).query(async ({ ctx, input }) => {
+    const { data: c } = await ctx.supabase
+      .from("candidates")
+      .select("id, interview:interviews!inner(projectId)")
+      .eq("id", input.candidateId)
+      .maybeSingle();
+    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+    const projectId = (c.interview as unknown as { projectId: string }).projectId;
+    if (!(await hasProjectAccess(ctx.supabase, projectId, ctx.user.id))) {
+      throw new TRPCError({ code: "FORBIDDEN" });
+    }
+    const { data: rt } = await ctx.supabase
+      .from("round_two_interviews")
+      .select('id, status, "scheduledAt", "reportStatus", title')
+      .eq("candidateId", input.candidateId)
+      .order("createdAt", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!rt) return null;
+    return {
+      id: rt.id as string,
+      status: rt.status as string,
+      scheduledAt: rt.scheduledAt as string | null,
+      reportStatus: rt.reportStatus as string,
+      title: rt.title as string,
+    };
+  }),
+
   /** Round 2 interviews in a project (newest first). */
   list: protectedProcedure.input(z.object({ projectId: z.string() })).query(async ({ ctx, input }) => {
     if (!(await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id))) {

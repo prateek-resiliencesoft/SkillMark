@@ -27,6 +27,7 @@ import { sessionStatusNote } from "@/lib/session-activity";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -48,7 +49,9 @@ import {
     Sparkles,
     Star,
     User,
+    Video,
 } from "lucide-react";
+import Link from "next/link";
 import { interviewLanguageLabel } from "@/lib/interview-language";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -257,6 +260,12 @@ export function CandidateDetailSheet({
   const [extendOpen, setExtendOpen] = useState(false);
   const [sendEmail, setSendEmail] = useState(false);
   const [sendWhatsapp, setSendWhatsapp] = useState(false);
+  const [roundTwoOpen, setRoundTwoOpen] = useState(false);
+  const roundTwoQ = trpc.roundTwo.forCandidate.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId, retry: false },
+  );
+  const existingRoundTwo = roundTwoQ.data;
 
   const original = useMemo(() => (c ? toForm(c) : null), [c]);
   useEffect(() => {
@@ -677,6 +686,48 @@ export function CandidateDetailSheet({
                   )}
                 </section>
 
+                {/* Round 2 — same schedule flow as the session report actions */}
+                {c.sessionId && interviewBegun && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                      <Video className="h-3.5 w-3.5 text-primary" />
+                      Round 2 live interview
+                    </h4>
+                    {existingRoundTwo && existingRoundTwo.status !== "draft" ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          {existingRoundTwo.status === "scheduled"
+                            ? existingRoundTwo.scheduledAt
+                              ? `Scheduled for ${fmt(existingRoundTwo.scheduledAt)}`
+                              : "Scheduled"
+                            : existingRoundTwo.status === "live"
+                              ? "Live now"
+                              : existingRoundTwo.status === "ended"
+                                ? "Ended"
+                                : `Status: ${existingRoundTwo.status}`}
+                        </p>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link href={`/round-two/${existingRoundTwo.id}`}>
+                            Open round 2 <ExternalLink className="ml-1.5 h-3 w-3" />
+                          </Link>
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          {existingRoundTwo?.status === "draft"
+                            ? "A draft plan is ready — finish scheduling when you are."
+                            : "Build a question plan from round 1, invite the panel, and send the candidate a join link."}
+                        </p>
+                        <Button size="sm" onClick={() => setRoundTwoOpen(true)}>
+                          <Video className="mr-1.5 h-3.5 w-3.5" />
+                          {existingRoundTwo?.status === "draft" ? "Continue scheduling" : "Schedule round 2"}
+                        </Button>
+                      </div>
+                    )}
+                  </section>
+                )}
+
                 {feedback ? (
                   <section className="rounded-xl border bg-card p-4 shadow-sm">
                     <h4 className="mb-2 text-sm font-semibold">Candidate feedback</h4>
@@ -823,6 +874,17 @@ export function CandidateDetailSheet({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <CreateRoundTwoSheet
+        open={roundTwoOpen}
+        onOpenChange={(o) => {
+          setRoundTwoOpen(o);
+          if (!o) void utils.roundTwo.forCandidate.invalidate({ candidateId: candidateId ?? "" });
+        }}
+        candidateId={candidateId ?? undefined}
+        sessionId={(c?.session?.id as string | undefined) ?? (c?.sessionId as string | undefined)}
+        candidateName={c?.name as string | undefined}
+      />
     </>
   );
 }
