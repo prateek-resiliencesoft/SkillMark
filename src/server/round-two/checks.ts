@@ -1,6 +1,6 @@
 /** Pure, deterministic checks the round 2 graphs run on model output (no I/O, safe to unit test). */
 import { alignSpan, wordOverlap } from "@/lib/ai/extract/align";
-import type { CopilotFlag, GroundedClaim, QuestionPlanItem, Round1Context, RoundTwoReport } from "@/lib/round-two/types";
+import type { CopilotFlag, GroundedClaim, LiveScoring, QuestionPlanItem, Round1Context, RoundTwoReport } from "@/lib/round-two/types";
 
 /** Overlap above which a plan question is taken to address a weakness / claim. */
 const ADDRESSED = 0.12;
@@ -89,4 +89,16 @@ export function verifyReportEvidence(report: RoundTwoReport, candidateText: stri
     if (c.round2) tally(!!alignSpan(candidateText, c.round2));
   }
   return { ...report, questions, evidenceCheck: { verified, unverified } };
+}
+
+/** Live scores: keep evidence only if it is in the candidate's words; unverified evidence can't carry a score. */
+export function verifyLiveScoring(scoring: LiveScoring, candidateText: string): LiveScoring {
+  return {
+    ...scoring,
+    scores: scoring.scores.map((c) => {
+      if (!c.evidence) return { ...c, verified: false };
+      const span = alignSpan(candidateText, c.evidence);
+      return span ? { ...c, evidence: candidateText.slice(span.start, span.end), verified: true } : { ...c, verified: false };
+    }),
+  };
 }

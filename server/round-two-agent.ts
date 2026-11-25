@@ -9,9 +9,12 @@
  * Env: ROUND2_APP_URL, ROUND2_AGENT_SECRET, LIVEKIT_AGENT_URL | LIVEKIT_URL,
  *      ROUND2_STT_BASE_URL, ROUND2_STT_MODEL, ROUND2_STT_API_KEY
  *      (falls back to OPENAI_API_KEY for OpenAI, GROQ_API_KEY for Groq), ROUND2_VAD_RMS
+ *
+ * The app may send an ordered STT list per room (Settings → AI → Round 2 transcript);
+ * it is tried in order with failover. The env endpoint above is the last fallback.
  */
 import { AudioStream, Room, RoomEvent, TrackKind, type RemoteParticipant, type RemoteTrack } from "@livekit/rtc-node";
-import { resolveSttConfig, segmentTimes } from "../src/lib/round-two/stt-config";
+import { resolveSttConfig, segmentTimes, sttShouldFailover, type SttTarget } from "../src/lib/round-two/stt-config";
 
 const APP_URL = (process.env.ROUND2_APP_URL || "http://localhost:3000").replace(/\/$/, "");
 const SECRET = process.env.ROUND2_AGENT_SECRET || "";
@@ -30,7 +33,9 @@ const MIN_SPEECH_MS = 350;
 const PREROLL_MS = 200;
 const LEVEL_LOG_MS = 30_000;
 
-type LiveRoom = { roundTwoId: string; room: string; token: string };
+type LiveRoom = { roundTwoId: string; room: string; token: string; stt?: SttTarget[] };
+
+const ENV_STT: SttTarget[] = STT_KEY ? [{ provider: STT.provider, baseUrl: STT_BASE, model: STT_MODEL, apiKey: STT_KEY }] : [];
 
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), "[round2-agent]", ...a);
 
@@ -61,20 +66,43 @@ function rms(samples: Int16Array): number {
   return Math.sqrt(sum / Math.max(1, samples.length));
 }
 
-async function transcribe(pcm: Int16Array): Promise<string> {
+async function transcribeWith(t: SttTarget, pcm: Int16Array): Promise<string> {
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(wav(pcm, SAMPLE_RATE))], { type: "audio/wav" }), "utterance.wav");
-  form.append("model", STT_MODEL);
+  form.append("model", t.model);
   form.append("response_format", "json");
-  const res = await fetch(`${STT_BASE}/audio/transcriptions`, {
+  const res = await fetch(`${t.baseUrl}/audio/transcriptions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${STT_KEY}` },
+    headers: { Authorization: `Bearer ${t.apiKey}` },
     body: form,
     signal: AbortSignal.timeout(30_000),
   });
-  if (!res.ok) throw new Error(`STT ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) {
+    const err = new Error(`STT ${t.provider}/${t.model} ${res.status}: ${(await res.text()).slice(0, 200)}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   const body = (await res.json()) as { text?: string };
   return (body.text ?? "").trim();
+}
+
+/** Room's STT list in order (org settings), then the agent's env endpoint; fails over on auth/quota/5xx. */
+async function transcribe(pcm: Int16Array, targets: SttTarget[]): Promise<string> {
+  const list = [...targets, ...ENV_STT.filter((e) => !targets.some((t) => t.baseUrl === e.baseUrl && t.apiKey === e.apiKey))];
+  if (!list.length) throw new Error("no speech-to-text endpoint configured (Settings → AI or ROUND2_STT_*)");
+  let last: unknown;
+  for (let i = 0; i < list.length; i++) {
+    try {
+      return await transcribeWith(list[i], pcm);
+    } catch (e) {
+      last = e;
+      const status = (e as { status?: number }).status;
+      const retry = status == null || sttShouldFailover(status);
+      if (!retry || i === list.length - 1) break;
+      log("stt failover", e instanceof Error ? e.message : e, "→", `${list[i + 1].provider}/${list[i + 1].model}`);
+    }
+  }
+  throw last;
 }
 
 async function postSegment(seg: { roundTwoId: string; identity: string; name: string; text: string; startedAt: number; endedAt: number }) {
@@ -89,7 +117,13 @@ async function postSegment(seg: { roundTwoId: string; identity: string; name: st
 }
 
 /** Reads one audio track, cuts utterances on silence and transcribes them in order. */
-async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant: RemoteParticipant, signal: AbortSignal) {
+async function consumeTrack(
+  roundTwoId: string,
+  track: RemoteTrack,
+  participant: RemoteParticipant,
+  signal: AbortSignal,
+  stt: () => SttTarget[],
+) {
   const stream = new AudioStream(track, { sampleRate: SAMPLE_RATE, numChannels: 1 });
   const reader = stream.getReader();
   signal.addEventListener("abort", () => void reader.cancel().catch(() => {}), { once: true });
@@ -128,7 +162,7 @@ async function consumeTrack(roundTwoId: string, track: RemoteTrack, participant:
     }
     chain = chain.then(async () => {
       try {
-        const text = await transcribe(pcm);
+        const text = await transcribe(pcm, stt());
         if (!text) return;
         await postSegment({ roundTwoId, identity: participant.identity, name: participant.name || participant.identity, text, ...segmentTimes(start, end) });
       } catch (e) {
@@ -192,7 +226,12 @@ class RoomWorker {
   private room = new Room();
   private tracks = new Map<string, AbortController>();
 
-  constructor(private readonly live: LiveRoom) {}
+  constructor(private live: LiveRoom) {}
+
+  /** Poll refresh: picks up STT setting changes without rejoining. */
+  update(live: LiveRoom) {
+    this.live = { ...this.live, stt: live.stt };
+  }
 
   async start() {
     this.room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
@@ -201,7 +240,7 @@ class RoomWorker {
       const ctrl = new AbortController();
       this.tracks.set(sid, ctrl);
       log("transcribing", this.live.room, participant.identity);
-      void consumeTrack(this.live.roundTwoId, track, participant, ctrl.signal).finally(() => this.tracks.delete(sid));
+      void consumeTrack(this.live.roundTwoId, track, participant, ctrl.signal, () => this.live.stt ?? []).finally(() => this.tracks.delete(sid));
     });
     this.room.on(RoomEvent.TrackUnsubscribed, (_track, publication) => {
       const sid = publication.sid;
@@ -213,7 +252,8 @@ class RoomWorker {
       this.abortAll();
     });
     await this.room.connect(LIVEKIT_URL, this.live.token, { autoSubscribe: true, dynacast: false });
-    log("joined", this.live.room);
+    const stt = this.live.stt?.length ? this.live.stt : ENV_STT;
+    log("joined", this.live.room, "stt:", stt.map((t) => `${t.provider}/${t.model}`).join(" → ") || "none");
   }
 
   private abortAll() {
@@ -253,6 +293,7 @@ async function poll() {
     }
   }
   for (const r of rooms) {
+    workers.get(r.roundTwoId)?.update(r);
     if (workers.has(r.roundTwoId) || joining.has(r.roundTwoId)) continue;
     joining.add(r.roundTwoId);
     const w = new RoomWorker(r);
@@ -269,7 +310,7 @@ async function poll() {
 async function main() {
   if (!SECRET || SECRET.length < 16) throw new Error("ROUND2_AGENT_SECRET (16+ chars) is required");
   if (!LIVEKIT_URL) throw new Error("LIVEKIT_AGENT_URL or LIVEKIT_URL is required");
-  if (!STT_KEY) throw new Error(`ROUND2_STT_API_KEY is required for ${STT_BASE}`);
+  if (!STT_KEY) log(`no env STT key for ${STT_BASE}; relying on Settings → AI → Round 2 transcript`);
   log(`polling ${APP_URL} · livekit ${LIVEKIT_URL} · stt ${STT.provider} ${STT_BASE} (${STT_MODEL}) · vad ${SPEECH_RMS}`);
   await poll();
   const timer = setInterval(() => void poll(), POLL_MS);

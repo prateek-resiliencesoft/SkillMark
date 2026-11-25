@@ -51,7 +51,7 @@ export function VideoStage({ className }: { className?: string }) {
   };
 
   return (
-    <div className={cn("relative min-h-0 flex-1 overflow-hidden", className)}>
+    <div className={cn("relative min-h-0 flex-1 overflow-hidden", className)} {...LK_THEME}>
       <div className="absolute inset-0 overflow-hidden rounded-xl bg-black">
         {focus ? (
           <button

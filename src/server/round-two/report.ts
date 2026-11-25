@@ -129,7 +129,7 @@ function buildGraph() {
         classes: EVIDENCE_CLASSES,
         instructions: "The source is everything a job candidate said in a live interview. Extract the evidence a hiring manager needs.",
         organizationId: s.round.organizationId as string,
-        task: "report",
+        task: "round2_report",
         maxPerChunk: 20,
         signal: ctx.signal,
       });
@@ -168,7 +168,7 @@ function buildGraph() {
 
     const { data } = await callJson<Record<string, unknown>>({
       organizationId: round.organizationId as string,
-      task: "report",
+      task: "round2_report",
       maxTokens: 4500,
       temperature: 0.2,
       system: SYSTEM,

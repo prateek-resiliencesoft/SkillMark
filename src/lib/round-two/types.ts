@@ -228,6 +228,49 @@ export function compareStyle(a: StyleMetrics | null, b: StyleMetrics | null): st
 }
 
 /* ------------------------------------------------------------------ */
+/*  Live scoring (AI suggestions; never written into a human scorecard) */
+/* ------------------------------------------------------------------ */
+
+/** Panel scorecard criteria (1-5). Live AI scoring uses the same list. */
+export const ROUND2_RUBRIC = ["Technical depth", "Problem solving", "Communication", "Ownership", "Culture fit"] as const;
+
+export interface LiveCriterionScore {
+  criterion: string;
+  /** 1-5, or null when there isn't enough evidence yet. */
+  score: number | null;
+  reason: string;
+  /** Candidate quote backing the score. */
+  evidence?: string;
+  /** Evidence found in the live transcript. */
+  verified?: boolean;
+}
+
+export interface LiveScoring {
+  scores: LiveCriterionScore[];
+  recommendation: Recommendation | null;
+  /** 0-1: how much of the interview the scores can rest on. */
+  confidence: number;
+  summary: string;
+}
+
+/** AI failure surfaced in the panel instead of failing silently. */
+export interface RoundTwoAiError {
+  stage: "copilot" | "scoring";
+  message: string;
+  at: string;
+}
+
+/** Live-run failures that the panel should see, in plain words. */
+export function describeAiError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err ?? "error");
+  if (/No LLM provider configured/i.test(msg)) return "No AI provider is configured. Add a key in Settings → AI.";
+  if (/quota|rate.?limit|429|exhausted/i.test(msg)) return "The AI provider is out of quota or rate-limited. Add a backup provider in Settings → AI.";
+  if (/401|403|api key|unauthori[sz]ed|permission/i.test(msg)) return "The AI provider rejected the API key. Check Settings → AI.";
+  if (/abort|timeout|timed out/i.test(msg)) return "The AI took too long to answer. It will retry after the next answer.";
+  return msg.length > 200 ? `${msg.slice(0, 200)}…` : msg;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Parsing helpers for LLM output                                     */
 /* ------------------------------------------------------------------ */
 
@@ -306,4 +349,36 @@ export function normalizeCopilot(raw: unknown, planIds: string[]): CopilotResult
     ? o.coveredQuestionIds.map((x) => str(x, 40)).filter((x) => ids.has(x))
     : [];
   return { suggestions, flags, coveredQuestionIds: covered, liveSummary: str(o.liveSummary, 4000) };
+}
+
+export function normalizeLiveScoring(raw: unknown): LiveScoring {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const byName = new Map<string, Record<string, unknown>>();
+  if (Array.isArray(o.scores)) {
+    for (const x of o.scores) {
+      const r = (x ?? {}) as Record<string, unknown>;
+      const name = str(r.criterion, 80).toLowerCase();
+      if (name) byName.set(name, r);
+    }
+  }
+  const scores = ROUND2_RUBRIC.map((criterion) => {
+    const r = byName.get(criterion.toLowerCase()) ?? {};
+    const n = Number(r.score);
+    const score = r.score == null || !Number.isFinite(n) ? null : Math.min(5, Math.max(1, Math.round(n)));
+    return {
+      criterion,
+      score,
+      reason: str(r.reason, 300),
+      evidence: str(r.evidence, 300) || undefined,
+    } satisfies LiveCriterionScore;
+  });
+  const conf = Number(o.confidence);
+  return {
+    scores,
+    recommendation: typeof o.recommendation === "string" && (RECOMMENDATIONS as readonly string[]).includes(o.recommendation)
+      ? (o.recommendation as Recommendation)
+      : null,
+    confidence: Number.isFinite(conf) ? Math.min(1, Math.max(0, conf)) : 0,
+    summary: str(o.summary, 600),
+  };
 }
