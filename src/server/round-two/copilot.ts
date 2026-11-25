@@ -18,6 +18,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { callJson, clip } from "./ai";
 import { relatedPairs, verifyFlags, type ClaimPair } from "./checks";
 import { round1ContextPrompt } from "./context";
+import { maybeRunLiveScoring, recordAiError } from "./live-score";
 
 const log = createLogger("round-two/copilot");
 
@@ -35,10 +36,13 @@ const g = globalThis as unknown as {
     timers: Map<string, NodeJS.Timeout>;
     /** startMs of the newest candidate segment already mined for claims. */
     minedUpTo: Map<string, number>;
+    /** Rooms already told they ran out of AI budget. */
+    budgetNoted: Set<string>;
   };
 };
-const state = (g.__r2Copilot ??= { running: new Set(), lastRun: new Map(), timers: new Map(), minedUpTo: new Map() });
+const state = (g.__r2Copilot ??= { running: new Set(), lastRun: new Map(), timers: new Map(), minedUpTo: new Map(), budgetNoted: new Set() });
 state.minedUpTo ??= new Map();
+state.budgetNoted ??= new Set();
 
 const SYSTEM = `You are a silent copilot for a human interview panel running a live round 2 interview.
 The candidate cannot see you. You read the live transcript, the question plan, round 1 context, claims extracted from the latest answers with related earlier claims, and the panel's notes.
@@ -142,7 +146,7 @@ function buildGraph() {
         classes: CLAIM_CLASSES,
         instructions: "The source is what a job candidate just said in a live interview. Extract checkable statements about their own experience.",
         organizationId: s.organizationId,
-        task: "screening",
+        task: "round2_live",
         maxPerChunk: 12,
         signal: ctx.signal,
       });
@@ -187,7 +191,7 @@ function buildGraph() {
 
       const { data } = await callJson<Record<string, unknown>>({
         organizationId: s.organizationId,
-        task: "standard",
+        task: "round2_live",
         maxTokens: 1400,
         temperature: 0.4,
         system: SYSTEM,
@@ -229,12 +233,16 @@ function buildGraph() {
     .compile();
 }
 
+export type CopilotOutcome =
+  | { ok: true; result: CopilotResult }
+  | { ok: false; reason: "busy" | "not_live" | "budget" | "nothing_new" | "error"; message: string };
+
 export async function runCopilot(
   roundTwoId: string,
   trigger: Trigger,
   ask?: { text: string; by: string },
-): Promise<CopilotResult | null> {
-  if (state.running.has(roundTwoId)) return null;
+): Promise<CopilotOutcome> {
+  if (state.running.has(roundTwoId)) return { ok: false, reason: "busy", message: "The copilot is already working on the last answer." };
   state.running.add(roundTwoId);
   try {
     const { data: round } = await supabaseAdmin
@@ -242,10 +250,15 @@ export async function runCopilot(
       .select('id, "organizationId", status, "livekitRoom", "questionPlan", "round1Context", "liveSummary", "coveredQuestionIds", "aiTokensUsed", "hostUserId"')
       .eq("id", roundTwoId)
       .maybeSingle();
-    if (!round || round.status !== "live") return null;
+    if (!round || round.status !== "live") return { ok: false, reason: "not_live", message: "Interview is not live." };
     if ((round.aiTokensUsed as number) >= TOKEN_BUDGET) {
       log.warn("AI budget reached", roundTwoId);
-      return null;
+      const message = "This interview has used its AI budget (ROUND2_AI_TOKEN_BUDGET).";
+      if (!state.budgetNoted.has(roundTwoId)) {
+        state.budgetNoted.add(roundTwoId);
+        await recordAiError(roundTwoId, "copilot", new Error(message), trigger);
+      }
+      return { ok: false, reason: "budget", message };
     }
 
     const r = await runGraph<S>(buildGraph(), {
@@ -275,11 +288,11 @@ export async function runCopilot(
       },
     });
     const s = r.state;
-    if (!s.result) return null;
+    if (!s.result) return { ok: false, reason: "nothing_new", message: "Nothing new to analyse yet." };
 
     const result = s.result;
     const mergedCovered = Array.from(new Set([...s.covered, ...result.coveredQuestionIds]));
-    await Promise.all([
+    const [, ins] = await Promise.all([
       supabaseAdmin
         .from("round_two_interviews")
         .update({
@@ -297,13 +310,14 @@ export async function runCopilot(
         payload: { ...result, ask: ask ?? null, claims: s.claims, steps: r.steps },
       }),
     ]);
+    if (ins.error) log.warn("copilot event insert failed", roundTwoId, ins.error.message);
 
     const panel = (await listRoomIdentities(s.livekitRoom)).filter((i) => i.startsWith(USER_IDENTITY_PREFIX));
     await sendToIdentities(s.livekitRoom, panel, DATA_TOPICS.copilot, { roundTwoId, trigger });
-    return { ...result, coveredQuestionIds: mergedCovered };
+    return { ok: true, result: { ...result, coveredQuestionIds: mergedCovered } };
   } catch (err) {
     log.error("copilot run failed", roundTwoId, err instanceof Error ? err.message : err);
-    return null;
+    return { ok: false, reason: "error", message: await recordAiError(roundTwoId, "copilot", err, trigger) };
   } finally {
     state.lastRun.set(roundTwoId, Date.now());
     state.running.delete(roundTwoId);
@@ -317,11 +331,12 @@ export function scheduleTurnCopilot(roundTwoId: string): void {
   const timer = setTimeout(() => {
     state.timers.delete(roundTwoId);
     const since = Date.now() - (state.lastRun.get(roundTwoId) ?? 0);
-    if (since < MIN_TURN_GAP_MS) {
+    // A manual/ask run in progress or a run just finished: try again shortly so this turn isn't lost.
+    if (since < MIN_TURN_GAP_MS || state.running.has(roundTwoId)) {
       scheduleTurnCopilot(roundTwoId);
       return;
     }
-    void runCopilot(roundTwoId, "turn");
+    void runCopilot(roundTwoId, "turn").then(() => maybeRunLiveScoring(roundTwoId));
   }, TURN_DEBOUNCE_MS);
   timer.unref?.();
   state.timers.set(roundTwoId, timer);

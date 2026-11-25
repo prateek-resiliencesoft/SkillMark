@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   RECOMMENDATIONS,
   RECOMMENDATION_LABELS,
+  ROUND2_RUBRIC,
   type CopilotFlag,
   type CopilotSuggestion,
   type QuestionPlanItem,
@@ -20,7 +21,7 @@ import { trpc } from "@/lib/trpc/client";
 import type { AppRouter } from "@/server/routers/_app";
 import type { inferRouterOutputs } from "@trpc/server";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, Loader2, Lock, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, Gauge, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const TABS = [
@@ -50,9 +51,10 @@ const FLAG_STYLE: Record<CopilotFlag["kind"], string> = {
   strength: "border-green-600/50",
 };
 
-const RUBRIC = ["Technical depth", "Problem solving", "Communication", "Ownership", "Culture fit"];
+const RUBRIC: readonly string[] = ROUND2_RUBRIC;
 
 type LiveData = inferRouterOutputs<AppRouter>["roundTwo"]["live"];
+type LiveScores = NonNullable<LiveData["liveScores"]>;
 
 export function PanelSidebar({
   roundTwoId,
@@ -108,7 +110,7 @@ export function PanelSidebar({
         {tab === "cv" && <CvTab ctx={round1} />}
         {tab === "compare" && <CompareTab live={live} />}
         {tab === "notes" && <NotesTab roundTwoId={roundTwoId} live={live} />}
-        {tab === "score" && <ScorecardTab roundTwoId={roundTwoId} initial={myScorecard} />}
+        {tab === "score" && <ScorecardTab roundTwoId={roundTwoId} initial={myScorecard} aiScores={live?.liveScores ?? null} />}
       </div>
     </div>
   );
@@ -127,6 +129,8 @@ function CopilotTab({ roundTwoId, live, plan }: { roundTwoId: string; live: Live
   });
   const latest = live?.copilot[0];
   const earlier = live?.copilot.slice(1, 6) ?? [];
+  const heard = live?.transcript.length ?? 0;
+  const candidateLines = live?.transcript.filter((t) => t.speakerRole === "candidate").length ?? 0;
   const planText = useMemo(() => new Map(plan.map((q) => [q.id, q.text])), [plan]);
   const recentFlags = (live?.flags ?? []).slice(0, 6);
 
@@ -154,6 +158,22 @@ function CopilotTab({ roundTwoId, live, plan }: { roundTwoId: string; live: Live
       </div>
       <p className="-mt-2 text-[11px] text-muted-foreground">Suggestions refresh automatically after each answer. Press the sparkle to refresh now.</p>
 
+      {live?.aiError && (
+        <div className="flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2.5 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <div>
+            <div className="font-semibold">{live.aiError.stage === "scoring" ? "Live scoring" : "Copilot"} couldn&apos;t run</div>
+            <div>{live.aiError.message}</div>
+          </div>
+        </div>
+      )}
+
+      {mutation.isLoading && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> The copilot is analysing the conversation…
+        </div>
+      )}
+
       {latest ? (
         <div className="space-y-2">
           {latest.ask && (
@@ -179,9 +199,15 @@ function CopilotTab({ roundTwoId, live, plan }: { roundTwoId: string; live: Live
         </div>
       ) : (
         <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-          Suggestions appear once the conversation starts.
+          {!heard
+            ? "Suggestions appear once the transcript starts. If people are talking and the Transcript tab stays empty, the transcription agent isn't receiving audio."
+            : !candidateLines
+              ? "Waiting for the candidate's first answer (admit them from the lobby). Press the sparkle to get suggestions now."
+              : "Analysing the latest answers… press the sparkle to refresh now."}
         </div>
       )}
+
+      <LiveScoresCard roundTwoId={roundTwoId} live={live} />
 
       {recentFlags.length > 0 && (
         <div className="space-y-1.5">
@@ -213,6 +239,77 @@ function CopilotTab({ roundTwoId, live, plan }: { roundTwoId: string; live: Live
           </ul>
         </details>
       )}
+    </div>
+  );
+}
+
+const REC_TONE: Record<string, string> = {
+  strong_no: "text-red-700 dark:text-red-400",
+  no: "text-red-700 dark:text-red-400",
+  lean_no: "text-amber-700 dark:text-amber-400",
+  lean_yes: "text-emerald-700 dark:text-emerald-400",
+  yes: "text-emerald-700 dark:text-emerald-400",
+  strong_yes: "text-emerald-700 dark:text-emerald-400",
+};
+
+/** AI's suggested rubric scores during the interview. Suggestions only; the panel scores. */
+function LiveScoresCard({ roundTwoId, live }: { roundTwoId: string; live: LiveData | undefined }) {
+  const { toast } = useToast();
+  const utils = trpc.useUtils();
+  const refresh = trpc.roundTwo.scoreLive.useMutation({
+    onSuccess: () => void utils.roundTwo.live.invalidate({ id: roundTwoId }),
+    onError: (err) => toast({ title: "Live scoring", description: err.message, variant: "destructive" }),
+  });
+  if (live && !live.liveScoringEnabled) return null;
+  const ls = live?.liveScores ?? null;
+  return (
+    <div className="rounded-lg border bg-card p-2.5 text-card-foreground">
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <Gauge className="h-3.5 w-3.5 text-primary" />
+        <span className="text-xs font-semibold">Live AI scores</span>
+        <span className="text-[10px] text-muted-foreground">suggestions · you decide</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="ml-auto h-6 w-6"
+          onClick={() => refresh.mutate({ id: roundTwoId })}
+          disabled={refresh.isLoading}
+          aria-label="Refresh live scores"
+        >
+          {refresh.isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+      {ls ? <LiveScoreRows scores={ls} /> : (
+        <p className="text-xs text-muted-foreground">Scores appear after the candidate has answered a few questions (updated about once a minute).</p>
+      )}
+    </div>
+  );
+}
+
+function LiveScoreRows({ scores }: { scores: LiveScores }) {
+  return (
+    <div className="space-y-1.5">
+      {scores.scores.map((c) => (
+        <div key={c.criterion} className="text-xs">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">{c.criterion}</span>
+            <span className="tabular-nums font-semibold">{c.score != null ? `${c.score}/5` : "—"}</span>
+          </div>
+          {c.reason && <p className="text-[11px] text-muted-foreground">{c.reason}</p>}
+          {c.evidence && (
+            <p className="text-[11px] italic text-muted-foreground">
+              “{c.evidence}”{c.verified === false && " (quote not found in transcript)"}
+            </p>
+          )}
+        </div>
+      ))}
+      <div className="flex items-center justify-between border-t pt-1.5 text-[11px]">
+        <span className={cn("font-semibold", scores.recommendation ? REC_TONE[scores.recommendation] : "text-muted-foreground")}>
+          {scores.recommendation ? RECOMMENDATION_LABELS[scores.recommendation] : "Too early to recommend"}
+        </span>
+        <span className="text-muted-foreground">confidence {Math.round((scores.confidence ?? 0) * 100)}%</span>
+      </div>
+      {scores.summary && <p className="text-[11px] text-muted-foreground">{scores.summary}</p>}
     </div>
   );
 }
@@ -467,7 +564,16 @@ function NotesTab({ roundTwoId, live }: { roundTwoId: string; live: LiveData | u
   );
 }
 
-export function ScorecardTab({ roundTwoId, initial }: { roundTwoId: string; initial: Record<string, unknown> | null }) {
+export function ScorecardTab({
+  roundTwoId,
+  initial,
+  aiScores = null,
+}: {
+  roundTwoId: string;
+  initial: Record<string, unknown> | null;
+  /** Live AI suggestions; shown next to each criterion, applied only when the panelist clicks. */
+  aiScores?: LiveScores | null;
+}) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const [scores, setScores] = useState<Record<string, number>>(() => (initial?.scores as Record<string, number>) ?? {});
@@ -486,9 +592,27 @@ export function ScorecardTab({ roundTwoId, initial }: { roundTwoId: string; init
       <p className="text-xs text-muted-foreground">
         Score independently. Other panelists&apos; scorecards stay hidden until you submit yours.
       </p>
-      {RUBRIC.map((r) => (
+      {RUBRIC.map((r) => {
+        const ai = aiScores?.scores.find((c) => c.criterion === r);
+        return (
         <div key={r}>
-          <div className="mb-1 text-xs font-medium">{r}</div>
+          <div className="mb-1 flex items-center gap-2 text-xs font-medium">
+            <span>{r}</span>
+            {ai?.score != null && (
+              <button
+                type="button"
+                title={ai.reason || "AI suggestion from the live transcript"}
+                onClick={() => setScores({ ...scores, [r]: ai.score as number })}
+                className={cn(
+                  "rounded-full border border-dashed px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground hover:bg-muted",
+                  scores[r] === ai.score && "border-primary/50 text-primary",
+                )}
+              >
+                AI suggests {ai.score}
+                {scores[r] == null ? " · use" : ""}
+              </button>
+            )}
+          </div>
           <div className="flex gap-1">
             {[1, 2, 3, 4, 5].map((n) => (
               <button
@@ -505,7 +629,8 @@ export function ScorecardTab({ roundTwoId, initial }: { roundTwoId: string; init
             ))}
           </div>
         </div>
-      ))}
+        );
+      })}
       <div>
         <div className="mb-1 text-xs font-medium">Recommendation</div>
         <div className="grid grid-cols-3 gap-1">

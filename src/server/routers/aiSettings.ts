@@ -1,6 +1,7 @@
 import {
   AI_PROVIDER_IDS,
   AI_TASK_KINDS,
+  isSttProvider,
   DEFAULT_PROVIDER_MODELS,
   DEFAULT_TASK_ROUTING,
   MAX_KEYS_PER_PROVIDER,
@@ -51,16 +52,7 @@ async function validateCustomBaseUrl(baseUrl: string | null | undefined): Promis
 }
 
 const providerIdSchema = z.enum(AI_PROVIDER_IDS);
-const taskKindSchema = z.enum([
-  "screening",
-  "standard",
-  "heavy",
-  "interview",
-  "report",
-  "resume",
-  "generate",
-  "voice",
-]);
+const taskKindSchema = z.enum(AI_TASK_KINDS);
 
 export const aiSettingsRouter = router({
   get: protectedProcedure.input(z.object({ organizationId: z.string() })).query(async ({ ctx, input }) => {
@@ -184,6 +176,11 @@ export const aiSettingsRouter = router({
       await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
       const current = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
       const routing = input.routing as AiRoutingStored;
+      for (const pid of routing.round2_transcript ?? []) {
+        if (!isSttProvider(pid)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Round 2 transcript needs a speech-to-text provider (Groq, OpenAI or Custom)." });
+        }
+      }
       // Voice interviews only run on voice-capable providers.
       for (const pid of routing.voice ?? []) {
         const blocked = voiceBlockedReason(pid);

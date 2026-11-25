@@ -230,6 +230,13 @@ const TEXT_TASKS: Record<string, { title: string; hint: string }> = {
     title: "Question generation",
     hint: "AI interview builder · reject-reason draft",
   },
+  round2_live: { title: "Round 2 · live copilot", hint: "Live analysis · claims · next-question suggestions" },
+  round2_scoring: { title: "Round 2 · live scoring", hint: "Suggested rubric scores during the interview" },
+  round2_report: { title: "Round 2 · final report", hint: "Report after the interview ends" },
+  round2_transcript: {
+    title: "Round 2 · transcript (speech-to-text)",
+    hint: "Groq / OpenAI / platform Custom Whisper endpoint only",
+  },
 };
 
 const PROVIDER_SHORT: Record<ProviderId, string> = {

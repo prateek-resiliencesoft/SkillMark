@@ -5,6 +5,7 @@ import {
   defaultModelForProvider,
   resolveCredentials,
   routingForTask,
+  taskModelOverride,
 } from "./credentials";
 import { createLogger } from "@/lib/logger";
 import { configuredGeminiModel, GEMINI_FALLBACK_MODELS, normalizeGeminiModel } from "./gemini-models";
@@ -49,7 +50,7 @@ function modelFor(provider: LLMProvider, kind: "generator" | "report" = "generat
 }
 
 /** Org keys + env keys, read fresh from the DB on every call (no caching). */
-async function loadCredsPair(organizationId?: string | null) {
+export async function loadCredsPair(organizationId?: string | null) {
   let orgPlain = decryptAiProviders({});
   if (organizationId) {
     const { data } = await supabaseAdmin
@@ -173,8 +174,12 @@ export async function resolveProviderChain(
       if (!provider) return;
       chain.push({
         provider,
-        // Custom endpoint: honour the model the org configured for text work.
-        model: (id === "custom" && source === "org" && orgPlain.custom?.textModel) || modelFor(provider),
+        // Custom endpoint: honour the model the org configured for text work; then a
+        // per-task env override (AI_MODEL_<TASK>_<PROVIDER>); then the provider default.
+        model:
+          (id === "custom" && source === "org" && orgPlain.custom?.textModel) ||
+          taskModel(task, id) ||
+          modelFor(provider),
         source,
         keyIndex,
       });
@@ -225,6 +230,12 @@ export async function resolveProviderChain(
     });
   }
   return chain;
+}
+
+function taskModel(task: AiTaskKind, id: AiProviderId): string | null {
+  const m = taskModelOverride(task, id);
+  if (!m) return null;
+  return id === "gemini" ? normalizeGeminiModel(m) : m;
 }
 
 export { isQuotaError };

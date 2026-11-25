@@ -20,8 +20,18 @@ export const AI_TASK_KINDS = [
   "resume", // CV parse
   "generate", // question generation
   "voice", // live voice interviews — voice-capable providers only
+  "round2_live", // round 2 live copilot: claims, cross-checks, next-question suggestions
+  "round2_scoring", // round 2 live rubric score suggestions for the panel
+  "round2_report", // round 2 final report after the interview ends
+  "round2_transcript", // round 2 speech-to-text (OpenAI-compatible /audio/transcriptions only)
 ] as const;
 export type AiTaskKind = (typeof AI_TASK_KINDS)[number];
+
+/** Providers with an OpenAI-compatible /audio/transcriptions endpoint (round 2 transcript). */
+export const STT_PROVIDER_IDS = ["groq", "openai", "custom"] as const satisfies readonly AiProviderId[];
+export function isSttProvider(id: string): boolean {
+  return (STT_PROVIDER_IDS as readonly string[]).includes(id);
+}
 
 export const MAX_KEYS_PER_PROVIDER = 5;
 
@@ -129,6 +139,7 @@ function sanitizeRouting(raw: AiRoutingStored): AiRoutingStored {
     );
     // Voice interviews: text-only providers never belong here.
     if (kind === "voice") cleaned = cleaned.filter((id) => isVoiceCapableProvider(id));
+    if (kind === "round2_transcript") cleaned = cleaned.filter((id) => isSttProvider(id));
     if (cleaned.length) out[kind] = cleaned;
   }
   return out;
@@ -418,6 +429,33 @@ export function resolveCredentials(orgPlain: AiProvidersStored): ResolvedAiCrede
 }
 
 /** Default provider priority when org has not set routing for a task. */
+/**
+ * Platform default order from env, e.g. AI_ROUTING_ROUND2_LIVE="groq,gemini,openai".
+ * Unknown ids are dropped; an empty result falls back to the built-in order.
+ */
+export function envTaskRouting(task: AiTaskKind, fallback: AiProviderId[], env: Record<string, string | undefined> = process.env): AiProviderId[] {
+  const raw = env[`AI_ROUTING_${task.toUpperCase()}`];
+  if (!raw?.trim()) return fallback;
+  const ids = Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((x) => x.trim().toLowerCase())
+        .filter((x): x is AiProviderId => (AI_PROVIDER_IDS as readonly string[]).includes(x)),
+    ),
+  ).filter((id) => task !== "round2_transcript" || isSttProvider(id));
+  return ids.length ? ids : fallback;
+}
+
+/**
+ * Per-task model override for one provider, e.g. AI_MODEL_ROUND2_LIVE_GROQ=llama-3.3-70b-versatile
+ * or AI_MODEL_ROUND2_TRANSCRIPT_GROQ=whisper-large-v3. Empty → the provider's normal model.
+ */
+export function taskModelOverride(task: AiTaskKind, id: string, env: Record<string, string | undefined> = process.env): string | null {
+  const v = env[`AI_MODEL_${task.toUpperCase()}_${id.toUpperCase()}`]?.trim();
+  return v || null;
+}
+
 export const DEFAULT_TASK_ROUTING: Record<AiTaskKind, AiProviderId[]> = {
   screening: ["gemini", "openai", "anthropic", "groq", "nvidia", "custom"],
   standard: ["openai", "gemini", "anthropic", "groq", "nvidia", "custom"],
@@ -427,6 +465,10 @@ export const DEFAULT_TASK_ROUTING: Record<AiTaskKind, AiProviderId[]> = {
   resume: ["gemini", "openai", "anthropic", "groq", "nvidia", "custom"],
   generate: ["openai", "gemini", "anthropic", "groq", "nvidia", "custom"],
   voice: ["openai", "gemini"],
+  round2_live: envTaskRouting("round2_live", ["openai", "gemini", "groq", "anthropic", "nvidia", "custom"]),
+  round2_scoring: envTaskRouting("round2_scoring", ["openai", "gemini", "anthropic", "groq", "nvidia", "custom"]),
+  round2_report: envTaskRouting("round2_report", ["openai", "gemini", "anthropic", "groq", "nvidia", "custom"]),
+  round2_transcript: envTaskRouting("round2_transcript", ["groq", "openai", "custom"]),
 };
 
 /** Per-provider chat model (env override). Failover always swaps to this provider's model — never reuses another vendor's id. */

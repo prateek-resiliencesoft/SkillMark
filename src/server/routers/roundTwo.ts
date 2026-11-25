@@ -12,6 +12,8 @@ import {
   normalizePlan,
   userIdentity,
   type CopilotResult,
+  type LiveScoring,
+  type RoundTwoAiError,
   type Round1Context,
 } from "@/lib/round-two/types";
 import { getSessionOverallScore, type SessionScoreInsights } from "@/lib/session-score";
@@ -28,6 +30,7 @@ import {
 import { buildRound1Context } from "../round-two/context";
 import type { ReasoningStep } from "@/lib/ai/graph/types";
 import { runCopilot } from "../round-two/copilot";
+import { liveScoringEnabled, runLiveScoring } from "../round-two/live-score";
 import { scheduleLine, sendRoundTwoEmail, type MailOutcome } from "../round-two/email";
 import { generateQuestionPlan } from "../round-two/plan";
 import { runRoundTwoReport } from "../round-two/report";
@@ -467,7 +470,7 @@ export const roundTwoRouter = router({
   live: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
     const r = access.round;
-    const [{ data: segs }, { data: events }, { data: notes }] = await Promise.all([
+    const [{ data: segs }, { data: events }, { data: notes }, { data: aiMeta }] = await Promise.all([
       ctx.supabase
         .from("round_two_transcript")
         .select('id, "speakerRole", "speakerName", text, "startMs", "endMs"')
@@ -478,6 +481,7 @@ export const roundTwoRouter = router({
         .from("round_two_ai_events")
         .select("id, kind, trigger, payload, \"createdAt\"")
         .eq("roundTwoId", r.id)
+        .eq("kind", "suggestions")
         .order("createdAt", { ascending: false })
         .limit(15),
       ctx.supabase
@@ -487,8 +491,26 @@ export const roundTwoRouter = router({
         .or(`visibility.eq.shared,authorUserId.eq.${ctx.user.id}`)
         .order("createdAt", { ascending: true })
         .limit(500),
+      ctx.supabase
+        .from("round_two_ai_events")
+        .select('kind, payload, "createdAt"')
+        .eq("roundTwoId", r.id)
+        .in("kind", ["scores", "error"])
+        .order("createdAt", { ascending: false })
+        .limit(10),
     ]);
     const transcript = (segs ?? []).reverse();
+    const latestScores = (aiMeta ?? []).find((e) => e.kind === "scores");
+    const latestSuggestionAt = (events ?? [])[0]?.createdAt as string | undefined;
+    // Show an error only if nothing succeeded after it (per stage).
+    const aiErrors = (aiMeta ?? [])
+      .filter((e) => e.kind === "error")
+      .map((e) => ({ ...(e.payload as RoundTwoAiError), at: e.createdAt as string }))
+      .filter((e) => {
+        const okAt = e.stage === "scoring" ? (latestScores?.createdAt as string | undefined) : latestSuggestionAt;
+        return !okAt || okAt < e.at;
+      });
+    const aiError = aiErrors[0] ?? null;
     const r1 = (r.round1Context ?? {}) as Round1Context;
     const styleR1 = computeStyleMetrics(r1.candidateAnswers ?? []);
     const styleR2 = computeStyleMetrics(
@@ -511,6 +533,9 @@ export const roundTwoRouter = router({
       transcript,
       copilot,
       flags: copilot.flatMap((c) => c.flags ?? []),
+      liveScores: latestScores ? { ...(latestScores.payload as LiveScoring), at: latestScores.createdAt as string } : null,
+      liveScoringEnabled: liveScoringEnabled(),
+      aiError,
       notes: notes ?? [],
       style: { round1: styleR1, round2: styleR2, notes: compareStyle(styleR1, styleR2) },
     };
@@ -925,10 +950,21 @@ export const roundTwoRouter = router({
       const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
       if (access.round.status !== "live") throw new TRPCError({ code: "BAD_REQUEST", message: "Interview is not live" });
       const by = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
-      const result = await runCopilot(access.round.id, input.text ? "ask" : "manual", input.text ? { text: input.text, by } : undefined);
-      if (!result) throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "The copilot is busy or out of budget. Try again in a moment." });
-      return result;
+      const out = await runCopilot(access.round.id, input.text ? "ask" : "manual", input.text ? { text: input.text, by } : undefined);
+      if (!out.ok) {
+        throw new TRPCError({ code: out.reason === "busy" ? "TOO_MANY_REQUESTS" : "BAD_REQUEST", message: out.message });
+      }
+      return out.result;
     }),
+
+  /** Refresh the AI's suggested live scores now (suggestions only; scorecards stay human). */
+  scoreLive: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    if (access.round.status !== "live") throw new TRPCError({ code: "BAD_REQUEST", message: "Interview is not live" });
+    const out = await runLiveScoring(access.round.id, "manual");
+    if (!out.ok) throw new TRPCError({ code: out.reason === "busy" ? "TOO_MANY_REQUESTS" : "BAD_REQUEST", message: out.message });
+    return out.scoring;
+  }),
 
   setCovered: protectedProcedure
     .input(z.object({ id: z.string(), questionId: z.string().max(40), covered: z.boolean() }))
