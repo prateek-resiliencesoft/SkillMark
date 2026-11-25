@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  collectExcludedScoreTexts,
+  shouldExcludePremadeFromScore,
+} from "../src/lib/premade-sections";
+import {
+  applyQuestionScoreExclusions,
   getSessionOverallScore,
   getSessionScoreBreakdown,
   usesQuestionEvaluationScore,
@@ -69,4 +74,71 @@ test("getSessionScoreBreakdown splits questions, skills and coding", () => {
   assert.equal(breakdown.coding.avg, 9);
   assert.equal(breakdown.coding.items[0]?.label, "two-sum.py");
   assert.match(breakdown.questions.items[0]?.label ?? "", /^Q1\./);
+});
+
+test("shouldExcludePremadeFromScore: screening/HR out, technical/empty in", () => {
+  assert.equal(shouldExcludePremadeFromScore("Screening Round"), true);
+  assert.equal(shouldExcludePremadeFromScore("HR Round"), true);
+  assert.equal(shouldExcludePremadeFromScore("Technical Round"), false);
+  assert.equal(shouldExcludePremadeFromScore(""), false);
+  assert.equal(shouldExcludePremadeFromScore(undefined), false);
+});
+
+test("applyQuestionScoreExclusions marks screening texts and overall ignores them", () => {
+  const evals = applyQuestionScoreExclusions(
+    [
+      { question: "what is current ctc", score: 9 },
+      { question: "Explain React reconciliation", score: 6 },
+      { question: "are you willing to relocate to Bilaspur chhatisgarh", score: 10 },
+    ],
+    [
+      "what is current ctc",
+      "are you willing to relocate to Bilaspur chhatisgarh",
+    ],
+  );
+
+  assert.equal(evals[0]?.excludeFromScore, true);
+  assert.equal(evals[1]?.excludeFromScore, undefined);
+  assert.equal(evals[2]?.excludeFromScore, true);
+
+  assert.equal(
+    getSessionOverallScore({ questionEvaluations: evals }),
+    6,
+  );
+  assert.equal(
+    getSessionScoreBreakdown({ questionEvaluations: evals }).questions.avg,
+    6,
+  );
+});
+
+test("getSessionOverallScore skips excludeFromScore entries already on insights", () => {
+  const insights = {
+    questionEvaluations: [
+      { question: "CTC?", score: 10, excludeFromScore: true },
+      { question: "System design", score: 4 },
+      { question: "Notice period?", score: 9, excludeFromScore: true },
+    ],
+  };
+  assert.equal(getSessionOverallScore(insights), 4);
+});
+
+test("collectExcludedScoreTexts uses flag, From-section desc, and non-tech bank", () => {
+  const texts = collectExcludedScoreTexts(
+    [
+      { text: "stamped CTC", validationRules: { excludeFromScore: true } },
+      { text: "desc relocate", description: "From Screening Round section" },
+      { text: "tech design", description: "From Technical Round section" },
+      { text: "genuine AI Q", description: null },
+    ],
+    [
+      { text: "bank HR culture", sectionName: "HR Round" },
+      { text: "bank tech arch", sectionName: "Technical Round" },
+    ],
+  );
+  assert.ok(texts.includes("stamped CTC"));
+  assert.ok(texts.includes("desc relocate"));
+  assert.ok(texts.includes("bank HR culture"));
+  assert.ok(!texts.includes("tech design"));
+  assert.ok(!texts.includes("bank tech arch"));
+  assert.ok(!texts.includes("genuine AI Q"));
 });

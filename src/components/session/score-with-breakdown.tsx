@@ -73,7 +73,7 @@ export function ScoreBreakdownBody({
 }) {
   const sourceNote =
     breakdown.source === "questions"
-      ? "Overall = average of question scores"
+      ? "Overall = average of technical question scores"
       : breakdown.source === "criteria"
         ? "Overall = average of skill scores"
         : null;

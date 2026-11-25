@@ -90,6 +90,68 @@ export function sectionsMatchingInterviewType<T extends { id: string; name: stri
   return matched.length ? matched : sections;
 }
 
+/**
+ * Premade bank Qs count toward overall score only from Technical Round.
+ * Screening / HR / other bank rounds are logistics / fit — not scored.
+ * Empty/missing sectionName = genuine AI complementary Q → scored.
+ */
+export function shouldExcludePremadeFromScore(
+  sectionName: string | null | undefined,
+): boolean {
+  const name = (sectionName ?? "").trim().toLowerCase();
+  if (!name) return false;
+  return !TYPE_KEYWORDS.technical.some((k) => name.includes(k));
+}
+
+/** Parse `validationRules.excludeFromScore` stamped at question insert. */
+export function hasExcludeFromScoreFlag(validationRules: unknown): boolean {
+  if (!validationRules || typeof validationRules !== "object" || Array.isArray(validationRules)) {
+    return false;
+  }
+  return (validationRules as { excludeFromScore?: unknown }).excludeFromScore === true;
+}
+
+/** Stamp for non-technical premade rows (reuse questions.validationRules jsonb). */
+export function excludeFromScoreValidationRules(
+  sectionName: string | null | undefined,
+): { excludeFromScore: true } | null {
+  return shouldExcludePremadeFromScore(sectionName) ? { excludeFromScore: true } : null;
+}
+
+const FROM_SECTION_RE = /^From (.+) section$/i;
+
+/**
+ * Texts that must not contribute to overall score: stamped flag, "From X section"
+ * description, or premade bank rows from non-technical rounds.
+ */
+export function collectExcludedScoreTexts(
+  questions: Array<{
+    text?: string | null;
+    description?: string | null;
+    validationRules?: unknown;
+  }> | null | undefined,
+  premade: Array<{ text?: string | null; sectionName?: string | null }> | null | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const q of questions ?? []) {
+    const text = typeof q.text === "string" ? q.text.trim() : "";
+    if (!text) continue;
+    if (hasExcludeFromScoreFlag(q.validationRules)) {
+      out.push(text);
+      continue;
+    }
+    const desc = typeof q.description === "string" ? q.description.trim() : "";
+    const m = desc.match(FROM_SECTION_RE);
+    if (m?.[1] && shouldExcludePremadeFromScore(m[1])) out.push(text);
+  }
+  for (const p of premade ?? []) {
+    const text = typeof p.text === "string" ? p.text.trim() : "";
+    if (!text) continue;
+    if (shouldExcludePremadeFromScore(p.sectionName)) out.push(text);
+  }
+  return out;
+}
+
 export type PremadeQuestionPayload = {
   text: string;
   type?: string;

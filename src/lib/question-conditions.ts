@@ -118,6 +118,7 @@ export function enforceExactPremadeQuestions<
     isRequired?: boolean;
     order?: number;
     skipIf?: unknown;
+    validationRules?: unknown;
   },
 >(questions: T[], premade: PremadeExact[]): T[] {
   if (!premade.length) return questions;
@@ -127,6 +128,10 @@ export function enforceExactPremadeQuestions<
 
   for (const pm of premade) {
     if (!pm?.text?.trim()) continue;
+    // Inline (avoid cycle with premade-sections): non-tech bank rounds skip overall score.
+    const section = (pm.sectionName ?? "").trim().toLowerCase();
+    const scoreRules =
+      section && !section.includes("tech") ? { excludeFromScore: true as const } : null;
     let hit = questions.findIndex(
       (q, i) => !usedGenerated.has(i) && textsOverlap(q.text, pm.text),
     );
@@ -147,6 +152,7 @@ export function enforceExactPremadeQuestions<
         options: (pm.options as T["options"]) ?? questions[hit].options,
         starterCode: (pm.starterCode as T["starterCode"]) ?? questions[hit].starterCode,
         skipIf: pm.skipIf ?? questions[hit].skipIf,
+        ...(scoreRules ? { validationRules: scoreRules } : {}),
       });
     } else {
       premadeExact.push({
@@ -158,6 +164,7 @@ export function enforceExactPremadeQuestions<
         options: pm.options as T["options"],
         starterCode: pm.starterCode as T["starterCode"],
         skipIf: pm.skipIf ?? null,
+        ...(scoreRules ? { validationRules: scoreRules } : {}),
       } as T);
     }
   }
