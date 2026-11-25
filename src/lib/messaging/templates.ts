@@ -460,7 +460,10 @@ Our team will share the further details and next steps with you shortly.
 We appreciate your interest in RESILIENCESOFT and wish you all the best for the next round!
 
 Team RESILIENCESOFT`,
-  example: ["Priya Sharma", "na"],
+  example: [
+    "Priya Sharma",
+    "Further details regarding your next round will be shared shortly.",
+  ],
 };
 
 export const APPROVAL_EMAIL_SUBJECT = "Congratulations! You've Been Shortlisted – RESILIENCESOFT";
@@ -479,23 +482,32 @@ We appreciate your interest in RESILIENCESOFT and wish you all the best for the 
 
 Team RESILIENCESOFT`;
 
-/** Placeholder when Round 2 is not created yet (Later path). */
-export const APPROVAL_NEXT_ROUND_NA = "na";
+/**
+ * {{2}} when Round 2 is not scheduled yet (Later path).
+ * Meta requires a non-empty body var — use a human line, never literal "na".
+ */
+export const APPROVAL_NEXT_ROUND_PENDING =
+  "Further details regarding your next round will be shared shortly.";
 
-/** Meta body_variables for approve: [{{1}} name, {{2}} next-round details | na]. */
+/** @deprecated Use APPROVAL_NEXT_ROUND_PENDING — kept so old imports compile. */
+export const APPROVAL_NEXT_ROUND_NA = APPROVAL_NEXT_ROUND_PENDING;
+
+/** Meta body_variables for approve: [{{1}} name, {{2}} next-round details | pending line]. */
 export function whatsappApprovalBodyVariables(
   name: string,
-  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_PENDING,
 ): string[] {
-  const details = (nextRoundDetails || APPROVAL_NEXT_ROUND_NA).trim() || APPROVAL_NEXT_ROUND_NA;
+  const details =
+    (nextRoundDetails || APPROVAL_NEXT_ROUND_PENDING).trim() || APPROVAL_NEXT_ROUND_PENDING;
   return [name, details.slice(0, 500)];
 }
 
 export function renderApprovalEmailText(
   name: string,
-  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_PENDING,
 ): string {
-  const details = (nextRoundDetails || APPROVAL_NEXT_ROUND_NA).trim() || APPROVAL_NEXT_ROUND_NA;
+  const details =
+    (nextRoundDetails || APPROVAL_NEXT_ROUND_PENDING).trim() || APPROVAL_NEXT_ROUND_PENDING;
   return APPROVAL_EMAIL_BODY.replace(/\{\{\s*name\s*\}\}/g, name).replace(
     /\{\{\s*details\s*\}\}/g,
     details,
@@ -527,7 +539,7 @@ export function fillWhatsappTemplateBody(body: string, variables: string[]): str
 /** Exact WhatsApp text for Approve shortlist ({{2}} = details or "na"). */
 export function previewApprovalWhatsapp(
   name: string,
-  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_PENDING,
 ): string {
   return fillWhatsappTemplateBody(
     WHATSAPP_APPROVAL_META_TEMPLATE.body,
@@ -598,7 +610,7 @@ export function declineWithReasonEmailHtml(name: string, reason: string): string
 /** Plain shortlist HTML — no invite CTA. */
 export function approvalEmailHtml(
   name: string,
-  nextRoundDetails = APPROVAL_NEXT_ROUND_NA,
+  nextRoundDetails = APPROVAL_NEXT_ROUND_PENDING,
 ): string {
   return noticeEmailHtml(renderApprovalEmailText(name, nextRoundDetails));
 }

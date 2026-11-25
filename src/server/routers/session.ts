@@ -1688,7 +1688,7 @@ export const sessionRouter = router({
           ctx.supabase,
           input.sessionId,
           interviewData.project.organizationId,
-          { nextRoundDetails: input.nextRoundDetails ?? "na" },
+          { nextRoundDetails: input.nextRoundDetails },
         );
         return { ...result, ...delivery };
       }
@@ -1721,7 +1721,7 @@ export const sessionRouter = router({
         ctx.supabase,
         input.sessionId,
         interviewData.project.organizationId,
-        { nextRoundDetails: input.nextRoundDetails ?? "na" },
+        { nextRoundDetails: input.nextRoundDetails },
       );
     }),
 

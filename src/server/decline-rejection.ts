@@ -3,6 +3,7 @@ import { createLogger } from "@/lib/logger";
 import { sendBrevoEmail, sendResendEmail, sendResilioTemplate } from "@/lib/messaging/providers";
 import {
   APPROVAL_EMAIL_SUBJECT,
+  APPROVAL_NEXT_ROUND_PENDING,
   DECLINE_EMAIL_SUBJECT,
   DECLINE_WITH_REASON_EMAIL_SUBJECT,
   WHATSAPP_APPROVAL_META_TEMPLATE,
@@ -224,6 +225,6 @@ export async function sendApprovalShortlist(
   opts?: { nextRoundDetails?: string },
 ): Promise<MediaReviewNoticeDeliveryResult> {
   return sendMediaReviewNotice(supabase, sessionId, organizationId, APPROVAL_NOTICE, {
-    nextRoundDetails: opts?.nextRoundDetails?.trim() || "na",
+    nextRoundDetails: opts?.nextRoundDetails?.trim() || APPROVAL_NEXT_ROUND_PENDING,
   });
 }
