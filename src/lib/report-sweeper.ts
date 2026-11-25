@@ -25,6 +25,19 @@ export function startReportSweeper(): void {
       first = false;
     } catch (err) {
       log.error("Report sweep failed:", err);
+    }
+    try {
+      const { sweepRoundTwoReports } = await import("@/server/round-two/report");
+      const n = await sweepRoundTwoReports();
+      if (n > 0) log.info(`Sweep: ${n} round 2 report(s) generated`);
+    } catch (err) {
+      log.error("Round 2 report sweep failed:", err);
+    }
+    try {
+      const { pruneAiRuns } = await import("@/lib/ai/graph/runtime");
+      await pruneAiRuns();
+    } catch (err) {
+      log.error("ai_runs prune failed:", err);
     } finally {
       running = false;
     }
