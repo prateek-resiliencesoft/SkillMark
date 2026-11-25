@@ -23,6 +23,7 @@ COMPOSE = [
 ]
 APP_PORT = 3100
 VOICE_PORT = 8182
+VIDEO_PORT = 7280  # LiveKit signaling, published 127.0.0.1:7280
 IDLE_SEC = 15 * 60
 # Leave this much RAM free before starting dev (prod + OS).
 MIN_FREE_TO_START_MB = 1400
@@ -104,32 +105,37 @@ async def wait_backend(port: int, timeout: float, http: bool) -> bool:
     return False
 
 
-async def ensure(voice: bool) -> bool:
+async def ensure(*, voice: bool = False, video: bool = False) -> bool:
     global last_hit
     async with op_lock:
         last_hit = time.time()
         if mem_available_mb() < MIN_FREE_TO_START_MB and not port_open(APP_PORT):
             log(f"refuse start, MemAvailable={mem_available_mb()}MB")
             return False
+        extra: list[str] = []
         if voice:
-            ok = await run_compose("--profile", "voice", "up", "-d")
+            extra += ["--profile", "voice"]
+        if video:
+            extra += ["--profile", "video"]
+        if extra or not await backend_ready(APP_PORT, http=True):
+            ok = await run_compose(*extra, "up", "-d")
             if not ok:
                 return False
-            return await wait_backend(VOICE_PORT, 90, http=False)
-        if await backend_ready(APP_PORT, http=True):
-            return True
-        ok = await run_compose("up", "-d")
-        if not ok:
-            return False
-        return await wait_backend(APP_PORT, 90, http=True)
+            if not await wait_backend(APP_PORT, 90, http=True):
+                return False
+            if voice and not await wait_backend(VOICE_PORT, 90, http=False):
+                return False
+            if video and not await wait_backend(VIDEO_PORT, 90, http=False):
+                return False
+        return True
 
 
 async def stop_stack(reason: str) -> None:
     async with op_lock:
-        if not port_open(APP_PORT) and not port_open(VOICE_PORT):
+        if not port_open(APP_PORT) and not port_open(VOICE_PORT) and not port_open(VIDEO_PORT):
             return
         log(f"stopping dev ({reason})")
-        await run_compose("--profile", "voice", "stop")
+        await run_compose("--profile", "voice", "--profile", "video", "stop")
 
 
 async def idle_loop() -> None:
@@ -184,7 +190,15 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             await writer.drain()
             return
         voice = path.startswith("/ws/")
-        if not await ensure(voice):
+        video = (
+            path == "/rtc"
+            or path.startswith("/rtc/")
+            or path.startswith("/round-two")
+            or path.startswith("/r2/")
+            or path == "/r2"
+            or path.startswith("/api/round-two")
+        )
+        if not await ensure(voice=voice, video=video):
             body = b"Dev is paused so production keeps enough memory. Try again shortly.\n"
             writer.write(
                 b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: "
@@ -194,7 +208,12 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
             )
             await writer.drain()
             return
-        host, port = ("127.0.0.1", VOICE_PORT if voice else APP_PORT)
+        if voice:
+            host, port = "127.0.0.1", VOICE_PORT
+        elif path == "/rtc" or path.startswith("/rtc/"):
+            host, port = "127.0.0.1", VIDEO_PORT
+        else:
+            host, port = "127.0.0.1", APP_PORT
         try:
             up_r, up_w = await asyncio.open_connection(host, port)
         except OSError:

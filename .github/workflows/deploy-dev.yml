@@ -119,8 +119,10 @@ jobs:
             DC=(docker compose -f /opt/skillmark-dev/docker-compose.dev.yml --env-file /opt/skillmark-dev/.env.dev -p skillmark-dev)
             app_up=0
             voice_up=0
+            video_up=0
             if docker ps -q --filter name=skillmark-dev-app-1 --filter status=running | grep -q .; then app_up=1; fi
             if docker ps -q --filter name=skillmark-dev-voice-1 --filter status=running | grep -q .; then voice_up=1; fi
+            if docker ps -q --filter name=skillmark-dev-livekit-1 --filter status=running | grep -q .; then video_up=1; fi
 
             # Schema updates hit skillmark_dev only. Start Postgres for the migration, then stop it if dev was idle.
             "${DC[@]}" up -d db
@@ -141,14 +143,18 @@ jobs:
               bash /opt/skillmark-dev/src/scripts/db-migrate.sh /opt/skillmark-dev/docker-compose.dev.yml
 
             if [ "$app_up" = 1 ]; then
-              if [ "$voice_up" = 1 ]; then
+              if [ "$voice_up" = 1 ] && [ "$video_up" = 1 ]; then
+                "${DC[@]}" --profile voice --profile video up -d
+              elif [ "$voice_up" = 1 ]; then
                 "${DC[@]}" --profile voice up -d
+              elif [ "$video_up" = 1 ]; then
+                "${DC[@]}" --profile video up -d
               else
                 "${DC[@]}" up -d
               fi
               echo "dev was in use; recreated"
             else
-              "${DC[@]}" --profile voice stop
+              "${DC[@]}" --profile voice --profile video stop
               echo "dev was idle; images updated, stack left stopped"
             fi
 

@@ -1,0 +1,19 @@
+# Dev LiveKit SFU (docker-compose.dev.yml, profile "video").
+# API keys come from LIVEKIT_KEYS ("<key>: <secret>") in the container env.
+# Signaling is not public: the waker on :3199 proxies /rtc → 127.0.0.1:7280.
+# Media ports (open these on the host firewall; do not reuse prod's):
+#   7883/tcp (ICE over TCP), 3479/udp (embedded TURN), 50300-50350/udp (RTP).
+port: 7880
+log_level: info
+rtc:
+  tcp_port: 7883
+  port_range_start: 50300
+  port_range_end: 50350
+  use_external_ip: true
+turn:
+  enabled: true
+  udp_port: 3479
+room:
+  empty_timeout: 600
+  departure_timeout: 120
+  max_participants: 8
