@@ -6,6 +6,7 @@ import { Pin, PinOff } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CANDIDATE_IDENTITY_PREFIX } from "@/lib/round-two/types";
 import { cn } from "@/lib/utils";
+import { LK_THEME } from "./lk-theme";
 
 function key(t: TrackReferenceOrPlaceholder) {
   return `${t.participant.identity}:${t.source}`;
