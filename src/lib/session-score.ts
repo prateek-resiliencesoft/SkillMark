@@ -1,4 +1,9 @@
-type ScoreEntry = { score?: number | string | null } | null | undefined;
+import { normalizeMatchText, textsOverlap } from "@/lib/question-conditions";
+
+type ScoreEntry =
+  | { score?: number | string | null; excludeFromScore?: boolean; question?: string }
+  | null
+  | undefined;
 
 export type SessionScoreInsights =
   | {
@@ -31,10 +36,17 @@ function toFiniteScore(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function isScoreableEntry(entry: ScoreEntry): entry is NonNullable<ScoreEntry> {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.excludeFromScore === true) return false;
+  return toFiniteScore(entry.score) !== null;
+}
+
 function averageScore(entries: ScoreEntry[] | null | undefined): number | null {
   if (!Array.isArray(entries) || entries.length === 0) return null;
   const scores = entries
-    .map((entry) => toFiniteScore(entry?.score))
+    .filter(isScoreableEntry)
+    .map((entry) => toFiniteScore(entry.score))
     .filter((score): score is number => score !== null);
   if (scores.length === 0) return null;
   return scores.reduce((sum, score) => sum + score, 0) / scores.length;
@@ -52,6 +64,7 @@ function namedFrom(
     const entry = entries[i];
     if (!entry || typeof entry !== "object") continue;
     const row = entry as Record<string, unknown>;
+    if (row.excludeFromScore === true) continue;
     const score = toFiniteScore(row.score);
     if (score === null) continue;
     const label = labelOf(row, i).trim() || `Item ${i + 1}`;
@@ -60,6 +73,26 @@ function namedFrom(
   if (items.length === 0) return { avg: null, items: [] };
   const avg = items.reduce((sum, item) => sum + item.score, 0) / items.length;
   return { avg, items };
+}
+
+/** Mark screening/HR (etc.) evals so overall avg only uses technical + genuine Qs. */
+export function applyQuestionScoreExclusions<
+  T extends { question?: string; excludeFromScore?: boolean },
+>(evaluations: T[] | null | undefined, excludedTexts: string[]): T[] {
+  if (!Array.isArray(evaluations) || evaluations.length === 0) return evaluations ?? [];
+  const needles = excludedTexts.map((t) => t.trim()).filter(Boolean);
+  if (needles.length === 0) return evaluations;
+
+  return evaluations.map((entry) => {
+    const q = typeof entry.question === "string" ? entry.question : "";
+    if (!q.trim()) return entry;
+    const hit = needles.some(
+      (needle) =>
+        normalizeMatchText(q) === normalizeMatchText(needle) || textsOverlap(q, needle),
+    );
+    if (!hit) return entry;
+    return { ...entry, excludeFromScore: true };
+  });
 }
 
 function asInsights(raw: unknown): SessionScoreInsights {

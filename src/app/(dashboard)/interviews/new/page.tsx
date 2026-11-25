@@ -36,7 +36,10 @@ import {
   normalizeInterviewerGender,
   type InterviewerGender,
 } from "@/lib/interviewer-persona";
-import { flattenEnabledBankList } from "@/lib/premade-sections";
+import {
+  excludeFromScoreValidationRules,
+  flattenEnabledBankList,
+} from "@/lib/premade-sections";
 import { trpc } from "@/lib/trpc/client";
 import {
   Files,
@@ -166,6 +169,8 @@ export default function NewInterviewPage() {
                 language: string;
                 code: string;
               } | null) ?? undefined,
+            validationRules:
+              excludeFromScoreValidationRules(q.sectionName) ?? undefined,
           });
         }
       }

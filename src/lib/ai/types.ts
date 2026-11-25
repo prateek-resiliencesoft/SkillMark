@@ -78,4 +78,6 @@ export interface GeneratedQuestion {
   starterCode?: { language: string; code: string };
   /** Skip when prior user answers already cover these keywords. */
   skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
+  /** Screening/HR premade: overall score ignores these. */
+  validationRules?: { excludeFromScore?: boolean } | null;
 }

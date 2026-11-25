@@ -627,6 +627,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
             followUpPrompts: q.followUpPrompts ?? undefined,
             starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : undefined,
             skipIf: q.skipIf ?? undefined,
+            validationRules: q.validationRules ?? undefined,
           })
         )
       );

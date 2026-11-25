@@ -60,7 +60,7 @@ export function ReportHero({ data }: { data: ReportData }) {
   );
   const sourceNote =
     data.scoreDistribution.source === "questions"
-      ? "Overall is the average of question scores"
+      ? "Overall is the average of technical question scores"
       : data.scoreDistribution.source === "criteria"
         ? "Overall is the average of skill scores"
         : null;

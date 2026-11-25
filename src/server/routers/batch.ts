@@ -351,6 +351,7 @@ export const batchRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: ivError?.message ?? "Failed to create interview" });
       }
 
+      const { excludeFromScoreValidationRules } = await import("@/lib/premade-sections");
       const questionRows = generated.questions.map((q, i) => {
         const pm = premade.find(
           (p) => p.text.trim().toLowerCase() === (q.text ?? "").trim().toLowerCase(),
@@ -367,6 +368,7 @@ export const batchRouter = router({
           followUpPrompts: q.followUpPrompts ?? null,
           starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
           skipIf: pm?.skipIf ?? (q as { skipIf?: unknown }).skipIf ?? null,
+          validationRules: excludeFromScoreValidationRules(pm?.sectionName) ?? null,
         };
       });
       const { error: qError } = await ctx.supabase.from("questions").insert(questionRows);

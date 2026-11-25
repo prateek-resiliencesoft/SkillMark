@@ -24,8 +24,11 @@ import {
   profileToResumeText,
   type CandidateProfile,
 } from "@/lib/documents/cv-profile";
+import { loadAutoIncludePremade } from "@/lib/auto-include-premade";
 import { createLogger } from "@/lib/logger";
+import { collectExcludedScoreTexts } from "@/lib/premade-sections";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { applyQuestionScoreExclusions } from "@/lib/session-score";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { assessCandidateCapture, buildCaptureFailure } from "@/lib/transcript/capture-check";
 
@@ -126,7 +129,7 @@ export async function generateSummaryForSession(
   const { data, error } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, interview:interviews!inner(title, objective, language, assessmentCriteria, questions(text, order, type))`,
+      `id, interview:interviews!inner(title, objective, language, assessmentCriteria, questions(text, order, type, description, validationRules))`,
     )
     .eq("id", sessionId)
     .order("order", { referencedTable: "interviews.questions", ascending: true })
@@ -142,7 +145,13 @@ export async function generateSummaryForSession(
         objective?: string | null;
         language?: string | null;
         assessmentCriteria?: { name: string; description: string }[] | null;
-        questions?: { text: string; order: number; type?: string }[] | null;
+        questions?: {
+          text: string;
+          order: number;
+          type?: string;
+          description?: string | null;
+          validationRules?: unknown;
+        }[] | null;
       }
     | undefined;
   if (!interview) throw new Error("Session not found");
