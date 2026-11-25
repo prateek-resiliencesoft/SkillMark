@@ -15,6 +15,7 @@ import {
   useRoomContext,
   type LocalUserChoices,
 } from "@livekit/components-react";
+import { R2_ROOM_OPTIONS, r2CameraCapture } from "@/lib/round-two/media";
 import { Loader2 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -83,6 +84,7 @@ export default function CandidateRoundTwoPage() {
         serverUrl={conn.url}
         token={conn.token}
         connect
+        options={R2_ROOM_OPTIONS}
         audio={false}
         video={false}
         onDisconnected={() => setLeft(true)}
@@ -160,7 +162,10 @@ function CandidateRoom({ choices }: { choices: LocalUserChoices }) {
     if (!admitted || published.current) return;
     published.current = true;
     void localParticipant.setMicrophoneEnabled(choices.audioEnabled, choices.audioEnabled ? { deviceId: choices.audioDeviceId } : undefined);
-    void localParticipant.setCameraEnabled(choices.videoEnabled, choices.videoEnabled ? { deviceId: choices.videoDeviceId } : undefined);
+    void localParticipant.setCameraEnabled(
+      choices.videoEnabled,
+      choices.videoEnabled ? r2CameraCapture(choices.videoDeviceId) : undefined,
+    );
   }, [admitted, choices, localParticipant]);
 
   if (!admitted) {
