@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { dailySeries, statusBreakdown, usageByOrg } from "@/lib/admin-stats";
 import { readHostHealth } from "@/lib/host-health";
+import { SESSION_ACTIVITY_COLUMNS } from "@/lib/session-list-select";
 import { abandonSession } from "@/lib/session-link-server";
 import { scheduleSessionReport } from "@/lib/session-report-server";
 import { updatePassword } from "@/lib/users";
@@ -142,7 +143,12 @@ export const platformOpsRouter = router({
       const ids = interviews.map((i) => i.id);
       if (!ids.length) return { interviews: [], sessions: [], pendingCandidates: [] };
       const [{ data: sessions }, { data: candidates }] = await Promise.all([
-        ctx.supabase.from("sessions").select("*").in("interviewId", ids).order("createdAt", { ascending: false }).limit(300),
+        ctx.supabase
+          .from("sessions")
+          .select(SESSION_ACTIVITY_COLUMNS)
+          .in("interviewId", ids)
+          .order("createdAt", { ascending: false })
+          .limit(300),
         ctx.supabase
           .from("candidates")
           .select("id, interviewId, name, email, phone, sessionId, createdAt")

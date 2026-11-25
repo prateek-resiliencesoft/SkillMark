@@ -1175,10 +1175,11 @@ export const interviewRouter = router({
         .select("id", { count: "exact", head: true })
         .in("interviewId", interviewIds);
 
+      // List fields only — insights loaded later for the 5 recent completed rows.
       const { data: sessions } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail, insights",
+          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail",
         )
         .in("interviewId", interviewIds);
       const allSessions = sessions ?? [];
@@ -1188,19 +1189,15 @@ export const interviewRouter = router({
         .select("id, type, createdAt")
         .in("interviewId", interviewIds);
 
-      // Message counts per session (batch)
+      // Total message count only (head). Avoid selecting every message row.
       let totalMessages = 0;
-      const sessionMsgMap: Record<string, number> = {};
       if (allSessions.length > 0) {
         const sIds = allSessions.map((s) => s.id);
-        const { data: msgs } = await ctx.supabase
+        const { count } = await ctx.supabase
           .from("messages")
-          .select("sessionId")
+          .select("id", { count: "exact", head: true })
           .in("sessionId", sIds);
-        for (const m of msgs ?? []) {
-          sessionMsgMap[m.sessionId] = (sessionMsgMap[m.sessionId] ?? 0) + 1;
-          totalMessages++;
-        }
+        totalMessages = count ?? 0;
       }
 
       // Summary numbers
@@ -1257,7 +1254,14 @@ export const interviewRouter = router({
           dateMap[day].sessionMinutes += Math.round(
             ((s.totalDurationSeconds as number) ?? 0) / 60,
           );
-          dateMap[day].messages += sessionMsgMap[s.id] ?? 0;
+        }
+      }
+      // Approx daily messages from session share (avoids loading every message row).
+      if (totalSessions > 0 && totalMessages > 0) {
+        for (const day of Object.keys(dateMap)) {
+          dateMap[day].messages = Math.round(
+            (totalMessages * dateMap[day].sessions) / totalSessions,
+          );
         }
       }
       for (const i of interviews ?? []) {
@@ -1309,34 +1313,53 @@ export const interviewRouter = router({
         .slice(0, 8)
         .map(([theme, count]) => ({ theme, count }));
 
-      // Recent completed sessions
-      const recentSessions = [...allSessions]
+      // Recent completed sessions (fetch insights only for these 5)
+      const recentIds = [...allSessions]
         .filter((s) => s.status === "COMPLETED")
-        .sort((a, b) =>
-          (b.createdAt as string).localeCompare(a.createdAt as string),
-        )
+        .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
         .slice(0, 5)
-        .map((s) => {
-          const score = getSessionOverallScore(
-            s.insights as {
-              questionEvaluations?: { score: number }[];
-              criteriaEvaluations?: { score: number }[];
-            } | null,
-          );
-          return {
-            id: s.id,
-            interviewId: s.interviewId as string,
-            name:
-              (s.participantName as string) ||
-              (s.participantEmail as string) ||
-              "Anonymous",
-            status: s.status as string,
-            duration: (s.totalDurationSeconds as number) ?? 0,
-            messages: sessionMsgMap[s.id] ?? 0,
-            date: s.createdAt as string,
-            score,
-          };
-        });
+        .map((s) => s.id as string);
+      const insightsById = new Map<string, unknown>();
+      if (recentIds.length > 0) {
+        const { data: recentRows } = await ctx.supabase
+          .from("sessions")
+          .select("id, insights")
+          .in("id", recentIds);
+        for (const r of recentRows ?? []) insightsById.set(r.id as string, r.insights);
+      }
+      const recentMsgCount = new Map<string, number>();
+      if (recentIds.length > 0) {
+        const { data: recentMsgs } = await ctx.supabase
+          .from("messages")
+          .select("sessionId")
+          .in("sessionId", recentIds);
+        for (const m of recentMsgs ?? []) {
+          const sid = m.sessionId as string;
+          recentMsgCount.set(sid, (recentMsgCount.get(sid) ?? 0) + 1);
+        }
+      }
+      const recentSessions = recentIds.map((id) => {
+        const s = allSessions.find((row) => row.id === id)!;
+        const score = getSessionOverallScore(
+          insightsById.get(id) as {
+            questionEvaluations?: { score: number }[];
+            criteriaEvaluations?: { score: number }[];
+          } | null,
+        );
+        return {
+          id: s.id,
+          interviewId: s.interviewId as string,
+          name:
+            (s.participantName as string) ||
+            (s.participantEmail as string) ||
+            "Anonymous",
+          status: s.status as string,
+          duration: (s.totalDurationSeconds as number) ?? 0,
+          messages: recentMsgCount.get(id) ?? 0,
+          date: s.createdAt as string,
+          score,
+        };
+      });
 
       return {
         totalInterviews: interviewIds.length,

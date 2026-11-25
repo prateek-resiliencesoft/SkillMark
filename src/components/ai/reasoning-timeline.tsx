@@ -148,7 +148,16 @@ export function AiRunHistory({
   const [showAll, setShowAll] = useState(false);
   const q = trpc.aiRuns.forSubject.useQuery(
     { subjectType, subjectId, flows, limit: showAll ? 50 : limit },
-    { staleTime: 15_000, keepPreviousData: true, refetchInterval: live ? 3000 : false },
+    {
+      staleTime: 15_000,
+      keepPreviousData: true,
+      refetchInterval: (data) => {
+        if (!live) return false;
+        const runs = data?.runs ?? [];
+        const busy = runs.some((r) => r.status === "running");
+        return busy ? 5_000 : false;
+      },
+    },
   );
   const runs = q.data?.runs ?? [];
   if (q.isLoading) return null;

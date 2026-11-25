@@ -108,17 +108,17 @@ export default function AdminServerLogsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(50);
 
-  const { ms: refreshMs, control: pollControl } = usePollInterval(5_000);
+  const { ms: refreshMs, control: pollControl } = usePollInterval(30_000);
 
   const logs = trpc.platform.serverLogs.useQuery(
     {
       source,
       minutes,
       search: deferredSearch || undefined,
-      limit: 500,
+      limit: 200,
     },
     {
-      staleTime: Math.min(refreshMs || 15_000, 15_000),
+      staleTime: Math.min(refreshMs || 30_000, 30_000),
       refetchInterval: refreshMs > 0 ? refreshMs : false,
       keepPreviousData: true,
     },

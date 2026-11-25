@@ -33,20 +33,30 @@ import {
 import { Loader2, UserCheck } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-function useElapsed(startedAt: string | null | undefined) {
+function mmss(s: number) {
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Isolated so the 1s tick does not re-render LiveKit video / sidebar. */
+function ElapsedBadge({ startedAt, durationMin }: { startedAt: string | null | undefined; durationMin: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
   if (!startedAt) return null;
-  return Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
-}
-
-function mmss(s: number) {
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const elapsed = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  const remaining = durationMin * 60 - elapsed;
+  return (
+    <div className="text-right text-xs tabular-nums">
+      <div className="font-semibold">{mmss(elapsed)}</div>
+      <div className={remaining < 0 ? "text-destructive" : "text-muted-foreground"}>
+        {remaining < 0 ? `${mmss(-remaining)} over` : `${mmss(remaining)} left`}
+      </div>
+    </div>
+  );
 }
 
 export default function PanelRoomPage() {
@@ -157,13 +167,29 @@ function PanelRoom({ id }: { id: string }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const room = useRoomContext();
-  const info = trpc.roundTwo.get.useQuery({ id });
-  const live = trpc.roundTwo.live.useQuery({ id }, { refetchInterval: 6000 });
+  const info = trpc.roundTwo.get.useQuery(
+    { id },
+    { staleTime: 30_000, refetchOnWindowFocus: false, refetchOnMount: false },
+  );
+  // Poll slower; data-channel bumps are debounced so STT spam does not thrash React.
+  const live = trpc.roundTwo.live.useQuery(
+    { id },
+    { refetchInterval: 12_000, refetchOnWindowFocus: false, staleTime: 4_000 },
+  );
   const remotes = useRemoteParticipants();
   const [confirmEnd, setConfirmEnd] = useState(false);
-  const elapsed = useElapsed(live.data?.startedAt ?? info.data?.round.startedAt);
+  const liveBumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refreshLive = () => void utils.roundTwo.live.invalidate({ id });
+  const refreshLive = useCallback(() => {
+    if (liveBumpTimer.current) return;
+    liveBumpTimer.current = setTimeout(() => {
+      liveBumpTimer.current = null;
+      void utils.roundTwo.live.invalidate({ id });
+    }, 2500);
+  }, [id, utils.roundTwo.live]);
+  useEffect(() => () => {
+    if (liveBumpTimer.current) clearTimeout(liveBumpTimer.current);
+  }, []);
   useDataChannel(DATA_TOPICS.transcript, refreshLive);
   useDataChannel(DATA_TOPICS.copilot, refreshLive);
 
@@ -183,7 +209,6 @@ function PanelRoom({ id }: { id: string }) {
   const { round, candidate, canManage, myRole, myScorecard } = info.data;
   const candidateP = remotes.find((p) => p.identity.startsWith(CANDIDATE_IDENTITY_PREFIX));
   const inLobby = !!candidateP && candidateP.permissions?.canSubscribe === false;
-  const remaining = elapsed != null ? round.durationMin * 60 - elapsed : null;
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 bg-background lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -193,16 +218,7 @@ function PanelRoom({ id }: { id: string }) {
             <div className="truncate font-semibold">{candidate?.name ?? "Candidate"}</div>
             <div className="truncate text-xs text-muted-foreground">{round.title}</div>
           </div>
-          {elapsed != null && (
-            <div className="text-right text-xs tabular-nums">
-              <div className="font-semibold">{mmss(elapsed)}</div>
-              {remaining != null && (
-                <div className={remaining < 0 ? "text-destructive" : "text-muted-foreground"}>
-                  {remaining < 0 ? `${mmss(-remaining)} over` : `${mmss(remaining)} left`}
-                </div>
-              )}
-            </div>
-          )}
+          <ElapsedBadge startedAt={live.data?.startedAt ?? round.startedAt} durationMin={round.durationMin} />
           {!candidateP && <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">Candidate not joined yet</span>}
           {canManage && (
             <Button variant="destructive" size="sm" onClick={() => setConfirmEnd(true)}>

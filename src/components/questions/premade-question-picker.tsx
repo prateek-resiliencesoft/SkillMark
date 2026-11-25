@@ -52,8 +52,7 @@ export function PremadeQuestionPicker({
     { organizationId },
     {
       enabled: !!organizationId,
-      staleTime: 10_000,
-      refetchOnMount: "always",
+      staleTime: 30_000,
       retry: 1,
     },
   );

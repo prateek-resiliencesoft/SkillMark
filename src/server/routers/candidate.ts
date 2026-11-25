@@ -2,6 +2,12 @@ import { expireIfStale, expireNestedSession, expireSessionsIfStale, isRevokedInv
 import { recordPreflightEvent } from "@/lib/preflight-server";
 import { issueNewInviteLink } from "../new-invite-link";
 import { nanoid } from "@/lib/id";
+import {
+  CANDIDATE_LIST_ALL_WITH_SESSION,
+  CANDIDATE_LIST_WITH_SESSION,
+  WALKIN_SESSION_LIST,
+  WALKIN_SESSION_LIST_ALL,
+} from "@/lib/session-list-select";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { pathBelongsToOrganization } from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
@@ -458,7 +464,7 @@ export const candidateRouter = router({
       // relationship, and an unhinted session:sessions(*) embed fails with PGRST201.
       const { data: candidates } = await ctx.supabase
         .from("candidates")
-        .select("*, session:sessions!candidates_sessionId_fkey(*)")
+        .select(CANDIDATE_LIST_WITH_SESSION)
         .eq("interviewId", input.interviewId)
         .order("createdAt", { ascending: false });
 
@@ -472,7 +478,7 @@ export const candidateRouter = router({
 
       let walkInQuery = ctx.supabase
         .from("sessions")
-        .select("*, messages(id)")
+        .select(WALKIN_SESSION_LIST)
         .eq("interviewId", input.interviewId)
         .is("dataArchivedAt", null)
         .is("candidateId", null)
@@ -722,9 +728,7 @@ export const candidateRouter = router({
 
       const { data: candidates } = await ctx.supabase
         .from("candidates")
-        .select(
-          "*, session:sessions!candidates_sessionId_fkey(*), interview:interviews!inner(id, title)",
-        )
+        .select(CANDIDATE_LIST_ALL_WITH_SESSION)
         .in("interviewId", interviewIds)
         .order("createdAt", { ascending: false })
         .limit(input.limit);
@@ -735,9 +739,7 @@ export const candidateRouter = router({
 
       let walkInQuery = ctx.supabase
         .from("sessions")
-        .select(
-          "*, messages(id), interview:interviews!inner(id, title)",
-        )
+        .select(WALKIN_SESSION_LIST_ALL)
         .in("interviewId", interviewIds)
         // Earlier attempts of invited candidates (retakes / new links) are not walk-ins.
         .is("candidateId", null)

@@ -199,7 +199,7 @@ export function BulkCvGenerator({
 
   const bankListQuery = trpc.questionBank.list.useQuery(
     { organizationId: bankOrgId },
-    { enabled: !!bankOrgId, staleTime: 10_000, refetchOnMount: "always" },
+    { enabled: !!bankOrgId, staleTime: 30_000 },
   );
   const premadeQuestionsList = useMemo(
     () => flattenEnabledBankList(bankListQuery.data).questions,

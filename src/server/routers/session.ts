@@ -1,5 +1,6 @@
 import { expireIfStale, expireSessionsIfStale, isRevokedInviteToken } from "@/lib/session-link-server";
 import { recordPreflightEvent } from "@/lib/preflight-server";
+import { SESSION_LIST_WITH_MESSAGE_IDS } from "@/lib/session-list-select";
 import {
   MAX_STRIKES,
   STRIKE_LABEL,
@@ -1355,7 +1356,7 @@ export const sessionRouter = router({
 
       let query = ctx.supabase
         .from("sessions")
-        .select("*, messages(id)")
+        .select(SESSION_LIST_WITH_MESSAGE_IDS)
         .eq("interviewId", input.interviewId)
         .is("dataArchivedAt", null)
         .order("createdAt", { ascending: false })

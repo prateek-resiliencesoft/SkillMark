@@ -1773,11 +1773,17 @@ export function useVoice({
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 10_000);
       try {
+        const bodyJson = JSON.stringify({
+          sessionId,
+          messages,
+          complete: true,
+          ...(endReasonRef.current ? { reason: endReasonRef.current } : {}),
+        });
         const res = await fetch("/api/voice/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, messages, complete: true, ...(endReasonRef.current ? { reason: endReasonRef.current } : {}) }),
-          keepalive: JSON.stringify(messages).length < 60_000,
+          body: bodyJson,
+          keepalive: bodyJson.length < 60_000,
           signal: ctrl.signal,
         });
         const body = (await res.json().catch(() => ({}))) as { completed?: boolean; error?: string };

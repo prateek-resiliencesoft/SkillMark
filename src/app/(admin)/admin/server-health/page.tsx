@@ -117,9 +117,9 @@ function MetricRow({ label, value }: { label: string; value: React.ReactNode }) 
 
 export default function ServerHealthPage() {
   const q = trpc.platformOps.hostHealth.useQuery(undefined, {
-    refetchInterval: 10_000,
-    refetchOnWindowFocus: true,
-    staleTime: 0,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
   });
   const h = q.data?.host;
   const loading = q.isLoading;
@@ -131,7 +131,7 @@ export default function ServerHealthPage() {
       <PageHeader
         kicker="Host Telemetry"
         title="Server Health & Runtime"
-        description="Live hardware load, memory footprints, active process stats, and real-time interview pipeline throughput. Auto-refreshes every 10s."
+        description="Live hardware load, memory footprints, active process stats, and real-time interview pipeline throughput. Auto-refreshes every 30s."
         actions={
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 rounded-full border border-border/60 bg-muted/40 px-3 py-1 text-xs text-muted-foreground dark:border-white/[0.08] dark:bg-zinc-900/60">

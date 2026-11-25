@@ -132,7 +132,10 @@ export function FormBuilder({ formId }: { formId: string }) {
   const router = useRouter();
   const utils = trpc.useUtils();
   const q = trpc.interviewForm.get.useQuery({ id: formId });
-  const apps = trpc.interviewForm.applications.useQuery({ id: formId }, { refetchInterval: 15000 });
+  const apps = trpc.interviewForm.applications.useQuery(
+    { id: formId },
+    { refetchInterval: 30_000, staleTime: 15_000 },
+  );
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<FormField[]>([]);

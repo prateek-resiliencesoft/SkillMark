@@ -276,7 +276,17 @@ export function CandidateDetailSheet({
     setEditing(open && startInEdit);
   }, [open, startInEdit, candidateId]);
 
-  const dirty = editing && !!original && JSON.stringify(form) !== JSON.stringify(original);
+  const dirty =
+    editing &&
+    !!original &&
+    (Object.keys(form) as (keyof typeof form)[]).some((k) => {
+      const a = form[k];
+      const b = original[k];
+      if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length !== b.length || a.some((v, i) => v !== b[i]);
+      }
+      return a !== b;
+    });
   useEffect(() => {
     if (!dirty) return;
     const h = (e: BeforeUnloadEvent) => {
