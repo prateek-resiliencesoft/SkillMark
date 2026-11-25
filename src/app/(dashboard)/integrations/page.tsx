@@ -977,11 +977,11 @@ export default function IntegrationsSettingsPage() {
               <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold">Left-interview follow-up body</p>
+                    <p className="text-sm font-semibold">Incomplete-interview reminder</p>
                     <p className="text-xs text-muted-foreground">
-                      UTILITY · en_US ·{" "}
+                      UTILITY · {WHATSAPP_FOLLOWUP_META_TEMPLATE.language} · APPROVED ·{" "}
                       <code>{WHATSAPP_FOLLOWUP_META_TEMPLATE.name}</code>
-                      {" · "}sent automatically when a candidate leaves an interview midway
+                      {" · "}auto-sent on abandon / leave early (resume link in {"{{4}}"})
                     </p>
                   </div>
                   <Button size="sm" variant="outline" onClick={copyFollowupMetaTemplate} className="h-8">
@@ -994,9 +994,10 @@ export default function IntegrationsSettingsPage() {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Vars: {"{{1}}"} candidate · {"{{2}}"} project contact number (Project → General) ·{" "}
-                  {"{{3}}"} invite link · {"{{4}}"} expiry date · {"{{5}}"} expiry time · {"{{6}}"} organization.
-                  Not editable here; the message is skipped if the project has no contact number.
+                  Header: {WHATSAPP_FOLLOWUP_META_TEMPLATE.header}. Vars: {"{{1}}"} candidate ·{" "}
+                  {"{{2}}"} interview name · {"{{3}}"} support phone (Project → General) · {"{{4}}"} resume
+                  link · {"{{5}}"} expiry. Skipped if project has no contact number; failures show on
+                  candidate screens for manual send.
                 </p>
                 <div className="grid gap-5 lg:grid-cols-2">
                   <div className="space-y-2">
@@ -1012,6 +1013,9 @@ export default function IntegrationsSettingsPage() {
                     <Label className="text-xs text-muted-foreground">Bubble preview</Label>
                     <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
                       <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
+                        <div className="mb-2 border-b border-black/10 pb-1 text-[11px] font-semibold dark:border-white/10">
+                          {WHATSAPP_FOLLOWUP_META_TEMPLATE.header}
+                        </div>
                         <div className="whitespace-pre-wrap">{renderWhatsappFollowupPreview()}</div>
                         <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
                           <span>10:00 AM</span>

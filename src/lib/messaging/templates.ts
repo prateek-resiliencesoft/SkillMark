@@ -161,8 +161,9 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 }
 
 /**
- * Meta UTILITY template for incomplete / abandoned interviews (manual Send follow-up
- * or auto when interviews.autoLeftFollowup). Body must match the approved WABA template.
+ * Meta UTILITY template for incomplete / abandoned interviews (auto on abandon when
+ * interviews.autoLeftFollowup, else manual). Body must match approved WABA
+ * interview_incomplete_reminder (en_US).
  *
  * body_variables[i] fills {{i+1}}:
  * {{1}} candidate name
@@ -177,7 +178,9 @@ export function renderWhatsappPreview(v: TemplateVars, customBody?: string): str
 export const WHATSAPP_FOLLOWUP_META_TEMPLATE = {
   name: "interview_incomplete_reminder",
   category: "UTILITY",
-  language: "en",
+  language: "en_US",
+  /** Fixed Meta HEADER (no variables). */
+  header: "Regarding Your Interview with RESILIENCESOFT",
   body: `Hi {{1}},
 
 Your interview with {{2}} is currently incomplete.
@@ -186,13 +189,11 @@ You can resume your interview using the link below:
 
 🔗 Resume Interview: {{4}}
 
-Please complete your interview before {{5}}, as the link will expire thereafter.
+Please complete your interview before {{5}} , as the link will expire thereafter.
 
 For any assistance, please contact {{3}}.
 
-Wish you all the best for your interview!
-
-Team RESILIENCESOFT`,
+Wish you all the best for your interview!`,
   // Array index i fills {{i+1}}
   example: [
     "Prateek", // {{1}} Candidate Name
@@ -309,19 +310,20 @@ export function followupBodyVariables(v: FollowupTemplateVars, timeZone?: string
 export function renderFollowupEmailText(v: FollowupTemplateVars, timeZone?: string): string {
   const expiry = formatFollowupExpiryLabel(v.expiresAt, timeZone);
   const role = followupRolePhrase(v.position);
+  // Match approved Meta body (space before comma after expiry); email omits emoji link prefix.
   return `Hi ${v.name},
 
 Your interview with ${role} is currently incomplete.
 
 You can resume your interview using the link below:
+
 Resume Interview: ${v.link}
 
-Please complete your interview before ${expiry}, as the link will expire thereafter.
+Please complete your interview before ${expiry} , as the link will expire thereafter.
 
 For any assistance, please contact ${v.supportPhone}.
 
-Wish you all the best for your interview!
-Team ${FOLLOWUP_BRAND}`;
+Wish you all the best for your interview!`;
 }
 
 /** Preview of the follow-up body with the given values (defaults to the Meta example). */
