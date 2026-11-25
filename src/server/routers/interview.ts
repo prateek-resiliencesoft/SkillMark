@@ -408,7 +408,7 @@ export const interviewRouter = router({
         headMovementDetectionEnabled: z.boolean().default(false),
         integrityChecksEnabled: z.boolean().default(false),
         livenessChallengesEnabled: z.boolean().default(false),
-        autoLeftFollowup: z.boolean().default(false),
+        autoLeftFollowup: z.boolean().default(true),
         completionNotifyMembers: z
           .array(
             z.object({

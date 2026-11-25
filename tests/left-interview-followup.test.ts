@@ -14,6 +14,8 @@ import {
 
 test("follow-up template has five positional variables and the approved name", () => {
   assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.name, "interview_incomplete_reminder");
+  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.language, "en_US");
+  assert.equal(WHATSAPP_FOLLOWUP_META_TEMPLATE.header, "Regarding Your Interview with RESILIENCESOFT");
   // Appearance order in approved Meta body.
   const placeholders = WHATSAPP_FOLLOWUP_META_TEMPLATE.body.match(/\{\{\d\}\}/g) ?? [];
   assert.deepEqual(placeholders, ["{{1}}", "{{2}}", "{{4}}", "{{5}}", "{{3}}"]);
@@ -23,9 +25,10 @@ test("follow-up body matches interview_incomplete_reminder wording", () => {
   const body = WHATSAPP_FOLLOWUP_META_TEMPLATE.body;
   assert.match(body, /Your interview with \{\{2\}\}/);
   assert.match(body, /Resume Interview: \{\{4\}\}/);
-  assert.match(body, /before \{\{5\}\}/);
+  assert.match(body, /before \{\{5\}\} ,/);
   assert.match(body, /contact \{\{3\}\}/);
-  assert.match(body, /Team RESILIENCESOFT/);
+  assert.match(body, /Wish you all the best for your interview!/);
+  assert.doesNotMatch(body, /Team RESILIENCESOFT/);
 });
 
 test("follow-up body variables match Meta slot numbers", () => {
@@ -62,7 +65,9 @@ test("follow-up email subject and body brand RESILIENCESOFT", () => {
   assert.match(text, /^Hi prateek,/m);
   assert.match(text, /RESILIENCESOFT For MERN Position/);
   assert.match(text, /https:\/\/example.com\/restart/);
-  assert.match(text, /Team RESILIENCESOFT/);
+  assert.match(text, /before 2026-12-31 at 23:59 ,/);
+  assert.match(text, /Wish you all the best for your interview!/);
+  assert.doesNotMatch(text, /Team RESILIENCESOFT/);
 });
 
 test("expiry parts use Meta-style YYYY-MM-DD and HH.mm in Asia/Kolkata", () => {
@@ -93,7 +98,7 @@ test("follow-up email uses the same dynamic expiry label", () => {
     expiresAt: "2026-12-31T18:29:00.000Z",
     position: "MERN Position",
   });
-  assert.match(text, /before 2026-12-31 at 23:59/);
+  assert.match(text, /before 2026-12-31 at 23:59 ,/);
 });
 
 test("normalizeWhatsappPhone", () => {

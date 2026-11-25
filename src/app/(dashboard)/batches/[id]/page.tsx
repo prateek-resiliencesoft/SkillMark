@@ -306,8 +306,8 @@ export default function BatchDetailPage() {
                 <div>
                   <Label className="text-sm">Auto follow-up on abandon</Label>
                   <p className="text-xs text-muted-foreground">
-                    Off by default. When on, left-early candidates in this batch get the incomplete reminder
-                    automatically.
+                    On by default. Left-early candidates get interview_incomplete_reminder with the resume
+                    link; failures show on the candidate row for manual send.
                   </p>
                 </div>
                 <Switch

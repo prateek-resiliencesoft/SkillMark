@@ -80,8 +80,9 @@ async function sendFollowupEmail(
 
 /**
  * Incomplete-interview follow-up (`interview_incomplete_reminder`).
- * Manual from dashboard always; auto only when interviews.autoLeftFollowup
- * (see notifyCandidateLeftInterview). WhatsApp primary; email additive.
+ * Auto on ABANDONED when interviews.autoLeftFollowup (default on); manual
+ * from dashboard always. WhatsApp primary; email additive. Failures write
+ * followupError so the UI can offer Send manually.
  */
 export async function sendLeftInterviewFollowup(
   sessionId: string,
@@ -235,7 +236,7 @@ export async function sendLeftInterviewFollowup(
   }
 }
 
-/** Automatic send when session → ABANDONED; no-op unless interviews.autoLeftFollowup. */
+/** Automatic send when session → ABANDONED (gated by interviews.autoLeftFollowup, default on). */
 export async function notifyCandidateLeftInterview(sessionId: string): Promise<void> {
   await sendLeftInterviewFollowup(sessionId, { manual: false });
 }

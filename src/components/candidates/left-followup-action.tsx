@@ -66,18 +66,22 @@ export function LeftFollowupAction({
   if (variant === "compact") {
     if (state.sent) {
       return (
-        <span className="inline-flex flex-col items-start text-[10px] leading-tight text-emerald-600" title="WhatsApp follow-up sent">
+        <span
+          className="inline-flex flex-col items-start text-[10px] leading-tight text-emerald-600"
+          title="interview_incomplete_reminder sent"
+        >
           <span className="inline-flex items-center gap-1 font-medium">
-            <CheckCircle2 className="h-3 w-3" /> Follow-up sent
+            <CheckCircle2 className="h-3 w-3" /> Reminder sent
           </span>
           {state.sentAt && <span className="text-muted-foreground">{when(state.sentAt)}</span>}
         </span>
       );
     }
     return (
-      <span className="inline-flex max-w-[200px] flex-col items-start text-[10px] leading-tight" title={reason ?? undefined}>
+      <span className="inline-flex max-w-[220px] flex-col items-start text-[10px] leading-tight" title={reason ?? undefined}>
         <span className="inline-flex items-center gap-1 font-medium text-amber-600">
-          <CircleAlert className="h-3 w-3" /> Follow-up not sent
+          <CircleAlert className="h-3 w-3" />
+          {state.error ? "Reminder failed" : "Reminder not sent"}
           {sendable && (
             <button
               type="button"
@@ -89,7 +93,7 @@ export function LeftFollowupAction({
               className="ml-1 inline-flex items-center gap-0.5 text-primary hover:underline disabled:opacity-60"
             >
               {send.isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-              Send
+              Send manually
             </button>
           )}
         </span>
@@ -102,7 +106,7 @@ export function LeftFollowupAction({
     <section className="rounded-xl border bg-card p-4 shadow-sm">
       <div className="mb-1 flex items-center gap-2">
         <MessageCircle className="h-4 w-4 text-muted-foreground" />
-        <h4 className="text-sm font-semibold">Left-interview follow-up</h4>
+        <h4 className="text-sm font-semibold">Incomplete-interview reminder</h4>
         <span
           className={
             state.sent
@@ -110,28 +114,29 @@ export function LeftFollowupAction({
               : "ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
           }
         >
-          {state.sent ? "Sent" : "Not sent"}
+          {state.sent ? "Sent" : state.error ? "Send failed" : "Not sent"}
         </span>
       </div>
       {state.sent ? (
         <p className="flex items-center gap-1.5 text-xs text-emerald-600">
           <CheckCircle2 className="h-3.5 w-3.5" />
-          WhatsApp follow-up sent{state.sentAt ? ` on ${when(state.sentAt)}` : ""}. The candidate can restart from their invite link.
+          interview_incomplete_reminder sent{state.sentAt ? ` on ${when(state.sentAt)}` : ""}. Candidate can resume from the invite link.
         </p>
       ) : (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            This candidate left the interview and has not received the WhatsApp message with their link to restart it.
+            Candidate left early. Auto-send uses WhatsApp template interview_incomplete_reminder with the resume link.
+            {sendable ? " If auto-send failed or was skipped, send it manually below." : ""}
           </p>
           {reason && (
             <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-300">
-              {state.error ? `Last attempt: ${state.error}` : reason}
+              {state.error ? `Last attempt failed: ${state.error}` : reason}
             </p>
           )}
           {sendable && (
             <Button size="sm" disabled={send.isLoading} onClick={() => send.mutate({ candidateId })}>
               {send.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-              Send follow-up on WhatsApp
+              Send reminder manually
             </Button>
           )}
         </div>

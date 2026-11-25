@@ -91,7 +91,7 @@ export default function SettingsTab() {
   const [integrityChecksEnabled, setIntegrityChecksEnabled] = useState<boolean>((interview as any).integrityChecksEnabled ?? false);
   const [livenessChallengesEnabled, setLivenessChallengesEnabled] = useState<boolean>((interview as any).livenessChallengesEnabled ?? false);
   const [autoLeftFollowup, setAutoLeftFollowup] = useState<boolean>(
-    (interview as { autoLeftFollowup?: boolean }).autoLeftFollowup ?? false,
+    (interview as { autoLeftFollowup?: boolean }).autoLeftFollowup ?? true,
   );
   const integrity = effectiveIntegrityConfig({
     antiCheatingEnabled,
@@ -521,8 +521,9 @@ export default function SettingsTab() {
             <div>
               <Label>Auto follow-up on abandon</Label>
               <p className="text-xs text-muted-foreground">
-                When on, candidates who leave mid-interview get the incomplete reminder (WhatsApp + email if
-                configured) with their resume link. Off by default — use Send follow-up manually.
+                On by default: abandon / leave early auto-sends interview_incomplete_reminder (WhatsApp +
+                email if configured) with the resume link. If send fails, the candidate screen shows the
+                error so you can send manually.
               </p>
             </div>
             <Switch checked={autoLeftFollowup} onCheckedChange={setAutoLeftFollowup} />
