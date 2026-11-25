@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { createLogger } from "@/lib/logger";
 import { admitParticipant, closeRoom, ensureRoom, liveKitConfig, mintRoomToken, removeParticipant } from "@/lib/livekit";
+import { deriveMaxRound } from "@/lib/round-two/round-filter";
 import {
   QUESTION_CATEGORIES,
   RECOMMENDATIONS,
@@ -232,6 +233,38 @@ export const roundTwoRouter = router({
       candidate: r.candidate as unknown as { id: string; name: string },
     }));
   }),
+
+  /** Meta for list round filters: max round + which candidates/interviews have R2. */
+  projectRoundMeta: protectedProcedure
+    .input(z.object({ projectId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      if (!(await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id))) {
+        throw new TRPCError({ code: "FORBIDDEN" });
+      }
+      const { data: rounds } = await ctx.supabase
+        .from("round_two_interviews")
+        .select('candidateId')
+        .eq("projectId", input.projectId)
+        .limit(1000);
+      const r2CandidateIds = [
+        ...new Set((rounds ?? []).map((r) => r.candidateId as string).filter(Boolean)),
+      ];
+      let r2InterviewIds: string[] = [];
+      if (r2CandidateIds.length > 0) {
+        const { data: cands } = await ctx.supabase
+          .from("candidates")
+          .select("interviewId")
+          .in("id", r2CandidateIds);
+        r2InterviewIds = [
+          ...new Set((cands ?? []).map((c) => c.interviewId as string).filter(Boolean)),
+        ];
+      }
+      return {
+        maxRound: deriveMaxRound(r2CandidateIds),
+        r2CandidateIds,
+        r2InterviewIds,
+      };
+    }),
 
   /** Rounds the caller was invited to (any org) — for external panelists' landing. */
   myInvites: protectedProcedure.query(async ({ ctx }) => {
