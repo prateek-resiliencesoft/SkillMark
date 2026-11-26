@@ -218,6 +218,31 @@ export async function authorizePreflightSource(opts: {
   return { ok: true, candidateId: null, sessionId: session.id as string, inviteToken: null };
 }
 
+
+/**
+ * Latest preflight event of one type for a session. `unavailable` means the
+ * events table could not be read (do not block the interview start).
+ */
+export async function latestPreflightEvent(
+  sessionId: string,
+  type: string,
+): Promise<{ status: string; createdAt: string } | null | "unavailable"> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabaseAdmin.from(eventsTable) as any)
+      .select("status, createdAt")
+      .eq("sessionId", sessionId)
+      .eq("type", type)
+      .order("createdAt", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return "unavailable";
+    return data ? { status: data.status as string, createdAt: data.createdAt as string } : null;
+  } catch {
+    return "unavailable";
+  }
+}
+
 export async function listPreflightEvents(candidateId: string): Promise<unknown[]> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

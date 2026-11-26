@@ -1,7 +1,8 @@
 import { checkRateLimit } from "@/lib/api-rate-limit";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { clientIp } from "@/lib/client-ip";
-import { recordPreflightEvent } from "@/lib/preflight-server";
+import { latestPreflightEvent, recordPreflightEvent } from "@/lib/preflight-server";
+import { canBeginInterviewFromPreflight } from "@/lib/screen-share";
 import { decideStart, inviteExpiredForSession } from "@/lib/session-link";
 import { abandonSession } from "@/lib/session-link-server";
 import { gateCandidateSession, isSessionId, rejectCrossSiteRequest } from "@/lib/session-access";
@@ -47,6 +48,20 @@ export async function POST(req: Request) {
     if (decision.action === "abandon_stale") {
       const ended = await abandonSession(sessionId, "DISCONNECTED");
       return NextResponse.json({ ok: false, expired: true, status: ended || "ABANDONED" }, { status: 409 });
+    }
+
+    // First begin only: a recorded screen_share/started event is required.
+    // Resume is left alone (the interview already began). If the events table
+    // cannot be read, do not block.
+    if (decision.action === "start") {
+      const latest = await latestPreflightEvent(sessionId, "screen_share");
+      const gateShare = canBeginInterviewFromPreflight({
+        eventsAvailable: latest !== "unavailable",
+        latestScreenShare: latest === "unavailable" ? null : latest,
+      });
+      if (!gateShare.ok) {
+        return NextResponse.json({ error: gateShare.error }, { status: 403 });
+      }
     }
 
     const now = new Date().toISOString();

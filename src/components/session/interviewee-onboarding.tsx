@@ -25,11 +25,10 @@ import {
   MIC_TEST_CHECK,
   micTestAudioSrc,
 } from "@/lib/voice/mic-test-check";
-import {
-    setCameraSkipped,
-    setScreenSkipped,
-    setStoredScreenStream,
-} from "@/lib/media-stream-store";
+import { getStoredScreenStream, setCameraSkipped, setStoredScreenStream } from "@/lib/media-stream-store";
+import { requestInterviewScreenShare } from "@/lib/screen-share-request";
+import { canUseDisplayMedia, screenShareErrorHelp } from "@/lib/screen-share";
+import { ScreenSharePrompt } from "@/components/session/screen-share-gate";
 import { cn } from "@/lib/utils";
 import {
     AlertCircle,
@@ -1222,107 +1221,63 @@ function MicCheck({
 function ScreenCheck({
   done,
   onDone,
-  allowSkip = true,
+  onLost,
 }: {
   done: boolean;
   onDone: () => void;
-  allowSkip?: boolean;
+  onLost?: () => void;
 }) {
   const report = usePreflightReport();
-  const [error, setError] = useState<string | null>(null);
+  const [errorKind, setErrorKind] = useState<"denied" | "not_entire" | "unsupported" | "failed" | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
-  const [showSkipDialog, setShowSkipDialog] = useState(false);
-
-  // getDisplayMedia is unavailable on iOS Safari and most mobile browsers
+  const [busy, setBusy] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
-  const autoSkippedRef = useRef(false);
 
   useEffect(() => {
-    const supported =
-      typeof navigator !== "undefined" &&
-      !!navigator.mediaDevices?.getDisplayMedia;
-    setIsSupported(supported);
-    if (!supported && !done && !autoSkippedRef.current) {
-      autoSkippedRef.current = true;
-      setScreenSkipped(true);
-      report("screen_share", "skipped", { reason: "unsupported" });
-      onDone();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setIsSupported(typeof navigator !== "undefined" && canUseDisplayMedia(navigator.mediaDevices));
+  }, []);
 
   const requestShare = useCallback(async () => {
-    setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-      });
-
-      // Validate that the user shared the entire screen, not a tab or window
-      const videoTrack = stream.getVideoTracks()[0];
-      const settings = videoTrack?.getSettings() as MediaTrackSettings & { displaySurface?: string };
-      if (settings.displaySurface && settings.displaySurface !== "monitor") {
-        stream.getTracks().forEach((t) => t.stop());
-        setError(
-          "Please share your entire screen, not a window or tab. Click \"Share Screen\" and select \"Entire Screen\"."
-        );
-        return;
+    setBusy(true);
+    setErrorKind(null);
+    const result = await requestInterviewScreenShare();
+    setBusy(false);
+    if (!result.ok) {
+      setErrorKind(result.kind);
+      if (result.kind === "denied" || result.kind === "failed") {
+        report("screen_share", "denied");
+        report("error", "error", { code: result.kind, source: "screen" });
       }
-
-      const videoEl = document.createElement("video");
-      videoEl.srcObject = stream;
-      videoEl.muted = true;
-      videoEl.playsInline = true;
-      await videoEl.play();
-
-      await new Promise((r) => setTimeout(r, 300));
-
-      const canvas = document.createElement("canvas");
-      canvas.width = videoEl.videoWidth;
-      canvas.height = videoEl.videoHeight;
-      canvas.getContext("2d")?.drawImage(videoEl, 0, 0);
-      setThumbnail(canvas.toDataURL("image/jpeg", 0.7));
-
-      // Keep the stream alive for the interview recording to reuse
-      setStoredScreenStream(stream);
-      videoEl.srcObject = null;
-      videoTrack?.addEventListener("ended", () => {
-        report("screen_share", "stopped");
-      });
-      report("screen_share", "started");
-      onDone();
-    } catch (err) {
-      const code = mediaErrorCode(err);
-      report("screen_share", "denied");
-      report("error", "error", { code, source: "screen" });
-      setError("Screen capture was denied or cancelled.");
+      return;
     }
-  }, [onDone, report]);
+
+    const stream = result.stream;
+    const videoEl = document.createElement("video");
+    videoEl.srcObject = stream;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    await videoEl.play().catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    const canvas = document.createElement("canvas");
+    canvas.width = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+    canvas.getContext("2d")?.drawImage(videoEl, 0, 0);
+    if (canvas.width > 0 && canvas.height > 0) setThumbnail(canvas.toDataURL("image/jpeg", 0.7));
+    videoEl.srcObject = null;
+
+    setStoredScreenStream(stream);
+    stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+      report("screen_share", "stopped");
+      if (getStoredScreenStream() === stream) setStoredScreenStream(null);
+      setThumbnail(null);
+      onLost?.();
+    });
+    report("screen_share", "started");
+    onDone();
+  }, [onDone, onLost, report]);
 
   if (!isSupported) {
-    return (
-      <Card className="overflow-hidden">
-        <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-start">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
-              <Monitor className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <div className="flex-1 space-y-1">
-              <p className="text-sm font-medium">Screen sharing unavailable</p>
-              <p className="text-xs text-muted-foreground">
-                Screen sharing requires a desktop browser (Chrome recommended).
-                This step has been automatically skipped on your device.
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center self-start pt-0.5">
-            <span className="flex items-center gap-1.5 text-sm font-medium text-secondary-600 dark:text-secondary-400">
-              <CheckCircle2 className="h-4 w-4" />
-              Skipped
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    );
+    return <ScreenSharePrompt />;
   }
 
   return (
@@ -1347,45 +1302,29 @@ function ScreenCheck({
             )}
           </div>
           {!done && (
-            <Button size="sm" onClick={requestShare} className="w-full">
+            <Button size="sm" onClick={() => void requestShare()} className="w-full" disabled={busy}>
               <Monitor className="mr-1.5 h-3.5 w-3.5" />
-              Share Screen
+              {errorKind ? "Retry" : "Share Screen"}
             </Button>
           )}
         </div>
 
         <div className="flex-1 space-y-2">
           <p className="text-sm font-medium">
-            Screen capture requires authorization.
+            Screen sharing is required for this interview.
           </p>
           <p className="text-xs text-muted-foreground">
             After clicking &quot;Share Screen&quot;, please select{" "}
             <span className="font-medium text-foreground">
               &quot;Entire Screen&quot;
             </span>{" "}
-            in the pop-up window and click &quot;Share&quot;.
+            in the pop-up window and click &quot;Share&quot;. You cannot continue without it.
           </p>
-          {error && (
-            <div className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              <span>{error}</span>
-              <button type="button" className="ml-auto font-medium underline" onClick={requestShare}>
-                Retry
-              </button>
+          {errorKind && (
+            <div className="flex items-start gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{screenShareErrorHelp(errorKind)}</span>
             </div>
-          )}
-          {allowSkip && !error && !done && (
-            <p className="text-xs text-muted-foreground">
-              Can&apos;t share screen?{" "}
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
-                Skip
-              </button>
-            </p>
-          )}
-          {!allowSkip && !error && !done && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              Screen sharing is required for this interview.
-            </p>
           )}
         </div>
 
@@ -1403,24 +1342,6 @@ function ScreenCheck({
           )}
         </div>
       </CardContent>
-      <AlertDialog open={showSkipDialog} onOpenChange={setShowSkipDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Skip screen sharing?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Skipping screen sharing is not recommended. Screen capture is used
-              to monitor your interview environment. Skipping may affect your
-              interview results.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setScreenSkipped(true); report("screen_share", "skipped"); onDone(); }}>
-              Skip anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Card>
   );
 }
@@ -1467,6 +1388,11 @@ function OnboardingBody({
   const allChecksDone = cameraDone && micDone && screenDone && (!multiLanguage || !onLanguageChange || !!candidateLanguage);
 
   const handleComplete = useCallback(() => {
+    if (!getStoredScreenStream()) {
+      setScreenDone(false);
+      setStep("checklist");
+      return;
+    }
     report("interview_started", "done");
     setStarting(true);
     onComplete();
@@ -1730,7 +1656,7 @@ function OnboardingBody({
         )}
         <CameraCheck done={cameraDone} onDone={() => setCameraDone(true)} allowSkip={!antiCheatingEnabled} />
         <MicCheck done={micDone} onDone={() => setMicDone(true)} language={effectiveLanguage} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
-        <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} allowSkip={!antiCheatingEnabled} />
+        <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} onLost={() => setScreenDone(false)} />
 
         <div className="sticky bottom-0 -mx-4 flex items-center justify-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-4 sm:backdrop-blur-none">
           <Button variant="outline" onClick={() => setStep("info")}>
