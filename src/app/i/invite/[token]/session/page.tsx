@@ -6,6 +6,7 @@ import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
 import { StrikeBadge } from "@/components/session/strike-badge";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding } from "@/components/session/interviewee-onboarding";
+import { ScreenShareGate } from "@/components/session/screen-share-gate";
 import { PreparingScreen } from "@/components/session/preparing-screen";
 import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { Card, CardContent } from "@/components/ui/card";
@@ -257,7 +258,7 @@ export default function InviteSessionPage() {
     };
 
     return (
-      <>
+      <ScreenShareGate sessionId={session.id} inviteToken={token}>
         <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
@@ -276,12 +277,12 @@ export default function InviteSessionPage() {
           }}
           videoMode={!!interview.videoEnabled}
         />
-      </>
+      </ScreenShareGate>
     );
   }
 
   return (
-    <>
+    <ScreenShareGate sessionId={session.id} inviteToken={token}>
       <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
       <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
@@ -297,6 +298,6 @@ export default function InviteSessionPage() {
         durationMinutes={interview.timeLimitMinutes ?? undefined}
         onComplete={handleComplete}
       />
-    </>
+    </ScreenShareGate>
   );
 }

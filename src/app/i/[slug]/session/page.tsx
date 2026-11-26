@@ -6,6 +6,7 @@ import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
 import { StrikeBadge } from "@/components/session/strike-badge";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding, PreviewWrapper } from "@/components/session/interviewee-onboarding";
+import { ScreenShareGate } from "@/components/session/screen-share-gate";
 import { IntervieweeTourOverlay } from "@/components/session/interviewee-tour-overlay";
 import { IntervieweeTourProvider } from "@/components/session/interviewee-tour-provider";
 import { CandidateThankYou } from "@/components/session/candidate-end-screens";
@@ -258,7 +259,7 @@ export default function SlugSessionPage() {
     };
 
     return (
-      <>
+      <ScreenShareGate optional={isPreview} sessionId={sessionId ?? undefined}>
         <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
         <StrikeBadge sessionId={sessionId!} enabled={antiCheatingEnabled} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
@@ -276,12 +277,12 @@ export default function SlugSessionPage() {
           onComplete={handleComplete}
           videoMode={isPreview ? false : !!interview.data.videoEnabled}
         />
-      </>
+      </ScreenShareGate>
     );
   }
 
   return (
-    <>
+    <ScreenShareGate optional={isPreview} sessionId={sessionId ?? undefined}>
       <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
       <StrikeBadge sessionId={sessionId!} enabled={antiCheatingEnabled} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
@@ -306,6 +307,6 @@ export default function SlugSessionPage() {
         initialQuestionIndex={isResuming ? resumeQuestionIndex : undefined}
         onComplete={handleComplete}
       />
-    </>
+    </ScreenShareGate>
   );
 }

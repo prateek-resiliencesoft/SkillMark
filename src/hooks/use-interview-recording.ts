@@ -6,8 +6,8 @@ import {
     getStoredScreenStream,
     setStoredCameraStream,
     setStoredScreenStream,
+    subscribeScreenStream,
     wasCameraSkipped,
-    wasScreenSkipped,
 } from "@/lib/media-stream-store";
 import fixWebmDuration from "fix-webm-duration";
 import { reportSessionError } from "@/lib/session-error-report-client";
@@ -161,6 +161,23 @@ export function useInterviewRecording({
   useEffect(() => { cameraStreamRef.current = cameraStream; }, [cameraStream]);
   useEffect(() => { screenStreamRef.current = screenStream; }, [screenStream]);
 
+  // A mid-interview re-share writes the new stream to the store; pick it up
+  // so screenshots continue without restarting the recorder.
+  useEffect(() => {
+    const attach = () => {
+      const next = getStoredScreenStream();
+      if (next === screenStreamRef.current) return;
+      setScreenStream(next);
+      screenStreamRef.current = next;
+      const video = screenVideoRef.current;
+      if (video) {
+        video.srcObject = next;
+        if (next) video.play().catch(() => {});
+      }
+    };
+    return subscribeScreenStream(attach);
+  }, []);
+
   /** Acquire camera and screen streams, reusing stored streams from onboarding. */
   const acquireStreams = useCallback(async () => {
     // Reuse camera stream from onboarding if still active. Keep it in the
@@ -182,35 +199,17 @@ export function useInterviewRecording({
       }
     }
 
-    // Reuse screen stream from onboarding if still active. Keep it in the
-    // store so strike evidence can grab a frame at the same moment.
+    // Reuse the onboarding (or re-share) stream. Do not call getDisplayMedia
+    // here: it needs a user click, and the ScreenShareGate prompts for that.
     const storedScreen = getStoredScreenStream();
     if (storedScreen) {
       setScreenStream(storedScreen);
       screenStreamRef.current = storedScreen;
-
       storedScreen.getVideoTracks()[0]?.addEventListener("ended", () => {
         setScreenStream(null);
         screenStreamRef.current = null;
         setStoredScreenStream(null);
       });
-    } else if (!wasScreenSkipped()) {
-      try {
-        const screen = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-        });
-        setScreenStream(screen);
-        screenStreamRef.current = screen;
-        setStoredScreenStream(screen);
-
-        screen.getVideoTracks()[0]?.addEventListener("ended", () => {
-          setScreenStream(null);
-          screenStreamRef.current = null;
-          setStoredScreenStream(null);
-        });
-      } catch (err) {
-        log.warn("Screen share not available:", err);
-      }
     }
   }, []);
 
