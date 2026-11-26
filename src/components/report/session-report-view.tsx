@@ -312,7 +312,10 @@ export function ReportQuestions({ data }: { data: ReportData }) {
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <HelpCircle className="h-4 w-4 text-primary" /> Question by question
-            <Badge variant="secondary" className="ml-1 font-normal">{data.questions.length}</Badge>
+            <Badge variant="secondary" className="ml-1 font-normal">
+              {data.questions.length}
+              {data.questionsScored !== data.questions.length ? ` · ${data.questionsScored} scored` : ""}
+            </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">

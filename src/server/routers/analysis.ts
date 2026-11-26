@@ -1,3 +1,5 @@
+import { loadAllBankQuestionsForExclusion } from "@/lib/auto-include-premade";
+import { collectExcludedScoreTexts } from "@/lib/premade-sections";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { effectiveDurationSeconds, lastMessageAt } from "@/lib/session-activity";
 import { assessIntegrity, type IntegritySignal } from "@/lib/integrity/signals";
@@ -68,7 +70,7 @@ export const analysisRouter = router({
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select(
-          `*, interview:interviews!inner(userId, title, objective, language, projectId, project:projects!inner(organizationId)), messages(*)`,
+          `*, interview:interviews!inner(userId, title, objective, language, projectId, project:projects!inner(organizationId), questions(text, order, type, description, validationRules)), messages(*)`,
         )
         .eq("id", input.sessionId)
         .order("timestamp", { referencedTable: "messages", ascending: true })
@@ -86,6 +88,7 @@ export const analysisRouter = router({
         language?: string | null;
         projectId: string;
         project: { organizationId: string };
+        questions?: Array<{ text: string; order: number; type?: string | null; description?: string | null; validationRules?: unknown }> | null;
       };
 
       const membership = await getOrgMembership(ctx.supabase, interview.project.organizationId, ctx.user.id);
@@ -174,8 +177,22 @@ export const analysisRouter = router({
       const rawSignals = (session as Record<string, unknown>).integritySignals;
       const integritySignals = (Array.isArray(rawSignals) ? rawSignals : []) as IntegritySignal[];
 
+      // Saved questions + preset/bank texts so the report lists every question asked (HR / general ones unscored).
+      let bankQuestions: Array<{ text: string; sectionName: string }> = [];
+      try {
+        bankQuestions = await loadAllBankQuestionsForExclusion(supabaseAdmin, organizationId);
+      } catch {
+        /* the report still lists the saved questions */
+      }
+      const interviewQuestions = (interview.questions ?? [])
+        .slice()
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const excludedQuestionTexts = collectExcludedScoreTexts(interviewQuestions, bankQuestions);
+
       return {
         organizationId,
+        interviewQuestions,
+        excludedQuestionTexts,
         interviewTitle: interview.title,
         interviewObjective: interview.objective,
         interviewLanguage: interview.language ?? null,

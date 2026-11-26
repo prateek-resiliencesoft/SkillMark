@@ -140,7 +140,7 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
     ) : null,
     questions: data.questions.length ? (
       <div>
-        <div data-pdf-block><H>Per-question details</H></div>
+        <div data-pdf-block><H>Per-question details</H>{data.questionsScored !== data.questions.length && <div style={{ color: "#6b7280", fontSize: fs - 1, marginBottom: 6 }}>{data.questions.length} questions asked · {data.questionsScored} scored (HR / general questions are not scored)</div>}</div>
         {data.questions.map((q) => {
           const unscored = q.excludeFromScore || q.score === null;
           return (
@@ -309,7 +309,7 @@ export const ReportDocument = forwardRef<HTMLDivElement, ReportDocumentProps>(fu
             <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
               {([
                 ["Duration", data.durationMinutes != null ? `${data.durationMinutes} min` : "—"],
-                ["Questions", String(data.questionsAnswered)],
+                ["Questions", data.questionsScored !== data.questions.length ? `${data.questionsAnswered} (${data.questionsScored} scored)` : String(data.questionsAnswered)],
                 ["Integrity strikes", `${data.integrityStrikes}/${data.maxStrikes}`],
                 ["Date", data.createdAt ? new Date(data.createdAt).toLocaleDateString() : "—"],
               ] as const).map(([k, v]) => (

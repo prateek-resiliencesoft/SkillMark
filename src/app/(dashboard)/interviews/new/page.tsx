@@ -40,6 +40,7 @@ import {
   excludeFromScoreValidationRules,
   flattenEnabledBankList,
 } from "@/lib/premade-sections";
+import { sortGeneralQuestions } from "@/lib/question-order";
 import { trpc } from "@/lib/trpc/client";
 import {
   Files,
@@ -142,11 +143,13 @@ export default function NewInterviewPage() {
         autoLeftFollowup,
       });
 
-      const picked = selectedPremadePayload(
+      const pickedRaw = selectedPremadePayload(
         enabledPremadeQuestions,
         selectedPremadeIds,
         includePremade,
       );
+      // Canonical order: intro, CTC, location, bond, … (kept as saved order).
+      const picked = pickedRaw ? sortGeneralQuestions(pickedRaw) : pickedRaw;
       if (picked?.length) {
         for (let i = 0; i < picked.length; i++) {
           const q = picked[i];

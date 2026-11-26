@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { orderGeneralFirst } from "@/lib/question-order";
 
 /**
  * Conditional skip rules for interview / bank questions.
@@ -170,5 +171,6 @@ export function enforceExactPremadeQuestions<
   }
 
   const complementary = questions.filter((_, i) => !usedGenerated.has(i));
-  return [...premadeExact, ...complementary].map((q, i) => ({ ...q, order: i }));
+  // General block in the canonical order (intro, CTC, location, bond, …), then AI Qs.
+  return orderGeneralFirst(premadeExact, complementary).map((q, i) => ({ ...q, order: i }));
 }
