@@ -29,6 +29,7 @@ import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
 import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
+import { RoundSwitcher, RoundTwoPanel, useCandidateRounds } from "@/components/candidates/round-details";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -323,6 +324,23 @@ export function CandidateDetailSheet({
   const fmtDur = (s: number | null | undefined) =>
     s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
+  // Round switcher: Round 1 (voice session) vs Round 2 (live panel). Defaults to the latest round in progress / done.
+  const r1Facts = useMemo(
+    () => ({
+      status: (c?.session?.status as string | undefined) ?? null,
+      score: score ?? null,
+      decision:
+        c?.decisionStatus === "approved" || c?.session?.mediaReviewStatus === "approved"
+          ? "approved"
+          : c?.decisionStatus === "rejected" || c?.session?.mediaReviewStatus === "declined"
+            ? "rejected"
+            : ((c?.decisionStatus as string | undefined) ?? null),
+      hasSession: !!c?.session && sessionStatus !== "NOT_STARTED",
+    }),
+    [c?.session?.status, c?.session?.mediaReviewStatus, c?.session, c?.decisionStatus, score, sessionStatus],
+  );
+  const rounds = useCandidateRounds(c ? candidateId : null, r1Facts);
+  const showRound2 = !editing && rounds.active === 2;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
   const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
   const linkExpired = isLinkExpired({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
@@ -463,6 +481,8 @@ export function CandidateDetailSheet({
             )}
           </SheetHeader>
 
+          {c && !editing && <RoundSwitcher state={rounds} />}
+
           <div className="flex-1 overflow-y-auto p-5 code-scrollbar">
             {q.isError && <p className="text-sm text-destructive">{q.error.message}</p>}
             {c && editing && (
@@ -477,7 +497,8 @@ export function CandidateDetailSheet({
                 <CandidateFormFields form={form} setForm={setForm} idPrefix="edit-" errors={Object.keys(errors).length ? errors : {}} />
               </div>
             )}
-            {c && !editing && (
+            {c && showRound2 && <RoundTwoPanel state={rounds} onSchedule={() => setRoundTwoOpen(true)} />}
+            {c && !editing && !showRound2 && (
               <div className="space-y-4">
                 {/* Invite link */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
@@ -903,7 +924,10 @@ export function CandidateDetailSheet({
         open={roundTwoOpen}
         onOpenChange={(o) => {
           setRoundTwoOpen(o);
-          if (!o) void utils.roundTwo.forCandidate.invalidate({ candidateId: candidateId ?? "" });
+          if (!o) {
+            void utils.roundTwo.forCandidate.invalidate({ candidateId: candidateId ?? "" });
+            void utils.roundTwo.roundsForCandidate.invalidate({ candidateId: candidateId ?? "" });
+          }
         }}
         candidateId={candidateId ?? undefined}
         sessionId={(c?.session?.id as string | undefined) ?? (c?.sessionId as string | undefined)}

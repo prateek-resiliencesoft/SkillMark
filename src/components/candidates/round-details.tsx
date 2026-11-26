@@ -143,7 +143,11 @@ export function RoundSwitcher({
             <ArrowLeft className="mr-1 h-4 w-4" /> Back
           </Button>
         )}
-        <div role="tablist" aria-label="Interview round" className="inline-flex flex-wrap gap-1.5 rounded-xl bg-muted/50 p-1">
+        <div
+          role="tablist"
+          aria-label="Interview round"
+          className={cn("inline-flex flex-wrap gap-1.5 rounded-xl bg-muted/50 p-1", tabs.length < 2 && !loading && "hidden")}
+        >
           {tabs.map((t) => {
             const selected = t.round === active;
             return (
