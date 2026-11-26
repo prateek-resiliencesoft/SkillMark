@@ -21,6 +21,7 @@ import { buildCandidateFocusSection, type CandidateFocus } from "../src/lib/ai/p
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
 import { LISTENING_RULES } from "../src/lib/ai/prompts/listening";
 import {
+  HINGLISH_CUE_NOTE,
   detectLanguageSwitch,
   getGeminiInterviewLanguageCode,
   interviewLanguageRequirement,
@@ -28,8 +29,10 @@ import {
   isMultiLanguage,
   multiLanguageRequirement,
   normalizeCandidateLanguage,
+  resolveInterviewLanguage,
   type CandidateLanguage,
 } from "../src/lib/interview-language";
+import { cleanCandidateTranscript, transcriptionLanguageHints } from "../src/lib/voice/transcript-filter";
 import { devanagariToRoman } from "../src/lib/transcript/transliterate";
 import { isQuotaError, keyChainExhaustedError, splitKeyList } from "../src/lib/ai/key-chain";
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
@@ -38,21 +41,28 @@ import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "..
 import {
   emptyLedger,
   isLocked,
+  earlyAnsweredQuestions,
+  isMetaReply,
+  metaComplaintKind,
   isPresenceAck,
   isSubstantiveCandidateAnswer,
   isSufficientShortAnswer,
   ledgerPromptBlock,
   ledgerRefreshCue,
   looksLikeReask,
+  metaReplyCue,
   noReaskBehaviorRules,
   reaskCorrectionCue,
   recordAnswer,
+  reopenQuestion,
+  reopenQuestionCue,
   silencePresenceAckCue,
   type AnsweredLedger,
 } from "../src/lib/voice/answered-ledger";
-import { candidateAskedToGoBack, decideQuestionMove, nextOpenQuestion } from "../src/lib/voice/question-progress";
+import { candidateAskedToGoBack, decideQuestionMove, findReopenIndex, nextOpenQuestion } from "../src/lib/voice/question-progress";
+import { TurnGate } from "../src/lib/voice/turn-gate";
 import { askedBefore, resumeBehaviorRule, resumeCue, shouldResume, type ResumeHints, type ResumeState } from "../src/lib/voice/resume-prompt";
-import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, SILENCE_PROMPTS, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
+import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, silencePromptLine, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
 import { stuckTurnReason } from "../src/lib/voice/turn-guard";
 import { ENDPOINTING_CONFIG } from "../src/lib/voice/endpointing-config";
 import {
@@ -134,6 +144,13 @@ const TTS_BARGE_IN_RMS = 2400;
 // Client jitter buffer adds ~150-250ms; room echo decays after that.
 const ECHO_TAIL_MS = 700;
 const TTS_BARGE_IN_FRAME_COUNT = 3;
+
+/** Terms speech recognition should spell right in Indian (Hinglish) interviews. */
+const TRANSCRIPTION_VOCABULARY = [
+  "CTC", "LPA", "lakhs per annum", "lakh", "crore", "in-hand", "notice period", "serving notice",
+  "relocate", "relocation", "B.Tech", "M.Tech", "MCA", "React", "Node.js", "JavaScript", "TypeScript",
+  "Python", "Java", "API", "database", "framework", "project", "experience",
+];
 
 // Whisper commonly hallucinates these phrases on silence / low-energy audio.
 const WHISPER_HALLUCINATIONS = new Set([
@@ -336,6 +353,13 @@ function buildSystemPrompt(
   ledger: AnsweredLedger = emptyLedger(),
 ): string {
   const isZh = isChineseInterview(ctx);
+  // Hindi / multi-language interviews ask English-written questions in the
+  // session language: "read VERBATIM" made the model read the English text and
+  // then say it again in Hinglish (two languages, the question twice).
+  const translates = isMultiLanguage(ctx.language) || resolveInterviewLanguage(ctx.language) === "hi";
+  const askRule = translates
+    ? "ask it ONCE in the interview language and style from Language Requirements (translated naturally, same meaning, technical terms in English). Never read the English text aloud and never repeat the question in a second language"
+    : "speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list";
   const sorted = ctx.questions.sort((a, b) => a.order - b.order);
   const lockedBlock = ledgerPromptBlock(ledger, isZh);
   const noReask = noReaskBehaviorRules(isZh);
@@ -440,15 +464,15 @@ ${ctx.objective ? `- Objective: ${ctx.objective}` : ""}
 ## Questions
 ${questionList}
 ${lockedBlock ? `\n${lockedBlock}` : ""}
-## Your Behavior
+${translates ? `## Language (fixed for the whole interview — read first)\n- ${languageRules(ctx)}\n\n` : ""}## Your Behavior
 ${resume ? resumeBehaviorRule(resume, false) : `1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.`}
-2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
+2. When asking a scripted question, ${askRule}.
 3. If a question has a SKIP IF note and the participant already covered those topics earlier (e.g. in their introduction), skip it: call signal_question_change to the next index without asking it.
 4. For each question, follow up based on the participant's answers (up to ${maxFollowUps} follow-ups). Sound like a warm, patient human interviewer, not a rapid-fire questionnaire.
 5. When a question is sufficiently discussed, call the signal_question_change function to move forward. "Sufficiently discussed" means the participant has given a detailed, specific answer — NOT a vague statement like "I had many challenges" or "that's a good question." If their answer is vague, ask them to elaborate before moving on.
-6. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question. Ask the next scripted question VERBATIM.
+6. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question. Ask the next scripted question (see rule 2).
 5. After all questions are done, call signal_question_change with questionIndex=${sorted.length} (out of bounds), then give a brief wrap-up and farewell.
-6. Keep responses concise (1-3 sentences) and conversational. Speak at a calm, unhurried pace — slightly slower than normal conversation speed so the participant can follow easily. Use brief friendly bridges like "Thanks for sharing that", "I appreciate the context", or "That makes sense" when appropriate.
+6. Keep responses concise (1-3 sentences) and conversational. Speak at a calm, unhurried pace — slightly slower than normal conversation speed so the participant can follow easily. Use brief friendly bridges like "Thanks for sharing that", "I appreciate the context", or "That makes sense" when appropriate${translates ? " (said in the interview's language style, e.g. \"Accha, samajh gaya\" / \"Thanks, yeh helpful tha\")" : ""}.
 7. If the participant asks to "skip" or "next question", briefly acknowledge and immediately call signal_question_change with userRequested=true.
 8. If the participant asks for "previous question", call signal_question_change with the previous question's index and userRequested=true.
 
@@ -585,6 +609,8 @@ interface GeminiConnectOpts {
    * activityStart / activityEnd from Silero VAD + smart endpointing.
    */
   clientVad?: boolean;
+  /** inputAudioTranscription.languageCodes (e.g. hi-IN + en-IN for Hindi). Empty = auto-detect. */
+  transcriptionLanguages?: string[];
   gender?: string;
 }
 
@@ -595,7 +621,15 @@ async function connectGemini(opts: GeminiConnectOpts): Promise<WebSocket> {
   let sawQuota = false;
   for (let i = 0; i < keys.length; i++) {
     try {
-      const ws = await connectGeminiWithKey(opts, keys[i].key);
+      let ws: WebSocket;
+      try {
+        ws = await connectGeminiWithKey(opts, keys[i].key);
+      } catch (err) {
+        // A model that rejects the transcription hints must not break the interview.
+        if (!opts.transcriptionLanguages?.length || isQuotaError(err) || !/1007|invalid|unknown name|language|vocabulary/i.test(err instanceof Error ? err.message : String(err))) throw err;
+        log.warn(`Gemini setup failed with transcription hints (${err instanceof Error ? err.message.slice(0, 160) : err}) — retrying without them`);
+        ws = await connectGeminiWithKey({ ...opts, transcriptionLanguages: [] }, keys[i].key);
+      }
       log.info(`Gemini Live connected using ${keys[i].source} key`);
       return ws;
     } catch (err) {
@@ -644,14 +678,18 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
                 disabled: false,
                 startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
                 endOfSpeechSensitivity: "END_SENSITIVITY_LOW",
-                prefixPaddingMs: 300,
+                prefixPaddingMs: 500,
                 // Client Silero owns pacing when available; this is only the
-                // no-VAD fallback — keep it snappy for clear answers.
-                silenceDurationMs: 2000,
+                // no-VAD fallback — long enough that a mid-answer pause does not cut the candidate off.
+                silenceDurationMs: 3000,
               },
               activityHandling: "NO_INTERRUPTION",
             },
-        inputAudioTranscription: {},
+        // Without a language hint Gemini auto-detects per utterance: Hindi came
+        // back as Urdu / other scripts or invented text on short or noisy audio.
+        inputAudioTranscription: opts.transcriptionLanguages?.length
+          ? { languageCodes: opts.transcriptionLanguages, customVocabulary: TRANSCRIPTION_VOCABULARY }
+          : {},
         outputAudioTranscription: {},
         sessionResumption: opts.resumeHandle ? { handle: opts.resumeHandle } : {},
         contextWindowCompression: { slidingWindow: {} },
@@ -798,6 +836,7 @@ async function handleInterview(
   const sortedQuestions = ctx.questions.sort((a, b) => a.order - b.order);
   const isZh = isChineseInterview(ctx);
   const langCode = languageCode(ctx);
+  const transcriptionLanguages = transcriptionLanguageHints(ctx.language);
   const multiLanguage = isMultiLanguage(ctx.language);
   if (multiLanguage) ctx.candidateLanguage = normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en";
   let currentQuestionIndex = Math.min(Math.max(0, ctx.startQuestionIndex ?? 0), Math.max(0, sortedQuestions.length - 1));
@@ -832,7 +871,14 @@ async function handleInterview(
   let userWordsSinceModelChunk = false;
   let playbackEndsAt = 0;      // estimated time the browser finishes playing
   let lastUserSpeech = 0;
+  /** The candidate gave a REAL answer to the current question (meta replies never count). */
   let userSpokeThisQuestion = false;
+  /** The interviewer has asked the current question; speech before that is not its answer. */
+  let questionPosed = resumingAtStart;
+  /** Candidate words that count toward the current question's answer. */
+  let answerAccum = "";
+  /** No back-to-back interviewer turns without a candidate turn or a relay cue in between. */
+  const gate = new TurnGate();
   let checkInAskedThisQuestion = false;
   let interviewDone = false;
   let pendingComplete = false;
@@ -854,6 +900,9 @@ async function handleInterview(
   /** When the current client turn was opened, and the last browser audio with voice in it. */
   let clientTurnOpenedAt = 0;
   let lastVoicedAudioAt = 0;
+  /** Browser audio since the last finished candidate turn (all / voice-level), for the silence check on transcripts. */
+  let turnAudioMs = 0;
+  let turnVoicedMs = 0;
   /** The AI's speech was cut (barge-in / reconnect) and it hasn't spoken again yet. */
   let aiCutPending = false;
   let aiCutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -988,12 +1037,24 @@ async function handleInterview(
       }
       sayText(
         `[SYSTEM] The participant has finished answering${last ? ` (they said: "${last.slice(0, 300)}")` : ""}. `
-        + `We are on question ${currentQuestionIndex + 1}: "${q?.text ?? ""}". Respond to them now out loud: briefly acknowledge the answer, then either ask one short follow-up or move on with signal_question_change.`,
+        + `We are on question ${currentQuestionIndex + 1}: "${q?.text ?? ""}". Respond to them now out loud in ONE short turn with at most ONE question. `
+        + (userSpokeThisQuestion
+          ? "If the answer is complete, briefly acknowledge it and move on with signal_question_change; otherwise ask one short follow-up."
+          : "They have NOT answered this question yet: stay on it, do not move on and do not say you are moving on."),
       );
       armResponseWatchdog("after_nudge");
     }, RESPONSE_WATCHDOG_MS);
   }
-  const sayText = (text: string) => gemSend({ realtimeInput: { text } });
+  /** The relay asks the model to speak: the one way (besides a candidate turn) an interviewer turn is allowed. */
+  /** The interviewer is speaking Hindi (Hinglish) right now. */
+  const speaksHindi = () =>
+    multiLanguage ? currentLanguage() === "hi" : resolveInterviewLanguage(ctx.language) === "hi";
+  const sayText = (text: string) => {
+    gate.cue();
+    // Cues are written in English; without this the model read them out in
+    // English in the middle of a Hinglish interview.
+    gemSend({ realtimeInput: { text: speaksHindi() ? `${text}${HINGLISH_CUE_NOTE}` : text } });
+  };
   const addContext = (text: string) =>
     gemSend({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
 
@@ -1053,9 +1114,28 @@ async function handleInterview(
   }
 
   function flushUser() {
-    const t = userBuf.trim();
+    const raw = userBuf.trim();
     userBuf = "";
-    if (!t) return;
+    const audioMs = turnAudioMs;
+    const voicedMs = turnVoicedMs;
+    turnAudioMs = 0;
+    turnVoicedMs = 0;
+    if (!raw) return;
+    // Speech-to-text invents text on silence, noise and the interviewer's own
+    // echo: never show, save or count it as an answer.
+    const lastAssistant = [...history].reverse().filter((h) => h.role === "assistant").slice(0, 2).map((h) => h.text);
+    if (modelBuf.trim()) lastAssistant.push(modelBuf);
+    const cleaned = cleanCandidateTranscript(raw, {
+      language: multiLanguage ? (currentLanguage() === "hi" ? "hi" : "en") : ctx.language,
+      recentAssistant: lastAssistant,
+      ...(clientVadEnabled && audioMs > 0 ? { audioMs, voicedMs } : {}),
+    });
+    if (cleaned.dropped) {
+      log.info(`Dropped candidate transcript (${cleaned.dropped}): ${JSON.stringify(raw.slice(0, 120))}`);
+      send({ type: "asr_dropped", reason: cleaned.dropped });
+      return;
+    }
+    const t = cleaned.text;
     send({ type: "asr_ended", text: t });
     pushHistory("user", t);
     log.info(`User: ${JSON.stringify(t)}`);
@@ -1072,19 +1152,112 @@ async function handleInterview(
       return;
     }
     awaitingSilencePresenceAck = false;
-    userSpokeThisQuestion = true;
-
-    // Lock EVERY scripted question once the candidate gives a real answer —
-    // not only screening CTC/relocate items.
-    if (isSubstantiveCandidateAnswer(t)) {
-      lockAnswer(currentQuestionIndex, t);
-    }
+    gate.candidateTurn();
+    const meta = noteCandidateWords(t, true);
 
     if (multiLanguage) {
       const asked = detectLanguageSwitch(t);
       if (asked) setCandidateLanguage(asked, "voice");
     }
-    if (!interviewDone) tryUserNavigation(t);
+    if (!interviewDone && !meta) tryUserNavigation(t);
+  }
+
+  /**
+   * Count a candidate turn toward the current question. Only real speech that
+   * follows the question and has content locks it; interviewer words, system
+   * cues and meta replies ("wait", "I haven't answered", "can you repeat")
+   * never do. Returns true for a meta reply.
+   */
+  function noteCandidateWords(t: string, cue: boolean): boolean {
+    const q = sortedQuestions[currentQuestionIndex];
+    if (isMetaReply(t)) {
+      if (cue) handleMetaReply(t);
+      return true;
+    }
+    lockEarlyAnswers(t);
+    // Spoken before the interviewer asked this question: not its answer.
+    if (!questionPosed) return false;
+    answerAccum = `${answerAccum} ${t}`.trim();
+    if (isSubstantiveCandidateAnswer(answerAccum, q?.text ?? "")) {
+      userSpokeThisQuestion = true;
+      lockAnswer(currentQuestionIndex, answerAccum);
+    }
+    return false;
+  }
+
+
+  /**
+   * The candidate already answered a LATER screening question (expected / current
+   * CTC, notice period, relocation): lock it so it is never asked again and the
+   * forward move skips it.
+   */
+  function lockEarlyAnswers(t: string) {
+    const later = earlyAnsweredQuestions(t, sortedQuestions, currentQuestionIndex, (i) => completed.has(i) || isLocked(answeredLedger, i));
+    for (const i of later) {
+      completed.add(i);
+      lockAnswer(i, t, false);
+      log.info(`Q${i + 1} already answered early — locked, will not be asked`);
+    }
+    if (later.length) {
+      const cue = ledgerRefreshCue(answeredLedger, isZh);
+      if (cue) addContext(cue);
+    }
+  }
+
+  /** "You skipped / I haven't answered": go back to that question (only it), then carry on in order. */
+  function handleMetaReply(t: string) {
+    const { complaint, skipped } = metaComplaintKind(t);
+    const cur = sortedQuestions[currentQuestionIndex];
+    if (!complaint) {
+      sayText(metaReplyCue(currentQuestionIndex, cur?.text ?? "", isZh));
+      return;
+    }
+    const idx = findReopenIndex(currentQuestionIndex, (i) => isLocked(answeredLedger, i), skipped);
+    if (idx === null) {
+      sayText(metaReplyCue(currentQuestionIndex, cur?.text ?? "", isZh));
+      return;
+    }
+    if (idx !== currentQuestionIndex) reopenTo(idx);
+    sayText(reopenQuestionCue(idx, sortedQuestions[idx]?.text ?? "", isZh));
+  }
+
+  /** Back to a question that was never really answered; moving forward again lands on the next unasked one. */
+  function reopenTo(idx: number) {
+    completed.delete(idx);
+    answeredLedger = reopenQuestion(answeredLedger, idx);
+    send({ type: "transitioning", direction: "previous", auto: true });
+    currentQuestionIndex = idx;
+    questionEnteredAt = Date.now();
+    userSpokeThisQuestion = false;
+    answerAccum = "";
+    questionPosed = false;
+    checkInAskedThisQuestion = false;
+    reaskCorrectedUntil = Date.now() + 8_000;
+    send({ type: "question_change", questionIndex: idx, totalQuestions: sortedQuestions.length, auto: true });
+    log.info(`↩ Reopened Q${idx + 1} (participant said it was skipped / not answered)`);
+  }
+
+  /** The interviewer's newest words ask something the candidate has not answered yet. */
+  function interviewerAwaitingAnswer(): boolean {
+    let spoken = modelBuf;
+    for (let i = history.length - 1; i >= 0 && history[i].role === "assistant"; i--) spoken = `${history[i].text} ${spoken}`;
+    return /[?？]/.test(spoken);
+  }
+
+  /** First output of a model turn: allowed only after a candidate turn or a relay cue. */
+  function admitModelOutput(): boolean {
+    if (Date.now() - lastVoicedAudioAt < 6_000) gate.candidateTurn();
+    const wasSuppressing = gate.isSuppressing;
+    const ok = gate.modelOutput();
+    if (!ok && !wasSuppressing) {
+      log.warn(`Suppressed an interviewer turn with no candidate answer in between (Q${currentQuestionIndex + 1})`);
+      logSessionError(sessionId, new Error("Interviewer tried to speak twice in a row — second turn suppressed"), "info", {
+        stage: "back_to_back_turn",
+        questionIndex: currentQuestionIndex,
+      });
+    }
+    if (ok) questionPosed = true;
+    return ok;
   }
 
   function flushModelText(force: boolean) {
@@ -1177,12 +1350,11 @@ async function handleInterview(
 
   /** Returns false when nothing is left to ask (the interview is ending instead). */
   function moveTo(idx: number, auto: boolean): boolean {
-    const priorUser = history.filter((h) => h.role === "user").map((h) => h.text);
+    const priorUser = history.filter((h) => h.role === "user" && !isMetaReply(h.text)).map((h) => h.text);
     // When advancing, skip questions already covered by earlier answers
     let resolved = idx;
     if (idx > currentQuestionIndex) {
-      const lastUser = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
-      lockAnswer(currentQuestionIndex, lastUser || "(answered)");
+      // Only a real answer locks a question (done when it was spoken); a skipped one is just left behind.
       completed.add(currentQuestionIndex);
       awaitingSilencePresenceAck = false;
       // Skip covered questions and ones already asked (e.g. after going back).
@@ -1203,6 +1375,8 @@ async function handleInterview(
     currentQuestionIndex = resolved;
     questionEnteredAt = Date.now();
     userSpokeThisQuestion = false;
+    answerAccum = "";
+    questionPosed = false;
     checkInAskedThisQuestion = false;
     send({
       type: "question_change",
@@ -1257,6 +1431,10 @@ async function handleInterview(
       let result: string;
       if (c.name !== "signal_question_change") {
         result = "Unknown function.";
+      } else if (!gate.canSpeak()) {
+        // Nobody has answered since the interviewer's last turn: this call is a second turn in a row.
+        log.warn("Rejected question change: no candidate turn since the interviewer last spoke");
+        result = "Rejected: the participant has not said anything since your last message. Do not speak and do not move on: wait silently for their answer.";
       } else {
         const args = (c.args || {}) as { questionIndex?: number; userRequested?: boolean };
         const newIdx = typeof args.questionIndex === "number" ? args.questionIndex : currentQuestionIndex + 1;
@@ -1264,18 +1442,20 @@ async function handleInterview(
         log.info(`Gemini called signal_question_change → Q${newIdx + 1}${userRequested ? " (user requested)" : ""}`);
         // Server-side state decides: no going back or re-asking unless the
         // candidate's own words asked for it.
-        const lastUser = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
+        const lastUser = [...history].reverse().find((h) => h.role === "user" && !isMetaReply(h.text))?.text ?? "";
         const qText = sortedQuestions[currentQuestionIndex]?.text ?? "";
-        const shortOk = isSufficientShortAnswer(qText, lastUser);
+        // A sufficient short answer must be a REAL answer to this question (never a meta reply).
+        const shortOk = userSpokeThisQuestion && isSufficientShortAnswer(qText, answerAccum);
         const decision = decideQuestionMove(
           {
             current: currentQuestionIndex,
             total: sortedQuestions.length,
             completed,
-            userSpokeThisQuestion: userSpokeThisQuestion || shortOk,
+            userSpokeThisQuestion,
             dwellMs: Date.now() - questionEnteredAt,
             // Screening short answers do not need the full dwell.
             minDwellMs: shortOk ? 0 : MIN_QUESTION_DWELL_MS,
+            openInterviewerQuestion: interviewerAwaitingAnswer(),
           },
           { target: newIdx, userRequested, candidateAskedBack: candidateAskedToGoBack(lastUser) },
         );
@@ -1286,10 +1466,12 @@ async function handleInterview(
           if (decision.reason !== "same") log.warn(`Rejected question change to Q${newIdx + 1} (${decision.reason})`);
         } else if (decision.end) {
           beginEnding();
+          gate.cue();
           result = "Interview is now complete. Please give a brief farewell.";
         } else if (moveTo(decision.target, true)) {
+          gate.cue(); // the continuation that asks the next question is allowed
           const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
-          result = `Moved to question ${currentQuestionIndex + 1} of ${sortedQuestions.length}: "${sortedQuestions[currentQuestionIndex]?.text}". Naturally transition and ask this question. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
+          result = `Moved to question ${currentQuestionIndex + 1} of ${sortedQuestions.length}: "${sortedQuestions[currentQuestionIndex]?.text}". Naturally transition and ask THIS question only: one question, nothing stacked on it. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
         } else {
           result = "All questions have been asked. Please give a brief farewell.";
         }
@@ -1323,10 +1505,12 @@ async function handleInterview(
       userTextSinceModel = true;
       userWordsSinceModelChunk = true;
       lastUserSpeech = Date.now();
+      gate.candidateTurn();
       send({ type: "asr", data: { results: [{ text: userBuf.trim() }] } });
     }
     if (sc.interrupted) {
       log.info("Gemini: interrupted (barge-in)");
+      gate.modelTurnEnded();
       // Send the text spoken so far BEFORE "interrupt" so the browser saves it.
       flushModelText(true);
       send({ type: "interrupt" });
@@ -1343,6 +1527,7 @@ async function handleInterview(
       for (const p of parts) {
         const inline = p.inlineData;
         if (inline?.data && String(inline.mimeType || "").startsWith("audio/")) {
+          if (!admitModelOutput()) continue;
           closeStaleModelTurn();
           if (userBuf.trim()) flushUser();
           lastModelChunkAt = Date.now();
@@ -1361,7 +1546,7 @@ async function handleInterview(
         }
       }
     }
-    if (sc.outputTranscription?.text) {
+    if (sc.outputTranscription?.text && admitModelOutput()) {
       closeStaleModelTurn();
       if (userBuf.trim()) flushUser();
       lastModelChunkAt = Date.now();
@@ -1371,7 +1556,15 @@ async function handleInterview(
       modelPending = modelPending ? joinTranscriptChunk(modelPending, sc.outputTranscription.text) : sc.outputTranscription.text;
       if (modelAudioBytes > 0) flushModelText(false);
     }
-    if (sc.generationComplete || sc.turnComplete) {
+    // generationComplete comes BEFORE the last output-transcription chunks. Ending
+    // the turn there split one spoken reply into 2-3 saved interviewer lines (the
+    // late words became a "new" turn) — only turnComplete ends it.
+    if (sc.turnComplete) {
+      if (gate.modelTurnEnded()) {
+        // That turn was dropped (nobody answered): tell the model it was not heard so it waits.
+        addContext(`[SYSTEM] Your last message was NOT delivered because the participant has not answered since your previous turn. Do not refer to it and do not repeat it. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text ?? ""}". Wait for the participant.`);
+        return;
+      }
       if (modelBuf.trim() || modelAudioBytes > 0) endModelTurn();
       else if (sc.turnComplete && userBuf.trim()) {
         // Gemini closed the turn without saying anything back.
@@ -1407,6 +1600,8 @@ async function handleInterview(
     // Save what the AI said so far, then tell the browser (it saves its buffer on this).
     closeCutModelTurn(`reconnect:${why}`);
     send({ type: "session_reconnecting" });
+    // Forget stale permissions; the resume cue (or the candidate's pending words) grants the next turn.
+    gate.reset();
     // Finish the candidate's pending words now so they aren't glued to the next turn.
     if (userBuf.trim()) flushUser();
     const pendingUserAnswer = userTextSinceModel;
@@ -1416,7 +1611,7 @@ async function handleInterview(
         const handle = attempt === 1 && !opts.fresh ? resumeHandle : null;
         const vadForThisSocket = clientVadEnabled;
         const ws = await connectGemini({
-          apiKeys, langCode, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
+          apiKeys, langCode, transcriptionLanguages, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
           clientVad: vadForThisSocket,
           gender: ctx.aiGender,
           // Fresh or resumed, the new session must continue, never start over.
@@ -1492,7 +1687,12 @@ async function handleInterview(
     }
     if (msg.type === "audio" && msg.data) {
       const pcm = Buffer.from(msg.data as string, "hex");
-      if (pcm16Rms(pcm) >= RELAY_VOICE_RMS) lastVoicedAudioAt = Date.now();
+      const chunkMs = (pcm.length / 2 / 16_000) * 1000;
+      turnAudioMs += chunkMs;
+      if (pcm16Rms(pcm) >= RELAY_VOICE_RMS) {
+        lastVoicedAudioAt = Date.now();
+        turnVoicedMs += chunkMs;
+      }
       // Half-duplex echo guard when Gemini automatic VAD is in charge.
       // With client VAD the browser already gates echo / barge-in, so we
       // forward whatever it sends (including silence inside an open turn).
@@ -1536,7 +1736,7 @@ async function handleInterview(
       }
     }
     if (resumingAtStart) log.info(`Resuming at Q${currentQuestionIndex + 1} (asked: ${[...completed].map((i) => i + 1).join(",") || "none"}, ${history.length} recent lines)`);
-    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null, answeredLedger) });
+    gem = await connectGemini({ apiKeys, langCode, transcriptionLanguages, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null, answeredLedger) });
     if (browserClosed) { gem.close(); return; }
     attach(gem);
     log.info(`Gemini session established (clientVad=${clientVadEnabled})`);
@@ -1595,6 +1795,7 @@ async function handleInterview(
         return;
       }
       if (msg.type === "activity_start" || msg.type === "activity_end" || (msg.type === "audio" && msg.data)) {
+        if (msg.type === "activity_end") gate.candidateTurn();
         if (msg.type === "activity_start" && clientVadEnabled) {
           if (clientTurnOpen) {
             msg.__reopen = true;
@@ -1632,14 +1833,15 @@ async function handleInterview(
           send({ type: "silence_prompt_ignored", stage });
           return;
         }
-        log.info(`silence_prompt stage ${stage} — "${SILENCE_PROMPTS[stage - 1]}"`);
-        logSessionError(sessionId, new Error(`Candidate silent on question ${currentQuestionIndex + 1} — reminder ${stage}: "${SILENCE_PROMPTS[stage - 1]}"`), "info", {
+        const reminder = silencePromptLine(stage, speaksHindi() ? "hi" : "en");
+        log.info(`silence_prompt stage ${stage} — "${reminder}"`);
+        logSessionError(sessionId, new Error(`Candidate silent on question ${currentQuestionIndex + 1} — reminder ${stage}: "${reminder}"`), "info", {
           stage: "silence_prompt",
           reminder: stage,
           questionIndex: currentQuestionIndex,
         });
         awaitingSilencePresenceAck = true;
-        sayText(silencePromptCue(stage));
+        sayText(silencePromptCue(stage, speaksHindi() ? "hi" : "en"));
         // Keep locked Qs in context so a silence recovery does not restart earlier topics.
         {
           const lock = ledgerRefreshCue(answeredLedger, isZh);
@@ -1682,6 +1884,12 @@ async function handleInterview(
           log.info("answer_check_in ignored (already asked this question)");
           return;
         }
+        // Never stack a check-in on the interviewer's own turn: only after the
+        // candidate said something and while the AI is silent.
+        if (Date.now() < playbackEndsAt || modelBuf.trim() || (!userTextSinceModel && !userBuf.trim())) {
+          log.info("answer_check_in ignored (AI speaking or no candidate words since its last turn)");
+          return;
+        }
         checkInAskedThisQuestion = true;
         const hint = String(msg.transcript || "").trim().slice(0, 240);
         log.info(`answer_check_in (hesitant) transcript=${JSON.stringify(hint)}`);
@@ -1697,11 +1905,12 @@ async function handleInterview(
         const text = String(msg.content).trim();
         if (!text) return;
         pushHistory("user", text);
-        userSpokeThisQuestion = true;
+        gate.candidateTurn();
+        const typedMeta = noteCandidateWords(text, false);
         lastUserSpeech = Date.now();
         send({ type: "interrupt" });
         playbackEndsAt = 0;
-        tryUserNavigation(text);
+        if (!typedMeta) tryUserNavigation(text);
         sayText(text);
         userTextSinceModel = true;
         armResponseWatchdog("text_input");

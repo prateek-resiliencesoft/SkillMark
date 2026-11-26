@@ -9,3 +9,21 @@ export const LISTENING_RULES = `
 /** Vocabulary hint for the speech-to-text model (OpenAI transcription `prompt`). */
 export const TRANSCRIPTION_HINT =
   "Job interview in Indian English. Indian names. Terms: CTC, LPA, lakhs per annum, lakh, crore, in-hand, fixed, variable, notice period, serving notice, B.Tech, M.Tech, MCA.";
+
+/** Speech-to-text hint for Hindi interviews (Hindi sentences, English technical terms). */
+export const TRANSCRIPTION_HINT_HINGLISH =
+  "Job interview in Hinglish: Hindi sentences mixed with English technical words. Indian names. Terms: CTC, LPA, lakhs per annum, lakh, crore, in-hand, notice period, serving notice, relocate, B.Tech, M.Tech, MCA, project, experience.";
+
+/**
+ * OpenAI realtime `audio.input.transcription` settings for the interview
+ * language. Without `language` + a Hindi prompt, Hindi speech was transcribed
+ * against an English-only hint (wrong words / translated / made-up text).
+ */
+export function transcriptionSettings(model: string, interviewLanguage?: string | null): { model: string; prompt: string; language?: string } {
+  const l = (interviewLanguage ?? "").trim().toLowerCase();
+  if (l === "hi" || l.startsWith("hi-") || l.includes("hindi") || l.includes("hinglish")) {
+    return { model, prompt: TRANSCRIPTION_HINT_HINGLISH, language: "hi" };
+  }
+  if (l === "multi" || l.startsWith("multi")) return { model, prompt: TRANSCRIPTION_HINT_HINGLISH };
+  return { model, prompt: TRANSCRIPTION_HINT };
+}

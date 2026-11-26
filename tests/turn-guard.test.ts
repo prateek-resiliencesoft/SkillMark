@@ -42,7 +42,7 @@ test("barge-in: a couple of dip frames inside real speech are tolerated", () => 
   for (let i = 0; i < 6; i++) fired ||= d.feed(0.95, LOUD);
   fired ||= d.feed(0.5, LOUD);
   fired ||= d.feed(0.5, LOUD);
-  for (let i = 0; i < 8 && !fired; i++) fired = d.feed(0.95, LOUD);
+  for (let i = 0; i < framesFor(ENDPOINTING_CONFIG.bargeInMinSpeechMs) && !fired; i++) fired = d.feed(0.95, LOUD);
   assert.equal(fired, true);
 });
 

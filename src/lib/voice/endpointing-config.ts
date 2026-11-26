@@ -5,21 +5,21 @@
 export const ENDPOINTING_CONFIG = {
   /**
    * After this much silence, inspect the live transcript (done vs still thinking).
-   * Kept short so clear short answers can end around donePauseMs (~1.5s).
+   * Kept short so clear short answers can end around donePauseMs (~2.2s).
    */
   decisionAfterSilenceMs: 700,
 
   /** Clear, complete short/medium answer → end the turn after this much silence. */
-  donePauseMs: 1_500,
+  donePauseMs: 2_200,
 
   /**
    * Once the candidate has been speaking this long (e.g. a self-intro), natural
    * between-sentence pauses must NOT end the turn as quickly as a short answer.
    */
-  longAnswerSpeechMs: 8_000,
+  longAnswerSpeechMs: 5_000,
 
   /** Silence required to end a long-running answer that still looks complete. */
-  longAnswerDonePauseMs: 3_000,
+  longAnswerDonePauseMs: 4_000,
 
   /**
    * Stutter / unfinished-looking answer → keep listening this long before
@@ -61,8 +61,8 @@ export const ENDPOINTING_CONFIG = {
    * comma pauses inside a long answer stay “in speech” and do not start the
    * end-of-turn countdown.
    */
-  redemptionMs: 900,
-  preSpeechPadMs: 300,
+  redemptionMs: 1_200,
+  preSpeechPadMs: 500,
   /** Segments shorter than this are dropped as noise (cough, click, gust). */
   minSpeechMs: 250,
   /** Confident 32 ms frames in a row needed to open a turn from the frame stream (~256 ms). */
@@ -75,7 +75,7 @@ export const ENDPOINTING_CONFIG = {
 
   // ── Barge-in (candidate talking over the AI) ─────────────────────
   /** Silero probability a frame needs to count toward a barge-in. */
-  bargeInSpeechThreshold: 0.85,
+  bargeInSpeechThreshold: 0.9,
   /** Legacy frame count (32ms frames); kept for reference — bargeInMinSpeechMs rules. */
   bargeInMinFrames: 13,
   /**
@@ -83,11 +83,11 @@ export const ENDPOINTING_CONFIG = {
    * blips, breaths, coughs and speaker echo stay below this, so they no
    * longer chop the AI mid-sentence.
    */
-  bargeInMinSpeechMs: 400,
+  bargeInMinSpeechMs: 600,
   /** Low-probability frames tolerated inside a barge-in streak (natural dips). */
   bargeInMaxDipFrames: 2,
-  /** Mic level (float32 RMS) the latest chunk must reach — echo after echo-cancellation is quieter. */
-  bargeInMinRms: 0.012,
+  /** Mic level (float32 RMS) the latest chunk must reach — echo after echo-cancellation is quieter (0.012 let laptop-speaker echo of the AI's own voice cut it off). */
+  bargeInMinRms: 0.02,
 
   // ── Stuck-turn guard ─────────────────────────────────────────────
   /**

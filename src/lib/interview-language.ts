@@ -19,13 +19,10 @@ export const INTERVIEW_LANGUAGE_STYLE: Record<InterviewLanguage, string> = {
   en: "Clear, natural English.",
   zh: "Natural Simplified Chinese.",
   hi: [
-    "Use Hinglish — everyday spoken Hindi mixed with common English,",
-    "the way educated Indian professionals talk in interviews.",
-    "Hindi sentence flow is fine; keep technical/business terms in English",
-    "(experience, project, team, leadership, API, database, framework, etc.).",
-    "Prefer simple spoken Hindi over pure/literary/Sanskritized Hindi.",
+    "ONE FIXED STYLE for the whole interview: natural Hinglish, the way educated Indian professionals talk in interviews.",
+    "Every sentence is Hindi sentence flow (simple spoken Hindi, not pure/literary/Sanskritized Hindi)",
+    "with technical/business terms kept in English (experience, project, team, leadership, API, database, framework, etc.).",
     "Example tone: \"Aapka experience kitna hai? Is project mein aapne kaunsa approach use kiya?\"",
-    "Do not use pure English-only or shuddh Hindi-only replies.",
     "Any written text must be in Roman script (Hinglish), never Devanagari.",
   ].join(" "),
   es: "Natural conversational Spanish.",
@@ -137,8 +134,9 @@ export function interviewLanguageRequirement(
     return [
       "YOU MUST ALWAYS RESPOND IN HINGLISH (natural Hindi-English mix).",
       getInterviewLanguageStyle("hi"),
-      "Conduct the whole interview in this Hinglish style — greetings, questions, follow-ups, and farewells.",
+      "Conduct the whole interview in this Hinglish style — greetings, questions, follow-ups, acknowledgements, reminders and farewells.",
       HINDI_QUESTION_RULE,
+      HINGLISH_NO_SWITCH_RULE,
     ].join(" ");
   }
   const name = INTERVIEW_LANGUAGE_DISPLAY[key];
@@ -155,7 +153,7 @@ export function interviewLanguageContentInstruction(
     return [
       `Write ALL user-facing text in Hinglish (${INTERVIEW_LANGUAGE_DISPLAY.hi}).`,
       getInterviewLanguageStyle("hi"),
-      "Mixing Hindi and English on purpose is required — do not write pure Hindi or pure English.",
+      "Hindi sentence flow with English technical terms throughout — do not write pure Hindi or pure English.",
     ].join(" ");
   }
   const name = INTERVIEW_LANGUAGE_DISPLAY[key];
@@ -235,7 +233,7 @@ export function normalizeInterviewLanguageSetting(language?: string | null): str
  */
 export function multiLanguageRequirement(current: CandidateLanguage): string {
   const now = current === "hi"
-    ? "The participant currently prefers HINDI: speak Hinglish (natural Hindi-English mix, technical terms in English)."
+    ? `The participant currently prefers HINDI: speak Hinglish. ${INTERVIEW_LANGUAGE_STYLE.hi} Stay in it until they ask to switch; never repeat a sentence in English.`
     : "The participant currently prefers ENGLISH: speak clear, natural English.";
   return [
     "This interview supports Hindi and English. The participant may speak Hindi, English, or mix both freely; understand all of it and never correct their language.",
@@ -249,7 +247,21 @@ export function multiLanguageRequirement(current: CandidateLanguage): string {
 
 /** Extra rule for Hindi interviews whose question list is written in English. */
 export const HINDI_QUESTION_RULE =
-  "The question list may be written in English: ask each question in Hinglish, translated naturally with the same meaning and English technical terms. Do not add or drop content.";
+  "The question list may be written in English: ask each question ONCE in this Hinglish style, translated naturally with the same meaning and English technical terms. Do not add or drop content. Never read the English text aloud and never say the same question again in English (or in another style).";
+
+/**
+ * The firm no-switch rule for Hindi interviews. Greeting, questions, follow-ups,
+ * acknowledgements, reminders, transitions and farewell all use the same style.
+ */
+export const HINGLISH_NO_SWITCH_RULE = [
+  "NEVER switch style mid-interview: no full-English sentences, no pure-Hindi sentences, and never repeat something you just said in another language.",
+  "System messages ([SYSTEM], [SILENCE_PROMPT], [NO_ANSWER], [ANSWER_CHECK_IN]) are written in English for you: say their meaning in this same Hinglish style, once.",
+  "If the participant answers in English, understand it and keep speaking Hinglish.",
+].join(" ");
+
+/** Appended to every relay cue the interviewer speaks in a Hindi interview. */
+export const HINGLISH_CUE_NOTE =
+  " (Say this in the interview's fixed Hinglish style: Hindi sentences with English technical terms. Not in full English, and say it only once.)";
 
 const SWITCH_TO_HI = [
   /\bhindi\s+(m(e|ei|ai)n?|me)\b/i,

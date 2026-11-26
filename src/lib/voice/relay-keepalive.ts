@@ -55,6 +55,19 @@ export const SILENCE_PROMPTS = [
   "It seems you've gone silent. I'll wait a little longer.",
 ] as const;
 
+/** The same reminders in the Hindi interview's fixed Hinglish style (gender-neutral). */
+export const SILENCE_PROMPTS_HI = [
+  "Kya aap mujhe sun pa rahe hain?",
+  "Mujhe aapka jawab sunai nahi de raha. Kya aap abhi bhi connected hain?",
+  "Koi baat nahi, aap time le lijiye. Hum thoda aur wait karte hain.",
+] as const;
+
+/** The reminder line for a stage, in the language the interviewer is speaking now. */
+export function silencePromptLine(stage: number, lang?: string | null): string {
+  const lines = lang === "hi" ? SILENCE_PROMPTS_HI : SILENCE_PROMPTS;
+  return lines[silencePromptStage(stage) - 1];
+}
+
 /** Clamp any client-sent stage to 1..3. */
 export function silencePromptStage(raw: unknown): 1 | 2 | 3 {
   const n = Math.round(Number(raw));
@@ -62,9 +75,9 @@ export function silencePromptStage(raw: unknown): 1 | 2 | 3 {
 }
 
 /** What the AI is told to say when the candidate has been silent (stage 1–3). Text is fixed server-side. */
-export function silencePromptCue(stage: number): string {
-  const line = SILENCE_PROMPTS[silencePromptStage(stage) - 1];
-  return `[SILENCE_PROMPT] The participant has been silent after your question. Say exactly this sentence, word for word, and nothing else: "${line}" Then stop and wait. This is not a new question: do not repeat or change the question, do not comment, and do not call any function.`;
+export function silencePromptCue(stage: number, lang?: string | null): string {
+  const line = silencePromptLine(stage, lang);
+  return `[SILENCE_PROMPT] The participant has been silent after your question. Say exactly this sentence, word for word, and nothing else: "${line}" Then stop and wait for their answer to the CURRENT question, which is still open. This is not a new question: do not repeat or change the question, do not move on, do not comment, and do not call any function.`;
 }
 
 /** @deprecated kept for older callers — stage 1 reminder. */
