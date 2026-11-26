@@ -61,6 +61,8 @@ import {
 } from "../src/lib/voice/answered-ledger";
 import { candidateAskedToGoBack, decideQuestionMove, findReopenIndex, nextOpenQuestion } from "../src/lib/voice/question-progress";
 import { TurnGate } from "../src/lib/voice/turn-gate";
+import { cleanInterviewerTurn, isInternalText, isStaleRepeatSentence, sanitizeInterviewerText } from "../src/lib/voice/interviewer-text";
+import { toolDecisionDelayMs, silencePromptBlocked } from "../src/lib/voice/tool-call-timing";
 import { askedBefore, resumeBehaviorRule, resumeCue, shouldResume, type ResumeHints, type ResumeState } from "../src/lib/voice/resume-prompt";
 import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, silencePromptLine, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
 import { stuckTurnReason } from "../src/lib/voice/turn-guard";
@@ -906,6 +908,26 @@ async function handleInterview(
   /** The AI's speech was cut (barge-in / reconnect) and it hasn't spoken again yet. */
   let aiCutPending = false;
   let aiCutTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The model is producing a turn (first admitted chunk .. turnComplete /
+   * interrupted). Context or text sent to Gemini now interrupts that turn:
+   * the voice glitched / was cut mid-sentence. Such sends wait for turn end.
+   */
+  let modelGenerating = false;
+  let deferredSends: Array<{ kind: "cue" | "context"; text: string }> = [];
+  /** Candidate spoke (VAD turn end, voiced audio, transcript, typed text) since the interviewer's last turn. */
+  let candidateSpeechSinceModel = false;
+  let lastCandidateSpeechAt = 0;
+  let lastTranscriptChunkAt = 0;
+  /** A signal_question_change is held until the candidate's transcript is in. */
+  let toolDecisionPending = false;
+  let toolDecisionTimer: ReturnType<typeof setTimeout> | null = null;
+  /** After a rejected tool call, only voice newer than this may open the next interviewer turn. */
+  let toolRejectedAt = 0;
+  /** This model turn spoke relay-internal text ("[SYSTEM] …"): nothing more of it is shown. */
+  let modelTurnInternal = false;
+  /** Last turnComplete: output transcription arriving shortly after with no audio is stale. */
+  let lastTurnCompleteAt = 0;
 
   const send = (m: Record<string, unknown>) => {
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(romanizeOutgoing(m)));
@@ -935,6 +957,8 @@ async function handleInterview(
     }
     if (browserClosed || reconnecting || !gem || gem.readyState !== WebSocket.OPEN) return;
     checkStuckClientTurn();
+    // Backstop: a model turn that never got turnComplete must not hold queued context forever.
+    if (modelGenerating && Date.now() - lastModelChunkAt > 8_000 && Date.now() >= playbackEndsAt) modelTurnFinished();
     const idle = Date.now() - lastRealtimeAt;
     if (idle < KEEPALIVE_IDLE_MS) return;
     // Don't feed silence while the AI is talking unless the socket is very idle.
@@ -1050,13 +1074,46 @@ async function handleInterview(
   const speaksHindi = () =>
     multiLanguage ? currentLanguage() === "hi" : resolveInterviewLanguage(ctx.language) === "hi";
   const sayText = (text: string) => {
+    if (modelGenerating) {
+      // Sending now would interrupt the reply being spoken; it waits for the turn end.
+      deferredSends.push({ kind: "cue", text });
+      return;
+    }
     gate.cue();
     // Cues are written in English; without this the model read them out in
     // English in the middle of a Hinglish interview.
     gemSend({ realtimeInput: { text: speaksHindi() ? `${text}${HINGLISH_CUE_NOTE}` : text } });
   };
-  const addContext = (text: string) =>
+  const addContext = (text: string) => {
+    if (modelGenerating) {
+      deferredSends.push({ kind: "context", text });
+      return;
+    }
     gemSend({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: false } });
+  };
+  /**
+   * The model's turn is over: send what waited. That turn already answered
+   * the candidate (the model hears their audio itself), so a waiting cue goes
+   * in as context only: speaking it would be a second interviewer turn in a
+   * row, which the candidate heard as a repeat.
+   */
+  function modelTurnFinished() {
+    modelGenerating = false;
+    modelTurnInternal = false;
+    const queued = deferredSends;
+    deferredSends = [];
+    for (const q of queued) {
+      addContext(q.kind === "cue" ? `[SYSTEM] (Context only, do not reply to this now.) ${q.text}` : q.text);
+    }
+  }
+
+  /** The relay cuts the AI on purpose (button / typed text): end its turn so the next cue is sent now. */
+  function endTurnForRelayCue(why: string) {
+    if (!modelGenerating) return;
+    closeCutModelTurn(why);
+    gate.modelTurnEnded();
+    modelTurnFinished();
+  }
 
   /** Where the interview stands, for a resume system prompt / cue. */
   function resumeState(pendingAnswer: boolean): ResumeState {
@@ -1098,6 +1155,7 @@ async function handleInterview(
   }
 
   function pushHistory(role: "user" | "assistant", text: string) {
+    if (role === "assistant") text = sanitizeInterviewerText(text);
     text = devanagariToRoman(text.trim());
     if (!text) return;
     history.push({ role, text });
@@ -1131,7 +1189,15 @@ async function handleInterview(
       ...(clientVadEnabled && audioMs > 0 ? { audioMs, voicedMs } : {}),
     });
     if (cleaned.dropped) {
-      log.info(`Dropped candidate transcript (${cleaned.dropped}): ${JSON.stringify(raw.slice(0, 120))}`);
+      log.warn(`Dropped candidate transcript (${cleaned.dropped}): ${JSON.stringify(raw.slice(0, 120))}`);
+      logSessionError(sessionId, new Error(`Candidate transcript dropped (${cleaned.dropped})`), "info", {
+        stage: "asr_dropped",
+        reason: cleaned.dropped,
+        words: raw.split(/\s+/).filter(Boolean).length,
+        audioMs: Math.round(audioMs),
+        voicedMs: Math.round(voicedMs),
+        questionIndex: currentQuestionIndex,
+      });
       send({ type: "asr_dropped", reason: cleaned.dropped });
       return;
     }
@@ -1239,6 +1305,9 @@ async function handleInterview(
 
   /** The interviewer's newest words ask something the candidate has not answered yet. */
   function interviewerAwaitingAnswer(): boolean {
+    // The candidate already replied to the interviewer's last question (the
+    // transcript may still be on its way): it is not waiting any more.
+    if (candidateSpeechSinceModel || userTextSinceModel) return false;
     let spoken = modelBuf;
     for (let i = history.length - 1; i >= 0 && history[i].role === "assistant"; i--) spoken = `${history[i].text} ${spoken}`;
     return /[?？]/.test(spoken);
@@ -1246,9 +1315,21 @@ async function handleInterview(
 
   /** First output of a model turn: allowed only after a candidate turn or a relay cue. */
   function admitModelOutput(): boolean {
-    if (Date.now() - lastVoicedAudioAt < 6_000) gate.candidateTurn();
+    // Recent voice counts as a candidate turn, but never voice from before a
+    // rejected tool call (that turn must stay silent).
+    if (Date.now() - lastVoicedAudioAt < 6_000 && lastVoicedAudioAt > toolRejectedAt) gate.candidateTurn();
+    const wasOpen = gate.isOpen;
     const wasSuppressing = gate.isSuppressing;
     const ok = gate.modelOutput();
+    if (ok && !wasOpen) {
+      // A new interviewer turn: per-turn state starts clean (no leftover text
+      // from an earlier turn is glued onto this one).
+      if (modelBuf.trim() || modelAudioBytes > 0) closeCutModelTurn("new turn");
+      modelPending = "";
+      modelTurnInternal = false;
+      candidateSpeechSinceModel = false;
+    }
+    if (ok) modelGenerating = true;
     if (!ok && !wasSuppressing) {
       log.warn(`Suppressed an interviewer turn with no candidate answer in between (Q${currentQuestionIndex + 1})`);
       logSessionError(sessionId, new Error("Interviewer tried to speak twice in a row — second turn suppressed"), "info", {
@@ -1260,20 +1341,41 @@ async function handleInterview(
     return ok;
   }
 
+  /** Text already sent for this turn (to drop a stale repeat of an earlier line). */
+  let modelShown = "";
+  const recentAssistantLines = () => history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text);
+  function sendModelPiece(raw: string) {
+    if (modelTurnInternal) return;
+    const text = stripToolCallText(raw);
+    const piece = sanitizeInterviewerText(text);
+    // Relay-internal text read out ("[SYSTEM] The tool call was rejected …"):
+    // drop it and everything after it in this turn.
+    if (isInternalText(text)) modelTurnInternal = true;
+    if (!piece) return;
+    // A later piece that repeats an earlier interviewer line is a stale tail.
+    if (modelShown && isStaleRepeatSentence(piece, recentAssistantLines())) return;
+    modelShown = `${modelShown} ${piece}`.trim();
+    send({ type: "tts_text", data: { text: piece } });
+  }
+
   function flushModelText(force: boolean) {
     // Send transcript in sentence-sized pieces (the browser joins pieces with spaces).
     const re = /^[\s\S]*?[.!?。！？]+(\s|$)/;
     let m: RegExpMatchArray | null;
     while ((m = modelPending.match(re))) {
-      const piece = stripToolCallText(m[0]);
-      if (piece) send({ type: "tts_text", data: { text: piece } });
+      sendModelPiece(m[0]);
       modelPending = modelPending.slice(m[0].length);
     }
     if (force && modelPending.trim()) {
-      const piece = stripToolCallText(modelPending);
-      if (piece) send({ type: "tts_text", data: { text: piece } });
+      sendModelPiece(modelPending);
       modelPending = "";
     }
+    if (force) modelShown = "";
+  }
+
+  /** The turn's text as saved: tool / internal text removed, stale repeat of the previous line dropped. */
+  function finalModelText(raw: string): string {
+    return cleanInterviewerTurn(stripToolCallText(raw), recentAssistantLines());
   }
 
   /** Newest history line is an AI line saying the same thing (no candidate line between). */
@@ -1284,7 +1386,7 @@ async function handleInterview(
 
   function endModelTurn() {
     flushModelText(true);
-    const text = stripToolCallText(modelBuf);
+    const text = finalModelText(modelBuf);
     if (text || modelAudioBytes > 0) {
       if (text && !repeatsLastAssistant(text)) { pushHistory("assistant", text); log.info(`AI: ${JSON.stringify(text)}`); }
       send({ type: "tts_ended" });
@@ -1292,12 +1394,13 @@ async function handleInterview(
     modelBuf = "";
     modelAudioBytes = 0;
     if (text && Date.now() >= reaskCorrectedUntil && looksLikeReask(text, answeredLedger, currentQuestionIndex)) {
-      log.warn(`Verbal re-ask of locked topic on Q${currentQuestionIndex + 1} — correcting`);
-      send({ type: "interrupt" });
-      playbackEndsAt = 0;
+      // The turn has already been spoken: cutting the audio and cueing a new
+      // turn made two interviewer turns in a row with a glitch between them.
+      // Correct silently: the reminder steers the NEXT turn.
+      log.warn(`Verbal re-ask of locked topic on Q${currentQuestionIndex + 1} — reminding the model (no interrupt)`);
       reaskCorrectedUntil = Date.now() + 8_000;
       const q = sortedQuestions[currentQuestionIndex];
-      sayText(reaskCorrectionCue(answeredLedger, currentQuestionIndex, q?.text ?? "", isZh));
+      addContext(reaskCorrectionCue(answeredLedger, currentQuestionIndex, q?.text ?? "", isZh));
     }
     if (!pendingComplete && !interviewDone && currentQuestionIndex >= sortedQuestions.length - 1
         && text && looksLikeFarewell(text, isZh) && userSpokeThisQuestion) {
@@ -1318,7 +1421,7 @@ async function handleInterview(
   function closeCutModelTurn(why: string) {
     if (!modelBuf.trim() && modelAudioBytes === 0) return;
     flushModelText(true);
-    const text = closePartialTurn(modelBuf);
+    const text = closePartialTurn(finalModelText(modelBuf));
     if (text && !repeatsLastAssistant(text)) pushHistory("assistant", text);
     send({ type: "tts_ended", partial: true });
     log.info(`AI turn closed as partial (${why})`);
@@ -1396,6 +1499,7 @@ async function handleInterview(
     // Stop current speech in the browser
     send({ type: "interrupt" });
     playbackEndsAt = 0;
+    endTurnForRelayCue("navigation");
     if (targetIdx >= sortedQuestions.length) {
       beginEnding();
       sayText(`[SYSTEM] The participant ${reason === "button" ? `clicked "${label}"` : "asked to finish"}. All questions are done. Give a brief thank-you and farewell now. Do not call any function.`);
@@ -1419,7 +1523,50 @@ async function handleInterview(
     }
   }
 
+  /**
+   * With browser VAD the model can call the tool the moment the candidate's
+   * turn ends, before Gemini sends that turn's transcription. Deciding then saw
+   * "no answer yet", rejected a complete answer and the follow-up was asked
+   * again. Hold the call (max TOOL_DECISION_MAX_WAIT_MS) until the transcript
+   * is in, then decide.
+   */
   function handleToolCall(calls: Array<{ id: string; name: string; args?: Record<string, unknown> }>) {
+    const socket = gem;
+    const started = Date.now();
+    if (toolDecisionTimer) clearTimeout(toolDecisionTimer);
+    toolDecisionPending = true;
+    const attempt = () => {
+      toolDecisionTimer = null;
+      if (browserClosed || gem !== socket) { toolDecisionPending = false; return; }
+      const wait = toolDecisionDelayMs({
+        waitedMs: Date.now() - started,
+        candidateTurnOpen: clientTurnOpen,
+        speechSinceModel: candidateSpeechSinceModel,
+        transcriptSinceModel: userTextSinceModel || !!userBuf.trim(),
+        msSinceTranscriptChunk: lastTranscriptChunkAt ? Date.now() - lastTranscriptChunkAt : null,
+      });
+      if (wait > 0) { toolDecisionTimer = setTimeout(attempt, wait); return; }
+      toolDecisionPending = false;
+      const waited = Date.now() - started;
+      if (waited > 0) log.info(`Tool call decided after waiting ${waited}ms for the candidate's transcript`);
+      decideToolCall(calls);
+    };
+    attempt();
+  }
+
+  /** A rejected tool call: the model's next turn (it reads the rejection out, or re-asks) is not delivered. */
+  function silenceAfterRejection() {
+    toolRejectedAt = Date.now();
+    lastTurnCompleteAt = Date.now();
+    if (gate.isOpen) {
+      // The words before the call were already spoken: end that turn cleanly.
+      if (modelBuf.trim() || modelAudioBytes > 0) endModelTurn();
+      gate.modelTurnEnded();
+    }
+    gate.rejected();
+  }
+
+  function decideToolCall(calls: Array<{ id: string; name: string; args?: Record<string, unknown> }>) {
     // The tool call can arrive before the answer's transcription is flushed;
     // count those words as the answer so a valid move isn't rejected.
     if (userBuf.trim()) {
@@ -1427,6 +1574,7 @@ async function handleInterview(
       flushUser();
     }
     const responses: GeminiMsg[] = [];
+    let rejected = false;
     for (const c of calls) {
       let result: string;
       if (c.name !== "signal_question_change") {
@@ -1435,6 +1583,7 @@ async function handleInterview(
         // Nobody has answered since the interviewer's last turn: this call is a second turn in a row.
         log.warn("Rejected question change: no candidate turn since the interviewer last spoke");
         result = "Rejected: the participant has not said anything since your last message. Do not speak and do not move on: wait silently for their answer.";
+        rejected = true;
       } else {
         const args = (c.args || {}) as { questionIndex?: number; userRequested?: boolean };
         const newIdx = typeof args.questionIndex === "number" ? args.questionIndex : currentQuestionIndex + 1;
@@ -1464,6 +1613,10 @@ async function handleInterview(
             ? `The participant already gave a sufficient short answer ("${lastUser.slice(0, 120)}"). You may call signal_question_change to advance. Do NOT re-ask or reconfirm LOCKED answers.`
             : decision.message;
           if (decision.reason !== "same") log.warn(`Rejected question change to Q${newIdx + 1} (${decision.reason})`);
+          // "The participant has not answered yet": the model's next turn is not
+          // delivered (it read the rejection aloud / re-asked). Other reasons
+          // follow a real candidate turn, so the model still replies to it.
+          if (decision.reason === "pending_question") rejected = true;
         } else if (decision.end) {
           beginEnding();
           gate.cue();
@@ -1478,6 +1631,7 @@ async function handleInterview(
       }
       responses.push({ id: c.id, name: c.name, response: { result } });
     }
+    if (rejected) silenceAfterRejection();
     gemSend({ toolResponse: { functionResponses: responses } });
   }
 
@@ -1503,6 +1657,9 @@ async function handleInterview(
     if (sc.inputTranscription?.text) {
       userBuf = joinTranscriptChunk(userBuf, sc.inputTranscription.text);
       userTextSinceModel = true;
+      candidateSpeechSinceModel = true;
+      lastCandidateSpeechAt = Date.now();
+      lastTranscriptChunkAt = Date.now();
       userWordsSinceModelChunk = true;
       lastUserSpeech = Date.now();
       gate.candidateTurn();
@@ -1515,11 +1672,12 @@ async function handleInterview(
       flushModelText(true);
       send({ type: "interrupt" });
       playbackEndsAt = 0;
-      const cutText = closePartialTurn(modelBuf);
+      const cutText = closePartialTurn(finalModelText(modelBuf));
       if (cutText && !repeatsLastAssistant(cutText)) pushHistory("assistant", cutText);
       const wasSpeaking = !!(modelBuf.trim() || modelAudioBytes);
       if (wasSpeaking) send({ type: "tts_ended", partial: true });
-      modelBuf = ""; modelAudioBytes = 0;
+      modelBuf = ""; modelAudioBytes = 0; modelPending = ""; modelShown = "";
+      modelTurnFinished();
       if (wasSpeaking) scheduleAiCutResume("barge_in");
     }
     const parts = sc.modelTurn?.parts as Array<GeminiMsg> | undefined;
@@ -1546,7 +1704,13 @@ async function handleInterview(
         }
       }
     }
-    if (sc.outputTranscription?.text && admitModelOutput()) {
+    // Late output transcription of an already-finished turn (no new audio):
+    // appending it glued an earlier line onto the next turn. Ignored without
+    // touching the turn gate.
+    const lateOutput = !!sc.outputTranscription?.text && !parts?.length && !gate.canSpeak()
+      && modelAudioBytes === 0 && Date.now() - lastTurnCompleteAt < 2_000;
+    if (lateOutput) log.info(`Ignored late interviewer transcript after turn end: ${JSON.stringify(sc.outputTranscription?.text?.slice(0, 80))}`);
+    if (sc.outputTranscription?.text && !lateOutput && admitModelOutput()) {
       closeStaleModelTurn();
       if (userBuf.trim()) flushUser();
       lastModelChunkAt = Date.now();
@@ -1560,13 +1724,18 @@ async function handleInterview(
     // the turn there split one spoken reply into 2-3 saved interviewer lines (the
     // late words became a "new" turn) — only turnComplete ends it.
     if (sc.turnComplete) {
+      lastTurnCompleteAt = Date.now();
       if (gate.modelTurnEnded()) {
         // That turn was dropped (nobody answered): tell the model it was not heard so it waits.
+        modelTurnFinished();
         addContext(`[SYSTEM] Your last message was NOT delivered because the participant has not answered since your previous turn. Do not refer to it and do not repeat it. We are on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text ?? ""}". Wait for the participant.`);
         return;
       }
-      if (modelBuf.trim() || modelAudioBytes > 0) endModelTurn();
-      else if (sc.turnComplete && userBuf.trim()) {
+      const hadOutput = !!(modelBuf.trim() || modelAudioBytes > 0);
+      if (hadOutput) endModelTurn();
+      modelBuf = ""; modelPending = ""; modelAudioBytes = 0; modelShown = "";
+      modelTurnFinished();
+      if (!hadOutput && userBuf.trim()) {
         // Gemini closed the turn without saying anything back.
         flushUser();
         armResponseWatchdog("empty_turn");
@@ -1627,6 +1796,10 @@ async function handleInterview(
         lastRealtimeAt = Date.now();
         try { old?.removeAllListeners("close"); old?.close(); } catch { /* ignore */ }
         attach(ws);
+        // The old socket's turn is gone: queued context goes to the new one.
+        if (toolDecisionTimer) { clearTimeout(toolDecisionTimer); toolDecisionTimer = null; }
+        toolDecisionPending = false;
+        modelTurnFinished();
         if (!handle) {
           // The resume rule in the system prompt carries the asked questions and
           // recent transcript; this cue makes it speak now.
@@ -1692,6 +1865,10 @@ async function handleInterview(
       if (pcm16Rms(pcm) >= RELAY_VOICE_RMS) {
         lastVoicedAudioAt = Date.now();
         turnVoicedMs += chunkMs;
+        if (Date.now() >= playbackEndsAt) {
+          candidateSpeechSinceModel = true;
+          lastCandidateSpeechAt = Date.now();
+        }
       }
       // Half-duplex echo guard when Gemini automatic VAD is in charge.
       // With client VAD the browser already gates echo / barge-in, so we
@@ -1795,7 +1972,13 @@ async function handleInterview(
         return;
       }
       if (msg.type === "activity_start" || msg.type === "activity_end" || (msg.type === "audio" && msg.data)) {
-        if (msg.type === "activity_end") gate.candidateTurn();
+        if (msg.type === "activity_end") {
+          gate.candidateTurn();
+          if (clientTurnOpen || !clientVadEnabled) {
+            candidateSpeechSinceModel = true;
+            lastCandidateSpeechAt = Date.now();
+          }
+        }
         if (msg.type === "activity_start" && clientVadEnabled) {
           if (clientTurnOpen) {
             msg.__reopen = true;
@@ -1826,8 +2009,16 @@ async function handleInterview(
         // here (stage 1–3), not taken from the client. No question change.
         const stage = silencePromptStage(msg.stage ?? msg.attempt);
         // Never talk over the candidate, the AI, a pending reply, or the ending.
-        const busy = clientTurnOpen || Date.now() < playbackEndsAt || !!responseWatchdog
-          || userTextSinceModel || !!userBuf.trim() || interviewDone || pendingComplete;
+        const busy = silencePromptBlocked({
+          candidateTurnOpen: clientTurnOpen,
+          aiAudioPlaying: Date.now() < playbackEndsAt,
+          modelGenerating,
+          toolDecisionPending,
+          replyWatchdogArmed: !!responseWatchdog,
+          candidateWordsSinceModel: userTextSinceModel || !!userBuf.trim(),
+          msSinceCandidateSpeech: lastCandidateSpeechAt ? Date.now() - lastCandidateSpeechAt : null,
+          interviewEnding: interviewDone || pendingComplete,
+        });
         if (busy) {
           log.info(`silence_prompt stage ${stage} ignored (busy)`);
           send({ type: "silence_prompt_ignored", stage });
@@ -1841,12 +2032,14 @@ async function handleInterview(
           questionIndex: currentQuestionIndex,
         });
         awaitingSilencePresenceAck = true;
-        sayText(silencePromptCue(stage, speaksHindi() ? "hi" : "en"));
-        // Keep locked Qs in context so a silence recovery does not restart earlier topics.
+        // Keep locked Qs in context so a silence recovery does not restart
+        // earlier topics. Sent BEFORE the cue: context sent after it cut the
+        // reminder the model had just started to speak.
         {
           const lock = ledgerRefreshCue(answeredLedger, isZh);
           if (lock) addContext(lock);
         }
+        sayText(silencePromptCue(stage, speaksHindi() ? "hi" : "en"));
         return;
       }
       if (msg.type === "no_answer_skip") {
@@ -1854,6 +2047,7 @@ async function handleInterview(
         // Move on explicitly (the AI's own signal_question_change would be
         // rejected as premature because nobody answered). Not an answer.
         const busy = clientTurnOpen || Date.now() < playbackEndsAt || !!responseWatchdog
+          || modelGenerating || toolDecisionPending
           || userTextSinceModel || !!userBuf.trim() || interviewDone || pendingComplete;
         if (busy) {
           log.info("no_answer_skip ignored (busy)");
@@ -1908,9 +2102,13 @@ async function handleInterview(
         gate.candidateTurn();
         const typedMeta = noteCandidateWords(text, false);
         lastUserSpeech = Date.now();
+        candidateSpeechSinceModel = true;
+        lastCandidateSpeechAt = Date.now();
         send({ type: "interrupt" });
         playbackEndsAt = 0;
         if (!typedMeta) tryUserNavigation(text);
+        // Typed text barges in: end the AI's turn so the text is sent now.
+        endTurnForRelayCue("typed text");
         sayText(text);
         userTextSinceModel = true;
         armResponseWatchdog("text_input");

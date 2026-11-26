@@ -33,6 +33,11 @@ import { reportSessionError } from "@/lib/session-error-report-client";
 import { VadFailsafe, type FailsafeReason } from "@/lib/voice/vad-failsafe";
 import { compareUserLines, joinTranscriptChunk, normalizeForCompare } from "@/lib/transcript/dedupe";
 import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "@/lib/transcript/sanitize";
+import { sanitizeInterviewerText } from "@/lib/voice/interviewer-text";
+
+/** Interviewer text as shown / saved: no tool-call or relay text ("[SYSTEM] …"). */
+const interviewerText = (raw: string) => sanitizeInterviewerText(stripToolCallText(raw));
+const interviewerPartial = (raw: string) => closePartialTurn(interviewerText(raw));
 import { buildResumeHints, type RecentLine, type ResumeHints } from "@/lib/voice/resume-prompt";
 import { registerMediaTrack, setAiSpeaking } from "@/lib/integrity/bus";
 
@@ -460,11 +465,10 @@ export function useVoice({
     audioSourcesRef.current.push(source);
     awaitingAiReplyUntilRef.current = 0;
     isSpeakingRef.current = true;
-    setState((s) => ({
-      ...s,
-      isSpeaking: true,
-      isProcessing: false,
-    }));
+    // Only re-render when something changed: a state update on every audio
+    // flush (several per second) kept the main thread busy and the AI voice
+    // stuttered. Returning the same object makes React skip the render.
+    setState((s) => (s.isSpeaking && !s.isProcessing ? s : { ...s, isSpeaking: true, isProcessing: false }));
 
     source.onended = () => {
       audioSourcesRef.current = audioSourcesRef.current.filter(
@@ -852,7 +856,7 @@ export function useVoice({
    */
   const saveAssistantLine = useCallback(
     (raw: string, partial = false): string => {
-      const text = partial ? closePartialTurn(raw) : stripToolCallText(raw);
+      const text = partial ? interviewerPartial(raw) : interviewerText(raw);
       if (!text) return "";
       const normalized = text.replace(/\s+/g, " ").trim();
       if (normalized === lastOnAIResponseRef.current.replace(/\s+/g, " ").trim()) return text;
@@ -1030,7 +1034,7 @@ export function useVoice({
             chatBufferRef.current = joinTranscriptChunk(chatBufferRef.current, text);
             setState((s) => ({
               ...s,
-              aiTranscript: stripToolCallText(chatBufferRef.current),
+              aiTranscript: interviewerText(chatBufferRef.current),
               lastAssistantUtteranceEndedAt: 0,
               isProcessing: false,
             }));
@@ -1044,7 +1048,7 @@ export function useVoice({
             chatBufferRef.current += (chatBufferRef.current ? " " : "") + text;
             setState((s) => ({
               ...s,
-              aiTranscript: stripToolCallText(chatBufferRef.current),
+              aiTranscript: interviewerText(chatBufferRef.current),
               lastAssistantUtteranceEndedAt: 0,
               isProcessing: false,
             }));
@@ -1081,7 +1085,7 @@ export function useVoice({
             }
           }
           const partialTurn = msg.partial === true;
-          const fullResponse = (partialTurn ? closePartialTurn : stripToolCallText)(chatBufferRef.current);
+          const fullResponse = (partialTurn ? interviewerPartial : interviewerText)(chatBufferRef.current);
           chatBufferRef.current = "";
           // Keep last transcript visible until next AI speech (replaced by tts_text/chat)
           setState((s) => ({
@@ -1762,7 +1766,7 @@ export function useVoice({
     if (pendingChatText) {
       {
         // The AI was still mid-turn: end the line cleanly, drop tool-call text.
-        const line = closePartialTurn(pendingChatText);
+        const line = interviewerPartial(pendingChatText);
         if (line) trackMessage({ role: "assistant", content: line });
       }
       chatBufferRef.current = "";
@@ -1863,7 +1867,7 @@ export function useVoice({
       if (pendingChatText) {
         {
         // The AI was still mid-turn: end the line cleanly, drop tool-call text.
-        const line = closePartialTurn(pendingChatText);
+        const line = interviewerPartial(pendingChatText);
         if (line) trackMessage({ role: "assistant", content: line });
       }
         chatBufferRef.current = "";
