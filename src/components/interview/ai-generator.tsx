@@ -592,8 +592,12 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       setEditingIndex(null);
       setEditingCriterionIndex(null);
       toast({ title: "Interview refined based on your feedback!" });
-    } catch {
-      toast({ title: "Refinement failed", description: "Please try again.", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Refinement failed",
+        description: err instanceof Error && err.message ? err.message : "Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setRefining(false);
       setStreamPhase("idle");

@@ -25,13 +25,13 @@ export type QuestionSetEvent =
   | { type: "step"; step: ReasoningStep };
 
 const JD_CLASSES = [
-  { name: "required_skill", description: "A skill, tool or technology the role requires or prefers" },
-  { name: "responsibility", description: "Something the person in this role will do" },
-  { name: "qualification", description: "Experience level, degree, certification or years required" },
+  { name: "required_skill", description: "A skill, competency, tool, process or domain the role requires or prefers (include non-technical: hiring, people management, communication, compliance, etc.)" },
+  { name: "responsibility", description: "Something the person in this role will do (projects, ownership areas, processes they run)" },
+  { name: "qualification", description: "Experience level, degree, certification, years, or domain background required" },
 ];
 
 const CV_CLASSES = [
-  { name: "skill", description: "A skill, tool or technology the candidate claims" },
+  { name: "skill", description: "A skill, competency, tool, process or domain the candidate claims (technical or non-technical)" },
   { name: "experience", description: "A role, project or responsibility the candidate held (attributes: years, company)" },
   { name: "achievement", description: "A concrete, ideally measurable outcome the candidate claims" },
 ];
@@ -129,10 +129,14 @@ function buildGraph(provider: LLMProvider, model: string | undefined, emit: (e: 
       const streamToClient = s.attempts === 0;
       if (s.attempts > 0) emit({ type: "status", message: `Output was malformed, retrying (${s.attempts + 1}/${MAX_ATTEMPTS})…` });
       const messages = s.messages.map((m) => ({ ...m }));
-      if (s.evidence.length) {
-        const sys = messages.find((m) => m.role === "system");
-        if (sys && typeof sys.content === "string") {
-          sys.content += `\n\nEVIDENCE EXTRACTED FROM THE DOCUMENTS (verbatim quotes; tailor questions to these, probe CV claims against JD requirements):\n${extractionsPrompt(s.evidence, 50)}\n`;
+      const sys = messages.find((m) => m.role === "system");
+      if (sys && typeof sys.content === "string") {
+        if (s.mode === "refine") {
+          sys.content +=
+            "\n\nREFINE MODE: User feedback in the user message is the highest-priority directive. If it asks for a different role or focus (e.g. HR/hiring/management), rewrite the whole set for that focus; do not preserve conflicting technical questions just because they appear in the current set or in document evidence.\n";
+        }
+        if (s.evidence.length) {
+          sys.content += `\n\nEVIDENCE EXTRACTED FROM THE DOCUMENTS (verbatim quotes; use when they support the brief/feedback; ignore when they conflict with refine feedback):\n${extractionsPrompt(s.evidence, 50)}\n`;
         }
       }
       let inThink = false;
@@ -189,9 +193,16 @@ function buildGraph(provider: LLMProvider, model: string | undefined, emit: (e: 
       result.questions = enforceExactPremadeQuestions(questions, s.premadeQuestions as Parameters<typeof enforceExactPremadeQuestions>[1]);
       notes.push(`${s.premadeQuestions.length} premade question(s) kept word-for-word`);
     }
-    const missingOptions = (result.questions ?? []).filter(
-      (q) => (q.type === "SINGLE_CHOICE" || q.type === "MULTIPLE_CHOICE") && !(Array.isArray(q.options) && q.options.length >= 2),
-    ).length;
+    const missingOptions = (result.questions ?? []).filter((q) => {
+      if (q.type !== "SINGLE_CHOICE" && q.type !== "MULTIPLE_CHOICE") return false;
+      const opts = q.options;
+      const list = Array.isArray(opts)
+        ? opts
+        : opts && typeof opts === "object" && Array.isArray((opts as { options?: unknown }).options)
+          ? (opts as { options: unknown[] }).options
+          : null;
+      return !(list && list.length >= 2);
+    }).length;
     if (missingOptions) notes.push(`${missingOptions} choice question(s) missing options — check before saving`);
     const reqs = s.evidence.filter((e) => e.class === "required_skill");
     if (reqs.length) {
