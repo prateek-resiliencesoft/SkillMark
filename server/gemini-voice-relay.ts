@@ -35,6 +35,20 @@ import { isQuotaError, keyChainExhaustedError, splitKeyList } from "../src/lib/a
 import { interviewerPromptIdentity, resolveGeminiVoice, resolveInterviewerName } from "../src/lib/interviewer-persona";
 import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
 import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "../src/lib/transcript/sanitize";
+import {
+  emptyLedger,
+  isPresenceAck,
+  isSubstantiveCandidateAnswer,
+  isSufficientShortAnswer,
+  ledgerPromptBlock,
+  ledgerRefreshCue,
+  looksLikeReask,
+  noReaskBehaviorRules,
+  reaskCorrectionCue,
+  recordAnswer,
+  silencePresenceAckCue,
+  type AnsweredLedger,
+} from "../src/lib/voice/answered-ledger";
 import { candidateAskedToGoBack, decideQuestionMove, nextOpenQuestion } from "../src/lib/voice/question-progress";
 import { askedBefore, resumeBehaviorRule, resumeCue, shouldResume, type ResumeHints, type ResumeState } from "../src/lib/voice/resume-prompt";
 import { RESPONSE_WATCHDOG_MS, KEEPALIVE_IDLE_MS, silentPcmBase64, shouldResumeAfterClose, AI_CUT_RESUME_MS, RELAY_TURN_NO_VOICE_MS, pcm16Rms, RELAY_VOICE_RMS, silencePromptCue, silencePromptStage, SILENCE_PROMPTS, noAnswerAdvanceCue } from "../src/lib/voice/relay-keepalive";
@@ -314,9 +328,16 @@ function int16ToFloat32(buf: Buffer): Buffer {
 
 // ── System prompt builder ───────────────────────────────────────────
 
-function buildSystemPrompt(ctx: InterviewContext, startIdx: number, resume?: ResumeState | null): string {
+function buildSystemPrompt(
+  ctx: InterviewContext,
+  startIdx: number,
+  resume?: ResumeState | null,
+  ledger: AnsweredLedger = emptyLedger(),
+): string {
   const isZh = isChineseInterview(ctx);
   const sorted = ctx.questions.sort((a, b) => a.order - b.order);
+  const lockedBlock = ledgerPromptBlock(ledger, isZh);
+  const noReask = noReaskBehaviorRules(isZh);
 
   let maxFollowUps: number;
   switch (ctx.followUpDepth) {
@@ -361,7 +382,7 @@ ${ctx.objective ? `- 目标: ${ctx.objective}` : ""}
 
 ## 问题列表
 ${questionList}
-
+${lockedBlock ? `\n${lockedBlock}` : ""}
 ## 你的行为准则
 ${resume ? resumeBehaviorRule(resume, true) : `1. 从第${currentQ}个问题开始。先用温暖友好的方式自我介绍（提到你的名字、面试主题和问题数量）。然后说一句过渡语，比如"我们开始吧，这是第一个问题。"之后再提出问题。问候、过渡语和问题必须是三个独立的句子，不要合并。`}
 2. 提问脚本问题时，必须逐字朗读题目原文——不要改写、软化或替换列表中的问题文本。
@@ -401,7 +422,8 @@ ${resume ? resumeBehaviorRule(resume, true) : `1. 从第${currentQ}个问题开�
 - 如果受访者只是简单打招呼、确认性问题或模糊回答（如"你好"、"能听到吗?"、"我遇到过很多挑战"），先友好回应，再继续当前问题；不要调用 signal_question_change。这些不是实质性回答。必须等受访者给出详细、具体的回答后再切换。如果回答太简短或模糊，应追问以获取更多信息。
 - 始终关注当前问题，不要跳到其他话题。
 - 对于选择题，确保受访者给出选择并解释理由。
-- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。${focus}`;
+- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。
+${noReask}${focus}`;
   }
 
   const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "en");
@@ -416,7 +438,7 @@ ${ctx.objective ? `- Objective: ${ctx.objective}` : ""}
 
 ## Questions
 ${questionList}
-
+${lockedBlock ? `\n${lockedBlock}` : ""}
 ## Your Behavior
 ${resume ? resumeBehaviorRule(resume, false) : `1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.`}
 2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
@@ -463,7 +485,8 @@ ${LISTENING_RULES}
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
 - For choice questions, ensure the participant both selects an option AND explains their reasoning.
-- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.${focus}`;
+- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.
+${noReask}${focus}`;
 }
 
 // ── OpenAI tool definitions ─────────────────────────────────────────
@@ -779,6 +802,15 @@ async function handleInterview(
   let currentQuestionIndex = Math.min(Math.max(0, ctx.startQuestionIndex ?? 0), Math.max(0, sortedQuestions.length - 1));
   /** Questions asked and left: the model may never go back to them on its own. */
   const completed = new Set<number>(askedBefore(currentQuestionIndex, ctx.resume?.askedQuestionIndexes ?? [], sortedQuestions.length));
+  /** Locked Q→A snippets so the model cannot verbally re-ask finished topics. */
+  let answeredLedger: AnsweredLedger = emptyLedger();
+  for (const i of completed) {
+    answeredLedger = recordAnswer(answeredLedger, i, sortedQuestions[i]?.text ?? "", "(answered earlier)");
+  }
+  /** After a silence reminder, the next brief "yes" is presence — not an answer. */
+  let awaitingSilencePresenceAck = false;
+  /** Cooldown so a correction cue does not immediately re-trigger looksLikeReask. */
+  let reaskCorrectedUntil = 0;
   /** Browser reconnected / reloaded mid-interview: continue, don't start over. */
   const resumingAtStart = shouldResume(ctx.startQuestionIndex, ctx.resume);
   let questionEnteredAt = Date.now();
@@ -1009,14 +1041,43 @@ async function handleInterview(
     while (history.length > 40) history.shift();
   }
 
+  function lockAnswer(index: number, answerText: string | null | undefined, refresh = true) {
+    const q = sortedQuestions[index]?.text ?? "";
+    answeredLedger = recordAnswer(answeredLedger, index, q, answerText);
+    if (refresh) {
+      const cue = ledgerRefreshCue(answeredLedger, isZh);
+      if (cue) addContext(cue);
+    }
+  }
+
   function flushUser() {
     const t = userBuf.trim();
     userBuf = "";
     if (!t) return;
     send({ type: "asr_ended", text: t });
     pushHistory("user", t);
-    userSpokeThisQuestion = true;
     log.info(`User: ${JSON.stringify(t)}`);
+
+    // Silence "are you there?" → brief presence only: steer model, do not count as answer.
+    if (awaitingSilencePresenceAck && isPresenceAck(t)) {
+      awaitingSilencePresenceAck = false;
+      const q = sortedQuestions[currentQuestionIndex];
+      sayText(silencePresenceAckCue(currentQuestionIndex, q?.text ?? "", isZh));
+      if (multiLanguage) {
+        const asked = detectLanguageSwitch(t);
+        if (asked) setCandidateLanguage(asked, "voice");
+      }
+      return;
+    }
+    awaitingSilencePresenceAck = false;
+    userSpokeThisQuestion = true;
+
+    // Lock EVERY scripted question once the candidate gives a real answer —
+    // not only screening CTC/relocate items.
+    if (isSubstantiveCandidateAnswer(t)) {
+      lockAnswer(currentQuestionIndex, t);
+    }
+
     if (multiLanguage) {
       const asked = detectLanguageSwitch(t);
       if (asked) setCandidateLanguage(asked, "voice");
@@ -1055,6 +1116,14 @@ async function handleInterview(
     }
     modelBuf = "";
     modelAudioBytes = 0;
+    if (text && Date.now() >= reaskCorrectedUntil && looksLikeReask(text, answeredLedger, currentQuestionIndex)) {
+      log.warn(`Verbal re-ask of locked topic on Q${currentQuestionIndex + 1} — correcting`);
+      send({ type: "interrupt" });
+      playbackEndsAt = 0;
+      reaskCorrectedUntil = Date.now() + 8_000;
+      const q = sortedQuestions[currentQuestionIndex];
+      sayText(reaskCorrectionCue(answeredLedger, currentQuestionIndex, q?.text ?? "", isZh));
+    }
     if (!pendingComplete && !interviewDone && currentQuestionIndex >= sortedQuestions.length - 1
         && text && looksLikeFarewell(text, isZh) && userSpokeThisQuestion) {
       interviewDone = true;
@@ -1110,7 +1179,10 @@ async function handleInterview(
     // When advancing, skip questions already covered by earlier answers
     let resolved = idx;
     if (idx > currentQuestionIndex) {
+      const lastUser = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
+      lockAnswer(currentQuestionIndex, lastUser || "(answered)");
       completed.add(currentQuestionIndex);
+      awaitingSilencePresenceAck = false;
       // Skip covered questions and ones already asked (e.g. after going back).
       resolved = idx;
       for (let guard = 0; guard < sortedQuestions.length + 1; guard++) {
@@ -1175,12 +1247,8 @@ async function handleInterview(
     // The tool call can arrive before the answer's transcription is flushed;
     // count those words as the answer so a valid move isn't rejected.
     if (userBuf.trim()) {
-      const t = userBuf.trim();
-      userBuf = "";
-      send({ type: "asr_ended", text: t });
-      pushHistory("user", t);
-      userSpokeThisQuestion = true;
-      log.info(`User: ${JSON.stringify(t)}`);
+      // Reuse flushUser so presence-ack / short-answer locking stay consistent.
+      flushUser();
     }
     const responses: GeminiMsg[] = [];
     for (const c of calls) {
@@ -1195,25 +1263,31 @@ async function handleInterview(
         // Server-side state decides: no going back or re-asking unless the
         // candidate's own words asked for it.
         const lastUser = [...history].reverse().find((h) => h.role === "user")?.text ?? "";
+        const qText = sortedQuestions[currentQuestionIndex]?.text ?? "";
+        const shortOk = isSufficientShortAnswer(qText, lastUser);
         const decision = decideQuestionMove(
           {
             current: currentQuestionIndex,
             total: sortedQuestions.length,
             completed,
-            userSpokeThisQuestion,
+            userSpokeThisQuestion: userSpokeThisQuestion || shortOk,
             dwellMs: Date.now() - questionEnteredAt,
-            minDwellMs: MIN_QUESTION_DWELL_MS,
+            // Screening short answers do not need the full dwell.
+            minDwellMs: shortOk ? 0 : MIN_QUESTION_DWELL_MS,
           },
           { target: newIdx, userRequested, candidateAskedBack: candidateAskedToGoBack(lastUser) },
         );
         if (!decision.ok) {
-          result = decision.message;
+          result = shortOk && decision.reason === "premature"
+            ? `The participant already gave a sufficient short answer ("${lastUser.slice(0, 120)}"). You may call signal_question_change to advance. Do NOT re-ask or reconfirm LOCKED answers.`
+            : decision.message;
           if (decision.reason !== "same") log.warn(`Rejected question change to Q${newIdx + 1} (${decision.reason})`);
         } else if (decision.end) {
           beginEnding();
           result = "Interview is now complete. Please give a brief farewell.";
         } else if (moveTo(decision.target, true)) {
-          result = `Moved to question ${currentQuestionIndex + 1} of ${sortedQuestions.length}: "${sortedQuestions[currentQuestionIndex]?.text}". Naturally transition and ask this question. Do not repeat earlier questions.`;
+          const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
+          result = `Moved to question ${currentQuestionIndex + 1} of ${sortedQuestions.length}: "${sortedQuestions[currentQuestionIndex]?.text}". Naturally transition and ask this question. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
         } else {
           result = "All questions have been asked. Please give a brief farewell.";
         }
@@ -1344,7 +1418,7 @@ async function handleInterview(
           clientVad: vadForThisSocket,
           gender: ctx.aiGender,
           // Fresh or resumed, the new session must continue, never start over.
-          systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumeState(pendingUserAnswer)),
+          systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumeState(pendingUserAnswer), answeredLedger),
         });
         if (browserClosed) {
           ws.close();
@@ -1460,7 +1534,7 @@ async function handleInterview(
       }
     }
     if (resumingAtStart) log.info(`Resuming at Q${currentQuestionIndex + 1} (asked: ${[...completed].map((i) => i + 1).join(",") || "none"}, ${history.length} recent lines)`);
-    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null) });
+    gem = await connectGemini({ apiKeys, langCode, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null, answeredLedger) });
     if (browserClosed) { gem.close(); return; }
     attach(gem);
     log.info(`Gemini session established (clientVad=${clientVadEnabled})`);
@@ -1562,7 +1636,13 @@ async function handleInterview(
           reminder: stage,
           questionIndex: currentQuestionIndex,
         });
+        awaitingSilencePresenceAck = true;
         sayText(silencePromptCue(stage));
+        // Keep locked Qs in context so a silence recovery does not restart earlier topics.
+        {
+          const lock = ledgerRefreshCue(answeredLedger, isZh);
+          if (lock) addContext(lock);
+        }
         return;
       }
       if (msg.type === "no_answer_skip") {

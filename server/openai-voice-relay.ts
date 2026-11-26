@@ -33,6 +33,18 @@ import {
 } from "./openai-voice-relay-helpers";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
 import {
+  emptyLedger,
+  isSubstantiveCandidateAnswer,
+  isSufficientShortAnswer,
+  ledgerPromptBlock,
+  ledgerRefreshCue,
+  looksLikeReask,
+  noReaskBehaviorRules,
+  reaskCorrectionCue,
+  recordAnswer,
+  type AnsweredLedger,
+} from "../src/lib/voice/answered-ledger";
+import {
   RELAY_MAX_PAYLOAD_BYTES,
   admitRelayConnection,
   authorizeRelayInit,
@@ -275,9 +287,15 @@ function int16ToFloat32(buf: Buffer): Buffer {
 
 // ── System prompt builder ───────────────────────────────────────────
 
-function buildSystemPrompt(ctx: InterviewContext, startIdx: number): string {
+function buildSystemPrompt(
+  ctx: InterviewContext,
+  startIdx: number,
+  ledger: AnsweredLedger = emptyLedger(),
+): string {
   const isZh = isChineseInterview(ctx);
   const sorted = ctx.questions.sort((a, b) => a.order - b.order);
+  const lockedBlock = ledgerPromptBlock(ledger, isZh);
+  const noReask = noReaskBehaviorRules(isZh);
 
   let maxFollowUps: number;
   switch (ctx.followUpDepth) {
@@ -319,7 +337,7 @@ ${ctx.objective ? `- 目标: ${ctx.objective}` : ""}
 
 ## 问题列表
 ${questionList}
-
+${lockedBlock ? `\n${lockedBlock}` : ""}
 ## 你的行为准则
 1. 从第${currentQ}个问题开始。先用温暖友好的方式自我介绍（提到你的名字、面试主题和问题数量）。然后说一句过渡语，比如"我们开始吧，这是第一个问题。"之后再提出问题。问候、过渡语和问题必须是三个独立的句子，不要合并。
 2. 提问脚本问题时，必须逐字朗读题目原文——不要改写、软化或替换列表中的问题文本。
@@ -359,7 +377,8 @@ ${questionList}
 - 如果受访者只是简单打招呼、确认性问题或模糊回答（如"你好"、"能听到吗?"、"我遇到过很多挑战"），先友好回应，再继续当前问题；不要调用 signal_question_change。这些不是实质性回答。必须等受访者给出详细、具体的回答后再切换。如果回答太简短或模糊，应追问以获取更多信息。
 - 始终关注当前问题，不要跳到其他话题。
 - 对于选择题，确保受访者给出选择并解释理由。
-- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。`;
+- 当受访者让你看白板时，描述你看到的内容并给出反馈。不要在收到图片更新时自动开口说话。
+${noReask}`;
   }
 
   const ident = interviewerPromptIdentity(ctx.aiName, ctx.aiGender, ctx.aiTone, "en");
@@ -374,7 +393,7 @@ ${ctx.objective ? `- Objective: ${ctx.objective}` : ""}
 
 ## Questions
 ${questionList}
-
+${lockedBlock ? `\n${lockedBlock}` : ""}
 ## Your Behavior
 1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.
 2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
@@ -415,7 +434,8 @@ ${LISTENING_RULES}
 - Do NOT call signal_question_change if the participant has only said a brief greeting, clarifying remark, or vague statement (e.g. "hi", "can you hear me?", "I had many challenges"). First respond warmly and helpfully, then continue the current question. These are NOT substantive answers. You MUST wait for a detailed, specific response that actually addresses the question before moving on. If their answer is too brief or vague, probe deeper.
 - Stay focused on the current question. Do not jump to unrelated topics.
 - For choice questions, ensure the participant both selects an option AND explains their reasoning.
-- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.`;
+- When the participant asks you to look at the whiteboard, describe what you see and give feedback. Do NOT automatically start speaking when you receive a whiteboard image update — wait for the participant to address you.
+${noReask}`;
 }
 
 // ── OpenAI tool definitions ─────────────────────────────────────────
@@ -741,6 +761,12 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   const MIN_QUESTION_DWELL_MS = 15_000;
   const MIN_WORDS_BEFORE_TRANSITION = 20;
   let userCommittedWordsThisQuestion = 0;
+  /** Locked Q→A so verbal re-asks of ANY finished question get corrected. */
+  let answeredLedger: AnsweredLedger = emptyLedger();
+  for (let i = 0; i < currentQuestionIndex; i++) {
+    answeredLedger = recordAnswer(answeredLedger, i, sortedQuestions[i]?.text ?? "", "(answered earlier)");
+  }
+  let reaskCorrectedUntil = 0;
   // Keep the transition tool available at all times. Server-side guards
   // still decide whether a transition request is actually allowed.
   let toolsEnabled = true;
@@ -821,10 +847,36 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   const conversationHistory: Array<{ role: "user" | "assistant"; text: string }> = [];
   const MAX_HISTORY_ENTRIES = 30;
 
+  function lockAnswer(index: number, answerText: string | null | undefined, refresh = true) {
+    answeredLedger = recordAnswer(answeredLedger, index, sortedQuestions[index]?.text ?? "", answerText);
+    if (refresh) {
+      const cue = ledgerRefreshCue(answeredLedger, isZh);
+      if (cue) injectSystemCue(cue);
+    }
+  }
+
+  function injectSystemCue(text: string) {
+    if (!oaiWs || oaiWs.readyState !== WebSocket.OPEN) return;
+    oaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "system",
+        content: [{ type: "input_text", text }],
+      },
+    }));
+  }
+
   function pushHistory(role: "user" | "assistant", text: string) {
     if (!text.trim()) return;
     if (role === "user" && !text.startsWith("[")) {
       userCommittedWordsThisQuestion += text.trim().split(/\s+/).length;
+      const qText = sortedQuestions[currentQuestionIndex]?.text ?? "";
+      // Lock EVERY scripted question on a real answer (behavioral, coding talk, screening…).
+      if (isSubstantiveCandidateAnswer(text)) {
+        lockAnswer(currentQuestionIndex, text);
+        if (isSufficientShortAnswer(qText, text) && !toolsEnabled) enableTools();
+      }
       if (!toolsEnabled && userCommittedWordsThisQuestion >= MIN_WORDS_BEFORE_TRANSITION) {
         enableTools();
       }
@@ -1582,10 +1634,14 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               // Reject premature transitions: block if the user hasn't spoken,
               // not enough time has passed, or insufficient words (forward only).
               // Backward transitions and explicit user requests bypass the word count guard.
+              // Screening short answers (CTC / relocate / yes-no) bypass the word floor.
               const dwellMs = Date.now() - questionEnteredAt;
               const isForward = newIdx > currentQuestionIndex && newIdx < sortedQuestions.length;
-              const needsWordGuard = isForward && !userRequested;
-              if (newIdx < sortedQuestions.length && (lastUserInput === 0 || dwellMs < MIN_QUESTION_DWELL_MS || (needsWordGuard && userCommittedWordsThisQuestion < MIN_WORDS_BEFORE_TRANSITION))) {
+              const lastUser = [...conversationHistory].reverse().find((h) => h.role === "user" && !h.text.startsWith("["))?.text ?? "";
+              const shortOk = isSufficientShortAnswer(sortedQuestions[currentQuestionIndex]?.text ?? "", lastUser);
+              const needsWordGuard = isForward && !userRequested && !shortOk;
+              const needsDwell = !shortOk;
+              if (newIdx < sortedQuestions.length && (lastUserInput === 0 || (needsDwell && dwellMs < MIN_QUESTION_DWELL_MS) || (needsWordGuard && userCommittedWordsThisQuestion < MIN_WORDS_BEFORE_TRANSITION))) {
                 const reason = lastUserInput === 0
                   ? "the participant has not spoken yet"
                   : (needsWordGuard && userCommittedWordsThisQuestion < MIN_WORDS_BEFORE_TRANSITION)
@@ -1595,7 +1651,9 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                 pendingFunctionCalls.push({
                   callId: msg.call_id,
                   name: msg.name,
-                  args: `Rejected: ${reason}. You MUST continue discussing question ${currentQuestionIndex + 1} and wait for a substantive response before calling signal_question_change. Do NOT verbally say you are moving to another question — the transition was blocked.`,
+                  args: shortOk
+                    ? `The participant already gave a sufficient short answer. You may call signal_question_change to advance. Do NOT re-ask or reconfirm LOCKED answers.`
+                    : `Rejected: ${reason}. You MUST continue discussing question ${currentQuestionIndex + 1} and wait for a substantive response before calling signal_question_change. Do NOT verbally say you are moving to another question — the transition was blocked.`,
                 });
                 break;
               }
@@ -1606,7 +1664,8 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               if (newIdx >= sortedQuestions.length) {
                 result = "Interview is now complete. Please give a brief farewell.";
               } else {
-                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question VERBATIM.`;
+                const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
+                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question VERBATIM. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
               }
 
               if (newIdx >= sortedQuestions.length) {
@@ -1623,6 +1682,9 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               } else if (newIdx >= 0 && newIdx !== currentQuestionIndex) {
                 const dir = newIdx > currentQuestionIndex ? "next" : "previous";
                 const arrow = dir === "next" ? "→" : "←";
+                if (newIdx > currentQuestionIndex) {
+                  lockAnswer(currentQuestionIndex, lastUser || "(answered)");
+                }
                 send({ type: "transitioning", auto: true, direction: dir });
                 currentQuestionIndex = newIdx;
                 questionEnteredAt = Date.now();
@@ -1690,7 +1752,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               log.warn("Inferred interview completion from farewell text on final question");
             }
 
-            if (hadTts && responseTtsBytes > 0) {
+              if (hadTts && responseTtsBytes > 0) {
               // Flush any pending user text BEFORE committing agent text
               // so the transcript order matches the conversation order.
               flushPendingUserTurnBeforeAssistant();
@@ -1700,6 +1762,14 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               if (capturedModelText) {
                 log.info(`TTS done (${responseTtsBytes}B sent): ${JSON.stringify(capturedModelText)}`);
                 pushHistory("assistant", capturedModelText);
+                if (Date.now() >= reaskCorrectedUntil && looksLikeReask(capturedModelText, answeredLedger, currentQuestionIndex)) {
+                  log.warn(`Verbal re-ask of locked topic on Q${currentQuestionIndex + 1} — correcting`);
+                  send({ type: "interrupt" });
+                  reaskCorrectedUntil = Date.now() + 8_000;
+                  const q = sortedQuestions[currentQuestionIndex];
+                  injectSystemCue(reaskCorrectionCue(answeredLedger, currentQuestionIndex, q?.text ?? "", isZh));
+                  requestAssistantResponse("reask correction");
+                }
               }
               send({ type: "tts_ended" });
             } else if (hadTts) {
@@ -1835,7 +1905,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
     });
 
     const systemPrompt =
-      buildSystemPrompt(ctx, currentQuestionIndex) +
+      buildSystemPrompt(ctx, currentQuestionIndex, answeredLedger) +
       buildIntegrityProbingSection(ctx.integrityProbing, isChineseInterview(ctx));
 
     ws.send(JSON.stringify({
@@ -1905,7 +1975,8 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
 
         // OpenAI doesn't have session resumption tokens —
         // replay conversation history to restore context.
-        const resumePrompt = `[SYSTEM] Session reconnected. The UI currently shows question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}".\nDo NOT re-introduce yourself, re-ask the current question, or repeat anything you've already said. Wait silently for the participant to speak, then respond naturally. If you were in the middle of saying something, do NOT repeat it.`;
+        const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
+        const resumePrompt = `[SYSTEM] Session reconnected. The UI currently shows question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}".\nDo NOT re-introduce yourself, re-ask the current question, or repeat anything you've already said. Wait silently for the participant to speak, then respond naturally. If you were in the middle of saying something, do NOT repeat it.${lock ? `\n${lock}` : ""}`;
 
         if (conversationHistory.length > 0) {
           const MAX_REPLAY_TURNS = 12;
@@ -2073,6 +2144,10 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
         return;
       }
       const dir = targetIdx > currentQuestionIndex ? "→" : "←";
+      if (targetIdx > currentQuestionIndex) {
+        const lastUser = [...conversationHistory].reverse().find((h) => h.role === "user" && !h.text.startsWith("["))?.text ?? "";
+        lockAnswer(currentQuestionIndex, lastUser || "(answered)");
+      }
       currentQuestionIndex = targetIdx;
       questionEnteredAt = Date.now();
       userCommittedWordsThisQuestion = 0;
@@ -2086,9 +2161,10 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
       isTransitioning = false;
       log.info(`${dir} Q${currentQuestionIndex + 1}/${sortedQuestions.length}`);
 
+      const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
       const prompt = reason === "user_request"
-        ? `[SYSTEM] The participant explicitly asked to go ${directionLabel.toLowerCase()}. We are now on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly acknowledge the transition and introduce this question now.`
-        : `[SYSTEM] The participant clicked "${directionLabel}". We are now on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly introduce this question now.`;
+        ? `[SYSTEM] The participant explicitly asked to go ${directionLabel.toLowerCase()}. We are now on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly acknowledge the transition and introduce this question now. Do not re-ask LOCKED answers.${lock ? `\n${lock}` : ""}`
+        : `[SYSTEM] The participant clicked "${directionLabel}". We are now on question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}". Briefly introduce this question now. Do not re-ask LOCKED answers.${lock ? `\n${lock}` : ""}`;
       sendQuestionPrompt(prompt);
     }, 500);
   }
