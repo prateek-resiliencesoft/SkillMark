@@ -76,7 +76,7 @@ export function CompletionNotifyPicker({
     setEditing((prev) => new Set(prev).add(userId));
   };
 
-  const useProfileNumber = (userId: string) => {
+  const restoreProfileNumber = (userId: string) => {
     const fromProfile = profilePhone(userId);
     setPhone(userId, fromProfile);
     setEditing((prev) => {
@@ -197,7 +197,7 @@ export function CompletionNotifyPicker({
                             <button
                               type="button"
                               disabled={disabled}
-                              onClick={() => useProfileNumber(m.userId)}
+                              onClick={() => restoreProfileNumber(m.userId)}
                               className="text-[11px] font-medium text-primary hover:underline disabled:opacity-50"
                             >
                               Use profile number
