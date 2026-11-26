@@ -37,6 +37,36 @@ export interface CodeSnippetInput {
   language: string;
 }
 
+/* Code review pieces shared with the round 2 report (src/server/round-two/report.ts). */
+
+/** Snippet list exactly as the model sees it; `[id=...]` is echoed back as snippetId. */
+export function codeSnippetsSection(codeSnippets: CodeSnippetInput[]): string {
+  return `Code Snippets (written by the participant during the interview):\n${codeSnippets.map((s, i) => `--- Snippet ${i + 1}${s.id ? ` [id=${s.id}]` : ""}: "${s.label}" (${s.language}) ---\n${s.code}\n--- End of Snippet ${i + 1} ---`).join("\n\n")}`;
+}
+
+export const CODE_REVIEW_INSTRUCTION =
+  "For EACH code snippet, produce a dedicated coding review calibrated to the candidate's experience level (fresher/beginner vs mid/senior). Match the snippet to the CODING question it answers when possible. Include: the question asked, what the candidate said/explained verbally, a level-appropriate expected approach, a short reference solution suitable for their level (not a senior overkill dump for freshers), what was wrong or incomplete in their code relative to that level, and a score.";
+
+export const CODE_CALIBRATION_NOTE =
+  "The participant wrote code snippets during the interview. Evaluate each snippet in codeEvaluations. Calibrate harshly only when their resume/experience claims senior ability; for freshers and beginners, prioritize basic correctness, clarity, and problem understanding — do not penalize missing advanced patterns they were never expected to know.";
+
+/** The `"codeEvaluations": [...]` JSON field description. */
+export const CODE_EVALUATIONS_JSON_FIELD = `"codeEvaluations": [
+    {
+      "snippetId": "exact [id=...] value from the snippet header when present, otherwise empty string",
+      "snippetLabel": "exact snippet label from the list above",
+      "language": "language id",
+      "question": "the coding question this snippet was answering (from Interview Questions or transcript)",
+      "candidateAnswer": "what the candidate explained verbally about their approach / solution (from Candidate: lines); empty string if they only wrote code",
+      "expectedApproach": "clear explanation of a solid approach at THIS candidate's experience level — step by step",
+      "referenceCode": "a short, level-appropriate reference solution in the same language (keep it proportionate to their seniority)",
+      "whatWentWrong": ["specific issue vs expected for their level", "another gap"],
+      "levelNotes": "one sentence on how expectations were calibrated (e.g. fresher: focus on correctness basics, not system design)",
+      "score": 1-10,
+      "evaluation": "overall coding judgment for this snippet at their level"
+    }
+  ]`;
+
 /** Resume / experience context for calibrating code review. */
 export interface CandidateJudgingContext {
   workExperience?: string | null;
@@ -81,9 +111,7 @@ export function buildSummaryPrompt(
 
   // ── Code snippets section ─────────────────────────────────────
   const hasCode = codeSnippets && codeSnippets.length > 0;
-  const codeSection = hasCode
-    ? `\n\nCode Snippets (written by the participant during the interview):\n${codeSnippets.map((s, i) => `--- Snippet ${i + 1}${s.id ? ` [id=${s.id}]` : ""}: "${s.label}" (${s.language}) ---\n${s.code}\n--- End of Snippet ${i + 1} ---`).join("\n\n")}`
-    : "";
+  const codeSection = hasCode ? `\n\n${codeSnippetsSection(codeSnippets)}` : "";
 
   // ── Candidate experience / resume (untrusted calibration data) ─
   const hasCandidateCtx =
@@ -172,26 +200,12 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
       : "";
 
   const codeEvalInstruction = hasCode
-    ? `${codeEvalStep}. For EACH code snippet, produce a dedicated coding review calibrated to the candidate's experience level (fresher/beginner vs mid/senior). Match the snippet to the CODING question it answers when possible. Include: the question asked, what the candidate said/explained verbally, a level-appropriate expected approach, a short reference solution suitable for their level (not a senior overkill dump for freshers), what was wrong or incomplete in their code relative to that level, and a score.\n`
+    ? `${codeEvalStep}. ${CODE_REVIEW_INSTRUCTION}\n`
     : "";
 
   const codeEvalJsonField = hasCode
     ? `,
-  "codeEvaluations": [
-    {
-      "snippetId": "exact [id=...] value from the snippet header when present, otherwise empty string",
-      "snippetLabel": "exact snippet label from the list above",
-      "language": "language id",
-      "question": "the coding question this snippet was answering (from Interview Questions or transcript)",
-      "candidateAnswer": "what the candidate explained verbally about their approach / solution (from Candidate: lines); empty string if they only wrote code",
-      "expectedApproach": "clear explanation of a solid approach at THIS candidate's experience level — step by step",
-      "referenceCode": "a short, level-appropriate reference solution in the same language (keep it proportionate to their seniority)",
-      "whatWentWrong": ["specific issue vs expected for their level", "another gap"],
-      "levelNotes": "one sentence on how expectations were calibrated (e.g. fresher: focus on correctness basics, not system design)",
-      "score": 1-10,
-      "evaluation": "overall coding judgment for this snippet at their level"
-    }
-  ]`
+  ${CODE_EVALUATIONS_JSON_FIELD}`
     : "";
 
   // ── Language instruction ───────────────────────────────────────
@@ -202,7 +216,7 @@ ${candidateContext!.workExperience ? `- Stated experience: ${candidateContext!.w
     : "";
 
   const codeInstruction = hasCode
-    ? "\n- The participant wrote code snippets during the interview. Evaluate each snippet in codeEvaluations. Calibrate harshly only when their resume/experience claims senior ability; for freshers and beginners, prioritize basic correctness, clarity, and problem understanding — do not penalize missing advanced patterns they were never expected to know."
+    ? `\n- ${CODE_CALIBRATION_NOTE}`
     : "";
 
   const systemPrompt = `You are an expert interview analyst. Evaluate and summarize the following interview transcript. Focus on the participant's responses — their depth, relevance, and quality.

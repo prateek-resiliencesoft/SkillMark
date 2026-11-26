@@ -113,6 +113,45 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
         </CardContent>
       </Card>
 
+      {!!report.codeEvaluations?.length && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Coding (shared editor)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {report.codeEvaluations.map((c) => (
+              <div key={c.snippetId} className="rounded-lg border p-3 text-sm">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{c.snippetLabel}</span>
+                  <span className="rounded border px-1.5 text-xs text-muted-foreground">{c.language}</span>
+                  <span className="ml-auto text-xs font-semibold tabular-nums">{c.score}/10</span>
+                </div>
+                {c.question && <p className="mb-1 text-xs text-muted-foreground">{c.question}</p>}
+                {c.evaluation && <p>{c.evaluation}</p>}
+                {c.whatWentWrong.length > 0 && (
+                  <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">
+                    {c.whatWentWrong.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+                {c.expectedApproach && (
+                  <p className="mt-1 text-xs">
+                    <span className="font-semibold">Expected approach:</span> {c.expectedApproach}
+                  </p>
+                )}
+                {c.referenceCode && (
+                  <details className="mt-1 text-xs">
+                    <summary className="cursor-pointer text-muted-foreground">Reference solution</summary>
+                    <pre className="mt-1 overflow-auto rounded bg-muted p-2">{c.referenceCode}</pre>
+                  </details>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader className="pb-2">

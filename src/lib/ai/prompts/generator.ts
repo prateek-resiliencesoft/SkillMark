@@ -15,6 +15,10 @@ export interface PremadeQuestionInput {
   skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
 }
 
+/** How a CODING question is written (shared with round 2's AI coding task). */
+export const CODING_QUESTION_RULE =
+  'For CODING questions, set "options" to null. Write a clear problem statement in the question text. Include a "starterCode" object with "language" and "code" fields containing a code template for the participant.';
+
 function generatorLanguageBlock(language?: string): string {
   if (!language || resolveInterviewLanguage(language) === "en") return "";
   const content = interviewLanguageContentInstruction(language);
@@ -89,7 +93,7 @@ GUIDELINES:
 - End with an open "anything else" question
 - Use OPEN_ENDED for free-text/verbal responses, SINGLE_CHOICE when the participant must pick exactly one option, MULTIPLE_CHOICE when multiple selections are allowed, CODING for programming/algorithm questions, and RESEARCH when the goal is to extract as much detailed information as possible on a topic
 - For SINGLE_CHOICE and MULTIPLE_CHOICE questions, ALWAYS provide 2-6 clear option strings in the "options" field
-- For CODING questions, set "options" to null. Write a clear problem statement in the question text. Include a "starterCode" object with "language" and "code" fields containing a code template for the participant.
+- ${CODING_QUESTION_RULE}
 - Suggest time limits where appropriate
 - Assessment criteria should be specific dimensions the participant will be evaluated on (e.g. "Communication Skills", "Problem Solving Ability", "Cultural Fit")
 - recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.

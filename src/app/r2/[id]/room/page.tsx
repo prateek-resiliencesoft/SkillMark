@@ -3,6 +3,7 @@
 import "@livekit/components-styles";
 import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
 import { BoardSurfaces, BoardToolbar, useRoundTwoBoards } from "@/components/round-two/room/boards";
+import { CodingTaskDialog } from "@/components/round-two/room/coding-task-dialog";
 import { PanelSidebar, ScorecardTab } from "@/components/round-two/room/panel-sidebar";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { RoomShareLinks } from "@/components/round-two/room/share-links";
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { canControlBoards, isServerPacket, type BoardState, type CodingTask } from "@/lib/round-two/boards";
 import { R2_ROOM_OPTIONS, r2CameraCapture } from "@/lib/round-two/media";
 import { CANDIDATE_IDENTITY_PREFIX, DATA_TOPICS } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
@@ -168,7 +170,11 @@ function PanelRoom({ id }: { id: string }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const room = useRoomContext();
-  const boards = useRoundTwoBoards();
+  const boards = useRoundTwoBoards({
+    side: "panel",
+    loadReplay: () => utils.roundTwo.board.fetch({ id }, { staleTime: 0 }),
+  });
+  const [taskDialog, setTaskDialog] = useState(false);
   const info = trpc.roundTwo.get.useQuery(
     { id },
     { staleTime: 30_000, refetchOnWindowFocus: false, refetchOnMount: false },
@@ -192,8 +198,12 @@ function PanelRoom({ id }: { id: string }) {
   useEffect(() => () => {
     if (liveBumpTimer.current) clearTimeout(liveBumpTimer.current);
   }, []);
-  useDataChannel(DATA_TOPICS.transcript, refreshLive);
-  useDataChannel(DATA_TOPICS.copilot, refreshLive);
+  // Server-only topics: ignore anything a participant publishes on them.
+  const onServerBump = useCallback((msg: { from?: unknown }) => {
+    if (isServerPacket(msg.from as { identity?: string } | undefined)) refreshLive();
+  }, [refreshLive]);
+  useDataChannel(DATA_TOPICS.transcript, onServerBump);
+  useDataChannel(DATA_TOPICS.copilot, onServerBump);
 
   const admit = trpc.roundTwo.admitCandidate.useMutation({
     onSuccess: () => {
@@ -201,6 +211,16 @@ function PanelRoom({ id }: { id: string }) {
       refreshLive();
     },
     onError: (err) => toast({ title: "Couldn't admit", description: err.message, variant: "destructive" }),
+  });
+  const setBoard = trpc.roundTwo.setBoard.useMutation({
+    onSuccess: (next) => boards.setState(next),
+    onError: (err) => toast({ title: "Couldn't update the board", description: err.message, variant: "destructive" }),
+  });
+  const updateBoard = (next: Omit<BoardState, "task">, task?: CodingTask | null) =>
+    setBoard.mutate({ id, coding: next.coding, whiteboard: next.whiteboard, ...(task !== undefined ? { task } : {}) });
+  const askShare = trpc.roundTwo.askToShare.useMutation({
+    onSuccess: () => toast({ title: "Asked the candidate to share their screen" }),
+    onError: (err) => toast({ title: "Couldn't ask", description: err.message, variant: "destructive" }),
   });
   const end = trpc.roundTwo.end.useMutation({
     onSuccess: () => void room.disconnect(),
@@ -211,6 +231,8 @@ function PanelRoom({ id }: { id: string }) {
   const { round, candidate, canManage, myRole, myScorecard } = info.data;
   const candidateP = remotes.find((p) => p.identity.startsWith(CANDIDATE_IDENTITY_PREFIX));
   const inLobby = !!candidateP && candidateP.permissions?.canSubscribe === false;
+  const canControl = canControlBoards(myRole);
+  const st = boards.state;
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 bg-background lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -246,19 +268,27 @@ function PanelRoom({ id }: { id: string }) {
           </div>
         )}
 
-        <VideoStage className={boards.open.coding || boards.open.whiteboard ? "min-h-[160px] flex-[0.55]" : "min-h-[240px] flex-1"} />
+        <VideoStage className={st.coding || st.whiteboard ? "min-h-[160px] flex-[0.55]" : "min-h-[240px] flex-1"} />
         <BoardSurfaces
-          open={boards.open}
-          canClose
-          onClose={(kind) => boards.toggle(kind)}
-          onSnapshot={boards.publishSnapshot}
+          state={st}
+          writer={false}
+          onClose={canControl ? (kind) => updateBoard({ ...st, [kind]: false }) : undefined}
           remoteCoding={boards.remoteCoding}
           remoteWhiteboard={boards.remoteWhiteboard}
           className="min-h-[200px] flex-1"
         />
         <div className="flex shrink-0 flex-wrap items-center justify-center gap-2">
-          <BoardToolbar open={boards.open} onToggle={boards.toggle} />
-          <RoomControls guardScreenShare onLeave={() => void room.disconnect()} />
+          {canControl && (
+            <BoardToolbar
+              state={st}
+              busy={setBoard.isLoading}
+              onCoding={() => (st.coding ? updateBoard({ ...st, coding: false }) : setTaskDialog(true))}
+              onChangeTask={() => setTaskDialog(true)}
+              onToggleWhiteboard={() => updateBoard({ ...st, whiteboard: !st.whiteboard })}
+              onAskShare={candidateP && !inLobby ? () => askShare.mutate({ id }) : undefined}
+            />
+          )}
+          <RoomControls guardScreenShare canScreenShare={canControl} onLeave={() => void room.disconnect()} />
         </div>
       </div>
 
@@ -286,10 +316,23 @@ function PanelRoom({ id }: { id: string }) {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep going</AlertDialogCancel>
-            <AlertDialogAction onClick={() => end.mutate({ id })}>End interview</AlertDialogAction>
+            <AlertDialogAction onClick={() => end.mutate({ id, boards: boards.latestForFlush() })}>End interview</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {canControl && (
+        <CodingTaskDialog
+          roundTwoId={id}
+          open={taskDialog}
+          onOpenChange={setTaskDialog}
+          busy={setBoard.isLoading}
+          onPick={(task) => {
+            setTaskDialog(false);
+            updateBoard({ ...st, coding: true }, task);
+          }}
+        />
+      )}
     </div>
   );
 }

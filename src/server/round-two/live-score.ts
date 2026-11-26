@@ -13,6 +13,7 @@ import {
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { callJson, clip } from "./ai";
 import { verifyLiveScoring } from "./checks";
+import { latestCodeContext } from "./boards";
 import { round1ContextPrompt } from "./context";
 
 const log = createLogger("round-two/live-score");
@@ -86,6 +87,7 @@ export async function runLiveScoring(roundTwoId: string, trigger: "turn" | "manu
       .map((x) => `${x.speakerRole === "candidate" ? "Candidate" : x.speakerName || "Interviewer"}: ${x.text}`)
       .join("\n");
 
+    const codeText = await latestCodeContext(roundTwoId).catch(() => "");
     const r = await callJson<Record<string, unknown>>({
       organizationId: round.organizationId as string,
       task: "round2_scoring",
@@ -95,7 +97,13 @@ export async function runLiveScoring(roundTwoId: string, trigger: "turn" | "manu
       messages: [
         {
           role: "user",
-          content: `${round1ContextPrompt((round.round1Context ?? {}) as Round1Context)}\n\nLive transcript (latest last):\n${clip(transcript, 14_000)}`,
+          content: [
+            round1ContextPrompt((round.round1Context ?? {}) as Round1Context),
+            codeText,
+            `Live transcript (latest last):\n${clip(transcript, 14_000)}`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
         },
       ],
       signal: AbortSignal.timeout(45_000),

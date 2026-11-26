@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { createLogger } from "@/lib/logger";
 import { admitParticipant, closeRoom, ensureRoom, liveKitConfig, mintRoomToken, removeParticipant } from "@/lib/livekit";
+import { canControlBoards, checkSnapshot, normalizeBoardState, normalizeTask, type BoardState } from "@/lib/round-two/boards";
 import { deriveMaxRound } from "@/lib/round-two/round-filter";
 import {
   QUESTION_CATEGORIES,
@@ -27,6 +28,14 @@ import {
   requireProjectManager,
   type RoundRow,
 } from "../round-two/access";
+import {
+  askCandidateToShare,
+  generateCodingTask,
+  listBankCodingTasks,
+  loadBoardReplay,
+  saveBoardSnapshot,
+  setBoardState,
+} from "../round-two/boards";
 import { buildRound1Context } from "../round-two/context";
 import type { ReasoningStep } from "@/lib/ai/graph/types";
 import { runCopilot } from "../round-two/copilot";
@@ -270,6 +279,84 @@ export const roundTwoRouter = router({
     };
   }),
 
+  /**
+   * Every Round 2 attempt for a candidate (newest first) with the facts the details
+   * screen's round switcher needs. Lightweight: no report body, no tokens.
+   */
+  roundsForCandidate: protectedProcedure.input(z.object({ candidateId: z.string() })).query(async ({ ctx, input }) => {
+    const { data: c } = await ctx.supabase
+      .from("candidates")
+      .select("id, interview:interviews!inner(projectId)")
+      .eq("id", input.candidateId)
+      .maybeSingle();
+    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
+    const projectId = (c.interview as unknown as { projectId: string }).projectId;
+    if (!(await hasProjectAccess(ctx.supabase, projectId, ctx.user.id))) {
+      throw new TRPCError({ code: "FORBIDDEN" });
+    }
+    const { data } = await ctx.supabase
+      .from("round_two_interviews")
+      .select('id, title, status, "reportStatus", "scheduledAt", "startedAt", "endedAt", "createdAt", "durationMin", report')
+      .eq("candidateId", input.candidateId)
+      .order("createdAt", { ascending: false })
+      .limit(20);
+    return (data ?? []).map((r) => {
+      const rep = (r.report ?? null) as { overallScore?: number; recommendation?: string } | null;
+      return {
+        id: r.id as string,
+        title: (r.title as string) ?? "",
+        status: r.status as string,
+        reportStatus: (r.reportStatus as string) ?? "none",
+        scheduledAt: (r.scheduledAt as string | null) ?? null,
+        startedAt: (r.startedAt as string | null) ?? null,
+        endedAt: (r.endedAt as string | null) ?? null,
+        createdAt: (r.createdAt as string | null) ?? null,
+        durationMin: (r.durationMin as number | null) ?? null,
+        overallScore: typeof rep?.overallScore === "number" ? rep.overallScore : null,
+        recommendation: rep?.recommendation ?? null,
+      };
+    });
+  }),
+
+  /**
+   * What the candidate wrote / drew in this round, one entry per task (latest snapshot).
+   * Reads the board snapshots saved during the live round (db/init/51). Returns [] when
+   * nothing was saved or the migration has not been run yet.
+   * HOOK: when GB-14's task-submission table lands, map its rows into this same shape
+   * (plus `submittedAt`) so the details screen picks them up without UI changes.
+   */
+  boardSubmissions: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    const { data, error } = await ctx.supabase
+      .from("round_two_board_snapshots")
+      .select('"taskId", kind, task, language, data, "updatedAt"')
+      .eq("roundTwoId", access.round.id)
+      .order("updatedAt", { ascending: true })
+      .limit(50);
+    if (error) {
+      if (/round_two_board_snapshots|42P01|PGRST205/.test(`${error.code} ${error.message}`)) return [];
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+    }
+    const MAX = 20_000;
+    return (data ?? []).map((r) => {
+      const task = (r.task ?? null) as { title?: string; prompt?: string } | null;
+      const text = String(r.data ?? "");
+      return {
+        taskId: r.taskId as string,
+        kind: r.kind as "coding" | "whiteboard",
+        title: task?.title ?? (r.kind === "whiteboard" ? "Whiteboard" : "Coding task"),
+        prompt: task?.prompt ?? null,
+        language: (r.language as string | null) ?? null,
+        // Whiteboard snapshots are drawing JSON; the UI only shows code as text.
+        data: r.kind === "coding" ? text.slice(0, MAX) : "",
+        hasData: text.length > 0,
+        truncated: r.kind === "coding" && text.length > MAX,
+        submittedAt: null as string | null,
+        updatedAt: r.updatedAt as string,
+      };
+    });
+  }),
+
   /** Round 2 interviews in a project (newest first). */
   list: protectedProcedure.input(z.object({ projectId: z.string() })).query(async ({ ctx, input }) => {
     if (!(await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id))) {
@@ -304,14 +391,14 @@ export const roundTwoRouter = router({
       }
       const { data: rounds } = await ctx.supabase
         .from("round_two_interviews")
-        .select('id, "candidateId", status, "scheduledAt", "createdAt"')
+        .select('id, "candidateId", status, "reportStatus", "scheduledAt", "createdAt"')
         .eq("projectId", input.projectId)
         .order("createdAt", { ascending: false })
         .limit(1000);
       /** Latest R2 per candidate (rows already newest-first). */
       const r2ByCandidateId: Record<
         string,
-        { id: string; status: string; scheduledAt: string | null }
+        { id: string; status: string; reportStatus: string; scheduledAt: string | null }
       > = {};
       for (const r of rounds ?? []) {
         const cid = r.candidateId as string;
@@ -319,6 +406,7 @@ export const roundTwoRouter = router({
         r2ByCandidateId[cid] = {
           id: r.id as string,
           status: r.status as string,
+          reportStatus: (r.reportStatus as string | null) ?? "none",
           scheduledAt: (r.scheduledAt as string | null) ?? null,
         };
       }
@@ -888,7 +976,8 @@ export const roundTwoRouter = router({
       room: r.livekitRoom,
       identity: userIdentity(ctx.user.id),
       name,
-      kind: "panel",
+      // Observers watch: camera + mic only, no screen share, no data packets.
+      kind: access.role === "observer" ? "observer" : "panel",
       metadata: { role: access.role },
     });
     const now = new Date().toISOString();
@@ -1022,28 +1111,136 @@ export const roundTwoRouter = router({
       return { ok: true };
     }),
 
-  /** End for everyone: closes the room and queues the async report. */
-  end: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+  /** Open boards + latest snapshots (late join, and the panel's backup poll while a board is open). */
+  board: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
-    assertCanManage(access);
-    const r = access.round;
-    if (r.status !== "live" && r.status !== "scheduled") throw new TRPCError({ code: "BAD_REQUEST", message: "Interview is not running" });
-    const now = new Date().toISOString();
-    const wasLive = r.status === "live";
-    await ctx.supabase
-      .from("round_two_interviews")
-      .update({
-        status: wasLive ? "ended" : "no_show",
-        endedAt: now,
-        reportStatus: wasLive ? "pending" : "none",
-        reportAttempts: 0,
-        updatedAt: now,
-      })
-      .eq("id", r.id);
-    if (liveKitConfig()) await closeRoom(r.livekitRoom);
-    if (wasLive) void runRoundTwoReport(r.id);
+    return loadBoardReplay(access.round.id, access.round.boardState);
+  }),
+
+  /** Host / interviewers open or close the editor + whiteboard and set the coding task. Observers can't. */
+  setBoard: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        coding: z.boolean(),
+        whiteboard: z.boolean(),
+        task: z
+          .object({
+            id: z.string().max(60).optional(),
+            source: z.enum(["bank", "typed", "ai"]),
+            title: z.string().max(200).optional(),
+            prompt: z.string().trim().min(1).max(4000),
+            language: z.string().max(32),
+            starter: z.string().max(20_000).nullable().optional(),
+          })
+          .nullable()
+          .optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+      if (!canControlBoards(access.role)) throw new TRPCError({ code: "FORBIDDEN", message: "Observers can't open or close the boards" });
+      if (access.round.status !== "live") throw new TRPCError({ code: "BAD_REQUEST", message: "Interview is not live" });
+      const prev = normalizeBoardState(access.round.boardState);
+      // undefined task = keep the current one; null = clear it.
+      const task = input.task === undefined ? prev.task : input.task ? normalizeTask(input.task) : null;
+      const next: BoardState = { coding: input.coding, whiteboard: input.whiteboard, task };
+      try {
+        await setBoardState(access.round.id, access.round.livekitRoom, next);
+      } catch (err) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err instanceof Error ? err.message : "Could not update the board" });
+      }
+      return next;
+    }),
+
+  /** CODING questions from the org's question bank, ready to use as a live task. */
+  codingTasks: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    if (!canControlBoards(access.role)) throw new TRPCError({ code: "FORBIDDEN", message: "Observers can't pick coding tasks" });
+    try {
+      return await listBankCodingTasks(access.round.organizationId);
+    } catch (err) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err instanceof Error ? err.message : "Could not load the question bank" });
+    }
+  }),
+
+  /** AI-written coding task (org question-generation routing). Not shown to the candidate until the panel uses it. */
+  generateCodingTask: protectedProcedure
+    .input(z.object({ id: z.string(), hint: z.string().max(600).default(""), language: z.string().max(32).default("python") }))
+    .mutation(async ({ ctx, input }) => {
+      const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+      if (!canControlBoards(access.role)) throw new TRPCError({ code: "FORBIDDEN", message: "Observers can't generate coding tasks" });
+      const r = access.round;
+      let out: Awaited<ReturnType<typeof generateCodingTask>>;
+      try {
+        out = await generateCodingTask({
+          organizationId: r.organizationId,
+          round1: (r.round1Context ?? {}) as Round1Context,
+          hint: input.hint,
+          language: input.language,
+        });
+      } catch (err) {
+        log.warn("coding task generation failed", r.id, err instanceof Error ? err.message : err);
+        throw new TRPCError({ code: "BAD_REQUEST", message: "The AI could not write a task right now. Try again or type one." });
+      }
+      if (out.tokens) {
+        await ctx.supabase
+          .from("round_two_interviews")
+          .update({ aiTokensUsed: (r.aiTokensUsed ?? 0) + out.tokens })
+          .eq("id", r.id);
+      }
+      if (!out.task) throw new TRPCError({ code: "BAD_REQUEST", message: "The AI returned an empty task. Try again." });
+      return out.task;
+    }),
+
+  /** Ask the candidate to share their screen (a prompt on their side; sharing stays optional). */
+  askToShare: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    if (!canControlBoards(access.role)) throw new TRPCError({ code: "FORBIDDEN", message: "Observers can't ask the candidate to share" });
+    if (access.round.status !== "live" || !access.round.candidateAdmittedAt) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "The candidate isn't in the room yet" });
+    }
+    const by = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
+    await askCandidateToShare(access.round.id, access.round.livekitRoom, by);
     return { ok: true };
   }),
+
+  /** End for everyone: closes the room and queues the async report. */
+  end: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        /** The panel's last live copy of the boards, saved before the report runs. */
+        boards: z.object({ coding: z.string().nullable().optional(), whiteboard: z.string().nullable().optional() }).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+      assertCanManage(access);
+      const r = access.round;
+      if (r.status !== "live" && r.status !== "scheduled") throw new TRPCError({ code: "BAD_REQUEST", message: "Interview is not running" });
+      const now = new Date().toISOString();
+      const wasLive = r.status === "live";
+      if (wasLive && input.boards) {
+        for (const kind of ["coding", "whiteboard"] as const) {
+          const check = checkSnapshot(kind, input.boards[kind]);
+          if (check.ok) await saveBoardSnapshot(r.id, r.boardState, kind, check.data);
+        }
+      }
+      await ctx.supabase
+        .from("round_two_interviews")
+        .update({
+          status: wasLive ? "ended" : "no_show",
+          endedAt: now,
+          reportStatus: wasLive ? "pending" : "none",
+          reportAttempts: 0,
+          updatedAt: now,
+        })
+        .eq("id", r.id);
+      if (liveKitConfig()) await closeRoom(r.livekitRoom);
+      if (wasLive) void runRoundTwoReport(r.id);
+      return { ok: true };
+    }),
 
   cancel: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);

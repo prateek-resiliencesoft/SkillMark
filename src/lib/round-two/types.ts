@@ -1,4 +1,5 @@
 /** Round 2 live interview: shared (client + server) types and pure helpers. */
+import type { CodeEvaluation } from "@/lib/round-two/boards";
 
 export const ROUND_TWO_STATUSES = ["draft", "scheduled", "live", "ended", "cancelled", "no_show"] as const;
 export type RoundTwoStatus = (typeof ROUND_TWO_STATUSES)[number];
@@ -147,6 +148,8 @@ export interface RoundTwoReport {
   panel: { name: string; recommendation: Recommendation | null; comments: string }[];
   /** Quotes in the report checked against the transcript. */
   evidenceCheck?: { verified: number; unverified: number };
+  /** Code written in the shared editor, reviewed like round 1's coding answers. */
+  codeEvaluations?: CodeEvaluation[];
   generatedAt: string;
 }
 
@@ -173,24 +176,13 @@ export const DATA_TOPICS = {
   transcript: "r2.transcript",
   copilot: "r2.copilot",
   admit: "r2.admit",
-  /** Open/close coding + whiteboard for the candidate (and panel view). */
+  /** Server → everyone: which boards are open + the coding task (set by host/interviewers via tRPC). */
   board: "r2.board",
-  /** Debounced coding/whiteboard snapshot sync between peers. */
+  /** Candidate → panel: debounced coding/whiteboard snapshot (the candidate is the only writer). */
   boardState: "r2.board.state",
+  /** Server → candidate: a panelist asks the candidate to share their screen. */
+  shareRequest: "r2.share",
 } as const;
-
-export interface RoundTwoBoardOpen {
-  coding: boolean;
-  whiteboard: boolean;
-}
-
-export type RoundTwoBoardKind = "coding" | "whiteboard";
-
-export interface RoundTwoBoardStateMsg {
-  kind: RoundTwoBoardKind;
-  /** Serialized editor / Excalidraw scene. */
-  data: string;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Style metrics                                                      */

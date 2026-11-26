@@ -36,6 +36,8 @@ export interface RoundRow {
   aiTokensUsed: number;
   reportStatus: string;
   report: unknown;
+  /** Open boards + coding task (db/init/51). */
+  boardState?: unknown;
   startedAt: string | null;
   endedAt: string | null;
   createdAt: string;
