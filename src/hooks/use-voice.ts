@@ -961,9 +961,20 @@ export function useVoice({
           break;
         }
 
+        case "asr_dropped":
+          // The relay threw the transcript away (silence / noise / echo / made-up
+          // text): forget the live text so it is never saved as the candidate's words.
+          asrBufferRef.current = "";
+          liveTranscriptRef.current = "";
+          setState((s) => ({ ...s, userTranscript: "" }));
+          break;
+
         case "asr_ended": {
           const finalText =
             (typeof msg.text === "string" && msg.text.trim()) || asrBufferRef.current;
+          // The interviewer's words came before this answer: save them first, so the
+          // answer is never stored ahead of the question (its turn-end can arrive late).
+          if (finalText && chatBufferRef.current.trim()) commitAssistantBuffer();
           if (finalText) {
             vadFailsafeRef.current.transcript(finalText.length);
             const normalized = normalizeForCompare(finalText);

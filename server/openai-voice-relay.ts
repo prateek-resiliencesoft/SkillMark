@@ -12,9 +12,11 @@ import { config } from "dotenv";
 import { WebSocket, WebSocketServer } from "ws";
 import { createLogger } from "../src/lib/logger";
 import { buildIntegrityProbingSection } from "../src/lib/ai/prompts/integrity-probing";
-import { LISTENING_RULES, TRANSCRIPTION_HINT } from "../src/lib/ai/prompts/listening";
+import { LISTENING_RULES, TRANSCRIPTION_HINT, transcriptionSettings } from "../src/lib/ai/prompts/listening";
+import { cleanCandidateTranscript } from "../src/lib/voice/transcript-filter";
 import {
   interviewLanguageRequirement,
+  resolveInterviewLanguage,
   isChineseInterviewLanguage,
 } from "../src/lib/interview-language";
 import { interviewerPromptIdentity, resolveOpenAiVoice } from "../src/lib/interviewer-persona";
@@ -32,16 +34,24 @@ import {
   shouldAllowTtsBargeIn,
 } from "./openai-voice-relay-helpers";
 import { nextAskableQuestionIndex } from "../src/lib/question-conditions";
+import { candidateAskedToGoBack, findReopenIndex, nextOpenQuestion } from "../src/lib/voice/question-progress";
 import {
   emptyLedger,
+  isLocked,
+  earlyAnsweredQuestions,
+  isMetaReply,
+  metaComplaintKind,
   isSubstantiveCandidateAnswer,
   isSufficientShortAnswer,
   ledgerPromptBlock,
   ledgerRefreshCue,
   looksLikeReask,
+  metaReplyCue,
   noReaskBehaviorRules,
   reaskCorrectionCue,
   recordAnswer,
+  reopenQuestion,
+  reopenQuestionCue,
   type AnsweredLedger,
 } from "../src/lib/voice/answered-ledger";
 import {
@@ -293,6 +303,12 @@ function buildSystemPrompt(
   ledger: AnsweredLedger = emptyLedger(),
 ): string {
   const isZh = isChineseInterview(ctx);
+  // Hindi interviews translate the (English) question list: "VERBATIM" made the
+  // model read the English text after a Hinglish version.
+  const translates = resolveInterviewLanguage(ctx.language) === "hi";
+  const askRule = translates
+    ? "ask it ONCE in the Hinglish style from Language Requirements (translated naturally, same meaning, technical terms in English). Never read the English text aloud and never repeat the question in English"
+    : "speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list";
   const sorted = ctx.questions.sort((a, b) => a.order - b.order);
   const lockedBlock = ledgerPromptBlock(ledger, isZh);
   const noReask = noReaskBehaviorRules(isZh);
@@ -396,11 +412,11 @@ ${questionList}
 ${lockedBlock ? `\n${lockedBlock}` : ""}
 ## Your Behavior
 1. Start at question ${currentQ}. First, give a warm greeting — introduce yourself by name, mention the topic "${ctx.title}" and that there are ${sorted.length} questions. Then say a transition phrase like "Let's get started. Here is the first question." ONLY AFTER that, ask the question. The greeting, the transition phrase, and the question MUST be three separate sentences — NEVER combine them into one.
-2. When asking a scripted question, speak its text VERBATIM — do not paraphrase, soften, or reword the question text from the list.
+2. When asking a scripted question, ${askRule}.
 3. If a question has a SKIP IF note and the participant already covered those topics earlier (e.g. in their introduction), skip it: call signal_question_change to the next index without asking it.
 4. For each question, follow up based on the participant's answers (up to ${maxFollowUps} follow-ups). Sound like a warm, patient human interviewer, not a rapid-fire questionnaire.
 5. When a question is sufficiently discussed, call the signal_question_change function to move forward. "Sufficiently discussed" means the participant has given a detailed, specific answer — NOT a vague statement like "I had many challenges" or "that's a good question." If their answer is vague, ask them to elaborate before moving on.
-6. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question. Ask the next scripted question VERBATIM.
+6. After transitioning, naturally introduce the next question. Usually start with a short acknowledgement or appreciation of the participant's last answer before asking the next question. Ask the next scripted question (see rule 2).
 7. After all questions are done, call signal_question_change with questionIndex=${sorted.length} (out of bounds), then give a brief wrap-up and farewell.
 8. Keep responses concise (1-3 sentences) and conversational. Speak at a calm, unhurried pace — slightly slower than normal conversation speed so the participant can follow easily. Use brief friendly bridges like "Thanks for sharing that", "I appreciate the context", or "That makes sense" when appropriate.
 9. If the participant asks to "skip" or "next question", briefly acknowledge and immediately call signal_question_change with userRequested=true.
@@ -652,7 +668,7 @@ async function handleMicTest(browserWs: WebSocket) {
             format: { type: "audio/pcm", rate: 24000 },
             noise_reduction: { type: "far_field" },
             transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL, prompt: TRANSCRIPTION_HINT },
-            turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 300 },
+            turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 500, silence_duration_ms: 800 },
           },
           output: { format: { type: "audio/pcm", rate: 24000 }, voice: AZURE_VOICE },
         },
@@ -761,6 +777,15 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   const MIN_QUESTION_DWELL_MS = 15_000;
   const MIN_WORDS_BEFORE_TRANSITION = 20;
   let userCommittedWordsThisQuestion = 0;
+  /** The candidate gave a REAL answer to the current question (meta replies never count). */
+  let userAnsweredThisQuestion = false;
+  /** The interviewer has asked the current question; speech before that is not its answer. */
+  let questionPosed = currentQuestionIndex > 0;
+  /** Candidate words that count toward the current question's answer. */
+  let answerAccum = "";
+  /** Questions asked and left; the model can never jump over one that is not in here. */
+  const completed = new Set<number>();
+  for (let i = 0; i < currentQuestionIndex; i++) completed.add(i);
   /** Locked Q→A so verbal re-asks of ANY finished question get corrected. */
   let answeredLedger: AnsweredLedger = emptyLedger();
   for (let i = 0; i < currentQuestionIndex; i++) {
@@ -804,7 +829,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   let pendingAsrUpdate: ReturnType<typeof setTimeout> | null = null;
 
   // Track pending function calls that need responses
-  let pendingFunctionCalls: Array<{ callId: string; name: string; args: string }> = [];
+  let pendingFunctionCalls: Array<{ callId: string; name: string; args: string; accepted?: boolean }> = [];
 
   function flushUserInput() {
     if (pendingInputFlush) { clearTimeout(pendingInputFlush); pendingInputFlush = null; }
@@ -870,15 +895,21 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
   function pushHistory(role: "user" | "assistant", text: string) {
     if (!text.trim()) return;
     if (role === "user" && !text.startsWith("[")) {
-      userCommittedWordsThisQuestion += text.trim().split(/\s+/).length;
       const qText = sortedQuestions[currentQuestionIndex]?.text ?? "";
-      // Lock EVERY scripted question on a real answer (behavioral, coding talk, screening…).
-      if (isSubstantiveCandidateAnswer(text)) {
-        lockAnswer(currentQuestionIndex, text);
-        if (isSufficientShortAnswer(qText, text) && !toolsEnabled) enableTools();
-      }
-      if (!toolsEnabled && userCommittedWordsThisQuestion >= MIN_WORDS_BEFORE_TRANSITION) {
-        enableTools();
+      // Only real speech that follows the question counts. Meta replies ("wait",
+      // "I haven't answered") and words spoken before it was asked never do.
+      if (!isMetaReply(text)) lockEarlyAnswers(text);
+      if (questionPosed && !isMetaReply(text)) {
+        answerAccum = `${answerAccum} ${text.trim()}`.trim();
+        userCommittedWordsThisQuestion += text.trim().split(/\s+/).length;
+        if (isSubstantiveCandidateAnswer(answerAccum, qText)) {
+          userAnsweredThisQuestion = true;
+          lockAnswer(currentQuestionIndex, answerAccum);
+          if (isSufficientShortAnswer(qText, answerAccum) && !toolsEnabled) enableTools();
+        }
+        if (!toolsEnabled && userCommittedWordsThisQuestion >= MIN_WORDS_BEFORE_TRANSITION) {
+          enableTools();
+        }
       }
     }
     conversationHistory.push({ role, text: text.trim() });
@@ -1042,8 +1073,65 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
     );
   }
 
+
+  /**
+   * The candidate already answered a LATER screening question (expected / current
+   * CTC, notice period, relocation): lock it so it is never asked again and the
+   * forward move skips it.
+   */
+  function lockEarlyAnswers(t: string) {
+    const later = earlyAnsweredQuestions(t, sortedQuestions, currentQuestionIndex, (i) => completed.has(i) || isLocked(answeredLedger, i));
+    for (const i of later) {
+      completed.add(i);
+      lockAnswer(i, t, false);
+      log.info(`Q${i + 1} already answered early — locked, will not be asked`);
+    }
+    if (later.length) {
+      const cue = ledgerRefreshCue(answeredLedger, isZh);
+      if (cue) injectSystemCue(cue);
+    }
+  }
+
+  /** "You skipped / I haven't answered": go back to that question (only it), then carry on in order. */
+  function handleMetaReply(t: string) {
+    const { complaint, skipped } = metaComplaintKind(t);
+    const cur = sortedQuestions[currentQuestionIndex];
+    const idx = complaint ? findReopenIndex(currentQuestionIndex, (i) => isLocked(answeredLedger, i), skipped) : null;
+    if (idx === null) {
+      injectSystemCue(metaReplyCue(currentQuestionIndex, cur?.text ?? "", isZh));
+      return;
+    }
+    if (idx !== currentQuestionIndex) {
+      completed.delete(idx);
+      answeredLedger = reopenQuestion(answeredLedger, idx);
+      send({ type: "transitioning", direction: "previous", auto: true });
+      currentQuestionIndex = idx;
+      questionEnteredAt = Date.now();
+      userCommittedWordsThisQuestion = 0;
+      userAnsweredThisQuestion = false;
+      answerAccum = "";
+      questionPosed = false;
+      reaskCorrectedUntil = Date.now() + 8_000;
+      send({ type: "question_change", questionIndex: idx, totalQuestions: sortedQuestions.length, auto: true });
+      pushHistory("user", `[Moved to question ${idx + 1}: "${sortedQuestions[idx]?.text}"]`);
+      log.info(`↩ Reopened Q${idx + 1} (participant said it was skipped / not answered)`);
+    }
+    injectSystemCue(reopenQuestionCue(idx, sortedQuestions[idx]?.text ?? "", isZh));
+  }
+
+  /** The interviewer's newest words ask something the candidate has not answered yet. */
+  function interviewerAwaitingAnswer(): boolean {
+    let spoken = outputTranscriptBuffer;
+    for (let i = conversationHistory.length - 1; i >= 0 && conversationHistory[i].role === "assistant"; i--) {
+      spoken = `${conversationHistory[i].text} ${spoken}`;
+    }
+    return /[?？]/.test(spoken);
+  }
+
   function handleCommittedUserText(committedText: string, reason: string): boolean {
-    if (tryHandleExplicitUserNavigation(committedText)) {
+    const meta = isMetaReply(committedText);
+    if (meta) handleMetaReply(committedText);
+    else if (tryHandleExplicitUserNavigation(committedText)) {
       return true;
     }
     const currentQuestion = sortedQuestions[currentQuestionIndex];
@@ -1099,8 +1187,19 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
     clearSpeechFinalizeTimer();
     if (speechTranscriptCommitted) return "";
 
-    const committedText = bestAvailableTranscript();
-    if (!committedText) return "";
+    const rawText = bestAvailableTranscript();
+    if (!rawText) return "";
+    // Never save or count made-up text (silence / noise phrases, foreign script, the AI's own echo).
+    const recentAssistant = conversationHistory.filter((h) => h.role === "assistant").slice(-2).map((h) => h.text);
+    const cleaned = cleanCandidateTranscript(rawText, { language: ctx.language, recentAssistant });
+    if (cleaned.dropped) {
+      log.info(`Dropped candidate transcript (${cleaned.dropped}): ${JSON.stringify(rawText.slice(0, 120))}`);
+      inputTranscriptBuffer = "";
+      volcAsrAccumulator = "";
+      send({ type: "asr_dropped", reason: cleaned.dropped });
+      return "";
+    }
+    const committedText = cleaned.text;
 
     speechTranscriptCommitted = true;
     pushHistory("user", committedText);
@@ -1267,7 +1366,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
     return {
       format: { type: "audio/pcm", rate: 24000 as const },
       noise_reduction: { type: "far_field" as const },
-      transcription: { model: OPENAI_REALTIME_TRANSCRIPTION_MODEL, prompt: TRANSCRIPTION_HINT },
+      transcription: transcriptionSettings(OPENAI_REALTIME_TRANSCRIPTION_MODEL, ctx.language),
       turn_detection: {
         type: "semantic_vad" as const,
         eagerness: "low" as const,
@@ -1608,14 +1707,20 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               try { args = JSON.parse(msg.arguments || "{}"); } catch { /* ignore */ }
               let newIdx = args.questionIndex ?? (currentQuestionIndex + 1);
               const userRequested = args.userRequested === true;
-              if (newIdx > currentQuestionIndex && newIdx < sortedQuestions.length) {
-                const priorUser = conversationHistory
-                  .filter((h) => h.role === "user")
-                  .map((h) => h.text);
-                const resolved = nextAskableQuestionIndex(sortedQuestions, newIdx, priorUser);
-                if (resolved !== newIdx) {
-                  log.info(`Skipped covered Qs → Q${resolved + 1} (was Q${newIdx + 1})`);
-                  newIdx = resolved;
+              if (newIdx > currentQuestionIndex) {
+                // Never jump over a question: the next one is the first not asked yet.
+                const base = nextOpenQuestion(currentQuestionIndex + 1, sortedQuestions.length, completed);
+                if (base !== newIdx) log.info(`Clamped question change Q${newIdx + 1} → next unasked Q${Math.min(base, sortedQuestions.length) + 1}`);
+                newIdx = base;
+                if (newIdx < sortedQuestions.length) {
+                  const priorUser = conversationHistory
+                    .filter((h) => h.role === "user" && !isMetaReply(h.text))
+                    .map((h) => h.text);
+                  const resolved = nextOpenQuestion(nextAskableQuestionIndex(sortedQuestions, newIdx, priorUser), sortedQuestions.length, completed);
+                  if (resolved !== newIdx) {
+                    log.info(`Skipped covered Qs → Q${resolved + 1} (was Q${newIdx + 1})`);
+                    newIdx = resolved;
+                  }
                 }
               }
               log.info(`OpenAI called signal_question_change → Q${newIdx + 1}${userRequested ? " (user requested)" : ""}`);
@@ -1631,6 +1736,35 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                 break;
               }
 
+              {
+                const lastRealUser = [...conversationHistory].reverse().find((h) => h.role === "user" && !h.text.startsWith("[") && !isMetaReply(h.text))?.text ?? "";
+                // Going back only when the candidate's own words asked for it.
+                if (newIdx < currentQuestionIndex && !(userRequested && candidateAskedToGoBack(lastRealUser))) {
+                  log.warn(`Rejected backward question change to Q${newIdx + 1}`);
+                  pendingFunctionCalls.push({
+                    callId: msg.call_id,
+                    name: msg.name,
+                    args: `Rejected: question ${newIdx + 1} was already asked. Never repeat earlier questions. Stay on question ${currentQuestionIndex + 1}; do not speak until the participant answers.`,
+                  });
+                  break;
+                }
+                if (!userRequested && newIdx > currentQuestionIndex) {
+                  const unanswered = !userAnsweredThisQuestion;
+                  const pending = interviewerAwaitingAnswer();
+                  if (unanswered || pending) {
+                    log.warn(`Rejected question change: ${unanswered ? "no real answer yet" : "the interviewer's last question is unanswered"}`);
+                    pendingFunctionCalls.push({
+                      callId: msg.call_id,
+                      name: msg.name,
+                      args: unanswered
+                        ? `Rejected: the participant has not given a real answer to question ${currentQuestionIndex + 1} yet. Do NOT say you are moving on and do NOT ask a new question: wait for their answer.`
+                        : `Rejected: you just asked the participant something and they have not answered yet. Do not speak again and do not move on: wait silently for their answer.`,
+                    });
+                    break;
+                  }
+                }
+              }
+
               // Reject premature transitions: block if the user hasn't spoken,
               // not enough time has passed, or insufficient words (forward only).
               // Backward transitions and explicit user requests bypass the word count guard.
@@ -1638,7 +1772,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               const dwellMs = Date.now() - questionEnteredAt;
               const isForward = newIdx > currentQuestionIndex && newIdx < sortedQuestions.length;
               const lastUser = [...conversationHistory].reverse().find((h) => h.role === "user" && !h.text.startsWith("["))?.text ?? "";
-              const shortOk = isSufficientShortAnswer(sortedQuestions[currentQuestionIndex]?.text ?? "", lastUser);
+              const shortOk = userAnsweredThisQuestion && isSufficientShortAnswer(sortedQuestions[currentQuestionIndex]?.text ?? "", answerAccum);
               const needsWordGuard = isForward && !userRequested && !shortOk;
               const needsDwell = !shortOk;
               if (newIdx < sortedQuestions.length && (lastUserInput === 0 || (needsDwell && dwellMs < MIN_QUESTION_DWELL_MS) || (needsWordGuard && userCommittedWordsThisQuestion < MIN_WORDS_BEFORE_TRANSITION))) {
@@ -1665,7 +1799,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                 result = "Interview is now complete. Please give a brief farewell.";
               } else {
                 const lock = ledgerPromptBlock(answeredLedger, isZh).trim();
-                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question VERBATIM. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
+                result = `Moved to question ${newIdx + 1}: "${sortedQuestions[newIdx]?.text}". Please naturally transition and ask this question ${resolveInterviewLanguage(ctx.language) === "hi" ? "once, in Hinglish (never also in English)" : "VERBATIM"}. Do not repeat earlier questions.${lock ? ` ${lock}` : ""}`;
               }
 
               if (newIdx >= sortedQuestions.length) {
@@ -1683,12 +1817,16 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                 const dir = newIdx > currentQuestionIndex ? "next" : "previous";
                 const arrow = dir === "next" ? "→" : "←";
                 if (newIdx > currentQuestionIndex) {
-                  lockAnswer(currentQuestionIndex, lastUser || "(answered)");
+                  // Only a real answer locks a question (done when it was spoken); a skipped one is just left behind.
+                  completed.add(currentQuestionIndex);
                 }
                 send({ type: "transitioning", auto: true, direction: dir });
                 currentQuestionIndex = newIdx;
                 questionEnteredAt = Date.now();
                 userCommittedWordsThisQuestion = 0;
+                userAnsweredThisQuestion = false;
+                answerAccum = "";
+                questionPosed = false;
                 disableTools();
                 send({
                   type: "question_change",
@@ -1705,6 +1843,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                 callId: msg.call_id,
                 name: msg.name,
                 args: result,
+                accepted: true,
               });
             }
             break;
@@ -1761,6 +1900,7 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
               }
               if (capturedModelText) {
                 log.info(`TTS done (${responseTtsBytes}B sent): ${JSON.stringify(capturedModelText)}`);
+                questionPosed = true;
                 pushHistory("assistant", capturedModelText);
                 if (Date.now() >= reaskCorrectedUntil && looksLikeReask(capturedModelText, answeredLedger, currentQuestionIndex)) {
                   log.warn(`Verbal re-ask of locked topic on Q${currentQuestionIndex + 1} — correcting`);
@@ -1816,7 +1956,10 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
                   },
                 }));
               }
-              requestAssistantResponse("function call follow-up");
+              // A rejected / no-op call must not make the interviewer speak again with no
+              // candidate answer in between; only an accepted move asks the next question.
+              if (calls.some((c) => c.accepted)) requestAssistantResponse("function call follow-up");
+              else log.info("Question change not accepted — no follow-up response (waiting for the participant)");
             } else if (queuedResponse) {
               requestAssistantResponse(`queued after ${queuedResponse.reason}`, queuedResponse.response);
             }
@@ -2145,12 +2288,14 @@ async function handleInterview(browserWs: WebSocket, ctx: InterviewContext) {
       }
       const dir = targetIdx > currentQuestionIndex ? "→" : "←";
       if (targetIdx > currentQuestionIndex) {
-        const lastUser = [...conversationHistory].reverse().find((h) => h.role === "user" && !h.text.startsWith("["))?.text ?? "";
-        lockAnswer(currentQuestionIndex, lastUser || "(answered)");
+        completed.add(currentQuestionIndex);
       }
       currentQuestionIndex = targetIdx;
       questionEnteredAt = Date.now();
       userCommittedWordsThisQuestion = 0;
+      userAnsweredThisQuestion = false;
+      answerAccum = "";
+      questionPosed = false;
       disableTools();
       pushHistory("user", `[Moved to question ${currentQuestionIndex + 1}: "${sortedQuestions[currentQuestionIndex]?.text}"]`);
       send({

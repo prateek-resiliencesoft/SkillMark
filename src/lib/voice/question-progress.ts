@@ -15,6 +15,11 @@ export type MoveState = {
   /** Time on the current question. */
   dwellMs: number;
   minDwellMs: number;
+  /**
+   * The interviewer's newest line asks something the candidate has not
+   * answered yet (a follow-up, a stacked question…). Moving on now would skip it.
+   */
+  openInterviewerQuestion?: boolean;
 };
 
 export type MoveRequest = {
@@ -27,7 +32,7 @@ export type MoveRequest = {
 
 export type MoveDecision =
   | { ok: true; target: number; end: boolean }
-  | { ok: false; reason: "same" | "invalid" | "backward" | "premature"; message: string };
+  | { ok: false; reason: "same" | "invalid" | "backward" | "premature" | "pending_question"; message: string };
 
 /** First question at or after `from` that hasn't been finished (total = interview end). */
 export function nextOpenQuestion(from: number, total: number, completed: ReadonlySet<number>): number {
@@ -53,16 +58,24 @@ export function decideQuestionMove(state: MoveState, req: MoveRequest): MoveDeci
       message: `Rejected: question ${req.target + 1} was already asked. Never repeat earlier questions. ${stay} and reply to the participant out loud now.`,
     };
   }
-  // Forward: land on the first question not finished yet.
-  const target = nextOpenQuestion(req.target, total, state.completed);
+  // Forward: never jump over a question. Whatever the model asks for, the next
+  // one is the first question after this one that has not been asked yet.
+  const target = nextOpenQuestion(current + 1, total, state.completed);
   // Wrapping up after the last question only needs an answer, not the dwell time.
   const lastAnswered = target >= total && current === total - 1 && state.userSpokeThisQuestion;
   const early = !lastAnswered && (!state.userSpokeThisQuestion || state.dwellMs < state.minDwellMs);
+  if (!req.userRequested && state.openInterviewerQuestion) {
+    return {
+      ok: false,
+      reason: "pending_question",
+      message: `Rejected: you just asked the participant something and they have not answered yet. ${stay}. Do not speak again and do not move on: wait silently for their answer.`,
+    };
+  }
   if (!req.userRequested && early) {
     return {
       ok: false,
       reason: "premature",
-      message: `Rejected: the participant has not given a substantive answer yet. ${stay} and reply to the participant out loud now (ask them to answer or to say a bit more). Do NOT say you are moving on.`,
+      message: `Rejected: the participant has not given a substantive answer yet. ${stay}. Do NOT say you are moving on and do NOT ask a new question: wait for the participant's answer (if you must speak, invite them to answer THIS question only, in one short sentence).`,
     };
   }
   return { ok: true, target, end: target >= total };
@@ -80,4 +93,27 @@ const BACK_RE = [
 /** The candidate's own words ask to return to an earlier question. */
 export function candidateAskedToGoBack(text: string | null | undefined): boolean {
   return !!text && BACK_RE.some((re) => re.test(text));
+}
+
+/**
+ * The candidate says they were skipped / have not answered: which question to
+ * go back to: the current one if it has no real answer yet (or, for "you
+ * skipped", the newest earlier one without an answer), else null.
+ */
+export function findReopenIndex(
+  current: number,
+  isAnswered: (index: number) => boolean,
+  /** "You skipped…": prefer an earlier question over the one now open. */
+  preferEarlier = false,
+): number | null {
+  const cur = Math.max(0, current);
+  if (preferEarlier || isAnswered(cur)) {
+    for (let i = cur - 1; i >= 0; i--) if (!isAnswered(i)) return i;
+  }
+  return isAnswered(cur) ? null : cur;
+}
+
+/** After a re-asked question was answered: the next question not asked yet, in order. */
+export function nextUnaskedAfter(index: number, total: number, completed: ReadonlySet<number>): number {
+  return nextOpenQuestion(index + 1, total, completed);
 }
