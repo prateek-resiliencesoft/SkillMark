@@ -28,7 +28,12 @@ const HALLUCINATION_WHOLE = new Set([
   "subscribe", "please subscribe", "like and subscribe", "thanks for watching", "thank you for watching",
   "music", "applause", "laughter", "silence", "noise",
   "dhanyavaad", "dhanyavad", "dhanyawad", "shukriya",
+  // Non-Latin "thanks for watching" that recognisers invent on silence.
+  "ご視聴ありがとうございました", "ご視聴ありがとうございます", "字幕由amara org社区提供", "請不吝點贊 訂閱 轉發 打賞支持明鏡與點點欄目",
 ]);
+
+/** A turn with no voiced audio is only dropped as silence when it is this short (a real answer is never dropped on level alone). */
+export const SILENCE_DROP_MAX_WORDS = 3;
 
 /** Phrases that never come from a candidate, removed wherever they appear. */
 const HALLUCINATION_ANYWHERE: RegExp[] = [
@@ -111,25 +116,33 @@ export function isKnownHallucination(text: string): boolean {
   return !p || HALLUCINATION_WHOLE.has(p);
 }
 
-function trigrams(words: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i + 3 <= words.length; i++) out.push(words.slice(i, i + 3).join(" "));
-  return out;
-}
-
 /**
- * The mic picked up the interviewer's own voice: most of the "candidate" words
- * appear, in order, in what the interviewer just said.
+ * The mic picked up the interviewer's own voice: the WHOLE "candidate" turn is
+ * a verbatim run of what the interviewer just said. Answers that reuse the
+ * question's words ("Mera current CTC 6.5 LPA hai") are never echo.
  */
 export function looksLikeEcho(candidate: string, assistantLines: string[] | undefined): boolean {
   if (!assistantLines?.length) return false;
-  const cw = plain(candidate).split(" ").filter(Boolean);
-  if (cw.length < 4) return false;
-  const said = new Set(trigrams(plain(assistantLines.join(" ")).split(" ").filter(Boolean)));
-  const grams = trigrams(cw);
-  if (grams.length < 2 || said.size === 0) return false;
-  const hit = grams.filter((g) => said.has(g)).length;
-  return hit / grams.length >= 0.6;
+  const c = plain(candidate);
+  if (c.split(" ").filter(Boolean).length < 4) return false;
+  return assistantLines.some((line) => ` ${plain(line)} `.includes(` ${c} `));
+}
+
+/**
+ * The turn starts with the tail of the interviewer's question (speaker echo
+ * picked up before the candidate spoke): remove only that verbatim run of 4+
+ * words from the start and keep the answer.
+ */
+export function stripEchoPrefix(candidate: string, assistantLines: string[] | undefined): string {
+  if (!assistantLines?.length) return candidate;
+  const words = candidate.replace(/\s+/g, " ").trim().split(" ");
+  const said = ` ${assistantLines.map(plain).join(" ")} `;
+  let cut = 0;
+  for (let n = words.length - 1; n >= 4; n--) {
+    const head = plain(words.slice(0, n).join(" "));
+    if (head && said.includes(` ${head} `)) { cut = n; break; }
+  }
+  return cut ? words.slice(cut).join(" ") : candidate;
 }
 
 /**
@@ -140,24 +153,35 @@ export function looksLikeEcho(candidate: string, assistantLines: string[] | unde
 export function cleanCandidateTranscript(raw: string | null | undefined, opts: CleanTranscriptOptions = {}): CleanTranscriptResult {
   let text = (raw ?? "").replace(/\s+/g, " ").trim();
   if (!text || !/[\p{L}\p{N}]/u.test(text)) return { text: "", dropped: "empty" };
+  // Conservative: a turn is only dropped when it is empty, an exact known
+  // made-up phrase, a short text over audio that never reached voice level,
+  // or a verbatim copy of the interviewer's line. Never on similarity, script
+  // or numbers: a lost answer is worse than an odd word.
+  if (isKnownHallucination(text)) return { text: "", dropped: "hallucination" };
 
-  // Audio arrived for this turn but none of it was loud enough to be a voice.
-  if (typeof opts.audioMs === "number" && opts.audioMs >= 500 && (opts.voicedMs ?? 0) <= 0) {
+  if (
+    typeof opts.audioMs === "number" && opts.audioMs >= 500 && (opts.voicedMs ?? 0) <= 0
+    && text.split(" ").filter(Boolean).length <= SILENCE_DROP_MAX_WORDS
+  ) {
     return { text: "", dropped: "silence" };
   }
 
+  // Remove stray foreign-script words (Urdu / Bengali / Japanese …) but keep
+  // the turn; if nothing else is left, keep the original words.
   const ratio = foreignScriptRatio(text, opts.language);
-  if (ratio > 0.5) return { text: "", dropped: "wrong_script" };
   if (ratio > 0) {
-    text = text.split(" ").filter((w) => ![...w].some((ch) => isForeignLetter(ch, opts.language))).join(" ");
+    const kept = text.split(" ").filter((w) => ![...w].some((ch) => isForeignLetter(ch, opts.language))).join(" ");
+    if (/[\p{L}\p{N}]/u.test(kept)) text = kept;
   }
 
+  // Known made-up phrases are removed; a turn made only of them is dropped.
   for (const re of HALLUCINATION_ANYWHERE) text = text.replace(re, " ");
   text = collapseRepeats(text.replace(/\s+/g, " ").trim());
   if (!text || !/[\p{L}\p{N}]/u.test(text) || isKnownHallucination(text)) return { text: "", dropped: "hallucination" };
 
   if (looksLikeEcho(text, opts.recentAssistant)) return { text: "", dropped: "echo" };
-  return { text, dropped: null };
+  const answer = stripEchoPrefix(text, opts.recentAssistant).trim();
+  return { text: answer || text, dropped: null };
 }
 
 /** Gemini Live `inputAudioTranscription.languageCodes` hints for the interview language. */

@@ -59,6 +59,23 @@ export class TurnGate {
     return this.suppressing;
   }
 
+  /** A model turn is being delivered right now. */
+  get isOpen() {
+    return this.open;
+  }
+
+  /**
+   * The relay rejected the model's tool call. Gemini always speaks after a
+   * tool response; that turn must not reach the candidate (it read the
+   * rejection aloud, or re-asked the question). Only NEW candidate speech or a
+   * relay cue may open the next turn. Suppression starts before the first
+   * chunk, so no reply is ever cut mid-sentence.
+   */
+  rejected() {
+    this.candidateSignal = false;
+    this.allowances = 0;
+  }
+
   /** Forget stale permissions (new connection, or the browser reset). */
   reset() {
     this.allowances = 0;

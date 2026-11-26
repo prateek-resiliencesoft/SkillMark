@@ -30,7 +30,12 @@ const INTERNAL_CUE_RE =
 /** Remove relay-internal cue messages (e.g. `[CODE_UPDATE] …`) from a transcript line. */
 export function stripInternalCueText(text: string): string {
   if (!text) return "";
-  return text.replace(INTERNAL_CUE_RE, " ").replace(/[ \t]{2,}/g, " ").trim();
+  return text
+    .replace(INTERNAL_CUE_RE, " ")
+    // A relay instruction read aloud: "[SYSTEM] …" / "[ANSWER_CHECK_IN] …" to the end of the line.
+    .replace(/\[\s*(?:SYSTEM|ANSWER_CHECK_IN)\s*\][\s\S]*$/i, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 }
 
 /** Remove spoken / transcribed tool-call text. Returns "" when nothing real is left. */

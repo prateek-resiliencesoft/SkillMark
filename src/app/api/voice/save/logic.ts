@@ -2,6 +2,7 @@ import { dropRepeatedUserLines } from "@/lib/transcript/dedupe";
 import { canMarkCompleted } from "@/lib/session-report-policy";
 import { candidateWriteWindow, completionEndReason, QUIT_REQUEST_REASON, type CandidateWriteSession } from "@/lib/session-link";
 import { stripToolCallText } from "@/lib/transcript/sanitize";
+import { sanitizeInterviewerText } from "@/lib/voice/interviewer-text";
 import { devanagariToRoman } from "@/lib/transcript/transliterate";
 import { normalizeCandidateLanguage } from "@/lib/interview-language";
 
@@ -28,8 +29,11 @@ export type VoiceSavePayload = {
 };
 
 /** Text as stored: no tool-call text, and Hindi in Roman script (Hinglish), never Devanagari. */
-export function storedLineText(content: unknown): string {
-  return devanagariToRoman(stripToolCallText(typeof content === "string" ? content : "")).trim();
+export function storedLineText(content: unknown, role?: string): string {
+  const text = stripToolCallText(typeof content === "string" ? content : "");
+  // Interviewer lines never keep relay / tool-rejection text ("[SYSTEM] The tool call was rejected …").
+  const clean = role === "assistant" || role === "ASSISTANT" ? sanitizeInterviewerText(text) : text;
+  return devanagariToRoman(clean).trim();
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -282,7 +286,7 @@ export async function handleVoiceSave(
       }
       // Never store tool-call text the voice model spoke ("signal_question_change{…}").
       const clean = messages
-        .map((m) => ({ ...m, content: storedLineText(m.content) }))
+        .map((m) => ({ ...m, content: storedLineText(m.content, m.role) }))
         .filter((m) => m.content);
       const { kept, dropped } = dropRepeatedUserLines(lastSaved, clean);
       if (dropped > 0) ops.log.info(`Dropped ${dropped} repeated candidate line(s) for session ${sessionId}`);

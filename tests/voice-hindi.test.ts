@@ -35,9 +35,12 @@ describe("made-up speech-to-text is dropped, real Hinglish is kept", () => {
     assert.equal(r.dropped, null);
     assert.equal(r.text.replace(/\s+/g, " ").trim(), "Mera notice period 30 days hai.");
   });
-  it("drops wrong-script junk in a Hindi interview but keeps Devanagari and Roman", () => {
-    assert.equal(cleanCandidateTranscript("میں نے پروجیکٹ بنایا", { language: "hi" }).dropped, "wrong_script");
-    assert.equal(cleanCandidateTranscript("ご視聴ありがとうございました", { language: "hi" }).dropped, "wrong_script");
+  it("never drops a turn for its script; known made-up phrases are still dropped", () => {
+    // A real answer transcribed in the wrong script is kept (an odd script beats a lost answer).
+    assert.equal(cleanCandidateTranscript("میں نے پروجیکٹ بنایا", { language: "hi" }).dropped, null);
+    assert.equal(cleanCandidateTranscript("ご視聴ありがとうございました", { language: "hi" }).dropped, "hallucination");
+    // Stray foreign words are removed from a Hinglish answer.
+    assert.equal(cleanCandidateTranscript("Main React use karta hoon میں", { language: "hi" }).text, "Main React use karta hoon");
     assert.equal(cleanCandidateTranscript("मैंने React में project बनाया", { language: "hi" }).dropped, null);
     assert.ok(foreignScriptRatio("Main Node.js use karta hoon", "hi") === 0);
     // Chinese interviews keep Chinese
@@ -152,7 +155,7 @@ describe("relay / client wiring (source checks)", async () => {
   const oai = readFileSync("server/openai-voice-relay.ts", "utf8");
   const hook = readFileSync("src/hooks/use-voice.ts", "utf8");
   it("one spoken reply = one saved line: the Gemini turn ends on turnComplete only", () => {
-    assert.match(gem, /if \(sc\.turnComplete\) \{\s*if \(gate\.modelTurnEnded\(\)\)/);
+    assert.match(gem, /if \(sc\.turnComplete\) \{\s*lastTurnCompleteAt = Date\.now\(\);\s*if \(gate\.modelTurnEnded\(\)\)/);
     assert.doesNotMatch(gem, /if \(sc\.generationComplete \|\| sc\.turnComplete\)/);
   });
   it("Gemini setup sends transcription language hints, with a fallback without them", () => {
