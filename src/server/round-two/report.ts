@@ -60,7 +60,15 @@ const EVIDENCE_CLASSES = [
   { name: "strength_signal", description: "A clear sign of depth: trade-offs reasoned through, ownership, precise detail" },
 ];
 
-type Panel = { name: string; recommendation: Recommendation | null; comments: string; scores: unknown };
+type Panel = {
+  name: string;
+  recommendation: Recommendation | null;
+  comments: string;
+  scores: unknown;
+  overallRating: number | null;
+  strengths: string;
+  concerns: string;
+};
 
 const State = Annotation.Root({
   roundTwoId: Annotation<string>(),
@@ -112,6 +120,9 @@ function buildGraph() {
       recommendation: (RECOMMENDATIONS as readonly string[]).includes(c.recommendation as string) ? (c.recommendation as Recommendation) : null,
       comments: (c.comments as string) || "",
       scores: c.scores,
+      overallRating: typeof c.overallRating === "number" ? c.overallRating : null,
+      strengths: (c.strengths as string) || "",
+      concerns: (c.concerns as string) || "",
     }));
     ctx.note(
       `${segs?.length ?? 0} transcript line(s) · ${notes?.length ?? 0} shared note(s) · ${panel.length} scorecard(s) · ${flags.length} copilot flag(s)${snippets.length ? ` · ${snippets.length} coding task(s)` : ""}`,
@@ -215,7 +226,14 @@ function buildGraph() {
           : [],
       },
       style: s.style,
-      panel: s.panel.map(({ name, recommendation, comments }) => ({ name, recommendation, comments })),
+      panel: s.panel.map(({ name, recommendation, comments, overallRating, strengths, concerns }) => ({
+        name,
+        recommendation,
+        comments,
+        overallRating,
+        strengths,
+        concerns,
+      })),
       generatedAt: new Date().toISOString(),
     };
     ctx.note(`${report.recommendation.replace("_", " ")} · score ${report.overallScore.toFixed(1)} · confidence ${Math.round(report.confidence * 100)}%`);
@@ -227,7 +245,7 @@ function buildGraph() {
     const round = s.round;
     const user = [
       round1ContextPrompt((round.round1Context ?? {}) as Round1Context),
-      `Coding tasks given in this round 2:\n${s.snippets.map((x, i) => `${i + 1}. [id=${x.id}] ${x.label}: ${clip(x.question, 1500) || "(no written task)"}`).join("\n")}`,
+      `Coding tasks given in this round 2:\n${s.snippets.map((x, i) => `${i + 1}. [id=${x.id}] ${x.label} (${x.submitted ? "candidate submitted" : "not submitted; code as it was when the task ended"}): ${clip(x.question, 1500) || "(no written task)"}${x.runOutput ? `\nLast run output:\n${clip(x.runOutput, 1200)}` : ""}`).join("\n")}`,
       codeSnippetsSection(s.snippets),
       `Round 2 transcript (what the candidate explained):\n${clip(s.transcript, 30_000) || "(no transcript captured)"}`,
       `${CODE_REVIEW_INSTRUCTION}\n\nReturn VALID JSON ONLY:\n{\n  ${CODE_EVALUATIONS_JSON_FIELD}\n}`,

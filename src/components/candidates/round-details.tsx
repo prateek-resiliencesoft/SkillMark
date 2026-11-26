@@ -1,6 +1,7 @@
 "use client";
 
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RecommendationBadge, RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,7 +25,7 @@ import {
 import type { RoundTwoReport } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, Circle, Code2, ExternalLink, Loader2, PenTool, Users, Video, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Circle, Code2, ExternalLink, Loader2, Star, Users, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -274,10 +275,10 @@ export function RoundTwoPanel({
     },
   );
   const ended = attempt?.status === "ended";
-  const subs = trpc.roundTwo.boardSubmissions.useQuery({ id }, { enabled: !!id && (ended || attempt?.status === "live"), retry: false });
+  // Tasks given to the candidate with their answers (status, code + run output, whiteboard preview).
+  const tasksQ = trpc.roundTwo.tasks.useQuery({ id }, { enabled: !!id && (ended || attempt?.status === "live"), retry: false, refetchInterval: attempt?.status === "live" ? 8000 : false });
   const [showTranscript, setShowTranscript] = useState(false);
   const live = trpc.roundTwo.live.useQuery({ id }, { enabled: !!id && ended && showTranscript, retry: false });
-  const [openCode, setOpenCode] = useState<string | null>(null);
 
   if (state.loading) {
     return (
@@ -309,7 +310,8 @@ export function RoundTwoPanel({
   const participants = q.data?.participants ?? [];
   const scorecards = q.data?.scorecards ?? [];
   const planCount = Array.isArray(round?.questionPlan) ? round!.questionPlan.length : 0;
-  const submissions = subs.data ?? [];
+  const tasks = tasksQ.data ?? [];
+  const candFeedback = round as { candidateRating?: number | null; candidateFeedback?: string | null; candidateFeedbackAt?: string | null } | undefined;
 
   return (
     <div className="space-y-4">
@@ -383,7 +385,14 @@ export function RoundTwoPanel({
         <EmptyState icon={Users} title="Waiting for the interview" hint="The report, code submissions and panel feedback appear here once the live round has ended." />
       )}
       {status === "live" && (
-        <EmptyState icon={Video} title="Round 2 is happening now" hint="This view updates by itself. Code and feedback show up after the interview ends." />
+        <>
+          <EmptyState icon={Video} title="Round 2 is happening now" hint="This view updates by itself. The report and feedback show up after the interview ends." />
+          {tasks.length > 0 && (
+            <Section title="Coding & whiteboard tasks so far" icon={Code2}>
+              <TaskAnswers items={tasks} />
+            </Section>
+          )}
+        </>
       )}
       {(status === "cancelled" || status === "no_show") && (
         <EmptyState
@@ -409,41 +418,13 @@ export function RoundTwoPanel({
             </div>
           )}
 
-          <Section title="Coding & whiteboard" icon={Code2}>
-            {subs.isLoading ? (
+          <Section title="Coding & whiteboard tasks" icon={Code2}>
+            {tasksQ.isLoading ? (
               <Skeleton className="h-10 w-full" />
-            ) : submissions.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No code or drawing was captured in this round.</p>
+            ) : tasks.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No coding or drawing task was given in this round.</p>
             ) : (
-              <ul className="space-y-2">
-                {submissions.map((s) => {
-                  const key = `${s.kind}:${s.taskId}`;
-                  const open = openCode === key;
-                  return (
-                    <li key={key} className="rounded-lg border bg-background/60">
-                      <div className="flex items-center gap-2 px-3 py-2 text-sm">
-                        {s.kind === "coding" ? <Code2 className="h-3.5 w-3.5 text-muted-foreground" /> : <PenTool className="h-3.5 w-3.5 text-muted-foreground" />}
-                        <span className="min-w-0 flex-1 truncate font-medium">{s.title}</span>
-                        {s.language && <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">{s.language}</span>}
-                        <span className="text-[11px] text-muted-foreground">{s.submittedAt ? `Submitted ${fmtDate(s.submittedAt)}` : `Saved ${fmtDate(s.updatedAt)}`}</span>
-                        {s.kind === "coding" && s.hasData && (
-                          <button type="button" className="text-xs font-medium text-primary hover:underline" onClick={() => setOpenCode(open ? null : key)}>
-                            {open ? "Hide code" : "View code"}
-                          </button>
-                        )}
-                      </div>
-                      {s.kind === "whiteboard" && <p className="px-3 pb-2 text-[11px] text-muted-foreground">{s.hasData ? "Drawing saved. Open the Round 2 page to view it." : "Nothing drawn."}</p>}
-                      {open && (
-                        <>
-                          {s.prompt && <p className="border-t px-3 py-2 text-xs text-muted-foreground">{s.prompt}</p>}
-                          <pre className="code-scrollbar max-h-80 overflow-auto border-t bg-muted/40 p-3 text-xs">{s.data}</pre>
-                          {s.truncated && <p className="px-3 pb-2 text-[11px] text-muted-foreground">Shortened. Open the Round 2 page for the full code.</p>}
-                        </>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+              <TaskAnswers items={tasks} />
             )}
           </Section>
 
@@ -461,12 +442,26 @@ export function RoundTwoPanel({
                       <RecommendationBadge value={c.recommendation as string | null} />
                       {fmtScore(avgScore(c.scores)) && <span className="text-xs text-muted-foreground">Avg {fmtScore(avgScore(c.scores))}/5</span>}
                     </div>
+                    {c.overallRating ? <span className="text-xs tabular-nums text-muted-foreground">{c.overallRating as number}/5 overall</span> : null}
+                    {c.strengths ? <p className="mt-1.5 text-xs"><span className="font-semibold">Strengths:</span> {c.strengths as string}</p> : null}
+                    {c.concerns ? <p className="mt-1 text-xs"><span className="font-semibold">Concerns:</span> {c.concerns as string}</p> : null}
                     {c.comments ? <p className="mt-1.5 whitespace-pre-line text-xs text-muted-foreground">{c.comments as string}</p> : null}
                   </li>
                 ))}
               </ul>
             )}
           </Section>
+
+          {candFeedback?.candidateFeedbackAt ? (
+            <Section title="Candidate's feedback on the interview" icon={Star}>
+              <div className="flex items-center gap-0.5" aria-label={`${candFeedback.candidateRating ?? 0} of 5 stars`}>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <Star key={n} className={n <= (candFeedback.candidateRating ?? 0) ? "h-4 w-4 fill-amber-400 text-amber-400" : "h-4 w-4 text-muted-foreground/40"} />
+                ))}
+              </div>
+              <p className="mt-1.5 whitespace-pre-wrap text-sm">{candFeedback.candidateFeedback || <span className="text-muted-foreground">No comment.</span>}</p>
+            </Section>
+          ) : null}
 
           <Section
             title="Transcript"

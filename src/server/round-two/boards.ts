@@ -4,11 +4,19 @@ import { getLanguage, normalizeLanguage } from "@/lib/code-languages";
 import { createLogger } from "@/lib/logger";
 import { listRoomIdentities, sendToIdentities } from "@/lib/livekit";
 import {
-  WHITEBOARD_TASK_ID,
+  EMPTY_BOARD_STATE,
+  TASK_STATUSES,
   boardTaskKey,
+  checkPreview,
   codeContextPrompt,
+  codeFromSnapshot,
+  giveTaskState,
   normalizeBoardState,
+  normalizeRunOutput,
+  normalizeTask,
   snippetsFromSnapshots,
+  statusAfterSave,
+  taskLocked,
   taskFromBankItem,
   taskFromGenerated,
   type BoardKind,
@@ -16,6 +24,9 @@ import {
   type BoardSnapshotRow,
   type BoardState,
   type CodingTask,
+  type TaskAnswer,
+  type TaskStatus,
+  type TaskSummary,
   type RoundTwoCodeSnippet,
 } from "@/lib/round-two/boards";
 import { AGENT_IDENTITY_PREFIX, DATA_TOPICS, candidateIdentity, type Round1Context } from "@/lib/round-two/types";
@@ -29,25 +40,82 @@ const snapshotTaskId = boardTaskKey;
 
 export type { BoardReplay };
 
-/** Open boards + the latest snapshots for the active task (late join / panel poll). */
-export async function loadBoardReplay(roundTwoId: string, boardStateRaw: unknown): Promise<BoardReplay> {
-  const state = normalizeBoardState(boardStateRaw);
-  const { data } = await supabaseAdmin
-    .from("round_two_board_snapshots")
-    .select('"taskId", kind, data')
-    .eq("roundTwoId", roundTwoId)
-    .in("taskId", [snapshotTaskId("coding", state), WHITEBOARD_TASK_ID]);
-  const rows = (data ?? []) as { taskId: string; kind: string; data: string }[];
-  return {
-    state,
-    coding: rows.find((r) => r.kind === "coding")?.data ?? null,
-    whiteboard: rows.find((r) => r.kind === "whiteboard")?.data ?? null,
-  };
+const SUMMARY_COLUMNS = '"taskId", kind, task, status, "sentAt", "submittedAt"';
+
+function toSummary(r: Record<string, unknown>): TaskSummary | null {
+  const task = normalizeTask(r.task);
+  if (!task) return null;
+  const status = (TASK_STATUSES as readonly string[]).includes(r.status as string) ? (r.status as TaskStatus) : "sent";
+  return { id: task.id, kind: task.kind, title: task.title, status, sentAt: (r.sentAt as string) ?? null, submittedAt: (r.submittedAt as string) ?? null };
 }
 
-/** Upsert the candidate's latest snapshot for the active task (data already size-checked). */
-export async function saveBoardSnapshot(roundTwoId: string, boardStateRaw: unknown, kind: BoardKind, data: string): Promise<boolean> {
+/** Every task given in this round, oldest first (history list; no answer data). */
+export async function loadTaskHistory(roundTwoId: string): Promise<TaskSummary[]> {
+  const { data } = await supabaseAdmin
+    .from("round_two_board_snapshots")
+    .select(SUMMARY_COLUMNS)
+    .eq("roundTwoId", roundTwoId)
+    .order("sentAt", { ascending: true })
+    .limit(30);
+  return ((data ?? []) as Record<string, unknown>[]).map(toSummary).filter((t): t is TaskSummary => !!t);
+}
+
+/** Open task + the latest snapshots for it + the history (late join / panel poll). */
+export async function loadBoardReplay(roundTwoId: string, boardStateRaw: unknown): Promise<BoardReplay> {
   const state = normalizeBoardState(boardStateRaw);
+  const keys = Array.from(new Set([snapshotTaskId("coding", state), snapshotTaskId("whiteboard", state)]));
+  const [{ data }, history] = await Promise.all([
+    supabaseAdmin.from("round_two_board_snapshots").select('"taskId", kind, data').eq("roundTwoId", roundTwoId).in("taskId", keys),
+    loadTaskHistory(roundTwoId),
+  ]);
+  const rows = (data ?? []) as { taskId: string; kind: string; data: string }[];
+  const pick = (kind: BoardKind) => rows.find((r) => r.kind === kind && r.taskId === snapshotTaskId(kind, state))?.data || null;
+  return { state, coding: pick("coding"), whiteboard: pick("whiteboard"), history };
+}
+
+/** Tasks with their answers, for the panel's history and the round page. */
+export async function listTasksWithAnswers(roundTwoId: string): Promise<TaskAnswer[]> {
+  const { data } = await supabaseAdmin
+    .from("round_two_board_snapshots")
+    .select(`${SUMMARY_COLUMNS}, data, preview, "runOutput"`)
+    .eq("roundTwoId", roundTwoId)
+    .order("sentAt", { ascending: true })
+    .limit(20);
+  const out: TaskAnswer[] = [];
+  for (const r of (data ?? []) as Record<string, unknown>[]) {
+    const sum = toSummary(r);
+    const task = normalizeTask(r.task);
+    if (!sum || !task) continue;
+    const code = sum.kind === "coding" ? codeFromSnapshot(r.data as string) : null;
+    out.push({
+      ...sum,
+      prompt: task.prompt,
+      language: code?.language ?? task.language,
+      code: code?.code.slice(0, 20_000) ?? null,
+      preview: sum.kind === "whiteboard" ? ((r.preview as string | null) ?? null) : null,
+      runOutput: normalizeRunOutput(r.runOutput),
+    });
+  }
+  return out;
+}
+
+/**
+ * Write the candidate's snapshot into the active task's row. `final` submits it (locks the task).
+ * Returns the new board state, or an error when the task is locked / not the active one.
+ */
+export async function saveBoardSnapshot(
+  roundTwoId: string,
+  room: string | null,
+  boardStateRaw: unknown,
+  kind: BoardKind,
+  data: string,
+  opts: { taskId?: string; submit?: boolean; runOutput?: unknown; preview?: unknown; announce?: boolean } = {},
+): Promise<{ ok: true; state: BoardState } | { ok: false; error: string; status: number }> {
+  const state = normalizeBoardState(boardStateRaw);
+  if (!state.task) return { ok: false, error: "No task is open right now", status: 409 };
+  if (state.task.kind !== kind) return { ok: false, error: "That board isn't open", status: 409 };
+  if (opts.taskId && opts.taskId !== state.task.id) return { ok: false, error: "That task was closed", status: 409 };
+  if (taskLocked(state.status)) return { ok: false, error: "This task is already submitted", status: 409 };
   let language: string | null = null;
   if (kind === "coding") {
     try {
@@ -56,20 +124,29 @@ export async function saveBoardSnapshot(roundTwoId: string, boardStateRaw: unkno
       language = null;
     }
   }
+  const nextStatus = opts.announce === false ? state.status : statusAfterSave(state.status, !!opts.submit);
+  const now = new Date().toISOString();
   const { error } = await supabaseAdmin.from("round_two_board_snapshots").upsert(
     {
       roundTwoId,
       taskId: snapshotTaskId(kind, state),
       kind,
-      task: kind === "coding" ? state.task : null,
+      task: state.task,
       language,
       data,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
+      ...(nextStatus && nextStatus !== state.status ? { status: nextStatus } : {}),
+      ...(opts.submit ? { submittedAt: now, runOutput: normalizeRunOutput(opts.runOutput), preview: checkPreview(opts.preview) } : {}),
     },
     { onConflict: "roundTwoId,taskId,kind" },
   );
-  if (error) log.warn("snapshot save failed", roundTwoId, error.message);
-  return !error;
+  if (error) {
+    log.warn("snapshot save failed", roundTwoId, error.message);
+    return { ok: false, error: "Could not save", status: 500 };
+  }
+  const next: BoardState = { ...state, status: nextStatus };
+  if (nextStatus !== state.status && room) await setBoardState(roundTwoId, room, next);
+  return { ok: true, state: next };
 }
 
 /** Store what is open and tell everyone in the room (server packet, so clients can trust it). */
@@ -81,6 +158,48 @@ export async function setBoardState(roundTwoId: string, room: string, state: Boa
   if (error) throw new Error(error.message);
   const people = (await listRoomIdentities(room)).filter((i) => !i.startsWith(AGENT_IDENTITY_PREFIX));
   await sendToIdentities(room, people, DATA_TOPICS.board, state);
+}
+
+/** Close the active task unless it was submitted (its row keeps whatever the candidate wrote). */
+async function closeActiveTask(roundTwoId: string, boardStateRaw: unknown): Promise<void> {
+  const prev = normalizeBoardState(boardStateRaw);
+  if (!prev.task || prev.status === "submitted" || prev.status === "ended") return;
+  await supabaseAdmin
+    .from("round_two_board_snapshots")
+    .update({ status: "ended", endedAt: new Date().toISOString() })
+    .eq("roundTwoId", roundTwoId)
+    .eq("taskId", prev.task.id)
+    .neq("status", "submitted");
+}
+
+/** Give a task: it opens on the candidate's screen. Any task still open is ended first. */
+export async function giveTask(roundTwoId: string, room: string, boardStateRaw: unknown, task: CodingTask): Promise<BoardState> {
+  await closeActiveTask(roundTwoId, boardStateRaw);
+  const { error } = await supabaseAdmin.from("round_two_board_snapshots").upsert(
+    {
+      roundTwoId,
+      taskId: task.id,
+      kind: task.kind,
+      task,
+      language: task.kind === "coding" ? task.language : null,
+      data: "",
+      status: "sent",
+      sentAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    { onConflict: "roundTwoId,taskId,kind" },
+  );
+  if (error) throw new Error(error.message);
+  const next = giveTaskState(task);
+  await setBoardState(roundTwoId, room, next);
+  return next;
+}
+
+/** End the open task for everyone (the candidate's screen closes). */
+export async function endTask(roundTwoId: string, room: string, boardStateRaw: unknown): Promise<BoardState> {
+  await closeActiveTask(roundTwoId, boardStateRaw);
+  await setBoardState(roundTwoId, room, { ...EMPTY_BOARD_STATE });
+  return { ...EMPTY_BOARD_STATE };
 }
 
 export async function askCandidateToShare(roundTwoId: string, room: string, by: string): Promise<void> {
@@ -110,10 +229,10 @@ export async function latestCodeContext(roundTwoId: string): Promise<string> {
 export async function loadCodeSnippets(roundTwoId: string): Promise<RoundTwoCodeSnippet[]> {
   const { data, error } = await supabaseAdmin
     .from("round_two_board_snapshots")
-    .select('"taskId", kind, task, data, language')
+    .select('"taskId", kind, task, data, language, status, "runOutput"')
     .eq("roundTwoId", roundTwoId)
     .eq("kind", "coding")
-    .order("createdAt", { ascending: true });
+    .order("sentAt", { ascending: true });
   if (error) {
     log.warn("snapshot load failed", roundTwoId, error.message);
     return [];

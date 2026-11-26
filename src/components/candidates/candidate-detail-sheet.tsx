@@ -337,7 +337,7 @@ export function CandidateDetailSheet({
             : ((c?.decisionStatus as string | undefined) ?? null),
       hasSession: !!c?.session && sessionStatus !== "NOT_STARTED",
     }),
-    [c?.session?.status, c?.session?.mediaReviewStatus, c?.session, c?.decisionStatus, score, sessionStatus],
+    [c?.session, c?.decisionStatus, score, sessionStatus],
   );
   const rounds = useCandidateRounds(c ? candidateId : null, r1Facts);
   const showRound2 = !editing && rounds.active === 2;

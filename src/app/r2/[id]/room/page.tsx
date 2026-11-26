@@ -2,8 +2,9 @@
 
 import "@livekit/components-styles";
 import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
-import { BoardSurfaces, BoardToolbar, useRoundTwoBoards } from "@/components/round-two/room/boards";
+import { BoardSurfaces, TaskToolbar, useRoundTwoBoards } from "@/components/round-two/room/boards";
 import { CodingTaskDialog } from "@/components/round-two/room/coding-task-dialog";
+import { TaskAnswers, TaskHistory } from "@/components/round-two/room/task-history";
 import { PanelSidebar, ScorecardTab } from "@/components/round-two/room/panel-sidebar";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { RoomShareLinks } from "@/components/round-two/room/share-links";
@@ -19,8 +20,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { canControlBoards, isServerPacket, type BoardState, type CodingTask } from "@/lib/round-two/boards";
+import { canControlBoards, isServerPacket, type BoardKind, type CodingTask } from "@/lib/round-two/boards";
 import { R2_ROOM_OPTIONS, r2CameraCapture } from "@/lib/round-two/media";
 import { CANDIDATE_IDENTITY_PREFIX, DATA_TOPICS } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
@@ -86,7 +88,7 @@ export default function PanelRoomPage() {
 
   if (left) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 overflow-auto p-6 text-center">
         <p className="text-lg font-semibold">{left === "ended" ? "The interview has ended" : "You left the interview"}</p>
         <p className="max-w-md text-sm text-muted-foreground">
           {left === "ended" ? "The report is being generated in the background." : "You can rejoin while the interview is still running."}
@@ -110,7 +112,8 @@ export default function PanelRoomPage() {
         </div>
         {myRole !== "observer" && (
           <div className="mt-4 w-full max-w-md rounded-xl border p-4 text-left">
-            <div className="mb-3 font-semibold">{myScorecard?.submittedAt ? "Your scorecard" : "Submit your scorecard"}</div>
+            <div className="mb-1 font-semibold">{myScorecard?.submittedAt ? "Your feedback on the candidate" : "Give your feedback on the candidate"}</div>
+            <p className="mb-3 text-xs text-muted-foreground">Rating, recommendation, strengths and concerns. It goes into the report.</p>
             <ScorecardTab roundTwoId={id} initial={myScorecard as Record<string, unknown> | null} />
           </div>
         )}
@@ -174,7 +177,8 @@ function PanelRoom({ id }: { id: string }) {
     side: "panel",
     loadReplay: () => utils.roundTwo.board.fetch({ id }, { staleTime: 0 }),
   });
-  const [taskDialog, setTaskDialog] = useState(false);
+  const [taskDialog, setTaskDialog] = useState<BoardKind | null>(null);
+  const [answersOpen, setAnswersOpen] = useState(false);
   const info = trpc.roundTwo.get.useQuery(
     { id },
     { staleTime: 30_000, refetchOnWindowFocus: false, refetchOnMount: false },
@@ -212,12 +216,33 @@ function PanelRoom({ id }: { id: string }) {
     },
     onError: (err) => toast({ title: "Couldn't admit", description: err.message, variant: "destructive" }),
   });
-  const setBoard = trpc.roundTwo.setBoard.useMutation({
-    onSuccess: (next) => boards.setState(next),
-    onError: (err) => toast({ title: "Couldn't update the board", description: err.message, variant: "destructive" }),
+  const give = trpc.roundTwo.giveTask.useMutation({
+    onSuccess: (next) => {
+      boards.setState(next);
+      setTaskDialog(null);
+      toast({ title: "Task sent", description: "It's open on the candidate's screen." });
+    },
+    onError: (err) => toast({ title: "Couldn't send the task", description: err.message, variant: "destructive" }),
   });
-  const updateBoard = (next: Omit<BoardState, "task">, task?: CodingTask | null) =>
-    setBoard.mutate({ id, coding: next.coding, whiteboard: next.whiteboard, ...(task !== undefined ? { task } : {}) });
+  const endTask = trpc.roundTwo.endTask.useMutation({
+    onSuccess: (next) => {
+      boards.setState(next);
+      toast({ title: "Task ended" });
+    },
+    onError: (err) => toast({ title: "Couldn't end the task", description: err.message, variant: "destructive" }),
+  });
+  const answers = trpc.roundTwo.tasks.useQuery({ id }, { enabled: answersOpen, refetchOnWindowFocus: false });
+  // The candidate pressed Submit (the server tells everyone through the board state).
+  const seenStatus = useRef<string | null>(null);
+  const taskKey = `${boards.state.task?.id ?? ""}:${boards.state.status ?? ""}`;
+  useEffect(() => {
+    if (seenStatus.current !== null && boards.state.status === "submitted" && seenStatus.current !== taskKey) {
+      toast({ title: "Candidate submitted their answer ✓", description: boards.state.task?.title });
+      void utils.roundTwo.tasks.invalidate({ id });
+    }
+    seenStatus.current = taskKey;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskKey]);
   const askShare = trpc.roundTwo.askToShare.useMutation({
     onSuccess: () => toast({ title: "Asked the candidate to share their screen" }),
     onError: (err) => toast({ title: "Couldn't ask", description: err.message, variant: "destructive" }),
@@ -272,19 +297,26 @@ function PanelRoom({ id }: { id: string }) {
         <BoardSurfaces
           state={st}
           writer={false}
-          onClose={canControl ? (kind) => updateBoard({ ...st, [kind]: false }) : undefined}
+          onClose={canControl ? () => endTask.mutate({ id }) : undefined}
           remoteCoding={boards.remoteCoding}
           remoteWhiteboard={boards.remoteWhiteboard}
           className="min-h-[200px] flex-1"
         />
+        {boards.history.length > 0 && (
+          <div className="flex shrink-0 items-start gap-2">
+            <TaskHistory items={boards.history} activeId={st.task?.id} className="max-h-20 min-w-0 flex-1 overflow-auto" />
+            <Button type="button" size="sm" variant="outline" onClick={() => setAnswersOpen(true)}>
+              View answers
+            </Button>
+          </div>
+        )}
         <div className="flex shrink-0 flex-wrap items-center justify-center gap-2">
           {canControl && (
-            <BoardToolbar
+            <TaskToolbar
               state={st}
-              busy={setBoard.isLoading}
-              onCoding={() => (st.coding ? updateBoard({ ...st, coding: false }) : setTaskDialog(true))}
-              onChangeTask={() => setTaskDialog(true)}
-              onToggleWhiteboard={() => updateBoard({ ...st, whiteboard: !st.whiteboard })}
+              busy={give.isLoading || endTask.isLoading}
+              onGive={(kind) => setTaskDialog(kind)}
+              onEnd={() => endTask.mutate({ id })}
               onAskShare={candidateP && !inLobby ? () => askShare.mutate({ id }) : undefined}
             />
           )}
@@ -321,18 +353,27 @@ function PanelRoom({ id }: { id: string }) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {canControl && (
+      {canControl && taskDialog && (
         <CodingTaskDialog
+          key={taskDialog}
           roundTwoId={id}
-          open={taskDialog}
-          onOpenChange={setTaskDialog}
-          busy={setBoard.isLoading}
-          onPick={(task) => {
-            setTaskDialog(false);
-            updateBoard({ ...st, coding: true }, task);
-          }}
+          kind={taskDialog}
+          open
+          onOpenChange={(o) => !o && setTaskDialog(null)}
+          busy={give.isLoading}
+          onPick={(task: CodingTask) => give.mutate({ id, task })}
         />
       )}
+
+      <Dialog open={answersOpen} onOpenChange={setAnswersOpen}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Candidate answers</DialogTitle>
+            <DialogDescription>Every task given in this interview, with what the candidate wrote or drew.</DialogDescription>
+          </DialogHeader>
+          {answers.isLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <TaskAnswers items={answers.data ?? []} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -145,7 +145,14 @@ export interface RoundTwoReport {
     contradictions: { round1: string; round2: string }[];
   };
   style: { round1: StyleMetrics | null; round2: StyleMetrics | null; notes: string[] };
-  panel: { name: string; recommendation: Recommendation | null; comments: string }[];
+  panel: {
+    name: string;
+    recommendation: Recommendation | null;
+    comments: string;
+    overallRating?: number | null;
+    strengths?: string;
+    concerns?: string;
+  }[];
   /** Quotes in the report checked against the transcript. */
   evidenceCheck?: { verified: number; unverified: number };
   /** Code written in the shared editor, reviewed like round 1's coding answers. */

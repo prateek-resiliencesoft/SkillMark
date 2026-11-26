@@ -22,14 +22,28 @@ export const BOARD_SAVE_INTERVAL_MS = 4_000;
 export const BOARD_PANEL_POLL_MS = 4_000;
 export const TASK_PROMPT_MAX = 4_000;
 export const TASK_STARTER_MAX = 20_000;
-/** Whiteboard has no task; its snapshots use this task id. */
+/** Snapshot slot used when no task is active (only the panel's flush on end can hit this). */
 export const WHITEBOARD_TASK_ID = "whiteboard";
+export const PREVIEW_MAX_CHARS = 400_000;
+export const RUN_OUTPUT_MAX_CHARS = 4_000;
+
+/** sent = on the candidate's screen, working = they started writing, submitted = final, ended = closed by the panel. */
+export const TASK_STATUSES = ["sent", "working", "submitted", "ended"] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  sent: "Sent",
+  working: "Candidate working",
+  submitted: "Submitted ✓",
+  ended: "Ended",
+};
 
 export const TASK_SOURCES = ["bank", "typed", "ai"] as const;
 export type TaskSource = (typeof TASK_SOURCES)[number];
 
 export interface CodingTask {
   id: string;
+  /** "coding" opens the editor, "whiteboard" is a drawing task. */
+  kind: BoardKind;
   source: TaskSource;
   title: string;
   prompt: string;
@@ -42,6 +56,28 @@ export interface BoardState {
   coding: boolean;
   whiteboard: boolean;
   task: CodingTask | null;
+  /** Status of the active task (null when none). */
+  status: TaskStatus | null;
+}
+
+/** One task in the history list (no answer data). */
+export interface TaskSummary {
+  id: string;
+  kind: BoardKind;
+  title: string;
+  status: TaskStatus;
+  sentAt: string | null;
+  submittedAt: string | null;
+}
+
+/** A task with the candidate's answer (panel history, round page). */
+export interface TaskAnswer extends TaskSummary {
+  prompt: string;
+  language: string;
+  code: string | null;
+  /** Whiteboard drawing as an SVG data URL. */
+  preview: string | null;
+  runOutput: { stdout: string; stderr: string; language: string } | null;
 }
 
 /** Open boards + latest saved snapshots for the active task (late join / panel poll). */
@@ -49,9 +85,10 @@ export interface BoardReplay {
   state: BoardState;
   coding: string | null;
   whiteboard: string | null;
+  history: TaskSummary[];
 }
 
-export const EMPTY_BOARD_STATE: BoardState = { coding: false, whiteboard: false, task: null };
+export const EMPTY_BOARD_STATE: BoardState = { coding: false, whiteboard: false, task: null, status: null };
 
 /** Host and interviewers run the boards; observers only watch. */
 export function canControlBoards(role: PanelRole | string | null | undefined): boolean {
@@ -67,9 +104,11 @@ export function normalizeTask(raw: unknown): CodingTask | null {
   if (!prompt) return null;
   const source = (TASK_SOURCES as readonly string[]).includes(o.source as string) ? (o.source as TaskSource) : "typed";
   const id = str(o.id, 60).trim() || `t${Date.now().toString(36)}`;
-  const starter = str(o.starter, TASK_STARTER_MAX);
+  const kind: BoardKind = o.kind === "whiteboard" ? "whiteboard" : "coding";
+  const starter = kind === "coding" ? str(o.starter, TASK_STARTER_MAX) : "";
   return {
     id,
+    kind,
     source,
     title: str(o.title, 200).trim() || prompt.split("\n")[0].slice(0, 80),
     prompt,
@@ -81,7 +120,39 @@ export function normalizeTask(raw: unknown): CodingTask | null {
 export function normalizeBoardState(raw: unknown): BoardState {
   if (!raw || typeof raw !== "object") return { ...EMPTY_BOARD_STATE };
   const o = raw as Record<string, unknown>;
-  return { coding: o.coding === true, whiteboard: o.whiteboard === true, task: normalizeTask(o.task) };
+  const task = normalizeTask(o.task);
+  const status = (TASK_STATUSES as readonly string[]).includes(o.status as string) ? (o.status as TaskStatus) : null;
+  return { coding: o.coding === true, whiteboard: o.whiteboard === true, task, status: task ? status ?? "sent" : null };
+}
+
+/** Board state when the panel gives a task: the matching board opens on the candidate's screen. */
+export function giveTaskState(task: CodingTask): BoardState {
+  return { coding: task.kind === "coding", whiteboard: task.kind === "whiteboard", task, status: "sent" };
+}
+
+/** The candidate's first save moves "sent" to "working"; submitted stays final. */
+export function statusAfterSave(status: TaskStatus | null, submit: boolean): TaskStatus | null {
+  if (status === "submitted") return status;
+  if (submit) return "submitted";
+  return status === "sent" ? "working" : status;
+}
+
+/** A submitted (or ended) task is locked: no more edits, saves or submits. */
+export function taskLocked(status: TaskStatus | null | undefined): boolean {
+  return status === "submitted" || status === "ended";
+}
+
+/** Run output kept with a submission: stdout / stderr clipped, nothing else. */
+export function normalizeRunOutput(raw: unknown): { stdout: string; stderr: string; language: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const out = { stdout: str(o.stdout, RUN_OUTPUT_MAX_CHARS), stderr: str(o.stderr, RUN_OUTPUT_MAX_CHARS), language: str(o.language, 32) };
+  return out.stdout || out.stderr ? out : null;
+}
+
+/** Whiteboard picture sent with a submission: only an SVG data URL, size-capped. */
+export function checkPreview(raw: unknown): string | null {
+  return typeof raw === "string" && raw.startsWith("data:image/svg+xml") && raw.length <= PREVIEW_MAX_CHARS ? raw : null;
 }
 
 /** Editor initial data for a task: its starter (other languages get a matching boilerplate). */
@@ -124,7 +195,7 @@ export const FREE_TASK_ID = "free";
 
 /** Snapshot slot for a board: one per coding task, one for the whiteboard. */
 export function boardTaskKey(kind: BoardKind, state: Pick<BoardState, "task">): string {
-  return kind === "whiteboard" ? WHITEBOARD_TASK_ID : state.task?.id ?? FREE_TASK_ID;
+  return state.task?.id ?? (kind === "whiteboard" ? WHITEBOARD_TASK_ID : FREE_TASK_ID);
 }
 
 export interface BoardLiveMsg {
@@ -186,6 +257,8 @@ export interface BoardSnapshotRow {
   task: unknown;
   data: string;
   language?: string | null;
+  status?: string | null;
+  runOutput?: unknown;
 }
 
 export interface RoundTwoCodeSnippet {
@@ -194,6 +267,14 @@ export interface RoundTwoCodeSnippet {
   code: string;
   language: string;
   question: string;
+  /** Candidate pressed Submit (otherwise the code is whatever they had when the task ended). */
+  submitted: boolean;
+  runOutput: string;
+}
+
+function runOutputText(raw: unknown): string {
+  const o = normalizeRunOutput(raw);
+  return o ? [o.stdout && `stdout:\n${o.stdout}`, o.stderr && `stderr:\n${o.stderr}`].filter(Boolean).join("\n") : "";
 }
 
 /** Coding snapshots → report snippets (same input as round 1's code review). Empty code is skipped. */
@@ -210,6 +291,8 @@ export function snippetsFromSnapshots(rows: BoardSnapshotRow[]): RoundTwoCodeSni
       code: c.code.slice(0, 20_000),
       language: c.language,
       question: task?.prompt ?? "",
+      submitted: r.status === "submitted",
+      runOutput: runOutputText(r.runOutput),
     });
   }
   return out.slice(0, 10);
@@ -228,6 +311,8 @@ export interface CodeEvaluation {
   levelNotes: string;
   score: number;
   evaluation: string;
+  /** Round 2 extra: the candidate pressed Submit. */
+  submitted?: boolean;
 }
 
 /** Parse the model's codeEvaluations; only snippets we sent are kept, scores clamped 1-10. */
@@ -257,6 +342,7 @@ export function normalizeCodeEvaluations(raw: unknown, snippets: RoundTwoCodeSni
       levelNotes: str(o.levelNotes, 600),
       score: Math.min(10, Math.max(1, Math.round(score))),
       evaluation: str(o.evaluation, 3_000),
+      submitted: snip.submitted,
     });
   }
   return out;

@@ -22,6 +22,13 @@ import {
   taskFromBankItem,
   taskFromGenerated,
   withCodeEvaluations,
+  PREVIEW_MAX_CHARS,
+  TASK_STATUS_LABELS,
+  checkPreview,
+  giveTaskState,
+  normalizeRunOutput,
+  statusAfterSave,
+  taskLocked,
 } from "@/lib/round-two/boards";
 import { admittedCandidatePermission, roomGrant } from "@/lib/round-two/grants";
 
@@ -71,9 +78,9 @@ describe("round 2 board control (observer block)", () => {
     assert.equal(canControlBoards(undefined), false);
   });
 
-  it("server enforces it on setBoard, codingTasks, generateCodingTask and askToShare", () => {
+  it("server enforces it on giveTask, endTask, codingTasks, generateCodingTask and askToShare", () => {
     const src = read("src/server/routers/roundTwo.ts");
-    for (const proc of ["setBoard", "codingTasks", "generateCodingTask", "askToShare"]) {
+    for (const proc of ["giveTask", "endTask", "codingTasks", "generateCodingTask", "askToShare"]) {
       const start = src.indexOf(`  ${proc}: protectedProcedure`);
       assert.ok(start > 0, proc);
       const body = src.slice(start, src.indexOf("\n  }),", start));
@@ -111,7 +118,7 @@ describe("round 2 candidate code runs", () => {
 
 describe("round 2 board persistence", () => {
   it("normalizes state and tasks", () => {
-    assert.deepEqual(normalizeBoardState(null), { coding: false, whiteboard: false, task: null });
+    assert.deepEqual(normalizeBoardState(null), { coding: false, whiteboard: false, task: null, status: null });
     const st = normalizeBoardState({ coding: true, whiteboard: "yes", task: { prompt: "  Reverse a list  ", language: "py", source: "x" } });
     assert.equal(st.coding, true);
     assert.equal(st.whiteboard, false);
@@ -135,7 +142,8 @@ describe("round 2 board persistence", () => {
     const task = normalizeTask({ id: "t1", prompt: "Sum" })!;
     assert.equal(boardTaskKey("coding", { task }), "t1");
     assert.equal(boardTaskKey("coding", { task: null }), "free");
-    assert.equal(boardTaskKey("whiteboard", { task }), "whiteboard");
+    assert.equal(boardTaskKey("whiteboard", { task }), "t1");
+    assert.equal(boardTaskKey("whiteboard", { task: null }), "whiteboard");
     const data = JSON.stringify({ code: "a=1", language: "python", drafts: { javascript: "x".repeat(5000) } });
     const pkt = livePacket("coding", "t1", data)!;
     const msg = parseLivePacket(pkt)!;
@@ -159,11 +167,12 @@ describe("round 2 board persistence", () => {
     const route = read("src/app/api/round-two/candidate/board/route.ts");
     assert.match(route, /rejectCrossSiteRequest\(req, \{ json: true \}\)/);
     assert.match(route, /checkRateLimit\(/);
-    assert.match(route, /BOARD_SNAPSHOT_MAX_CHARS \+ 1_000/);
+    assert.match(route, /BOARD_SNAPSHOT_MAX_CHARS \+ PREVIEW_MAX_CHARS/);
     assert.match(route, /roundTwoRunAllowed\(/);
     const router = read("src/server/routers/roundTwo.ts");
     const end = router.slice(router.indexOf("  end: protectedProcedure"));
     assert.ok(end.indexOf("saveBoardSnapshot") < end.indexOf("runRoundTwoReport"));
+    assert.match(route, /taskId: parsed\.data\.taskId/);
   });
 
   it("feeds the latest code to the copilot and live scoring", () => {
@@ -204,7 +213,7 @@ describe("round 2 report code review", () => {
   it("builds snippets from coding snapshots only (empty code skipped)", () => {
     const sn = snippetsFromSnapshots(rows);
     assert.equal(sn.length, 1);
-    assert.deepEqual(sn[0], { id: "t1", label: "Two sum", code: "def two(): pass", language: "python", question: "Two sum" });
+    assert.deepEqual(sn[0], { id: "t1", label: "Two sum", code: "def two(): pass", language: "python", question: "Two sum", submitted: false, runOutput: "" });
     assert.match(codeSnippetsSection(sn), /--- Snippet 1 \[id=t1\]: "Two sum" \(python\) ---/);
   });
 
@@ -244,5 +253,114 @@ describe("round 2 report code review", () => {
     assert.match(src, /\.addNode\("code_review", codeReview\)/);
     assert.match(src, /\.addEdge\("code_review", "verify"\)/);
     assert.match(src, /withCodeEvaluations\(s\.report as RoundTwoReport, evals\)/);
+  });
+});
+
+describe("round 2 tasks: give, work, submit, end", () => {
+  const task = normalizeTask({ id: "t1", kind: "whiteboard", prompt: "Draw a cache", starter: "ignored" })!;
+
+  it("a drawing task opens the whiteboard (no starter); a coding task opens the editor", () => {
+    assert.equal(task.kind, "whiteboard");
+    assert.equal(task.starter, null);
+    assert.deepEqual(giveTaskState(task), { coding: false, whiteboard: true, task, status: "sent" });
+    const coding = normalizeTask({ id: "t2", prompt: "Sum", language: "python", starter: "def f(): pass" })!;
+    const st = giveTaskState(coding);
+    assert.equal(st.coding, true);
+    assert.equal(st.whiteboard, false);
+    assert.equal(st.status, "sent");
+  });
+
+  it("status goes sent -> working on the first save, submitted is final", () => {
+    assert.equal(statusAfterSave("sent", false), "working");
+    assert.equal(statusAfterSave("working", false), "working");
+    assert.equal(statusAfterSave("working", true), "submitted");
+    assert.equal(statusAfterSave("sent", true), "submitted");
+    assert.equal(statusAfterSave("submitted", false), "submitted");
+    assert.equal(statusAfterSave("submitted", true), "submitted");
+    assert.equal(taskLocked("submitted"), true);
+    assert.equal(taskLocked("ended"), true);
+    assert.equal(taskLocked("working"), false);
+    assert.equal(TASK_STATUS_LABELS.submitted, "Submitted ✓");
+  });
+
+  it("normalizes state status and keeps the task through a round trip", () => {
+    const st = normalizeBoardState({ coding: true, task: { prompt: "x", id: "a" }, status: "weird" });
+    assert.equal(st.status, "sent");
+    assert.equal(normalizeBoardState({ coding: true, status: "working" }).status, null);
+    assert.equal(normalizeBoardState(giveTaskState(task)).task?.kind, "whiteboard");
+  });
+
+  it("keeps only clipped run output and an SVG preview", () => {
+    assert.equal(normalizeRunOutput({ stdout: "", stderr: "" }), null);
+    assert.equal(normalizeRunOutput({ stdout: "x".repeat(9000), stderr: "e", language: "python", extra: 1 })?.stdout.length, 4_000);
+    assert.equal(checkPreview("data:image/svg+xml;base64,AAAA"), "data:image/svg+xml;base64,AAAA");
+    assert.equal(checkPreview("data:text/html;base64,AAAA"), null);
+    assert.equal(checkPreview("javascript:alert(1)"), null);
+    assert.equal(checkPreview("data:image/svg+xml," + "x".repeat(PREVIEW_MAX_CHARS)), null);
+  });
+
+  it("server: locked tasks refuse saves, stale task ids are refused, observers can't give or end", () => {
+    const src = read("src/server/round-two/boards.ts");
+    assert.match(src, /if \(taskLocked\(state\.status\)\) return \{ ok: false, error: "This task is already submitted", status: 409 \}/);
+    assert.match(src, /opts\.taskId !== state\.task\.id/);
+    assert.match(src, /\.neq\("status", "submitted"\)/);
+    assert.match(src, /submittedAt: now, runOutput: normalizeRunOutput\(opts\.runOutput\), preview: checkPreview\(opts\.preview\)/);
+    const router = read("src/server/routers/roundTwo.ts");
+    assert.match(router, /The candidate isn't in the room yet/);
+  });
+
+  it("migration 52 adds task status/submission, scorecard feedback and candidate feedback", () => {
+    const sql = read("db/init/52-round-two-tasks-feedback.sql");
+    assert.match(sql, /round_two_board_snapshots[\s\S]*"submittedAt"[\s\S]*"runOutput"\s+jsonb[\s\S]*preview/);
+    assert.match(sql, /status IN \('sent', 'working', 'submitted', 'ended'\)/);
+    assert.match(sql, /"overallRating" smallint/);
+    assert.match(sql, /strengths text NOT NULL DEFAULT ''/);
+    assert.match(sql, /"candidateRating"\s+smallint/);
+    assert.match(sql, /"candidateFeedbackAt"/);
+  });
+
+  it("submitted answers feed the report: snippets carry submitted + run output, evaluations carry submitted", () => {
+    const rows = [
+      { taskId: "t1", kind: "coding", status: "submitted", task: { id: "t1", prompt: "Two sum" }, data: JSON.stringify({ code: "x=1", language: "python" }), runOutput: { stdout: "3", stderr: "" } },
+      { taskId: "t2", kind: "coding", status: "ended", task: { id: "t2", prompt: "Sum" }, data: JSON.stringify({ code: "y=2", language: "python" }) },
+    ];
+    const sn = snippetsFromSnapshots(rows);
+    assert.equal(sn[0].submitted, true);
+    assert.match(sn[0].runOutput, /stdout:\n3/);
+    assert.equal(sn[1].submitted, false);
+    const ev = normalizeCodeEvaluations([{ snippetId: "t1", score: 7 }, { snippetId: "t2", score: 4 }], sn);
+    assert.deepEqual(ev.map((e) => e.submitted), [true, false]);
+    assert.match(read("src/server/round-two/report.ts"), /candidate submitted/);
+    assert.match(read("src/components/round-two/report-view.tsx"), /Not submitted/);
+  });
+});
+
+describe("round 2 feedback after the interview", () => {
+  it("panel scorecard saves overall rating, strengths and concerns per panelist; observers can't", () => {
+    const router = read("src/server/routers/roundTwo.ts");
+    const body = router.slice(router.indexOf("  saveScorecard: protectedProcedure"), router.indexOf("  end: protectedProcedure"));
+    assert.match(body, /overallRating: z\.number\(\)\.int\(\)\.min\(1\)\.max\(5\)/);
+    assert.match(body, /strengths: z\.string\(\)/);
+    assert.match(body, /concerns: z\.string\(\)/);
+    assert.match(body, /access\.role === "observer"\) throw new TRPCError\(\{ code: "FORBIDDEN"/);
+    assert.match(body, /\.eq\("userId", ctx\.user\.id\)/);
+    const report = read("src/server/round-two/report.ts");
+    assert.match(report, /overallRating, strengths, concerns/);
+    const room = read("src/app/r2/[id]/room/page.tsx");
+    assert.match(room, /myRole !== "observer" && \(/);
+    assert.match(room, /Give your feedback on the candidate/);
+  });
+
+  it("candidate feedback: ended rounds only, once, 1-5 stars, rate-limited, same-origin", () => {
+    const route = read("src/app/api/round-two/candidate/feedback/route.ts");
+    assert.match(route, /rating: z\.number\(\)\.int\(\)\.min\(1\)\.max\(5\)/);
+    assert.match(route, /rejectCrossSiteRequest\(req, \{ json: true \}\)/);
+    assert.match(route, /checkRateLimit\(/);
+    assert.match(route, /round\.status !== "ended"/);
+    assert.match(route, /candidateFeedbackAt\) return NextResponse\.json/);
+    assert.match(route, /\.is\("candidateFeedbackAt", null\)/);
+    const page = read("src/app/r2/c/[token]/page.tsx");
+    assert.match(page, /CandidateFeedbackCard/);
+    assert.match(read("src/app/(dashboard)/round-two/[id]/page.tsx"), /candidateFeedbackAt/);
   });
 });

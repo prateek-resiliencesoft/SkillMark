@@ -124,6 +124,7 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className="font-medium">{c.snippetLabel}</span>
                   <span className="rounded border px-1.5 text-xs text-muted-foreground">{c.language}</span>
+                  <span className="text-xs text-muted-foreground">{c.submitted === false ? "Not submitted" : "Submitted ✓"}</span>
                   <span className="ml-auto text-xs font-semibold tabular-nums">{c.score}/10</span>
                 </div>
                 {c.question && <p className="mb-1 text-xs text-muted-foreground">{c.question}</p>}
@@ -198,6 +199,9 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
               <div key={i} className="flex flex-wrap items-start gap-3 text-sm">
                 <span className="font-medium">{p.name}</span>
                 <RecommendationBadge value={p.recommendation} />
+                {p.overallRating ? <span className="text-xs tabular-nums">{p.overallRating}/5</span> : null}
+                {p.strengths && <span className="w-full text-xs"><span className="font-semibold">Strengths:</span> {p.strengths}</span>}
+                {p.concerns && <span className="w-full text-xs"><span className="font-semibold">Concerns:</span> {p.concerns}</span>}
                 {p.comments && <span className="text-muted-foreground">{p.comments}</span>}
               </div>
             ))}
