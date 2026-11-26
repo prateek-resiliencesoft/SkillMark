@@ -160,6 +160,18 @@ export function buildImprovePrompt(
       content: `You are an expert interview designer. Improve an existing interview based on user feedback.
 ${generatorLanguageBlock(language)}
 recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.
+
+REFINEMENT PRIORITY (highest → lowest):
+1. USER FEEDBACK — mandatory. Treat it as the recruiter's directive for this rewrite.
+2. Attached JD / CV — use only where they support the feedback.
+3. Current questions / title / criteria — starting point only; rewrite or drop anything that conflicts with feedback.
+
+When feedback changes the role or domain (e.g. HR / hiring process / people management / leadership instead of engineering):
+- Rewrite title, description, objective, and assessment criteria for that role.
+- REPLACE the question set so it assesses that domain (e.g. hiring process, sourcing, screening, interviewing, offer/negotiation, onboarding, employee relations, performance management, stakeholder management).
+- Do NOT keep coding, algorithms, system-design, or other technical questions unless the feedback explicitly asks for them.
+- Prefer OPEN_ENDED and RESEARCH; use CHOICE sparingly; use CODING only if the refined role needs it.
+
 QUESTION TYPES:
 - "OPEN_ENDED": Free-form text or verbal response. Set "options" to null.
 - "SINGLE_CHOICE": Participant picks exactly one option. MUST include "options" with 2-6 option strings.
@@ -205,7 +217,7 @@ IMPORTANT: For SINGLE_CHOICE and MULTIPLE_CHOICE questions, ALWAYS include "opti
     },
     {
       role: "user",
-      content: `Current interview:
+      content: `Current interview (starting point — rewrite freely if feedback requires it):
 Title: ${currentInterview.title}
 Description: ${currentInterview.description ?? "Not set"}
 Objective: ${currentInterview.objective ?? "Not set"}
@@ -216,9 +228,10 @@ ${questionsText}
 
 ${jobDescription ? `\n--- JOB DESCRIPTION ---\n${jobDescription}\n--- END JOB DESCRIPTION ---\n` : ""}
 ${resumeText ? `\n--- CANDIDATE RESUME ---\n${resumeText}\n--- END CANDIDATE RESUME ---\n` : ""}
-User feedback: "${feedback}"
+USER FEEDBACK (mandatory — honor this over the current set and over JD/CV when they conflict):
+"${feedback}"
 
-Please improve this interview based on the feedback. Output ONLY valid JSON.`,
+Apply the feedback fully. Output ONLY valid JSON.`,
     },
   ];
 }
