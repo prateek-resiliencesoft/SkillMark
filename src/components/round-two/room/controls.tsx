@@ -25,22 +25,15 @@ const SHARE_OPTIONS: ScreenShareCaptureOptions = {
   surfaceSwitching: "include",
 };
 
-/**
- * Mic / camera / screen share / leave. `guardScreenShare` warns panelists before sharing,
- * since sharing the whole screen would show the private copilot panel.
- */
-export function RoomControls({ onLeave, leaveLabel = "Leave", guardScreenShare }: { onLeave: () => void; leaveLabel?: string; guardScreenShare?: boolean }) {
-  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
-  const perms = useLocalParticipantPermissions();
+/** Start a window share; `guard` warns panelists who picked the whole screen (it would show the copilot). */
+export function useStartScreenShare(guard?: boolean) {
+  const { localParticipant } = useLocalParticipant();
   const { toast } = useToast();
-  const [confirmShare, setConfirmShare] = useState(false);
-  const canPublish = perms?.canPublish !== false;
-
-  const startShare = async () => {
+  return async () => {
     try {
       const pub = await localParticipant.setScreenShareEnabled(true, SHARE_OPTIONS);
       const surface = pub?.track?.mediaStreamTrack.getSettings() as MediaTrackSettings & { displaySurface?: string };
-      if (guardScreenShare && surface?.displaySurface === "monitor") {
+      if (guard && surface?.displaySurface === "monitor") {
         toast({
           title: "You're sharing your entire screen",
           description: "The candidate can see everything, including the copilot panel. Share a single window or tab instead.",
@@ -53,6 +46,29 @@ export function RoomControls({ onLeave, leaveLabel = "Leave", guardScreenShare }
       }
     }
   };
+}
+
+/**
+ * Mic / camera / screen share / leave. `guardScreenShare` warns panelists before sharing,
+ * since sharing the whole screen would show the private copilot panel. Observers get no
+ * share button (their token can't publish a screen share either).
+ */
+export function RoomControls({
+  onLeave,
+  leaveLabel = "Leave",
+  guardScreenShare,
+  canScreenShare = true,
+}: {
+  onLeave: () => void;
+  leaveLabel?: string;
+  guardScreenShare?: boolean;
+  canScreenShare?: boolean;
+}) {
+  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const perms = useLocalParticipantPermissions();
+  const [confirmShare, setConfirmShare] = useState(false);
+  const canPublish = perms?.canPublish !== false;
+  const startShare = useStartScreenShare(guardScreenShare);
 
   return (
     <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 bg-transparent" {...LK_THEME}>
@@ -60,19 +76,21 @@ export function RoomControls({ onLeave, leaveLabel = "Leave", guardScreenShare }
         <>
           <TrackToggle source={Track.Source.Microphone} showIcon className="lk-button" />
           <TrackToggle source={Track.Source.Camera} showIcon className="lk-button" />
-          <Button
-            variant={isScreenShareEnabled ? "default" : "secondary"}
-            size="sm"
-            className="h-10"
-            onClick={() => {
-              if (isScreenShareEnabled) void localParticipant.setScreenShareEnabled(false);
-              else if (guardScreenShare) setConfirmShare(true);
-              else void startShare();
-            }}
-          >
-            {isScreenShareEnabled ? <MonitorX className="mr-1.5 h-4 w-4" /> : <MonitorUp className="mr-1.5 h-4 w-4" />}
-            {isScreenShareEnabled ? "Stop sharing" : "Share screen"}
-          </Button>
+          {canScreenShare && (
+            <Button
+              variant={isScreenShareEnabled ? "default" : "secondary"}
+              size="sm"
+              className="h-10"
+              onClick={() => {
+                if (isScreenShareEnabled) void localParticipant.setScreenShareEnabled(false);
+                else if (guardScreenShare) setConfirmShare(true);
+                else void startShare();
+              }}
+            >
+              {isScreenShareEnabled ? <MonitorX className="mr-1.5 h-4 w-4" /> : <MonitorUp className="mr-1.5 h-4 w-4" />}
+              {isScreenShareEnabled ? "Stop sharing" : "Share screen"}
+            </Button>
+          )}
         </>
       )}
       <Button variant="destructive" size="sm" className="h-10" onClick={onLeave}>

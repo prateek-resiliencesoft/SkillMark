@@ -18,6 +18,7 @@ import {
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { callJson, clip } from "./ai";
 import { relatedPairs, verifyFlags, type ClaimPair } from "./checks";
+import { latestCodeContext } from "./boards";
 import { round1ContextPrompt } from "./context";
 import { maybeRunLiveScoring, recordAiError } from "./live-score";
 
@@ -92,6 +93,8 @@ const State = Annotation.Root({
   aiTokensUsed: Annotation<number>(),
   segments: Annotation<Segment[]>(),
   notesText: Annotation<string>(),
+  /** Latest code in the shared editor (empty when no coding task ran). */
+  codeText: Annotation<string>(),
   priorClaims: Annotation<GroundedClaim[]>(),
   /** Questions the copilot already suggested in earlier runs (never offer them again). */
   priorSuggestions: Annotation<string[]>(),
@@ -199,6 +202,7 @@ function buildGraph() {
         `Question plan:\n${planText || "(none)"}`,
         `Summary so far:\n${s.liveSummary || "(none)"}`,
         s.notesText ? `Panel notes:\n${s.notesText}` : "",
+        s.codeText,
         s.pairs.length
           ? `New claims and related earlier statements (check for consistency):\n${s.pairs.map((p) => `- "${p.claim}" vs ${p.source}: "${p.related}"`).join("\n")}`
           : "",
@@ -306,6 +310,7 @@ export async function runCopilot(
         aiTokensUsed: round.aiTokensUsed as number,
         segments: [],
         notesText: "",
+        codeText: await latestCodeContext(roundTwoId).catch(() => ""),
         priorClaims: [],
         priorSuggestions: [],
         newText: "",

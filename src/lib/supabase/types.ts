@@ -23,6 +23,7 @@ export type Database = {
           email: string;
           name: string | null;
           avatar: string | null;
+          phone: string | null;
           organization: string | null;
           role: Database["public"]["Enums"]["UserRole"];
           createdAt: string;
@@ -33,6 +34,7 @@ export type Database = {
           email: string;
           name?: string | null;
           avatar?: string | null;
+          phone?: string | null;
           organization?: string | null;
           role?: Database["public"]["Enums"]["UserRole"];
           createdAt?: string;
@@ -43,6 +45,7 @@ export type Database = {
           email?: string;
           name?: string | null;
           avatar?: string | null;
+          phone?: string | null;
           organization?: string | null;
           role?: Database["public"]["Enums"]["UserRole"];
           createdAt?: string;

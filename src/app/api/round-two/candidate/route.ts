@@ -14,7 +14,7 @@ async function loadByToken(token: string | null) {
   if (!token || token.length < 10 || token.length > 200) return null;
   const { data } = await supabaseAdmin
     .from("round_two_interviews")
-    .select('id, title, status, "scheduledAt", "durationMin", "livekitRoom", "candidateAdmittedAt", "organizationId", candidate:candidates!inner(name)')
+    .select('id, title, status, "scheduledAt", "durationMin", "livekitRoom", "candidateAdmittedAt", "organizationId", "candidateFeedbackAt", candidate:candidates!inner(name)')
     .eq("candidateTokenHash", hashRoundToken(token))
     .maybeSingle();
   return data;
@@ -35,6 +35,7 @@ export async function GET(req: Request) {
     candidateName: (round.candidate as unknown as { name: string }).name,
     organizationName: (org?.name as string | undefined) ?? "",
     videoReady: !!liveKitConfig(),
+    feedbackGiven: !!round.candidateFeedbackAt,
   });
 }
 

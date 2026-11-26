@@ -15,6 +15,8 @@ import { SessionRow, SessionsTable } from "@/components/session/sessions-table";
 import { ResizableSplit } from "@/components/ui/resizable-split";
 import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
+import { RoundSwitcher, RoundTwoPanel, useCandidateRounds } from "@/components/candidates/round-details";
+import { getSessionOverallScore } from "@/lib/session-score";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -917,31 +919,56 @@ function SessionDetail({
   // The CV belongs to one candidate: close it when switching to another session.
   useEffect(() => setCvOpen(false), [sessionId]);
 
+  // Round switcher (only shown once a Round 2 exists): Round 1 report vs Round 2 panel report.
+  const r1Facts = useMemo(
+    () => ({
+      status: summary.data?.status ?? null,
+      score: summary.data?.insights ? getSessionOverallScore(summary.data.insights) : null,
+      decision:
+        summary.data?.mediaReviewStatus === "approved" ? "approved" : summary.data?.mediaReviewStatus === "declined" ? "rejected" : null,
+      hasSession: !!summary.data && summary.data.status !== "NOT_STARTED",
+    }),
+    [summary.data],
+  );
+  const rounds = useCandidateRounds(candidateId, r1Facts);
+
+  if (rounds.hasRound2 && rounds.active === 2) {
+    return (
+      <div className="space-y-4">
+        <RoundSwitcher state={rounds} onBack={onBack} className="rounded-xl border" />
+        <RoundTwoPanel state={rounds} />
+      </div>
+    );
+  }
+
   return (
-    <ResizableSplit
-      open={cvOpen && !!candidateId}
-      storageKey="skillmark:session-cv-panel-pct:v2"
-      defaultPanelPct={42}
-      minPanelPct={28}
-      maxPanelPct={75}
-      panel={
-        candidateId ? (
-          <CvViewerPanel
-            key={candidateId}
-            candidateId={candidateId}
-            candidateName={summary.data?.participantName}
-            onClose={() => setCvOpen(false)}
-          />
-        ) : null
-      }
-    >
-      <SessionDetailBody
-        sessionId={sessionId}
-        onBack={onBack}
-        cvOpen={cvOpen}
-        onToggleCv={() => setCvOpen((v) => !v)}
-      />
-    </ResizableSplit>
+    <>
+      {rounds.hasRound2 && <RoundSwitcher state={rounds} className="mb-4 rounded-xl border" />}
+      <ResizableSplit
+        open={cvOpen && !!candidateId}
+        storageKey="skillmark:session-cv-panel-pct:v2"
+        defaultPanelPct={42}
+        minPanelPct={28}
+        maxPanelPct={75}
+        panel={
+          candidateId ? (
+            <CvViewerPanel
+              key={candidateId}
+              candidateId={candidateId}
+              candidateName={summary.data?.participantName}
+              onClose={() => setCvOpen(false)}
+            />
+          ) : null
+        }
+      >
+        <SessionDetailBody
+          sessionId={sessionId}
+          onBack={onBack}
+          cvOpen={cvOpen}
+          onToggleCv={() => setCvOpen((v) => !v)}
+        />
+      </ResizableSplit>
+    </>
   );
 }
 

@@ -5,6 +5,7 @@ import { PlanChat } from "@/components/round-two/plan-chat";
 import { PlanEditor } from "@/components/round-two/plan-editor";
 import { AiRunHistory } from "@/components/ai/reasoning-timeline";
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import {
   AlertDialog,
@@ -23,7 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import type { QuestionPlanItem, RoundTwoReport } from "@/lib/round-two/types";
 import { trpc } from "@/lib/trpc/client";
-import { ArrowLeft, Link2, Loader2, RefreshCw, Sparkles, UserPlus, Video, X } from "lucide-react";
+import { ArrowLeft, Link2, Loader2, RefreshCw, Sparkles, Star, UserPlus, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -41,6 +42,7 @@ export default function RoundTwoDetailPage() {
     { refetchInterval: (d) => (d?.round.reportStatus === "pending" || d?.round.reportStatus === "generating" || d?.round.status === "live" ? 8000 : false) },
   );
   const live = trpc.roundTwo.live.useQuery({ id }, { enabled: q.data?.round.status === "ended" });
+  const tasks = trpc.roundTwo.tasks.useQuery({ id }, { enabled: q.data?.round.status === "ended" });
   const [plan, setPlan] = useState<QuestionPlanItem[]>([]);
   const [planDirty, setPlanDirty] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -156,6 +158,31 @@ export default function RoundTwoDetailPage() {
             <Card>
               <CardContent className="flex items-center gap-2 p-5 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" /> The report is being generated in the background. You&apos;ll get an email when it&apos;s ready.
+              </CardContent>
+            </Card>
+          )}
+          {(tasks.data?.length ?? 0) > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Candidate answers (coding / drawing tasks)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <TaskAnswers items={tasks.data ?? []} />
+              </CardContent>
+            </Card>
+          )}
+          {round.candidateFeedbackAt && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Candidate&apos;s feedback on the interview</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1 text-sm">
+                <div className="flex items-center gap-0.5" aria-label={`${round.candidateRating} of 5 stars`}>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <Star key={n} className={n <= (round.candidateRating ?? 0) ? "h-4 w-4 fill-amber-400 text-amber-400" : "h-4 w-4 text-muted-foreground"} />
+                  ))}
+                </div>
+                {round.candidateFeedback ? <p className="whitespace-pre-wrap">{round.candidateFeedback}</p> : <p className="text-muted-foreground">No comment.</p>}
               </CardContent>
             </Card>
           )}
@@ -297,6 +324,9 @@ export default function RoundTwoDetailPage() {
                   <div key={s.id as string}>
                     <span className="font-medium">{(s.userName as string) || "Interviewer"}</span>
                     <span className="text-muted-foreground"> · {String(s.recommendation ?? "").replace("_", " ")}</span>
+                    {s.overallRating ? <span className="text-muted-foreground"> · {s.overallRating as number}/5</span> : null}
+                    {s.strengths ? <p className="text-xs"><span className="font-semibold">Strengths:</span> {s.strengths as string}</p> : null}
+                    {s.concerns ? <p className="text-xs"><span className="font-semibold">Concerns:</span> {s.concerns as string}</p> : null}
                     {s.comments ? <p className="text-xs text-muted-foreground">{s.comments as string}</p> : null}
                   </div>
                 ))}

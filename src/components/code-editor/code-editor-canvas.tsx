@@ -49,6 +49,8 @@ interface CodeEditorCanvasProps {
   dark?: boolean;
   /** Interview session id: lets candidates run code and logs runner errors to the session. */
   sessionId?: string;
+  /** Round 2 candidate (no login): their link token lets them run code while admitted to a live round. */
+  roundTwo?: { token: string };
   /** Show the Run button + console (default true when the language is executable). */
   runnable?: boolean;
   /** Called after each run (e.g. to give the AI interviewer context). */
@@ -70,7 +72,13 @@ export interface CodeRunOutput {
   runtime?: string;
 }
 
-async function runCodeRequest(body: { language: string; code: string; stdin?: string; sessionId?: string }): Promise<CodeRunOutput> {
+async function runCodeRequest(body: {
+  language: string;
+  code: string;
+  stdin?: string;
+  sessionId?: string;
+  roundTwo?: { token: string };
+}): Promise<CodeRunOutput> {
   const res = await fetch("/api/trpc/code.run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -130,6 +138,7 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
       onDirty,
       dark = false,
       sessionId,
+      roundTwo,
       runnable = true,
       onRunResult,
     },
@@ -168,6 +177,10 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
     const [language, setLanguage] = useState(languageRef.current);
     // Key to force re-mount Monaco when the document is swapped
     const [editorKey, setEditorKey] = useState(0);
+    // Read-only followers (round 2 panel) update in place instead of re-mounting on every snapshot.
+    const readOnlyRef = useRef(readOnly);
+    readOnlyRef.current = readOnly;
+    const [, setFollowTick] = useState(0);
 
     const serialize = () =>
       JSON.stringify({
@@ -253,9 +266,11 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
         loadScene(data: string) {
           const parsed = parseState(data);
           if (!parsed) return;
+          const sameLanguage = parsed.language === languageRef.current;
           applyState(parsed);
           setLanguage(parsed.language);
-          setEditorKey((k) => k + 1);
+          if (readOnlyRef.current && sameLanguage) setFollowTick((t) => t + 1);
+          else setEditorKey((k) => k + 1);
         },
 
         resetScene() {
@@ -301,6 +316,7 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
           code,
           stdin: stdin || undefined,
           sessionId,
+          roundTwo,
         });
         setRunResult(out);
         onRunResultRef.current?.(out);
@@ -310,7 +326,8 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
       } finally {
         setRunning(false);
       }
-    }, [running, stdin, sessionId]);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [running, stdin, sessionId, roundTwo?.token]);
     const runCodeRef = useRef(runCode);
     runCodeRef.current = runCode;
 
@@ -434,6 +451,7 @@ export const CodeEditorCanvas = forwardRef<CodeEditorCanvasRef, CodeEditorCanvas
             defaultLanguage={language}
             language={language}
             defaultValue={codeRef.current}
+            value={readOnly ? codeRef.current : undefined}
             onChange={handleChange}
             onMount={handleMount}
             theme={dark ? "vs-dark" : "vs-light"}

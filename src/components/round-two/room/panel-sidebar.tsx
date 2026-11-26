@@ -22,7 +22,7 @@ import { trpc } from "@/lib/trpc/client";
 import type { AppRouter } from "@/server/routers/_app";
 import type { inferRouterOutputs } from "@trpc/server";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, CheckCircle2, Gauge, ListChecks, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Gauge, ListChecks, Loader2, Lock, RefreshCw, Send, Sparkles, Star } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const TABS = [
@@ -673,6 +673,10 @@ export function ScorecardTab({
   const [scores, setScores] = useState<Record<string, number>>(() => (initial?.scores as Record<string, number>) ?? {});
   const [rec, setRec] = useState<Recommendation | null>(() => (initial?.recommendation as Recommendation | null) ?? null);
   const [comments, setComments] = useState<string>(() => (initial?.comments as string) ?? "");
+  const [overall, setOverall] = useState<number | null>(() => (initial?.overallRating as number | null) ?? null);
+  const [strengths, setStrengths] = useState<string>(() => (initial?.strengths as string) ?? "");
+  const [concerns, setConcerns] = useState<string>(() => (initial?.concerns as string) ?? "");
+  const payload = { id: roundTwoId, scores, recommendation: rec, comments, overallRating: overall, strengths, concerns };
   const submitted = !!initial?.submittedAt;
   const save = trpc.roundTwo.saveScorecard.useMutation({
     onSuccess: (_, v) => {
@@ -726,6 +730,16 @@ export function ScorecardTab({
         );
       })}
       <div>
+        <div className="mb-1 text-xs font-medium">Overall rating</div>
+        <div className="flex gap-1">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} type="button" aria-label={`${n} of 5`} onClick={() => setOverall(n)} className="rounded p-0.5 hover:bg-muted">
+              <Star className={cn("h-6 w-6", overall != null && n <= overall ? "fill-amber-400 text-amber-400" : "text-muted-foreground")} />
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
         <div className="mb-1 text-xs font-medium">Recommendation</div>
         <div className="grid grid-cols-3 gap-1">
           {RECOMMENDATIONS.map((r) => (
@@ -740,12 +754,14 @@ export function ScorecardTab({
           ))}
         </div>
       </div>
-      <Textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={4} placeholder="Overall comments" className="text-sm" />
+      <Textarea value={strengths} onChange={(e) => setStrengths(e.target.value)} rows={3} maxLength={3000} placeholder="Strengths" className="text-sm" />
+      <Textarea value={concerns} onChange={(e) => setConcerns(e.target.value)} rows={3} maxLength={3000} placeholder="Concerns" className="text-sm" />
+      <Textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={4} placeholder="Notes" className="text-sm" />
       <div className="flex gap-2">
-        <Button variant="outline" size="sm" disabled={save.isLoading} onClick={() => save.mutate({ id: roundTwoId, scores, recommendation: rec, comments, submit: false })}>
+        <Button variant="outline" size="sm" disabled={save.isLoading} onClick={() => save.mutate({ ...payload, submit: false })}>
           Save draft
         </Button>
-        <Button size="sm" disabled={save.isLoading || !rec} onClick={() => save.mutate({ id: roundTwoId, scores, recommendation: rec, comments, submit: true })}>
+        <Button size="sm" disabled={save.isLoading || !rec} onClick={() => save.mutate({ ...payload, submit: true })}>
           {submitted ? "Update submission" : "Submit"}
         </Button>
       </div>

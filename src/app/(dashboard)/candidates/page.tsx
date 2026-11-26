@@ -78,6 +78,7 @@ import { leftFollowupState } from "@/lib/left-followup";
 import { isLinkExpired } from "@/lib/session-link";
 import { RoundFilterSegments } from "@/components/round-two/round-filter-segments";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
+import { latestRoundStatus } from "@/lib/round-details";
 import {
   candidateMatchesRound,
   clampRoundFilter,
@@ -1187,6 +1188,22 @@ export default function CandidatesPage() {
             </div>
           ) : (
             <span className="text-muted-foreground">-</span>
+          );
+        }
+        // "All rounds": once a candidate has a Round 2 that is scheduled / live / ended, lead with it
+        // (the Round 1 status stays underneath) instead of showing only the older Round 1 result.
+        const latestR2 = effectiveRoundFilter !== 1 && row.type === "candidate" ? r2ByCandidateId[row.id] : undefined;
+        if (latestR2 && latestRoundStatus(statusLabel(row), latestR2).round === 2) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="inline-flex items-center gap-1">
+                <span className="text-[10px] text-muted-foreground">{isZh ? "第2轮" : "R2"}</span>
+                <RoundTwoStatusBadge status={latestR2.status} />
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                {isZh ? "第1轮" : "R1"} · {statusLabel(row)}
+              </span>
+            </div>
           );
         }
         return (

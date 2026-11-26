@@ -418,6 +418,36 @@ export const batchRouter = router({
       };
     }),
 
+  /**
+   * Rename a batch and/or patch settings after creation.
+   * Settings changes apply to future candidate generation; existing interviews stay as-is.
+   */
+  update: protectedProcedure
+    .input(
+      z
+        .object({
+          batchId: z.string(),
+          name: z.string().trim().min(1).max(160).optional(),
+          settings: batchSettings.partial().optional(),
+        })
+        .refine((v) => v.name !== undefined || (v.settings && Object.keys(v.settings).length > 0), {
+          message: "Provide a name and/or settings to update",
+        }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+      const patch: Record<string, unknown> = {};
+      if (input.name !== undefined) patch.name = input.name;
+      if (input.settings && Object.keys(input.settings).length > 0) {
+        const prev = (batch.settings ?? {}) as BatchSettings;
+        patch.settings = { ...prev, ...input.settings };
+      }
+      const { error } = await ctx.supabase.from("interview_batches").update(patch).eq("id", input.batchId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { success: true, name: (patch.name as string | undefined) ?? (batch.name as string) };
+    }),
+
   /** Update premade (and related) settings for future candidate generation. */
   updateSettings: protectedProcedure
     .input(

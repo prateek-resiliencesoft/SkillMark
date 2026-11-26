@@ -7,8 +7,8 @@ import type { CompletionNotifyMember } from "@/lib/completion-notify";
 import { normalizeNotifyPhone } from "@/lib/completion-notify";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
-import { useMemo } from "react";
+import { Loader2, Pencil } from "lucide-react";
+import { useMemo, useState } from "react";
 
 export function CompletionNotifyPicker({
   organizationId,
@@ -29,18 +29,37 @@ export function CompletionNotifyPicker({
   );
 
   const selected = useMemo(() => new Map(value.map((m) => [m.userId, m])), [value]);
+  /** userIds where admin is editing/overriding the profile phone for this alert. */
+  const [editing, setEditing] = useState<Set<string>>(() => new Set());
 
   const rows = members.data ?? [];
 
+  const profilePhone = (userId: string): string => {
+    const p = rows.find((r) => r.userId === userId)?.profile?.phone;
+    if (!p?.trim()) return "";
+    return normalizeNotifyPhone(p) ?? p.trim();
+  };
+
   const toggle = (userId: string, name: string | null | undefined) => {
     if (selected.has(userId)) {
+      setEditing((prev) => {
+        if (!prev.has(userId)) return prev;
+        const next = new Set(prev);
+        next.delete(userId);
+        return next;
+      });
       onChange(value.filter((m) => m.userId !== userId));
       return;
     }
+    const fromProfile = profilePhone(userId);
     onChange([
       ...value,
-      { userId, name: name?.trim() || undefined, phone: "" },
+      { userId, name: name?.trim() || undefined, phone: fromProfile },
     ]);
+    // No profile number → open edit so they can type one.
+    if (!normalizeNotifyPhone(fromProfile)) {
+      setEditing((prev) => new Set(prev).add(userId));
+    }
   };
 
   const setPhone = (userId: string, phone: string) => {
@@ -53,6 +72,20 @@ export function CompletionNotifyPicker({
     );
   };
 
+  const startEdit = (userId: string) => {
+    setEditing((prev) => new Set(prev).add(userId));
+  };
+
+  const restoreProfileNumber = (userId: string) => {
+    const fromProfile = profilePhone(userId);
+    setPhone(userId, fromProfile);
+    setEditing((prev) => {
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-2">
       {!compact && (
@@ -60,7 +93,7 @@ export function CompletionNotifyPicker({
           <Label className="text-sm font-semibold">Notify on completion</Label>
           <p className="text-xs text-muted-foreground">
             Pick org members who get a WhatsApp (ResilioHub) with a direct report link when a
-            candidate finishes.
+            candidate finishes. Uses each member&apos;s signup phone; edit to send elsewhere.
           </p>
         </div>
       )}
@@ -94,6 +127,12 @@ export function CompletionNotifyPicker({
             const on = selected.get(m.userId);
             const phoneOk = on ? !!normalizeNotifyPhone(on.phone) : true;
             const label = m.profile?.name || m.profile?.email || m.userId.slice(0, 8);
+            const stored = profilePhone(m.userId);
+            const isEditing = !!on && (editing.has(m.userId) || !normalizeNotifyPhone(on.phone));
+            const usingProfile =
+              !!on &&
+              !!normalizeNotifyPhone(stored) &&
+              normalizeNotifyPhone(on.phone) === normalizeNotifyPhone(stored);
             return (
               <div
                 key={m.userId}
@@ -117,18 +156,71 @@ export function CompletionNotifyPicker({
                   </span>
                 </label>
                 {on && (
-                  <div className="mt-2 pl-6">
-                    <Input
-                      className="h-8 font-mono text-xs"
-                      placeholder="+91…"
-                      value={on.phone}
-                      disabled={disabled}
-                      onChange={(e) => setPhone(m.userId, e.target.value)}
-                    />
-                    {!phoneOk && (
-                      <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
-                        WhatsApp needs country code (e.g. +91…)
-                      </p>
+                  <div className="mt-2 space-y-1.5 pl-6">
+                    {!isEditing && phoneOk ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-foreground">
+                          {normalizeNotifyPhone(on.phone)}
+                        </span>
+                        {usingProfile && (
+                          <span className="text-[11px] text-muted-foreground">profile</span>
+                        )}
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => startEdit(m.userId)}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline disabled:opacity-50"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          Edit
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <Input
+                          className="h-8 font-mono text-xs"
+                          placeholder="+91…"
+                          value={on.phone}
+                          disabled={disabled}
+                          onChange={(e) => setPhone(m.userId, e.target.value)}
+                          autoFocus={editing.has(m.userId)}
+                        />
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          {!phoneOk && (
+                            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                              {stored
+                                ? "WhatsApp needs country code (e.g. +91…)"
+                                : "No signup phone — enter a number with country code"}
+                            </p>
+                          )}
+                          {!!normalizeNotifyPhone(stored) && !usingProfile && (
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => restoreProfileNumber(m.userId)}
+                              className="text-[11px] font-medium text-primary hover:underline disabled:opacity-50"
+                            >
+                              Use profile number
+                            </button>
+                          )}
+                          {phoneOk && editing.has(m.userId) && (
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              onClick={() =>
+                                setEditing((prev) => {
+                                  const next = new Set(prev);
+                                  next.delete(m.userId);
+                                  return next;
+                                })
+                              }
+                              className="text-[11px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            >
+                              Done
+                            </button>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 )}

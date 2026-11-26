@@ -269,7 +269,7 @@ export const orgMemberRouter = router({
       const userIds = rows.map((m) => m.userId);
       const { data: profiles } = await ctx.supabase
         .from("profiles")
-        .select("id, email, name, avatar")
+        .select("id, email, name, avatar, phone")
         .in("id", userIds);
 
       const profileMap = new Map(
@@ -286,6 +286,7 @@ export const orgMemberRouter = router({
           email: string;
           name: string | null;
           avatar: string | null;
+          phone: string | null;
         }) ?? null,
       }));
     }),

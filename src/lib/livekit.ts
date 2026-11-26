@@ -1,6 +1,9 @@
 import "server-only";
-import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackSource } from "livekit-server-sdk";
+import { AccessToken, DataPacket_Kind, RoomServiceClient } from "livekit-server-sdk";
 import { createLogger } from "@/lib/logger";
+import { admittedCandidatePermission, roomGrant, type RoomGrantKind } from "@/lib/round-two/grants";
+
+export type { RoomGrantKind };
 
 const log = createLogger("livekit");
 
@@ -28,8 +31,6 @@ export function requireLiveKit(): LiveKitConfig {
   return cfg;
 }
 
-export type RoomGrantKind = "panel" | "candidate_lobby" | "candidate" | "agent";
-
 export async function mintRoomToken(opts: {
   room: string;
   identity: string;
@@ -45,26 +46,7 @@ export async function mintRoomToken(opts: {
     metadata: JSON.stringify({ kind: opts.kind, ...(opts.metadata ?? {}) }),
     ttl: opts.ttlSeconds ?? 60 * 60 * 6,
   });
-  const base = { roomJoin: true, room: opts.room, canPublishData: false };
-  switch (opts.kind) {
-    case "panel":
-      at.addGrant({ ...base, canPublish: true, canSubscribe: true });
-      break;
-    case "candidate":
-      at.addGrant({
-        ...base,
-        canPublish: true,
-        canSubscribe: true,
-        canPublishSources: [TrackSource.CAMERA, TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO],
-      });
-      break;
-    case "candidate_lobby":
-      at.addGrant({ ...base, canPublish: false, canSubscribe: false });
-      break;
-    case "agent":
-      at.addGrant({ ...base, canPublish: false, canSubscribe: true, hidden: true });
-      break;
-  }
+  at.addGrant(roomGrant(opts.kind, opts.room));
   return at.toJwt();
 }
 
@@ -83,14 +65,7 @@ export async function ensureRoom(room: string, maxParticipants = 12): Promise<vo
 
 /** Promote a lobby participant to full publish/subscribe. */
 export async function admitParticipant(room: string, identity: string): Promise<void> {
-  await roomService().updateParticipant(room, identity, {
-    permission: {
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: false,
-      canPublishSources: [TrackSource.CAMERA, TrackSource.MICROPHONE, TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO],
-    },
-  });
+  await roomService().updateParticipant(room, identity, { permission: admittedCandidatePermission() });
 }
 
 export async function removeParticipant(room: string, identity: string): Promise<void> {

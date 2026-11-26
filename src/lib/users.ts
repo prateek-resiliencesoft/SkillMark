@@ -148,10 +148,12 @@ export async function ensureProfileRow(
     (typeof user.user_metadata?.full_name === "string" ? user.user_metadata.full_name.trim() : "") ||
     (typeof user.user_metadata?.name === "string" ? user.user_metadata.name.trim() : "") ||
     null;
+  const metaPhone =
+    typeof user.user_metadata?.phone === "string" ? user.user_metadata.phone.trim() : "";
 
   const { data: existing } = await supabaseAdmin
     .from("profiles")
-    .select("id, name, email")
+    .select("id, name, email, phone")
     .eq("id", user.id)
     .maybeSingle();
 
@@ -160,13 +162,15 @@ export async function ensureProfileRow(
       id: user.id,
       email: user.email,
       name: trimmed,
+      ...(metaPhone ? { phone: metaPhone } : {}),
     });
     return;
   }
 
-  const patch: { email?: string; name?: string } = {};
+  const patch: { email?: string; name?: string; phone?: string } = {};
   if (existing.email !== user.email) patch.email = user.email;
   if (!existing.name && trimmed) patch.name = trimmed;
+  if (!existing.phone && metaPhone) patch.phone = metaPhone;
   if (Object.keys(patch).length > 0) {
     await supabaseAdmin.from("profiles").update(patch).eq("id", user.id);
   }

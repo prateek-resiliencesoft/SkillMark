@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { DEFAULT_NEXT_PATH, safeNextPath } from "@/lib/safe-next";
 import { createClient } from "@/lib/supabase/client";
 import { AnimatePresence, motion } from "motion/react";
+import { normalizeWhatsappPhone } from "@/lib/messaging/templates";
 import {
   ArrowRight,
   CalendarClock,
@@ -20,6 +21,7 @@ import {
   LogIn,
   Mail,
   Mic,
+  Phone,
   ShieldCheck,
   User,
   UserPlus,
@@ -115,6 +117,7 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
 
   // Form states
   const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -166,6 +169,15 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    const normalizedPhone = normalizeWhatsappPhone(phone);
+    if (!normalizedPhone) {
+      toast({
+        title: "Phone required",
+        description: "Enter a WhatsApp number with country code (e.g. +919876543210).",
+        variant: "destructive",
+      });
+      return;
+    }
     setLoading(true);
 
     try {
@@ -175,6 +187,7 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
         options: {
           data: {
             full_name: name.trim() || undefined,
+            phone: normalizedPhone,
           },
         },
       });
@@ -396,6 +409,31 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
                               className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary"
                             />
                           </div>
+                        </div>
+                      )}
+
+                      {!isLogin && (
+                        <div className="space-y-2">
+                          <Label htmlFor="auth-phone" className="text-sm font-medium text-foreground">
+                            WhatsApp number
+                          </Label>
+                          <div className="relative">
+                            <Phone className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
+                            <Input
+                              id="auth-phone"
+                              type="tel"
+                              inputMode="tel"
+                              autoComplete="tel"
+                              placeholder="+919876543210"
+                              value={phone}
+                              onChange={(e) => setPhone(e.target.value)}
+                              required
+                              className="h-11 rounded-lg border-input bg-background pl-10 font-mono placeholder:text-muted-foreground/70 focus-visible:ring-primary"
+                            />
+                          </div>
+                          <p className="text-[11px] text-muted-foreground">
+                            Used for interview completion alerts. Include country code.
+                          </p>
                         </div>
                       )}
 
