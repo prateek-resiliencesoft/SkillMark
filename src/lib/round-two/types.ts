@@ -77,6 +77,18 @@ export interface CopilotSuggestion {
   planId?: string;
 }
 
+/** Live check of the latest interviewer question vs the candidate's answer. */
+export interface AnswerCheck {
+  /** Last question the interviewer asked (paraphrase OK if noisy). */
+  question: string;
+  /** Short summary of what the candidate replied. */
+  answerSummary: string;
+  /** Concrete points the candidate covered well. */
+  keyPoints: string[];
+  /** Important points still missing for a strong answer. */
+  gaps: string[];
+}
+
 export const FLAG_KINDS = ["contradiction", "vague", "possible_assistance", "red_flag", "strength"] as const;
 export type FlagKind = (typeof FLAG_KINDS)[number];
 
@@ -96,6 +108,8 @@ export interface CopilotResult {
   coveredQuestionIds: string[];
   liveSummary: string;
   flags: CopilotFlag[];
+  /** Latest Q↔answer check for the panel (null when nothing to check yet). */
+  answerCheck?: AnswerCheck | null;
 }
 
 export interface StyleMetrics {
@@ -154,8 +168,29 @@ export function speakerRoleForIdentity(identity: string): "candidate" | "intervi
   return null;
 }
 
-/** Data-channel topics the app publishes to interviewers. */
-export const DATA_TOPICS = { transcript: "r2.transcript", copilot: "r2.copilot", admit: "r2.admit" } as const;
+/** Data-channel topics the app publishes in the live room. */
+export const DATA_TOPICS = {
+  transcript: "r2.transcript",
+  copilot: "r2.copilot",
+  admit: "r2.admit",
+  /** Open/close coding + whiteboard for the candidate (and panel view). */
+  board: "r2.board",
+  /** Debounced coding/whiteboard snapshot sync between peers. */
+  boardState: "r2.board.state",
+} as const;
+
+export interface RoundTwoBoardOpen {
+  coding: boolean;
+  whiteboard: boolean;
+}
+
+export type RoundTwoBoardKind = "coding" | "whiteboard";
+
+export interface RoundTwoBoardStateMsg {
+  kind: RoundTwoBoardKind;
+  /** Serialized editor / Excalidraw scene. */
+  data: string;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Style metrics                                                      */
@@ -309,6 +344,22 @@ export function normalizePlan(raw: unknown, idPrefix = "q"): QuestionPlanItem[] 
   return out.slice(0, 40);
 }
 
+function normalizeAnswerCheck(raw: unknown): AnswerCheck | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const question = str(r.question, 600);
+  const answerSummary = str(r.answerSummary, 800);
+  if (!question && !answerSummary) return null;
+  const list = (v: unknown, max: number) =>
+    Array.isArray(v) ? v.map((x) => str(x, 300)).filter(Boolean).slice(0, max) : [];
+  return {
+    question: question || "(last interviewer question)",
+    answerSummary: answerSummary || "(no candidate answer yet)",
+    keyPoints: list(r.keyPoints, 8),
+    gaps: list(r.gaps, 8),
+  };
+}
+
 export function normalizeCopilot(raw: unknown, planIds: string[]): CopilotResult {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const ids = new Set(planIds);
@@ -348,7 +399,13 @@ export function normalizeCopilot(raw: unknown, planIds: string[]): CopilotResult
   const covered = Array.isArray(o.coveredQuestionIds)
     ? o.coveredQuestionIds.map((x) => str(x, 40)).filter((x) => ids.has(x))
     : [];
-  return { suggestions, flags, coveredQuestionIds: covered, liveSummary: str(o.liveSummary, 4000) };
+  return {
+    suggestions,
+    flags,
+    coveredQuestionIds: covered,
+    liveSummary: str(o.liveSummary, 4000),
+    answerCheck: normalizeAnswerCheck(o.answerCheck),
+  };
 }
 
 export function normalizeLiveScoring(raw: unknown): LiveScoring {

@@ -106,10 +106,36 @@ describe("normalizeCopilot", () => {
     assert.equal(r.flags.length, 1);
     assert.deepEqual(r.coveredQuestionIds, ["q1"]);
     assert.equal(r.liveSummary, "- solid");
+    assert.equal(r.answerCheck, null);
+  });
+
+  it("parses live answerCheck key points", () => {
+    const r = normalizeCopilot(
+      {
+        answerCheck: {
+          question: "How do you hire?",
+          answerSummary: "They described sourcing and a panel interview.",
+          keyPoints: ["Sourcing channels", "Panel interview"],
+          gaps: ["Offer process"],
+        },
+        suggestions: [{ type: "follow_up", question: "Who is on the panel?" }],
+        liveSummary: "- ok",
+      },
+      [],
+    );
+    assert.equal(r.answerCheck?.question, "How do you hire?");
+    assert.deepEqual(r.answerCheck?.keyPoints, ["Sourcing channels", "Panel interview"]);
+    assert.deepEqual(r.answerCheck?.gaps, ["Offer process"]);
   });
 
   it("tolerates garbage", () => {
-    assert.deepEqual(normalizeCopilot("oops", []), { suggestions: [], flags: [], coveredQuestionIds: [], liveSummary: "" });
+    assert.deepEqual(normalizeCopilot("oops", []), {
+      suggestions: [],
+      flags: [],
+      coveredQuestionIds: [],
+      liveSummary: "",
+      answerCheck: null,
+    });
   });
 });
 

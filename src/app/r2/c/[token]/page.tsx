@@ -1,6 +1,7 @@
 "use client";
 
 import "@livekit/components-styles";
+import { BoardSurfaces, useRoundTwoBoards } from "@/components/round-two/room/boards";
 import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { VideoStage } from "@/components/round-two/room/stage";
@@ -155,6 +156,7 @@ function CandidateRoom({ choices }: { choices: LocalUserChoices }) {
   const room = useRoomContext();
   const perms = useLocalParticipantPermissions();
   const { localParticipant } = useLocalParticipant();
+  const boards = useRoundTwoBoards();
   const admitted = perms?.canPublish === true;
   const published = useRef(false);
 
@@ -181,9 +183,17 @@ function CandidateRoom({ choices }: { choices: LocalUserChoices }) {
     );
   }
 
+  const boardsOpen = boards.open.coding || boards.open.whiteboard;
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 bg-background p-3">
-      <VideoStage className="min-h-[240px] flex-1" />
+      <VideoStage className={boardsOpen ? "min-h-[140px] flex-[0.4]" : "min-h-[240px] flex-1"} />
+      <BoardSurfaces
+        open={boards.open}
+        onSnapshot={boards.publishSnapshot}
+        remoteCoding={boards.remoteCoding}
+        remoteWhiteboard={boards.remoteWhiteboard}
+        className="min-h-[240px] flex-1"
+      />
       <div className="shrink-0">
         <RoomControls onLeave={() => void room.disconnect()} />
       </div>

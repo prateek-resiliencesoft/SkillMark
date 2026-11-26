@@ -49,11 +49,21 @@ const SYSTEM = `You are a silent copilot for a human interview panel running a l
 The candidate cannot see you. You read the live transcript, the question plan, round 1 context, claims extracted from the latest answers with related earlier claims, and the panel's notes.
 Produce JSON:
 {"reasoning": string (2-4 short "- " bullets: what you noticed in the latest answer and why you suggest what you suggest),
- "suggestions": [{"type": "follow_up"|"cross_check"|"new_topic"|"clarify", "question": string, "reason": string, "planId": string?}] (3-5, best first; follow-ups dig into the last answer, cross_check compares with round 1 claims or the CV),
+ "answerCheck": {
+   "question": string (the latest interviewer question — paraphrase cleanly),
+   "answerSummary": string (1-3 sentences: what the candidate actually replied),
+   "keyPoints": string[] (2-6 concrete points they covered well),
+   "gaps": string[] (0-5 important points still missing for a strong answer)
+ } | null (null only if there is no interviewer question + candidate answer yet),
+ "suggestions": [{"type": "follow_up"|"cross_check"|"new_topic"|"clarify", "question": string, "reason": string, "planId": string?}] (3-5, best first),
  "coveredQuestionIds": string[] (plan ids already answered in this round),
  "liveSummary": string (running summary of round 2 so far, <= 8 short bullet lines starting with "- "),
  "flags": [{"kind": "contradiction"|"vague"|"possible_assistance"|"red_flag"|"strength", "detail": string, "quote": string?, "round1Quote": string?}] (only new, evidence-backed flags; [] if none)}
-Rules: questions are short and speakable; never invent facts; quotes must be copied verbatim; a contradiction needs both quotes; treat style differences as signals, not proof.`;
+Suggestion mix (required when there is a recent candidate answer):
+1. Exactly one short follow_up that digs into the latest answer (one clarification or probe).
+2. If any plan items are still uncovered, include at least one new_topic (or follow_up) that uses that plan item's intent and set planId to that id — prefer the next logical uncovered plan question over inventing a new topic.
+3. Optionally cross_check vs round 1 / CV when claims relate.
+Rules: questions are short and speakable; never invent facts; quotes must be copied verbatim; a contradiction needs both quotes; treat style differences as signals, not proof; answerCheck must reflect the transcript, not invent coverage.`;
 
 const CLAIM_CLASSES = [
   { name: "claim", description: "A factual statement about the candidate's own work, role, team or results" },
@@ -204,7 +214,7 @@ function buildGraph() {
       const { data } = await callJson<Record<string, unknown>>({
         organizationId: s.organizationId,
         task: "round2_live",
-        maxTokens: 1400,
+        maxTokens: 1800,
         temperature: 0.4,
         system: SYSTEM,
         messages: [{ role: "user", content: user }],
