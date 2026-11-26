@@ -1715,12 +1715,15 @@ export function useVoice({
   /** Send code editor content to the relay for agent context */
   const sendCodeUpdate = useCallback((content: string, language: string) => {
     latestCodeUpdateRef.current = { content, language };
+    // Typing code is work, not silence: hold the "are you there?" reminders.
+    silenceCheckRef.current.codingActivity(performance.now());
     relayConnectorRef.current?.sendJson({ type: "code_update", content, language });
   }, []);
 
   /** Send whiteboard image to the relay for agent context */
   const sendWhiteboardUpdate = useCallback((imageDataUrl: string) => {
     latestWhiteboardUpdateRef.current = imageDataUrl;
+    silenceCheckRef.current.codingActivity(performance.now());
     relayConnectorRef.current?.sendJson({ type: "whiteboard_update", imageDataUrl });
   }, []);
 

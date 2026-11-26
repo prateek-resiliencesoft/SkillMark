@@ -87,16 +87,18 @@ export type SilenceCfg = {
   silencePromptGapMs: number;
   silenceFinalWaitMs: number;
   silenceCheckAiGraceMs: number;
+  /** Optional: how long a code/whiteboard edit holds all reminders. */
+  silenceCodingHoldMs?: number;
   silencePolicy: Cfg["silencePolicy"];
 };
 
 /**
  * Staged silence handling after the AI finishes asking (timed from the end of
  * AI playback, never from generation):
- *   9s silence → "Are you there? Can you hear me?"
- *   5s more    → "I can't hear your response. Are you still connected?"
- *   5s more    → "It seems you've gone silent. I'll wait a little longer."
- *   8s more    → silence policy (default: next question, left unanswered).
+ *   15s silence → "Are you there? Can you hear me?"
+ *   8s more    → "I can't hear your response. Are you still connected?"
+ *   8s more    → "It seems you've gone silent. I'll wait a little longer."
+ *   10s more   → silence policy (default: next question, left unanswered).
  * Each wait restarts when the reminder finishes playing.
  * Only genuine candidate speech (a gated VAD turn, or transcribed words) calls
  * candidateActivity() and cancels everything. Noise never resets the timer.
@@ -107,6 +109,7 @@ export class SilenceCheck {
   private waitingSince: number | null = null;
   private stage = 0; // reminders already sent for this question (0–3)
   private suppressedUntil = 0;
+  private codingUntil = 0;
   private done = false;
 
   constructor(private readonly cfg: SilenceCfg = ENDPOINTING_CONFIG) {}
@@ -147,6 +150,19 @@ export class SilenceCheck {
   }
 
   /**
+   * The candidate is typing code / drawing: they are working, not silent. Cancel
+   * pending reminders and hold new ones for `silenceCodingHoldMs` after the last
+   * edit. Unlike candidateActivity() this does not stop the wait, so the
+   * reminders resume once the work stops.
+   */
+  codingActivity(now: number) {
+    this.codingUntil = now + (this.cfg.silenceCodingHoldMs ?? 60_000);
+    this.stage = 0;
+    this.done = false;
+    if (this.waitingSince != null) this.waitingSince = Math.max(this.waitingSince, now);
+  }
+
+  /**
    * The candidate's turn closed. If the AI then never replies, count from here
    * so we still never listen forever (the AI's reply pauses this as usual).
    */
@@ -162,6 +178,7 @@ export class SilenceCheck {
     this.stage = 0;
     this.done = false;
     this.suppressedUntil = 0;
+    this.codingUntil = 0;
   }
 
   /** Another prompt (check-in, reply watchdog, reconnect) is in flight. */
@@ -197,7 +214,7 @@ export class SilenceCheck {
   ): SilenceCheckAction | null {
     if (this.waitingSince == null || this.done) return null;
     if (s.turnActive || s.aiBusy || s.speechInProgress) return null;
-    if (now < this.suppressedUntil) return null;
+    if (now < this.suppressedUntil || now < this.codingUntil) return null;
     if (now - this.waitingSince < this.limitMs()) return null;
 
     if (this.stage < SILENCE_PROMPTS.length) {

@@ -382,3 +382,45 @@ export function normalizeLiveScoring(raw: unknown): LiveScoring {
     summary: str(o.summary, 600),
   };
 }
+
+const DEDUPE_STOP = new Set(["the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "you", "your", "me", "can", "could", "would", "please", "tell", "about", "how", "did", "do", "does", "is", "was", "were", "what", "that", "this", "with", "it", "i", "we", "so", "then", "have", "has", "had", "be"]);
+
+function questionTokens(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !DEDUPE_STOP.has(w)),
+  );
+}
+
+/** Two questions are "the same" when most of their content words overlap. */
+export function similarQuestions(a: string, b: string): boolean {
+  const ta = questionTokens(a);
+  const tb = questionTokens(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  let shared = 0;
+  for (const w of ta) if (tb.has(w)) shared++;
+  return shared / Math.min(ta.size, tb.size) >= 0.7 && shared >= 2;
+}
+
+/**
+ * Drop suggestions that repeat an earlier suggestion, a question the panel has
+ * already asked, or each other, so the copilot never offers the same question
+ * again and again. Order (best first) is kept.
+ */
+export function dedupeSuggestions(
+  suggestions: CopilotSuggestion[],
+  alreadySuggested: string[],
+  alreadyAsked: string[] = [],
+): CopilotSuggestion[] {
+  const seen = [...alreadySuggested, ...alreadyAsked].filter(Boolean);
+  const out: CopilotSuggestion[] = [];
+  for (const s of suggestions) {
+    if (seen.some((q) => similarQuestions(q, s.question))) continue;
+    seen.push(s.question);
+    out.push(s);
+  }
+  return out;
+}

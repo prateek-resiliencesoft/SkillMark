@@ -7,6 +7,7 @@ import { listRoomIdentities, sendToIdentities } from "@/lib/livekit";
 import {
   DATA_TOPICS,
   USER_IDENTITY_PREFIX,
+  dedupeSuggestions,
   normalizeCopilot,
   normalizePlan,
   type CopilotResult,
@@ -82,6 +83,8 @@ const State = Annotation.Root({
   segments: Annotation<Segment[]>(),
   notesText: Annotation<string>(),
   priorClaims: Annotation<GroundedClaim[]>(),
+  /** Questions the copilot already suggested in earlier runs (never offer them again). */
+  priorSuggestions: Annotation<string[]>(),
   newText: Annotation<string>(),
   newUpTo: Annotation<number>(),
   claims: Annotation<GroundedClaim[]>(),
@@ -122,6 +125,11 @@ function buildGraph() {
     const minedUpTo = state.minedUpTo.get(s.roundTwoId) ?? -1;
     const fresh = segments.filter((x) => x.speakerRole === "candidate" && x.startMs > minedUpTo);
     const priorClaims = (events ?? []).flatMap((e) => ((e.payload as { claims?: GroundedClaim[] })?.claims ?? []));
+    const priorSuggestions = (events ?? []).flatMap((e) =>
+      ((e.payload as { suggestions?: Array<{ question?: string }> })?.suggestions ?? [])
+        .map((x) => (typeof x?.question === "string" ? x.question : ""))
+        .filter(Boolean),
+    );
     const notesText = (notes ?? [])
       .reverse()
       .map((n) => `${n.authorName || "Panel"}: ${clip(n.body as string, 500)}`)
@@ -133,6 +141,7 @@ function buildGraph() {
       segments,
       notesText,
       priorClaims,
+      priorSuggestions,
       newText: fresh.map((x) => x.text).join("\n"),
       newUpTo: fresh.length ? fresh[fresh.length - 1].startMs : minedUpTo,
     };
@@ -183,6 +192,9 @@ function buildGraph() {
         s.pairs.length
           ? `New claims and related earlier statements (check for consistency):\n${s.pairs.map((p) => `- "${p.claim}" vs ${p.source}: "${p.related}"`).join("\n")}`
           : "",
+        s.priorSuggestions.length
+          ? `Questions you already suggested earlier (do NOT suggest these or close rephrasings again; move on to something new):\n${[...new Set(s.priorSuggestions)].slice(0, 20).map((q) => `- ${clip(q, 200)}`).join("\n")}`
+          : "",
         `Live transcript (latest last):\n${clip(transcript, 14_000) || "(nothing said yet)"}`,
         s.ask ? `The interviewer ${s.ask.by} asks you: ${s.ask.text}` : "Suggest what to ask next.",
       ]
@@ -200,6 +212,11 @@ function buildGraph() {
       });
       if (typeof data.reasoning === "string") ctx.think(clip(data.reasoning, 1500));
       const result = normalizeCopilot(data, s.plan.map((q) => q.id));
+      // Never offer a question that was already suggested, or that the panel already asked aloud.
+      const askedAloud = s.segments.filter((x) => x.speakerRole !== "candidate").map((x) => x.text);
+      const before = result.suggestions.length;
+      result.suggestions = dedupeSuggestions(result.suggestions, s.priorSuggestions, askedAloud);
+      if (result.suggestions.length < before) ctx.note(`${before - result.suggestions.length} repeated suggestion(s) dropped`);
       const round1Text = [...(s.round1.candidateAnswers ?? []), ...(s.round1.claims ?? []).map((c) => c.evidence ?? c.claim)].join("\n");
       const candidateText = s.segments.filter((x) => x.speakerRole === "candidate").map((x) => x.text).join("\n");
       result.flags = verifyFlags(result.flags, candidateText, round1Text);
@@ -280,6 +297,7 @@ export async function runCopilot(
         segments: [],
         notesText: "",
         priorClaims: [],
+        priorSuggestions: [],
         newText: "",
         newUpTo: -1,
         claims: [],

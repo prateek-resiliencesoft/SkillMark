@@ -18,10 +18,25 @@ const TOOL_CALL_RE = new RegExp(
 );
 const TOOL_FENCE_RE = /```(?:tool_code|tool_outputs?)[\s\S]*?(?:```|$)/gi;
 
+/**
+ * Internal relay cues that must never show up as a chat turn: the code /
+ * whiteboard context updates sent to the model and the silence / no-answer
+ * cues. The marker, its line, an optional code fence and the "(This is the
+ * participant's code ...)" note are removed.
+ */
+const INTERNAL_CUE_RE =
+  /\[(?:CODE_UPDATE|WHITEBOARD_UPDATE|SILENCE_PROMPT|NO_ANSWER)\][^\n`]*\s*(?:```[\s\S]*?(?:```|$))?(?:\s*\((?:This is|Do not respond|The participant)[^)]*\))?/gi;
+
+/** Remove relay-internal cue messages (e.g. `[CODE_UPDATE] …`) from a transcript line. */
+export function stripInternalCueText(text: string): string {
+  if (!text) return "";
+  return text.replace(INTERNAL_CUE_RE, " ").replace(/[ \t]{2,}/g, " ").trim();
+}
+
 /** Remove spoken / transcribed tool-call text. Returns "" when nothing real is left. */
 export function stripToolCallText(text: string): string {
   if (!text) return "";
-  const cleaned = text
+  const cleaned = stripInternalCueText(text)
     .replace(TOOL_FENCE_RE, " ")
     .replace(TOOL_CALL_RE, " ")
     .replace(/[ \t]{2,}/g, " ")

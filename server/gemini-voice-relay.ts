@@ -37,6 +37,7 @@ import { joinTranscriptChunk } from "../src/lib/transcript/dedupe";
 import { closePartialTurn, isRepeatedAssistantLine, stripToolCallText } from "../src/lib/transcript/sanitize";
 import {
   emptyLedger,
+  isLocked,
   isPresenceAck,
   isSubstantiveCandidateAnswer,
   isSufficientShortAnswer,
@@ -1004,6 +1005,7 @@ async function handleInterview(
       asked: [...completed].filter((i) => i !== currentQuestionIndex),
       recent: history.slice(-8),
       pendingAnswer,
+      currentAnswered: isLocked(answeredLedger, currentQuestionIndex),
       language: multiLanguage ? (currentLanguage() === "hi" ? "Hindi (Hinglish)" : "English") : undefined,
     };
   }
