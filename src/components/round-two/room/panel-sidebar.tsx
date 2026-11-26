@@ -3,6 +3,7 @@
 import { ReasoningTimeline } from "@/components/ai/reasoning-timeline";
 import { CATEGORY_LABELS } from "@/components/round-two/plan-editor";
 import { StyleTable } from "@/components/round-two/report-view";
+import { CvViewerPanel } from "@/components/session/cv-viewer-panel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,7 +22,7 @@ import { trpc } from "@/lib/trpc/client";
 import type { AppRouter } from "@/server/routers/_app";
 import type { inferRouterOutputs } from "@trpc/server";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, Gauge, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Gauge, ListChecks, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 const TABS = [
@@ -63,6 +64,8 @@ export function PanelSidebar({
   myRole,
   live,
   myScorecard,
+  candidateId,
+  candidateName,
 }: {
   roundTwoId: string;
   plan: QuestionPlanItem[];
@@ -70,6 +73,8 @@ export function PanelSidebar({
   myRole: string;
   live: LiveData | undefined;
   myScorecard: Record<string, unknown> | null;
+  candidateId?: string | null;
+  candidateName?: string | null;
 }) {
   const [tab, setTab] = useState<TabId>("copilot");
   const lastFlagCount = useRef(0);
@@ -107,7 +112,9 @@ export function PanelSidebar({
         {tab === "plan" && <PlanTab roundTwoId={roundTwoId} plan={plan} covered={live?.coveredQuestionIds ?? []} />}
         {tab === "transcript" && <TranscriptTab live={live} />}
         {tab === "round1" && <Round1Tab ctx={round1} />}
-        {tab === "cv" && <CvTab ctx={round1} />}
+        {tab === "cv" && (
+          <CvTab ctx={round1} candidateId={candidateId} candidateName={candidateName} />
+        )}
         {tab === "compare" && <CompareTab live={live} />}
         {tab === "notes" && <NotesTab roundTwoId={roundTwoId} live={live} />}
         {tab === "score" && <ScorecardTab roundTwoId={roundTwoId} initial={myScorecard} aiScores={live?.liveScores ?? null} />}
@@ -175,24 +182,79 @@ function CopilotTab({ roundTwoId, live, plan }: { roundTwoId: string; live: Live
       )}
 
       {latest ? (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {latest.ask && (
             <p className="text-xs text-muted-foreground">
               {latest.ask.by} asked: “{latest.ask.text}”
             </p>
           )}
-          {latest.suggestions.map((s, i) => (
-            <div key={i} className="rounded-lg border bg-card p-2.5">
-              <div className="mb-1 flex items-center gap-1.5">
-                <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", SUGGESTION_STYLE[s.type])}>
-                  {s.type.replace("_", " ")}
-                </span>
-                {s.planId && planText.get(s.planId) && <span className="truncate text-[10px] text-muted-foreground">plan: {planText.get(s.planId)}</span>}
+
+          {latest.answerCheck && (
+            <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold">
+                <ListChecks className="h-3.5 w-3.5 text-primary" />
+                Live answer check
               </div>
-              <p className="text-sm font-medium">{s.question}</p>
-              {s.reason && <p className="mt-0.5 text-xs text-muted-foreground">{s.reason}</p>}
+              <div className="space-y-1 text-xs">
+                <p>
+                  <span className="font-medium text-muted-foreground">Asked: </span>
+                  {latest.answerCheck.question}
+                </p>
+                <p>
+                  <span className="font-medium text-muted-foreground">They replied: </span>
+                  {latest.answerCheck.answerSummary}
+                </p>
+              </div>
+              {latest.answerCheck.keyPoints.length > 0 && (
+                <div>
+                  <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3" /> Covered
+                  </div>
+                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                    {latest.answerCheck.keyPoints.map((p, i) => (
+                      <li key={i}>• {p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {latest.answerCheck.gaps.length > 0 && (
+                <div>
+                  <div className="mb-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">Still missing</div>
+                  <ul className="space-y-0.5 text-xs text-muted-foreground">
+                    {latest.answerCheck.gaps.map((p, i) => (
+                      <li key={i}>• {p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-          ))}
+          )}
+
+          <div className="space-y-2">
+            <div className="text-xs font-semibold">Ask next</div>
+            {latest.suggestions.map((s, i) => (
+              <div key={i} className={cn("rounded-lg border bg-card p-2.5", i === 0 && "border-primary/40")}>
+                <div className="mb-1 flex items-center gap-1.5">
+                  {i === 0 && (
+                    <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary-foreground">
+                      next
+                    </span>
+                  )}
+                  <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", SUGGESTION_STYLE[s.type])}>
+                    {s.type.replace("_", " ")}
+                  </span>
+                  {s.planId && planText.get(s.planId) && (
+                    <span className="truncate text-[10px] text-muted-foreground">from plan</span>
+                  )}
+                </div>
+                <p className="text-sm font-medium">{s.question}</p>
+                {s.reason && <p className="mt-0.5 text-xs text-muted-foreground">{s.reason}</p>}
+                {s.planId && planText.get(s.planId) && (
+                  <p className="mt-1 truncate text-[10px] text-muted-foreground">Plan: {planText.get(s.planId)}</p>
+                )}
+              </div>
+            ))}
+          </div>
           {!!latest.steps?.length && (
             <ReasoningTimeline steps={latest.steps} title="How the copilot got here" collapsible defaultOpen={false} />
           )}
@@ -434,7 +496,39 @@ function Round1Tab({ ctx }: { ctx: Round1Context }) {
   );
 }
 
-function CvTab({ ctx }: { ctx: Round1Context }) {
+function CvTab({
+  ctx,
+  candidateId,
+  candidateName,
+}: {
+  ctx: Round1Context;
+  candidateId?: string | null;
+  candidateName?: string | null;
+}) {
+  // Same viewer as session "Show CV" (PDF / image / markdown via resumeAccess).
+  if (candidateId) {
+    return (
+      <div className="-m-3 flex h-[min(70vh,720px)] min-h-[320px] flex-col overflow-hidden">
+        {ctx.skills?.length ? (
+          <div className="flex shrink-0 flex-wrap gap-1 border-b px-3 py-2">
+            {ctx.skills.map((s) => (
+              <span key={s} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+                {s}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1">
+          <CvViewerPanel
+            key={candidateId}
+            candidateId={candidateId}
+            candidateName={candidateName}
+            showClose={false}
+          />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="space-y-3 text-sm">
       {ctx.skills?.length ? (
@@ -449,7 +543,7 @@ function CvTab({ ctx }: { ctx: Round1Context }) {
       {ctx.resumeMarkdown ? (
         <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed">{ctx.resumeMarkdown}</pre>
       ) : (
-        <p className="text-muted-foreground">No CV text on file.</p>
+        <p className="text-muted-foreground">No CV on file for this candidate.</p>
       )}
     </div>
   );

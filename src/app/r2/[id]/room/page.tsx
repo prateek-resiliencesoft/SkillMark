@@ -2,6 +2,7 @@
 
 import "@livekit/components-styles";
 import { AudioUnlock, LK_THEME } from "@/components/round-two/room/lk-theme";
+import { BoardSurfaces, BoardToolbar, useRoundTwoBoards } from "@/components/round-two/room/boards";
 import { PanelSidebar, ScorecardTab } from "@/components/round-two/room/panel-sidebar";
 import { RoomControls } from "@/components/round-two/room/controls";
 import { RoomShareLinks } from "@/components/round-two/room/share-links";
@@ -167,6 +168,7 @@ function PanelRoom({ id }: { id: string }) {
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const room = useRoomContext();
+  const boards = useRoundTwoBoards();
   const info = trpc.roundTwo.get.useQuery(
     { id },
     { staleTime: 30_000, refetchOnWindowFocus: false, refetchOnMount: false },
@@ -244,8 +246,18 @@ function PanelRoom({ id }: { id: string }) {
           </div>
         )}
 
-        <VideoStage className="min-h-[240px] flex-1" />
-        <div className="shrink-0">
+        <VideoStage className={boards.open.coding || boards.open.whiteboard ? "min-h-[160px] flex-[0.55]" : "min-h-[240px] flex-1"} />
+        <BoardSurfaces
+          open={boards.open}
+          canClose
+          onClose={(kind) => boards.toggle(kind)}
+          onSnapshot={boards.publishSnapshot}
+          remoteCoding={boards.remoteCoding}
+          remoteWhiteboard={boards.remoteWhiteboard}
+          className="min-h-[200px] flex-1"
+        />
+        <div className="flex shrink-0 flex-wrap items-center justify-center gap-2">
+          <BoardToolbar open={boards.open} onToggle={boards.toggle} />
           <RoomControls guardScreenShare onLeave={() => void room.disconnect()} />
         </div>
       </div>
@@ -258,6 +270,8 @@ function PanelRoom({ id }: { id: string }) {
           myRole={myRole}
           live={live.data}
           myScorecard={myScorecard as Record<string, unknown> | null}
+          candidateId={candidate?.id}
+          candidateName={candidate?.name}
         />
       </aside>
 

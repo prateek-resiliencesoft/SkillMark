@@ -229,10 +229,14 @@ export function CvViewerPanel({
   candidateId,
   candidateName,
   onClose,
+  showClose = true,
 }: {
   candidateId: string;
   candidateName?: string | null;
-  onClose: () => void;
+  /** Omit or no-op when embedded (e.g. Round 2 CV tab). */
+  onClose?: () => void;
+  /** Hide the header close button when embedded in a tab. Default true. */
+  showClose?: boolean;
 }) {
   const { state, name } = useCvDocument(candidateId);
   const [zoom, setZoom] = useState(1);
@@ -282,7 +286,7 @@ export function CvViewerPanel({
     } else if (e.key === "0") {
       e.preventDefault();
       resetZoom();
-    } else if (e.key === "Escape") {
+    } else if (e.key === "Escape" && onClose) {
       onClose();
     }
   };
@@ -336,9 +340,11 @@ export function CvViewerPanel({
             </p>
           )}
         </div>
-        <Button type="button" variant="ghost" size="icon" className={iconBtn} onClick={onClose} aria-label="Close CV">
-          <X className="h-4 w-4" />
-        </Button>
+        {showClose && onClose && (
+          <Button type="button" variant="ghost" size="icon" className={iconBtn} onClick={onClose} aria-label="Close CV">
+            <X className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Controls */}
