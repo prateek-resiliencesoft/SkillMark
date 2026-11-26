@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { orderGeneralFirst } from "@/lib/question-order";
+import { ensureIntroQuestion, orderGeneralFirst } from "@/lib/question-order";
 
 /**
  * Conditional skip rules for interview / bank questions.
@@ -174,3 +174,26 @@ export function enforceExactPremadeQuestions<
   // General block in the canonical order (intro, CTC, location, bond, …), then AI Qs.
   return orderGeneralFirst(premadeExact, complementary).map((q, i) => ({ ...q, order: i }));
 }
+
+/**
+ * Post-process a generated (or refined) question set: keep premade wording
+ * first when provided, then guarantee exactly one unscored intro at the top.
+ * Safe to call when premade is empty (still inserts or promotes an intro).
+ */
+export function finalizeGeneratedQuestions<
+  T extends {
+    text: string;
+    type?: string;
+    description?: string;
+    options?: unknown;
+    starterCode?: unknown;
+    isRequired?: boolean;
+    order?: number;
+    skipIf?: unknown;
+    validationRules?: unknown;
+  },
+>(questions: T[], premade: PremadeExact[] | null | undefined, language?: string | null): T[] {
+  const exact = premade?.length ? enforceExactPremadeQuestions(questions, premade) : [...(questions ?? [])];
+  return ensureIntroQuestion(exact, { language });
+}
+

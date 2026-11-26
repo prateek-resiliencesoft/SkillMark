@@ -42,6 +42,7 @@ const State = Annotation.Root({
   jobDescription: Annotation<string>(),
   resumeText: Annotation<string>(),
   premadeQuestions: Annotation<PremadeQuestionInput[]>(),
+  language: Annotation<string>(),
   evidence: Annotation<GroundedExtraction[]>(),
   raw: Annotation<string>(),
   attempts: Annotation<number>(),
@@ -188,11 +189,15 @@ function buildGraph(provider: LLMProvider, model: string | undefined, emit: (e: 
     const result = s.result as QuestionSet;
     const questions = result.questions ?? [];
     const notes: string[] = [];
-    if (s.premadeQuestions.length) {
-      const { enforceExactPremadeQuestions } = await import("@/lib/question-conditions");
-      result.questions = enforceExactPremadeQuestions(questions, s.premadeQuestions as Parameters<typeof enforceExactPremadeQuestions>[1]);
-      notes.push(`${s.premadeQuestions.length} premade question(s) kept word-for-word`);
-    }
+    const { finalizeGeneratedQuestions } = await import("@/lib/question-conditions");
+    const before = questions.length;
+    result.questions = finalizeGeneratedQuestions(
+      questions,
+      s.premadeQuestions as Parameters<typeof finalizeGeneratedQuestions>[1],
+      s.language,
+    );
+    if (s.premadeQuestions.length) notes.push(`${s.premadeQuestions.length} premade question(s) kept word-for-word`);
+    if ((result.questions?.length ?? 0) > before) notes.push("Intro question added");
     const missingOptions = (result.questions ?? []).filter((q) => {
       if (q.type !== "SINGLE_CHOICE" && q.type !== "MULTIPLE_CHOICE") return false;
       const opts = q.options;
@@ -248,6 +253,7 @@ export async function runQuestionSetFlow(opts: {
   jobDescription?: string;
   resumeText?: string;
   premadeQuestions?: PremadeQuestionInput[];
+  language?: string | null;
   organizationId?: string | null;
   userId?: string | null;
   projectId?: string | null;
@@ -263,6 +269,7 @@ export async function runQuestionSetFlow(opts: {
       jobDescription: opts.jobDescription ?? "",
       resumeText: opts.resumeText ?? "",
       premadeQuestions: Array.isArray(opts.premadeQuestions) ? opts.premadeQuestions : [],
+      language: typeof opts.language === "string" ? opts.language : "",
       evidence: [],
       raw: "",
       attempts: 0,

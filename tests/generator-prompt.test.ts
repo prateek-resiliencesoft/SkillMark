@@ -78,3 +78,36 @@ describe("Improve / refine prompt", () => {
     assert.ok(user.includes("--- CANDIDATE RESUME ---"));
   });
 });
+
+describe("Generator Prompt intro rules", () => {
+  it("asks the AI to add an intro when premade questions have none", () => {
+    const messages = buildGeneratorPrompt("Backend Engineer", 30, "en");
+    const systemPrompt = String(messages[0].content);
+    assert.ok(systemPrompt.includes("INTRO QUESTION (MANDATORY"));
+    assert.ok(systemPrompt.includes("Please introduce yourself and walk us through your most relevant work experience."));
+    assert.ok(systemPrompt.includes("must not replace or count as one of the complementary"));
+    assert.ok(systemPrompt.includes("Start with the intro question"));
+  });
+
+  it("keeps an existing premade intro and forbids a second one", () => {
+    const messages = buildGeneratorPrompt(
+      "Senior Frontend Engineer",
+      45,
+      "en",
+      undefined,
+      undefined,
+      [{ text: "Please introduce yourself and your background.", type: "OPEN_ENDED", sectionName: "Screening Round" }],
+    );
+    const systemPrompt = String(messages[0].content);
+    assert.ok(systemPrompt.includes("already includes an introduction"));
+    assert.ok(!systemPrompt.includes("INTRO QUESTION (MANDATORY"));
+    assert.ok(systemPrompt.includes("Do NOT add another intro"));
+  });
+
+  it("uses Hinglish suggested wording for Hindi interviews", () => {
+    const messages = buildGeneratorPrompt("Backend Engineer", 30, "hi");
+    const systemPrompt = String(messages[0].content);
+    assert.ok(systemPrompt.includes("Please introduce yourself aur apne sabse relevant work experience ke baare mein briefly bataiye."));
+  });
+});
+

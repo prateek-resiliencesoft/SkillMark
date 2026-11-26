@@ -300,14 +300,13 @@ export const batchRouter = router({
         });
       }
 
-      // Exact bank wording first (screening / auto-include), then complementary AI Qs
-      if (premade.length > 0) {
-        const { enforceExactPremadeQuestions } = await import("@/lib/question-conditions");
-        generated.questions = enforceExactPremadeQuestions(
-          generated.questions,
-          premade,
-        ) as typeof generated.questions;
-      }
+      // Exact bank wording first, then complementary AI Qs, plus exactly one unscored intro.
+      const { finalizeGeneratedQuestions } = await import("@/lib/question-conditions");
+      generated.questions = finalizeGeneratedQuestions(
+        generated.questions,
+        premade,
+        settings.language,
+      ) as typeof generated.questions;
 
       const { data: siblingIv } = await ctx.supabase
         .from("interviews")
@@ -368,7 +367,10 @@ export const batchRouter = router({
           followUpPrompts: q.followUpPrompts ?? null,
           starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
           skipIf: pm?.skipIf ?? (q as { skipIf?: unknown }).skipIf ?? null,
-          validationRules: excludeFromScoreValidationRules(pm?.sectionName) ?? null,
+          validationRules:
+            (q as { validationRules?: unknown }).validationRules
+            ?? excludeFromScoreValidationRules(pm?.sectionName)
+            ?? null,
         };
       });
       const { error: qError } = await ctx.supabase.from("questions").insert(questionRows);

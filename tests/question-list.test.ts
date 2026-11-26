@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { enforceExactPremadeQuestions } from "@/lib/question-conditions";
-import { generalQuestionRank, orderGeneralFirst, sortGeneralQuestions } from "@/lib/question-order";
+import { enforceExactPremadeQuestions, finalizeGeneratedQuestions } from "@/lib/question-conditions";
+import { collectExcludedScoreTexts, isQuestionTextExcluded } from "@/lib/premade-sections";
+import {
+  generalQuestionRank,
+  isIntroQuestion,
+  orderGeneralFirst,
+  sortGeneralQuestions,
+  standardIntroText,
+  STANDARD_INTRO_EN,
+  STANDARD_INTRO_HI,
+  ensureIntroQuestion,
+} from "@/lib/question-order";
 import { mergeQuestionEvaluations } from "@/lib/question-report";
 import { buildReportData } from "@/lib/report-data";
 
-const t = (text: string) => ({ text });
+type Q = {
+  text: string;
+  validationRules?: { excludeFromScore?: boolean };
+  description?: string;
+  order?: number;
+};
+const t = (text: string): Q => ({ text });
 
 const INTRO = "Please tell me about yourself and introduce yourself.";
 const CURRENT_CTC = "What is your current CTC?";
@@ -180,3 +196,125 @@ describe("report data: all questions listed, only technical ones scored", () => 
     assert.equal(r.questionsScored, 1);
   });
 });
+
+describe("ensureIntroQuestion", () => {
+  it("detects intro wording via isIntroQuestion", () => {
+    assert.equal(isIntroQuestion(INTRO), true);
+    assert.equal(isIntroQuestion("Tell me about yourself"), true);
+    assert.equal(isIntroQuestion(STANDARD_INTRO_EN), true);
+    assert.equal(isIntroQuestion(STANDARD_INTRO_HI), true);
+    assert.equal(isIntroQuestion("Explain how a hash map works."), false);
+  });
+
+  it("inserts a standard English intro when none exists and keeps every technical question", () => {
+    const tech = [t("Explain closures."), t("Design a cache.")];
+    const out = ensureIntroQuestion(tech);
+    assert.equal(out.length, 3);
+    assert.equal(out[0].text, STANDARD_INTRO_EN);
+    assert.equal((out[0].validationRules as { excludeFromScore?: boolean }).excludeFromScore, true);
+    assert.equal(out[0].description, "From General section");
+    assert.deepEqual(out.slice(1).map((q) => q.text), ["Explain closures.", "Design a cache."]);
+    assert.deepEqual(out.map((q) => q.order), [0, 1, 2]);
+  });
+
+  it("inserts a Hinglish intro for Hindi interviews", () => {
+    const out = ensureIntroQuestion([t("React hooks ko explain kijiye.")], { language: "hi" });
+    assert.equal(out[0].text, STANDARD_INTRO_HI);
+    assert.equal(standardIntroText("Hinglish (Hindi-English mix)"), STANDARD_INTRO_HI);
+    assert.equal(out[1].text, "React hooks ko explain kijiye.");
+  });
+
+  it("uses an existing bank intro, puts it first, stamps it unscored, and drops a duplicate AI intro without losing technical questions", () => {
+    const bankIntro = t("Please tell me about yourself and introduce yourself.");
+    const tech = [t("Explain the event loop."), t("Tell me about yourself"), t("How do you index a table?")];
+    const out = ensureIntroQuestion([bankIntro, ...tech]);
+    assert.equal(out.length, 3);
+    assert.equal(out[0].text, bankIntro.text);
+    assert.equal((out[0].validationRules as { excludeFromScore?: boolean }).excludeFromScore, true);
+    assert.ok(!out.slice(1).some((q) => isIntroQuestion(q.text)));
+    assert.deepEqual(out.slice(1).map((q) => q.text), ["Explain the event loop.", "How do you index a table?"]);
+  });
+
+  it("uses an AI intro when the bank has none, stamps it unscored, and keeps the technical count", () => {
+    const out = ensureIntroQuestion([
+      t("Explain closures."),
+      t("Tell me about yourself"),
+      t("Design a cache."),
+    ]);
+    assert.equal(out[0].text, "Tell me about yourself");
+    assert.equal((out[0].validationRules as { excludeFromScore?: boolean }).excludeFromScore, true);
+    assert.deepEqual(out.slice(1).map((q) => q.text), ["Explain closures.", "Design a cache."]);
+  });
+
+  it("finalizeGeneratedQuestions adds an intro even when there are no premade questions", () => {
+    const tech = [t("Explain closures."), t("Design a cache.")];
+    const out = finalizeGeneratedQuestions(tech, []);
+    assert.equal(out[0].text, STANDARD_INTRO_EN);
+    assert.equal(out.length, 3);
+    const withPremadeNoIntro = finalizeGeneratedQuestions(
+      tech,
+      [{ text: CURRENT_CTC, sectionName: "HR" }],
+    );
+    assert.equal(withPremadeNoIntro[0].text, STANDARD_INTRO_EN);
+    assert.equal(withPremadeNoIntro[1].text, CURRENT_CTC);
+    assert.deepEqual(withPremadeNoIntro.slice(2).map((q) => q.text), ["Explain closures.", "Design a cache."]);
+  });
+});
+
+describe("intro questions are never scored", () => {
+  it("isQuestionTextExcluded treats an unstamped intro as excluded", () => {
+    assert.equal(isQuestionTextExcluded("Tell me about yourself", []), true);
+    assert.equal(isQuestionTextExcluded(STANDARD_INTRO_EN, []), true);
+    assert.equal(isQuestionTextExcluded("Explain closures.", []), false);
+  });
+
+  it("collectExcludedScoreTexts includes intro wording without a stamped flag", () => {
+    const texts = collectExcludedScoreTexts(
+      [{ text: "Tell me about yourself" }, { text: "genuine AI Q" }],
+      [],
+    );
+    assert.ok(texts.includes("Tell me about yourself"));
+    assert.ok(!texts.includes("genuine AI Q"));
+  });
+
+  it("an unstamped intro is Not scored in the report and left out of overall score", () => {
+    const planned = [
+      { text: "Tell me about yourself", order: 0 },
+      { text: "Explain the event loop in Node.js.", order: 1 },
+    ];
+    const messages = [
+      { role: "assistant", content: "Tell me about yourself" },
+      { role: "user", content: "I am Asha." },
+      { role: "assistant", content: "Explain the event loop in Node.js." },
+      { role: "user", content: "A loop for callbacks." },
+    ];
+    const out = mergeQuestionEvaluations({
+      planned,
+      evaluations: [
+        { question: "Tell me about yourself", score: 9, evaluation: "Good intro." },
+        { question: "Explain the event loop in Node.js.", score: 3, evaluation: "Thin." },
+      ],
+      excludedTexts: [],
+      messages,
+    });
+    assert.equal(out[0].score, null);
+    assert.equal(out[0].excludeFromScore, true);
+    assert.equal(out[1].score, 3);
+    const r = buildReportData({
+      insights: { questionEvaluations: out, criteriaEvaluations: [] },
+      interviewQuestions: planned,
+      excludedQuestionTexts: [],
+      messages: messages.map((m, i) => ({
+        id: String(i),
+        role: m.role.toUpperCase(),
+        contentType: "TEXT",
+        content: m.content,
+        timestamp: `2026-01-01T10:00:0${i}Z`,
+      })),
+    });
+    assert.equal(r.questions[0].score, null);
+    assert.equal(r.overallScore, 3);
+    assert.equal(r.questionsScored, 1);
+  });
+});
+

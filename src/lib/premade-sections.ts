@@ -1,4 +1,5 @@
 import { normalizeMatchText, parseSkipIf, textsOverlap, type QuestionSkipIf } from "@/lib/question-conditions";
+import { isIntroQuestion } from "@/lib/question-order";
 
 /** Map interview type → question-bank section name keywords. */
 const TYPE_KEYWORDS: Record<string, string[]> = {
@@ -133,7 +134,7 @@ export function collectExcludedScoreTexts(
   for (const q of questions ?? []) {
     const text = typeof q.text === "string" ? q.text.trim() : "";
     if (!text) continue;
-    if (hasExcludeFromScoreFlag(q.validationRules)) {
+    if (isIntroQuestion(text) || hasExcludeFromScoreFlag(q.validationRules)) {
       out.push(text);
       continue;
     }
@@ -156,6 +157,7 @@ export function isQuestionTextExcluded(
   excludedTexts: string[],
   opts?: { description?: string | null; validationRules?: unknown },
 ): boolean {
+  if (isIntroQuestion(text)) return true;
   if (hasExcludeFromScoreFlag(opts?.validationRules)) return true;
   const desc = typeof opts?.description === "string" ? opts.description.trim() : "";
   const m = desc.match(FROM_SECTION_RE);
