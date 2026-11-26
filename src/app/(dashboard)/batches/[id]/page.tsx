@@ -1,6 +1,7 @@
 "use client";
 
 import { BulkCvGenerator, FlagsPopover } from "@/components/batch/bulk-cv-generator";
+import { EditBatchDialog } from "@/components/batch/edit-batch-dialog";
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
 import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
 import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
@@ -130,6 +131,7 @@ export default function BatchDetailPage() {
   const [editing, setEditing] = useState<{ id: string; name: string; email: string; phone: string } | null>(null);
   const [extendFor, setExtendFor] = useState<{ id: string; name: string; expiresAt: string | null } | null>(null);
   const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>([]);
+  const [editBatchOpen, setEditBatchOpen] = useState(false);
 
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -313,7 +315,22 @@ export default function BatchDetailPage() {
         </Link>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold">{b.name}</h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-3xl font-bold">{b.name}</h1>
+              {b.canEdit && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  title="Edit batch"
+                  aria-label="Edit batch"
+                  onClick={() => setEditBatchOpen(true)}
+                >
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
             <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
               <CalendarDays className="h-4 w-4" />
               Created {new Date(b.createdAt).toLocaleString()} · {invited} of {b.counts.total} invited
@@ -421,6 +438,10 @@ export default function BatchDetailPage() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setEditBatchOpen(true)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit batch
+                  </DropdownMenuItem>
                   <DropdownMenuItem asChild>
                     <Link href="/interviews/new?tab=bulk">New batch</Link>
                   </DropdownMenuItem>
@@ -849,6 +870,17 @@ export default function BatchDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {b.canEdit && (
+        <EditBatchDialog
+          open={editBatchOpen}
+          onOpenChange={setEditBatchOpen}
+          batchId={id}
+          name={b.name}
+          settings={b.settings}
+          mode="full"
+        />
+      )}
     </div>
   );
 }

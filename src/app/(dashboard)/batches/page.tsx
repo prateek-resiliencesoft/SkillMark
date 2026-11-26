@@ -1,17 +1,20 @@
 "use client";
 
+import { EditBatchDialog } from "@/components/batch/edit-batch-dialog";
 import { useProject } from "@/components/project-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { trpc } from "@/lib/trpc/client";
-import { CalendarDays, Files, Plus } from "lucide-react";
+import { CalendarDays, Files, Pencil, Plus } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 
 export default function BatchesPage() {
   const { currentProject } = useProject();
   const batches = trpc.batch.list.useQuery({ projectId: currentProject?.id }, { enabled: !!currentProject?.id });
+  const [edit, setEdit] = useState<{ id: string; name: string } | null>(null);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -52,17 +55,17 @@ export default function BatchesPage() {
           {batches.data.map((b) => {
             const pct = b.counts.total ? Math.round((b.counts.completed / b.counts.total) * 100) : 0;
             return (
-              <Link key={b.id} href={`/batches/${b.id}`} className="block">
-                <Card className="transition-colors hover:border-primary/40">
-                  <CardContent className="flex flex-wrap items-center gap-6 p-5">
-                    <div className="min-w-[200px] flex-1">
-                      <p className="font-semibold">{b.name}</p>
-                      <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <CalendarDays className="h-3.5 w-3.5" />
-                        {new Date(b.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
-                        {b.roleDescription && <span className="truncate">· {b.roleDescription.slice(0, 80)}</span>}
-                      </p>
-                    </div>
+              <Card key={b.id} className="transition-colors hover:border-primary/40">
+                <CardContent className="flex flex-wrap items-center gap-4 p-5 sm:gap-6">
+                  <Link href={`/batches/${b.id}`} className="min-w-[200px] flex-1 outline-none">
+                    <p className="font-semibold hover:underline">{b.name}</p>
+                    <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <CalendarDays className="h-3.5 w-3.5" />
+                      {new Date(b.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                      {b.roleDescription && <span className="truncate">· {b.roleDescription.slice(0, 80)}</span>}
+                    </p>
+                  </Link>
+                  <Link href={`/batches/${b.id}`} className="contents">
                     <Stat label="Candidates" value={b.counts.total} />
                     <Stat label="Invited" value={b.invited} />
                     <Stat label="Completed" value={b.counts.completed} />
@@ -71,12 +74,39 @@ export default function BatchesPage() {
                       <Progress value={pct} className="h-2" />
                       <p className="mt-1 text-right text-xs text-muted-foreground">{pct}% done</p>
                     </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                  </Link>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    title="Rename batch"
+                    aria-label="Rename batch"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setEdit({ id: b.id, name: b.name });
+                    }}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </CardContent>
+              </Card>
             );
           })}
         </div>
+      )}
+
+      {edit && (
+        <EditBatchDialog
+          open={!!edit}
+          onOpenChange={(o) => {
+            if (!o) setEdit(null);
+          }}
+          batchId={edit.id}
+          name={edit.name}
+          mode="name"
+        />
       )}
     </div>
   );
