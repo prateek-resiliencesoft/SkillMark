@@ -2,6 +2,7 @@
 import { countStrikes, MAX_STRIKES } from "@/lib/head-movement";
 import { getSessionOverallScore, getSessionScoreBreakdown } from "@/lib/session-score";
 import { interviewLanguageLabel } from "@/lib/interview-language";
+import { findQuestionMessageIndex, mergeQuestionEvaluations, type PlannedQuestion } from "@/lib/question-report";
 import { stripInternalCueText } from "@/lib/transcript/sanitize";
 
 export type Recommendation = "hire" | "maybe" | "no";
@@ -49,7 +50,10 @@ export interface ReportData {
   criteria: { name: string; score: number; reasoning: string }[];
   questions: ReportQuestion[];
   coding: ReportCoding[];
+  /** Questions in the list that have a recorded answer (scored or not). */
   questionsAnswered: number;
+  /** Questions in the list that carry a mark (AI-generated technical ones only). */
+  questionsScored: number;
   strengths: string[];
   concerns: string[];
   keyInsights: string[];
@@ -107,33 +111,13 @@ function uniq(list: string[], max: number): string[] {
   return out;
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
-
 /** Find the candidate's reply to a question in the transcript (best effort). */
 export function findAnswerExcerpt(
   question: string,
   messages: { role: string; content: string }[],
   maxLen = 320,
 ): string | null {
-  const key = norm(question).slice(0, 48);
-  if (!key) return null;
-  const words = key.split(" ").filter((w) => w.length > 3);
-  let qIdx = messages.findIndex((m) => m.role !== "USER" && norm(m.content).includes(key));
-  if (qIdx < 0 && words.length >= 3) {
-    // Fallback: interviewer message sharing most of the question's words.
-    let best = -1;
-    let bestHits = 0;
-    messages.forEach((m, i) => {
-      if (m.role === "USER") return;
-      const c = norm(m.content);
-      const hits = words.filter((w) => c.includes(w)).length;
-      if (hits > bestHits) {
-        bestHits = hits;
-        best = i;
-      }
-    });
-    if (bestHits >= Math.ceil(words.length * 0.6)) qIdx = best;
-  }
+  const qIdx = findQuestionMessageIndex(question, messages);
   if (qIdx < 0) return null;
   const parts: string[] = [];
   for (let i = qIdx + 1; i < messages.length && messages[i].role === "USER"; i++) parts.push(messages[i].content);
@@ -167,7 +151,7 @@ export function buildReportData(d: any): ReportData {
     score: Number(c?.score) || 0,
     reasoning: String(c?.reasoning ?? ""),
   }));
-  const qes = (obj.questionEvaluations ?? []) as any[];
+  const aiQes = (obj.questionEvaluations ?? []) as any[];
   const rawMessages = ((d?.messages ?? []) as any[])
     .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
     // Hide relay-internal cues ([CODE_UPDATE] …) that older sessions stored as chat lines.
@@ -181,6 +165,13 @@ export function buildReportData(d: any): ReportData {
       return String(a.id ?? "").localeCompare(String(b.id ?? ""));
     });
   const messages = rawMessages.map((m) => ({ role: String(m.role), content: String(m.content ?? "") }));
+  // Every question asked (HR / general / bank included) in interview order; the AI may have left some out.
+  const qes = mergeQuestionEvaluations({
+    planned: (d?.interviewQuestions ?? null) as PlannedQuestion[] | null,
+    evaluations: aiQes,
+    excludedTexts: (d?.excludedQuestionTexts ?? []) as string[],
+    messages,
+  }) as any[];
   const questions: ReportQuestion[] = qes.map((q, i) => {
     const excluded = q?.excludeFromScore === true;
     const rawScore = q?.score == null ? NaN : Number(q.score);
@@ -248,7 +239,8 @@ export function buildReportData(d: any): ReportData {
     criteria,
     questions,
     coding,
-    questionsAnswered: questions.length || messages.filter((m) => m.role === "USER").length,
+    questionsAnswered: questions.filter((q) => q.answerExcerpt).length || questions.length || messages.filter((m) => m.role === "USER").length,
+    questionsScored: questions.filter((q) => q.score !== null && !q.excludeFromScore).length,
     strengths: uniq([...questions.flatMap((q) => q.highlights), ...criteria.filter((c) => c.score >= 7).map((c) => c.name)], 6),
     concerns: uniq([...questions.flatMap((q) => q.improvements), ...criteria.filter((c) => c.score < 5).map((c) => c.name)], 6),
     keyInsights,

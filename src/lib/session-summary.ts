@@ -28,6 +28,7 @@ import { loadAllBankQuestionsForExclusion } from "@/lib/auto-include-premade";
 import { createLogger } from "@/lib/logger";
 import { collectExcludedScoreTexts, isQuestionTextExcluded } from "@/lib/premade-sections";
 import { recordSessionError } from "@/lib/session-error-log-server";
+import { mergeQuestionEvaluations } from "@/lib/question-report";
 import { applyQuestionScoreExclusions } from "@/lib/session-score";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { assessCandidateCapture, buildCaptureFailure } from "@/lib/transcript/capture-check";
@@ -395,11 +396,19 @@ function buildSummaryGraph() {
       if (parsed[k]) insightsData[k] = parsed[k];
     }
     // Round Presets / bank Qs never count toward overall — only AI complementary Qs.
+    if (!Array.isArray(insightsData.questionEvaluations) && st.questions?.length) insightsData.questionEvaluations = [];
     if (Array.isArray(insightsData.questionEvaluations)) {
       insightsData.questionEvaluations = applyQuestionScoreExclusions(
         insightsData.questionEvaluations as Array<{ question?: string; score?: unknown }>,
         excludedTexts,
       );
+      // The AI may leave out preset / general (HR, CTC, location …) questions: list every question asked, in interview order, unscored.
+      insightsData.questionEvaluations = mergeQuestionEvaluations({
+        planned: st.questions,
+        evaluations: insightsData.questionEvaluations as Array<Record<string, unknown>>,
+        excludedTexts,
+        messages: st.textMessages,
+      });
       const skipped = (
         insightsData.questionEvaluations as Array<{ excludeFromScore?: boolean }>
       ).filter((e) => e.excludeFromScore).length;
