@@ -40,7 +40,7 @@ import {
   excludeFromScoreValidationRules,
   flattenEnabledBankList,
 } from "@/lib/premade-sections";
-import { sortGeneralQuestions } from "@/lib/question-order";
+import { ensureIntroQuestion, sortGeneralQuestions } from "@/lib/question-order";
 import { trpc } from "@/lib/trpc/client";
 import {
   Files,
@@ -148,12 +148,15 @@ export default function NewInterviewPage() {
         selectedPremadeIds,
         includePremade,
       );
-      // Canonical order: intro, CTC, location, bond, … (kept as saved order).
-      const picked = pickedRaw ? sortGeneralQuestions(pickedRaw) : pickedRaw;
+      // Canonical order: intro, CTC, location, bond, … plus a standard intro if the bank has none.
+      const picked = pickedRaw?.length
+        ? ensureIntroQuestion(sortGeneralQuestions(pickedRaw), { language })
+        : pickedRaw;
       if (picked?.length) {
         for (let i = 0; i < picked.length; i++) {
           const q = picked[i];
           const full = enabledPremadeQuestions.find((bq) => bq.text === q.text);
+          const qRules = (q as { validationRules?: { excludeFromScore?: boolean } }).validationRules;
           await createQuestionMutation.mutateAsync({
             interviewId: interview.id,
             order: i,
@@ -173,7 +176,7 @@ export default function NewInterviewPage() {
                 code: string;
               } | null) ?? undefined,
             validationRules:
-              excludeFromScoreValidationRules(q.sectionName) ?? undefined,
+              qRules ?? excludeFromScoreValidationRules(q.sectionName) ?? undefined,
           });
         }
       }

@@ -203,3 +203,19 @@ test("isQuestionTextExcluded detects flag, section desc, and bank text", () => {
   );
   assert.equal(isQuestionTextExcluded("Compare GetX vs BLoC", ["Notice period?"]), false);
 });
+
+test("unstamped intro is excluded even with empty excludedTexts", () => {
+  const evals = applyQuestionScoreExclusions(
+    [
+      { question: "Tell me about yourself", score: 9 },
+      { question: "Explain React reconciliation", score: 6 },
+    ],
+    [],
+  );
+  assert.equal(evals[0]?.excludeFromScore, true);
+  assert.equal(evals[0]?.score, null);
+  assert.equal(evals[1]?.excludeFromScore, undefined);
+  assert.equal(evals[1]?.score, 6);
+  assert.equal(getSessionOverallScore({ questionEvaluations: evals }), 6);
+});
+

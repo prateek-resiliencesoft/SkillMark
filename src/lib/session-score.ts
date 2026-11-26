@@ -1,4 +1,5 @@
 import { normalizeMatchText, textsOverlap } from "@/lib/question-conditions";
+import { isIntroQuestion } from "@/lib/question-order";
 
 type ScoreEntry =
   | { score?: number | string | null; excludeFromScore?: boolean; question?: string }
@@ -84,15 +85,16 @@ export function applyQuestionScoreExclusions<
 ): Array<T & { excludeFromScore?: boolean }> {
   if (!Array.isArray(evaluations) || evaluations.length === 0) return evaluations ?? [];
   const needles = excludedTexts.map((t) => t.trim()).filter(Boolean);
-  if (needles.length === 0) return evaluations;
 
   return evaluations.map((entry) => {
     const q = typeof entry.question === "string" ? entry.question : "";
     if (!q.trim()) return entry;
-    const hit = needles.some(
-      (needle) =>
-        normalizeMatchText(q) === normalizeMatchText(needle) || textsOverlap(q, needle),
-    );
+    const hit =
+      isIntroQuestion(q) ||
+      needles.some(
+        (needle) =>
+          normalizeMatchText(q) === normalizeMatchText(needle) || textsOverlap(q, needle),
+      );
     if (!hit) return entry;
     return { ...entry, score: null, excludeFromScore: true as const };
   });

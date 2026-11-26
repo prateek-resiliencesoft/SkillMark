@@ -2,6 +2,7 @@ import {
   interviewLanguageContentInstruction,
   resolveInterviewLanguage,
 } from "@/lib/interview-language";
+import { isIntroQuestion, standardIntroText } from "@/lib/question-order";
 import type { LLMMessage } from "../types";
 
 export interface PremadeQuestionInput {
@@ -18,6 +19,21 @@ function generatorLanguageBlock(language?: string): string {
   if (!language || resolveInterviewLanguage(language) === "en") return "";
   const content = interviewLanguageContentInstruction(language);
   return `\nLANGUAGE: ${content} Applies to title, description, objective, assessment criteria names & descriptions, question texts & descriptions, and follow-up prompts. Only the JSON keys and enum values (e.g. "OPEN_ENDED", "PROFESSIONAL") should remain in English. recommendedSettings.aiGender must be "FEMALE" or "MALE". recommendedSettings.aiName must be the matching persona name: "Sarah" for FEMALE, "Alex" for MALE. Never use "Aural" or the product name as the interviewer name.\n`;
+}
+
+function introInstruction(language?: string, premadeQuestions?: PremadeQuestionInput[]): string {
+  const hasIntro = (premadeQuestions ?? []).some((q) => isIntroQuestion(q.text));
+  const sample = standardIntroText(language);
+  if (hasIntro) {
+    return `\nINTRO QUESTION:
+- The premade / question-bank list already includes an introduction / "tell me about yourself" question. Keep that exact wording and put it first.
+- Do NOT add another intro among the complementary questions. Complementary questions are technical / role questions only and must meet the requested count on their own.\n`;
+  }
+  return `\nINTRO QUESTION (MANDATORY, IN ADDITION TO THE TECHNICAL COUNT):
+- The premade list has no introduction question (or there are no premade questions). Add exactly one intro as the FIRST question, written in the interview language.
+- Suggested wording: "${sample}"
+- This intro is extra: it must not replace or count as one of the complementary / technical questions. Still generate the full set of 5-15 role questions after it.
+- Do not add a second intro later in the set.\n`;
 }
 
 export function buildGeneratorPrompt(
@@ -55,7 +71,7 @@ CRITICAL INSTRUCTIONS FOR PREMADE QUESTIONS:
     {
       role: "system",
       content: `You are an expert interview designer. Create a comprehensive interview structure based on the user's requirements.
-${languageInstruction}${contextInstruction}${premadeInstruction}
+${languageInstruction}${contextInstruction}${premadeInstruction}${introInstruction(language, premadeQuestions)}
 TASK:
 Design a complete interview with:
 1. A compelling title
@@ -67,7 +83,7 @@ Design a complete interview with:
 7. Optimal AI persona configuration
 
 GUIDELINES:
-- Start with an ice-breaker/warm-up question
+- Start with the intro question (see INTRO QUESTION rules). The intro is never scored
 - Group related topics together
 - Place most important questions in the middle (when engagement is highest)
 - End with an open "anything else" question
@@ -158,7 +174,8 @@ export function buildImprovePrompt(
     {
       role: "system",
       content: `You are an expert interview designer. Improve an existing interview based on user feedback.
-${generatorLanguageBlock(language)}
+${generatorLanguageBlock(language)}${introInstruction(language, currentInterview.questions)}
+Keep exactly one introduction / "tell me about yourself" question as the first question after any rewrite. If the current set has none, add one in the interview language (suggested: "${standardIntroText(language)}"). Do not add a second intro. The intro is never scored and does not count as a technical / role question.
 recommendedSettings.aiGender must be "FEMALE" or "MALE" (default FEMALE). recommendedSettings.aiName must be "Sarah" when FEMALE and "Alex" when MALE. Never use "Aural" or the product name as the interviewer name.
 
 REFINEMENT PRIORITY (highest → lowest):

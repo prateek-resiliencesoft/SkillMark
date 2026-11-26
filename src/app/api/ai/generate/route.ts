@@ -57,6 +57,7 @@ export async function POST(req: Request) {
         jobDescription,
         resumeText,
         premadeQuestions,
+        language,
         organizationId: orgId,
         userId: user.id,
         projectId: typeof projectId === "string" ? projectId : null,

@@ -10,6 +10,7 @@ import {
 import { useOrg } from "@/components/org-provider";
 import { useProject } from "@/components/project-provider";
 import { flattenEnabledBankList } from "@/lib/premade-sections";
+import { ensureIntroQuestion } from "@/lib/question-order";
 import { AiButton } from "@/components/ui/ai-button";
 import {
     AlertDialog,
@@ -523,7 +524,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       const data = await consumeStream(response);
       setResult(data);
       setEditableCriteria(data.assessmentCriteria ?? []);
-      setEditableQuestions(data.questions.map((q, i) => {
+      setEditableQuestions(ensureIntroQuestion(data.questions, { language }).map((q, i) => {
         const keepExcluded =
           q.validationRules?.excludeFromScore === true ||
           prevExcluded.has((q.text ?? "").trim().toLowerCase());
@@ -581,13 +582,17 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       const data = await consumeStream(response);
       setResult(data);
       setEditableCriteria(data.assessmentCriteria ?? []);
-      setEditableQuestions(data.questions.map((q, i) => ({
-        ...q,
-        order: i + 1,
-        starterCode: q.starterCode
-          ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
-          : undefined,
-      })));
+      setEditableQuestions(ensureIntroQuestion(data.questions, { language }).map((q, i) => {
+        const keepExcluded = q.validationRules?.excludeFromScore === true;
+        return {
+          ...q,
+          order: i + 1,
+          ...(keepExcluded ? { validationRules: { excludeFromScore: true } } : {}),
+          starterCode: q.starterCode
+            ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
+            : undefined,
+        };
+      }));
       setFeedback("");
       setEditingIndex(null);
       setEditingCriterionIndex(null);

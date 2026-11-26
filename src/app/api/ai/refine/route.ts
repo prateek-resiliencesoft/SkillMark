@@ -40,6 +40,7 @@ export async function POST(req: Request) {
         model: generatorModel,
         jobDescription,
         resumeText,
+        language,
         organizationId: orgId,
         userId: user.id,
         projectId: typeof projectId === "string" ? projectId : null,
