@@ -4,9 +4,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useHeadMovementDetection } from "@/hooks/use-head-movement-detection";
 import {
   HEAD_STATE_LABEL,
-  MAX_HEAD_VIOLATIONS,
+  MAX_STRIKES,
+  aiStrikeNotice,
   type HeadFrameState,
 } from "@/lib/head-movement";
+import { publishAiNotice, publishStrike } from "@/lib/integrity/bus";
+import { detectionsSuppressed, markInterviewEnded, markModalOpen } from "@/lib/anti-cheating-state";
+import { captureStrikeEvidence } from "@/lib/capture-camera-snapshot";
 import { trpc } from "@/lib/trpc/client";
 import { AlertTriangle, Ban } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -41,49 +45,52 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
   const handle = useCallback(
     (kind: Exclude<HeadFrameState, "ok">) => {
       // One modal at a time: ignore anything detected while a warning is pending/open.
-      if (done.current || !sessionId || openRef.current) return;
+      if (done.current || !sessionId || openRef.current || detectionsSuppressed()) return;
       openRef.current = true;
       setModal({ phase: "checking", reason: HEAD_STATE_LABEL[kind] });
       busy.current = busy.current.then(async () => {
         if (done.current) return;
         const timestamp = Date.now();
         localCount.current += 1;
-        let imageUrl: string | undefined;
-        let imagePath: string | undefined;
+        let count = localCount.current;
+        let evidencePayload: Awaited<ReturnType<typeof captureStrikeEvidence>> = {
+          detail: HEAD_STATE_LABEL[kind],
+        };
         try {
-          const blob = await captureRef.current();
-          if (blob) {
-            const fd = new FormData();
-            fd.append("file", blob, "snapshot.jpg");
-            fd.append("sessionId", sessionId);
-            fd.append("type", "screenshot");
-            fd.append("filename", `head-movement-${timestamp}.jpg`);
-            const r = await fetch("/api/session/upload", { method: "POST", body: fd });
-            if (r.ok) {
-              const j = await r.json();
-              imageUrl = j.url;
-              imagePath = j.path;
-            }
-          }
+          const webcamBlob = await captureRef.current();
+          evidencePayload = await captureStrikeEvidence({
+            sessionId,
+            type: "head_movement",
+            detail: HEAD_STATE_LABEL[kind],
+            timestamp,
+            strikeNumber: count,
+            webcamBlob,
+            prefix: "head-movement",
+          });
         } catch (err) {
           console.warn("[head-movement] snapshot upload failed", err);
         }
 
-        let count = localCount.current;
-        let disqualified = count >= MAX_HEAD_VIOLATIONS;
+        let disqualified = count >= MAX_STRIKES;
         try {
           const res = await reportRef.current.mutateAsync({
             sessionId,
-            violation: { type: "head_movement", timestamp, detail: HEAD_STATE_LABEL[kind], imageUrl, imagePath },
+            violation: { type: "head_movement", timestamp, ...evidencePayload },
           });
-          if (typeof res.headViolations === "number") {
-            count = res.headViolations;
+          const strikes = (res as { strikes?: number }).strikes ?? res.headViolations;
+          if (typeof strikes === "number") {
+            count = strikes;
             localCount.current = count;
           }
           disqualified = !!res.disqualified;
         } catch (err) {
           console.warn("[head-movement] report failed", err);
         }
+
+        const reason = HEAD_STATE_LABEL[kind];
+        publishStrike({ count, max: MAX_STRIKES, disqualified, lastReason: reason });
+        const notice = disqualified ? null : aiStrikeNotice(count, reason);
+        if (notice) publishAiNotice(notice);
 
         if (disqualified) {
           done.current = true;
@@ -103,6 +110,15 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
     graceMs: GRACE_MS,
   });
   captureRef.current = captureSnapshot;
+
+  useEffect(() => {
+    if (!modal) return;
+    markModalOpen(true);
+    return () => markModalOpen(false);
+  }, [modal]);
+  useEffect(() => {
+    if (modal?.phase === "final") markInterviewEnded();
+  }, [modal]);
 
   // Modal is not dismissable by Esc / keyboard shortcuts of the interview UI.
   useEffect(() => {
@@ -131,7 +147,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
 
   if (!enabled) return null;
 
-  const warnings = MAX_HEAD_VIOLATIONS - 1;
+  const warnings = MAX_STRIKES - 1;
   const isFinal = modal?.phase === "final";
 
   return (
@@ -149,7 +165,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
           aria-labelledby="hm-title"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <div className="mx-4 w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 text-center shadow-2xl dark:border-red-900 dark:bg-gray-900">
+          <div className="mx-4 max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-red-200 bg-white p-5 text-center shadow-2xl sm:p-6 dark:border-red-900 dark:bg-gray-900">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-100 dark:bg-red-950/50">
               {isFinal ? (
                 <Ban className="h-8 w-8 text-red-600 dark:text-red-400" />
@@ -158,7 +174,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
               )}
             </div>
             <h2 id="hm-title" className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">
-              {isFinal ? "Interview ended" : "You looked away from the screen"}
+              {isFinal ? "Interview ended — disqualified" : "You looked away from the screen"}
             </h2>
             {modal.phase === "warning" && (
               <p className="mt-2 inline-block rounded-full bg-red-100 px-3 py-1 text-sm font-semibold text-red-700 dark:bg-red-950/60 dark:text-red-300">
@@ -167,7 +183,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
             )}
             <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
               {isFinal
-                ? `You were disqualified after ${MAX_HEAD_VIOLATIONS} head-movement violations (last: ${modal.reason.toLowerCase()}). Your interview has ended.`
+                ? `You were disqualified after ${MAX_STRIKES} anti-cheating violations (last: ${modal.reason.toLowerCase()}). Your interview has ended and cannot be resumed.`
                 : `Detected: ${modal.reason.toLowerCase()}. A snapshot was recorded.`}
             </p>
             {!isFinal && (
@@ -176,7 +192,7 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
                 <li>• Look at the screen while answering; don&apos;t turn away or look down for long.</li>
                 <li>• Make sure no one else is in view and your room is well lit.</li>
                 <li className="font-medium text-red-600 dark:text-red-400">
-                  • Violation {MAX_HEAD_VIOLATIONS} will disqualify you and end the interview.
+                  • Violation {MAX_STRIKES} will disqualify you and end the interview.
                 </li>
               </ul>
             )}
@@ -198,13 +214,14 @@ export function HeadMovementGuard({ enabled, sessionId, onDisqualified }: Props)
 
 export function DisqualifiedScreen() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-md">
         <CardContent className="py-12 text-center">
           <Ban className="mx-auto h-16 w-16 text-red-600" />
-          <h2 className="mt-4 text-2xl font-bold">Interview ended</h2>
+          <h2 className="mt-4 text-2xl font-bold">Interview ended — disqualified</h2>
           <p className="mt-2 text-muted-foreground">
-            Interview ended: disqualified for repeated head-movement violations.
+            Interview ended — disqualified after repeated anti-cheating violations
+            (leaving the page, looking away, or similar). This session cannot be resumed.
           </p>
         </CardContent>
       </Card>

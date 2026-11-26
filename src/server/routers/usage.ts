@@ -1,6 +1,10 @@
 import { z } from "zod";
-import { router, protectedProcedure } from "../trpc";
-import { supabaseAdmin } from "@/lib/supabase/admin";
+import { filterAccessibleProjectIds, router, protectedProcedure } from "../trpc";
+import type { Context } from "../context";
+import { countOrgSeats, loadOrgLimits } from "../quotas";
+import { requireOrgAccess } from "../tenant";
+
+type Db = Context["supabase"];
 
 const periodEnum = z.enum([
   "current",
@@ -24,15 +28,35 @@ function toLocalDate(iso: string, tzOffset = 0): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-async function resolveOrgId(userId: string, orgId?: string) {
-  if (orgId) return orgId;
-  const { data } = await supabaseAdmin
+/**
+ * Resolve a usable org id for the caller.
+ * When the client passes organizationId, membership is required (no IDOR).
+ */
+async function resolveOrgId(
+  supabase: Db,
+  userId: string,
+  orgId?: string,
+) {
+  if (orgId) {
+    await requireOrgAccess(supabase, orgId, userId, { minRole: "VIEWER" });
+    return orgId;
+  }
+  const { data } = await supabase
     .from("organization_members")
-    .select("workspaceId")
-    .eq("userId", userId)
-    .limit(1)
-    .single();
-  return data?.workspaceId ?? undefined;
+    .select("organizationId")
+    .eq("userId", userId);
+  const candidates = (data ?? []).map((m) => m.organizationId as string);
+  if (candidates.length === 0) return undefined;
+  const { data: orgs } = await supabase
+    .from("organizations")
+    .select("id, status")
+    .in("id", candidates);
+  const live = new Set(
+    (orgs ?? [])
+      .filter((o) => (o.status ?? "ACTIVE") !== "DELETED")
+      .map((o) => o.id as string),
+  );
+  return candidates.find((id) => live.has(id));
 }
 
 function resolveCalendarPeriod(period: Period | undefined): { start: Date; end: Date } {
@@ -63,18 +87,23 @@ function resolveCalendarPeriod(period: Period | undefined): { start: Date; end: 
   }
 }
 
-async function getProjectIds(orgId: string, projectId?: string): Promise<string[]> {
-  if (projectId) return [projectId];
-  const { data } = await supabaseAdmin
-    .from("projects")
-    .select("id")
-    .eq("organizationId", orgId);
-  return (data ?? []).map((p) => p.id);
+/** Projects of orgId the caller may see; a requested projectId must belong to orgId. */
+async function getProjectIds(
+  supabase: Db,
+  userId: string,
+  orgId: string,
+  projectId?: string,
+): Promise<string[]> {
+  let query = supabase.from("projects").select("id").eq("organizationId", orgId);
+  if (projectId) query = query.eq("id", projectId);
+  const { data } = await query;
+  const ids = (data ?? []).map((p) => p.id as string);
+  return filterAccessibleProjectIds(supabase, ids, userId);
 }
 
-async function getInterviewIds(projectIds: string[]): Promise<string[]> {
+async function getInterviewIds(supabase: Db, projectIds: string[]): Promise<string[]> {
   if (projectIds.length === 0) return [];
-  const { data } = await supabaseAdmin
+  const { data } = await supabase
     .from("interviews")
     .select("id")
     .in("projectId", projectIds);
@@ -86,16 +115,20 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
 
       const range = resolveCalendarPeriod(input.period);
 
       // --- Templates ---
       let templatesUsed = 0;
       if (orgId) {
-        const pIds = await getProjectIds(orgId, input.projectId);
+        const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
         if (pIds.length > 0) {
-          const { count } = await supabaseAdmin
+          const { count } = await ctx.supabase
             .from("interviews")
             .select("id", { count: "exact", head: true })
             .in("projectId", pIds)
@@ -108,10 +141,10 @@ export const usageRouter = router({
       // --- Session Time ---
       let sessionSecondsUsed = 0;
       if (orgId) {
-        const pIds = await getProjectIds(orgId, input.projectId);
-        const iIds = await getInterviewIds(pIds);
+        const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
+        const iIds = await getInterviewIds(ctx.supabase, pIds);
         if (iIds.length > 0) {
-          const { data: sessions } = await supabaseAdmin
+          const { data: sessions } = await ctx.supabase
             .from("sessions")
             .select("totalDurationSeconds")
             .in("interviewId", iIds)
@@ -124,14 +157,10 @@ export const usageRouter = router({
         }
       }
 
-      // --- Seats ---
+      // --- Seats (members + pending invites) ---
       let seatsUsed = 1;
       if (orgId) {
-        const { count } = await supabaseAdmin
-          .from("organization_members")
-          .select("id", { count: "exact", head: true })
-          .eq("workspaceId", orgId);
-        seatsUsed = count ?? 1;
+        seatsUsed = await countOrgSeats(ctx.supabase, orgId);
       }
 
       // --- Daily breakdowns ---
@@ -147,10 +176,10 @@ export const usageRouter = router({
       // Sessions per day (duration)
       const sessionsByDay: Record<string, number> = {};
       if (orgId) {
-        const pIds = await getProjectIds(orgId, input.projectId);
-        const iIds = await getInterviewIds(pIds);
+        const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
+        const iIds = await getInterviewIds(ctx.supabase, pIds);
         if (iIds.length > 0) {
-          const { data: allSessions } = await supabaseAdmin
+          const { data: allSessions } = await ctx.supabase
             .from("sessions")
             .select("totalDurationSeconds, createdAt")
             .in("interviewId", iIds)
@@ -166,9 +195,9 @@ export const usageRouter = router({
       // Templates created per day
       const templatesByDay: Record<string, number> = {};
       if (orgId) {
-        const pIds = await getProjectIds(orgId, input.projectId);
+        const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
         if (pIds.length > 0) {
-          const { data: allInterviews } = await supabaseAdmin
+          const { data: allInterviews } = await ctx.supabase
             .from("interviews")
             .select("createdAt")
             .in("projectId", pIds)
@@ -188,17 +217,31 @@ export const usageRouter = router({
         templates: templatesByDay[day] ?? 0,
       }));
 
+      let seatsLimit: number | null = null;
+      let interviewsLimit: number | null = null;
+      let plan: string = "SELF_HOSTED";
+      if (orgId) {
+        const resolved = await loadOrgLimits(ctx.supabase, orgId);
+        plan = resolved.plan;
+        seatsLimit = resolved.limits.seats;
+        interviewsLimit = resolved.limits.interviews;
+      }
+
       return {
         periodStart: range.start.toISOString(),
         periodEnd: range.end.toISOString(),
+        plan,
         templates: {
           used: templatesUsed,
+          limit: interviewsLimit,
         },
         sessionTime: {
           usedSeconds: sessionSecondsUsed,
+          limit: null as number | null,
         },
         seats: {
           used: seatsUsed,
+          limit: seatsLimit,
         },
         daily,
       };
@@ -214,16 +257,20 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
       if (!orgId) return [];
 
       const range = resolveCalendarPeriod(input.period);
 
-      const pIds = await getProjectIds(orgId, input.projectId);
-      const iIds = await getInterviewIds(pIds);
+      const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
+      const iIds = await getInterviewIds(ctx.supabase, pIds);
       if (iIds.length === 0) return [];
 
-      const { data: sessions } = await supabaseAdmin
+      const { data: sessions } = await ctx.supabase
         .from("sessions")
         .select("id, interviewId, participantName, participantEmail, totalDurationSeconds, status, createdAt")
         .in("interviewId", iIds)
@@ -235,7 +282,7 @@ export const usageRouter = router({
       const uniqueIvIds = Array.from(new Set((sessions ?? []).map((s) => s.interviewId as string)));
       const ivTitleMap: Record<string, string> = {};
       if (uniqueIvIds.length > 0) {
-        const { data: ivs } = await supabaseAdmin
+        const { data: ivs } = await ctx.supabase
           .from("interviews")
           .select("id, title")
           .in("id", uniqueIvIds);
@@ -258,15 +305,19 @@ export const usageRouter = router({
     .input(filterInput)
     .query(async ({ ctx, input }) => {
       const userId = ctx.user.id;
-      const orgId = await resolveOrgId(userId, input.organizationId);
+      const orgId = await resolveOrgId(
+        ctx.supabase,
+        userId,
+        input.organizationId,
+      );
       if (!orgId) return [];
 
       const range = resolveCalendarPeriod(input.period);
 
-      const pIds = await getProjectIds(orgId, input.projectId);
+      const pIds = await getProjectIds(ctx.supabase, userId, orgId, input.projectId);
       if (pIds.length === 0) return [];
 
-      const { data: projects } = await supabaseAdmin
+      const { data: projects } = await ctx.supabase
         .from("projects")
         .select("id, name")
         .in("id", pIds);
@@ -275,7 +326,7 @@ export const usageRouter = router({
         projNameMap[p.id as string] = p.name as string;
       }
 
-      const { data: interviews } = await supabaseAdmin
+      const { data: interviews } = await ctx.supabase
         .from("interviews")
         .select("id, title, projectId, chatEnabled, voiceEnabled, videoEnabled, createdAt")
         .in("projectId", pIds)
@@ -287,7 +338,7 @@ export const usageRouter = router({
       const ivIds = (interviews ?? []).map((i) => i.id as string);
       const sessionCounts: Record<string, number> = {};
       if (ivIds.length > 0) {
-        const { data: sessions } = await supabaseAdmin
+        const { data: sessions } = await ctx.supabase
           .from("sessions")
           .select("interviewId")
           .in("interviewId", ivIds);

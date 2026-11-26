@@ -1,4 +1,4 @@
--- Skillmark public schema (generated from the original supabase/migrations 001-003).
+-- Resiliencesoft Interview AI public schema (generated from the original supabase/migrations 001-003).
 --
 -- PostgreSQL database dump
 --
@@ -384,7 +384,7 @@ CREATE TABLE public.interviews (
     "userId" uuid NOT NULL,
     "projectId" uuid,
     "aiPersona" text,
-    "aiName" text DEFAULT 'Aural'::text NOT NULL,
+    "aiName" text DEFAULT 'ResilienceSoft Interview'::text NOT NULL,
     "aiTone" public."ToneLevel" DEFAULT 'PROFESSIONAL'::public."ToneLevel" NOT NULL,
     "followUpDepth" public."FollowUpDepth" DEFAULT 'MODERATE'::public."FollowUpDepth" NOT NULL,
     language text DEFAULT 'en'::text NOT NULL,
@@ -566,7 +566,9 @@ CREATE TABLE public.sessions (
     "mediaReviewAt" timestamp with time zone,
     "mediaExpiresAt" timestamp with time zone,
     "mediaClearedAt" timestamp with time zone,
-    "mediaStoragePrefix" text
+    "mediaStoragePrefix" text,
+    "rejectReason" text,
+    "rejectTags" text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 

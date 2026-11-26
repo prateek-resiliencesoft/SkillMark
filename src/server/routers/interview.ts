@@ -3,6 +3,9 @@ import { INTERVIEW_TEMPLATES } from "@/lib/interview-templates";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
+import { effectiveIntegrityConfig, type IntegrityConfigInput } from "@/lib/integrity/config";
+import { projectInterviewForCandidate } from "@/lib/session-redact";
 import {
   assertMinRole,
   filterAccessibleProjectIds,
@@ -12,6 +15,7 @@ import {
   protectedProcedure,
   publicProcedure,
   router,
+  type MemberRole,
 } from "../trpc";
 
 function emptyDashboard() {
@@ -63,6 +67,7 @@ async function getInterviewWithAccess(
   supabase: Parameters<typeof getOrgMembership>[0],
   interviewId: string,
   userId: string,
+  options: { write?: boolean } = {},
 ) {
   const { data: interview } = await supabase
     .from("interviews")
@@ -81,6 +86,7 @@ async function getInterviewWithAccess(
     supabase,
     project.organizationId,
     userId,
+    options,
   );
 
   if (!membership) return null;
@@ -98,13 +104,46 @@ async function getInterviewWithAccess(
   return { interview, orgId: project.organizationId, role: effectiveRole };
 }
 
+/** Project must belong to one of `orgIds` (when given) and pass the project ACL. */
+async function projectInScope(
+  supabase: Parameters<typeof getOrgMembership>[0],
+  projectId: string,
+  userId: string,
+  orgIds?: string[],
+): Promise<boolean> {
+  if (orgIds) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("organizationId")
+      .eq("id", projectId)
+      .maybeSingle();
+    if (!project || !orgIds.includes(project.organizationId as string)) return false;
+  }
+  return hasProjectAccess(supabase, projectId, userId);
+}
+
+/** MEMBERs may only change interviews they created (same rule as interview.update). */
+function assertCanEditInterview(
+  result: { role: MemberRole; interview: { userId?: string | null } },
+  userId: string,
+) {
+  if (result.role === "MEMBER" && result.interview.userId !== userId) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "You can only edit interviews you created. Ask an admin for broader access.",
+    });
+  }
+  assertMinRole(result.role, "MEMBER");
+}
+
 async function resolveDefaultProject(
   supabase: Parameters<typeof getOrgMembership>[0],
   userId: string,
 ): Promise<string | null> {
   const { data: membership } = await supabase
     .from("organization_members")
-    .select("workspaceId")
+    .select("organizationId")
     .eq("userId", userId)
     .limit(1)
     .single();
@@ -114,7 +153,7 @@ async function resolveDefaultProject(
   const { data: defaultProject } = await supabase
     .from("projects")
     .select("id")
-    .eq("organizationId", membership.workspaceId)
+    .eq("organizationId", membership.organizationId)
     .order("createdAt", { ascending: true })
     .limit(1)
     .single();
@@ -161,10 +200,11 @@ export const interviewRouter = router({
         .limit(limit + 1);
 
       if (input?.projectId) {
-        const projAccess = await hasProjectAccess(
+        const projAccess = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          input.organizationId ? [input.organizationId] : undefined,
         );
         if (!projAccess) {
           throw new TRPCError({
@@ -190,11 +230,11 @@ export const interviewRouter = router({
       } else {
         const { data: memberships } = await ctx.supabase
           .from("organization_members")
-          .select("workspaceId")
+          .select("organizationId")
           .eq("userId", ctx.user.id);
 
         const orgIds = (memberships ?? []).map(
-          (m: { workspaceId: string }) => m.workspaceId,
+          (m: { organizationId: string }) => m.organizationId,
         );
         if (orgIds.length === 0)
           return { interviews: [], nextCursor: undefined };
@@ -228,6 +268,26 @@ export const interviewRouter = router({
       const { data: raw } = await query;
       const rows = raw ?? [];
 
+      const pageIds = rows.slice(0, limit).map((i) => i.id as string);
+      const formByInterview = new Map<
+        string,
+        { id: string; name: string; publicId: string }
+      >();
+      if (pageIds.length) {
+        const { data: forms } = await ctx.supabase
+          .from("interview_forms")
+          .select("id, name, publicId, interviewId")
+          .in("interviewId", pageIds);
+        for (const f of forms ?? []) {
+          if (!f.interviewId || formByInterview.has(f.interviewId)) continue;
+          formByInterview.set(f.interviewId, {
+            id: f.id,
+            name: f.name,
+            publicId: f.publicId,
+          });
+        }
+      }
+
       const interviews = rows.slice(0, limit).map((i) => ({
         ...i,
         _count: {
@@ -237,6 +297,11 @@ export const interviewRouter = router({
         questions: undefined,
         sessions: undefined,
       }));
+      // Attach after map so tRPC keeps full interview row typing.
+      for (const iv of interviews) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (iv as any).formSource = formByInterview.get(iv.id) ?? null;
+      }
 
       let nextCursor: string | undefined;
       if (rows.length > limit) {
@@ -300,10 +365,18 @@ export const interviewRouter = router({
         });
       }
 
-      // Omit sensitive invited candidate emails and system prompt from public view
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { invitedEmails: _omittedEmails, systemPrompt: _omittedPrompt, ...safeInterview } = interview;
-      return safeInterview;
+      // Invitees load questions through their personal link, never the public slug.
+      const safeInterview = projectInterviewForCandidate(interview, {
+        includeQuestions: !interview.requireInvite,
+      });
+      return {
+        ...safeInterview,
+        id: interview.id as string,
+        title: interview.title as string,
+        aiName: interview.aiName as string,
+        mode: interview.mode as string,
+        questions: safeInterview?.questions ?? [],
+      };
     }),
 
   create: protectedProcedure
@@ -319,7 +392,8 @@ export const interviewRouter = router({
         chatEnabled: z.boolean().default(true),
         voiceEnabled: z.boolean().default(false),
         videoEnabled: z.boolean().default(false),
-        aiName: z.string().default("Skillmark"),
+        aiName: z.string().optional(),
+        aiGender: z.enum(["FEMALE", "MALE"]).optional(),
         aiTone: z
           .enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"])
           .default("PROFESSIONAL"),
@@ -332,6 +406,19 @@ export const interviewRouter = router({
         llmModel: z.string().optional(),
         antiCheatingEnabled: z.boolean().default(false),
         headMovementDetectionEnabled: z.boolean().default(false),
+        integrityChecksEnabled: z.boolean().default(false),
+        livenessChallengesEnabled: z.boolean().default(false),
+        autoLeftFollowup: z.boolean().default(true),
+        completionNotifyMembers: z
+          .array(
+            z.object({
+              userId: z.string().uuid(),
+              phone: z.string().min(8).max(20),
+              name: z.string().max(120).optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -341,7 +428,7 @@ export const interviewRouter = router({
         // Auto-resolve: pick the user's first org's first project
         const { data: membership } = await ctx.supabase
           .from("organization_members")
-          .select("workspaceId")
+          .select("organizationId")
           .eq("userId", ctx.user.id)
           .limit(1)
           .single();
@@ -356,7 +443,7 @@ export const interviewRouter = router({
         const { data: defaultProject } = await ctx.supabase
           .from("projects")
           .select("id")
-          .eq("organizationId", membership.workspaceId)
+          .eq("organizationId", membership.organizationId)
           .order("createdAt", { ascending: true })
           .limit(1)
           .single();
@@ -388,6 +475,7 @@ export const interviewRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({
@@ -416,16 +504,31 @@ export const interviewRouter = router({
       );
       assertMinRole(effectiveRole, "MEMBER");
 
+      const { assertQuota } = await import("../quotas");
+      await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
+
+      const { data: orgDefaults } = await ctx.supabase
+        .from("organizations")
+        .select("defaultInterviewerGender")
+        .eq("id", project.organizationId)
+        .maybeSingle();
+      const aiGender = normalizeInterviewerGender(
+        input.aiGender ?? (orgDefaults as { defaultInterviewerGender?: string } | null)?.defaultInterviewerGender,
+      );
+      const aiName = resolveInterviewerName(input.aiName, aiGender);
 
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { projectId: _pid, ...rest } = input;
+      const { projectId: _pid, aiName: _n, aiGender: _g, ...rest } = input;
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .insert({
           ...rest,
+          ...effectiveIntegrityConfig(rest),
           projectId,
           userId: ctx.user.id,
           requireInvite: true,
+          aiGender,
+          aiName,
         })
         .select()
         .single();
@@ -476,6 +579,7 @@ export const interviewRouter = router({
         ctx.supabase,
         project.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({
@@ -497,12 +601,27 @@ export const interviewRouter = router({
       );
       assertMinRole(effectiveRole, "MEMBER");
 
+      const { assertQuota } = await import("../quotas");
+      await assertQuota(ctx.supabase, project.organizationId, "interviews", 1);
+
+      const { data: orgDefaults } = await ctx.supabase
+        .from("organizations")
+        .select("defaultInterviewerGender")
+        .eq("id", project.organizationId)
+        .maybeSingle();
+      const aiGender = normalizeInterviewerGender(
+        (orgDefaults as { defaultInterviewerGender?: string } | null)?.defaultInterviewerGender,
+      );
+      const aiName = resolveInterviewerName(undefined, aiGender);
+
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .insert({
           title: template.title,
           description: template.description,
           objective: template.objective,
+          aiGender,
+          aiName,
           aiTone: template.aiTone,
           followUpDepth: template.followUpDepth,
           assessmentCriteria: template.assessmentCriteria,
@@ -557,6 +676,7 @@ export const interviewRouter = router({
         videoEnabled: z.boolean().optional(),
         aiPersona: z.string().optional(),
         aiName: z.string().optional(),
+        aiGender: z.enum(["FEMALE", "MALE"]).optional(),
         aiTone: z
           .enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"])
           .optional(),
@@ -571,6 +691,19 @@ export const interviewRouter = router({
         invitedEmails: z.array(z.string().email()).optional(),
         antiCheatingEnabled: z.boolean().optional(),
         headMovementDetectionEnabled: z.boolean().optional(),
+        integrityChecksEnabled: z.boolean().optional(),
+        livenessChallengesEnabled: z.boolean().optional(),
+        autoLeftFollowup: z.boolean().optional(),
+        completionNotifyMembers: z
+          .array(
+            z.object({
+              userId: z.string().uuid(),
+              phone: z.string().min(8).max(20),
+              name: z.string().max(120).optional(),
+            }),
+          )
+          .max(20)
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -578,6 +711,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -593,6 +727,22 @@ export const interviewRouter = router({
       assertMinRole(result.role, "MEMBER");
 
       const { id, ...data } = input;
+      const nextGender = normalizeInterviewerGender(
+        data.aiGender ?? (result.interview as { aiGender?: string }).aiGender,
+      );
+      if (data.aiGender || data.aiName !== undefined) {
+        data.aiName = resolveInterviewerName(
+          data.aiName ?? result.interview.aiName,
+          data.aiGender ?? nextGender,
+        );
+        if (data.aiGender) data.aiGender = nextGender;
+      }
+      const touchesIntegrity = (
+        ["antiCheatingEnabled", "headMovementDetectionEnabled", "integrityChecksEnabled", "livenessChallengesEnabled"] as const
+      ).some((k) => data[k] !== undefined);
+      if (touchesIntegrity) {
+        Object.assign(data, effectiveIntegrityConfig({ ...(result.interview as IntegrityConfigInput), ...data }));
+      }
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .update(data)
@@ -618,6 +768,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -661,6 +812,7 @@ export const interviewRouter = router({
             ctx.supabase,
             id,
             ctx.user.id,
+            { write: true },
           );
           if (!result) {
             throw new TRPCError({ code: "NOT_FOUND" });
@@ -676,6 +828,20 @@ export const interviewRouter = router({
             });
           }
           assertMinRole(result.role, "MEMBER");
+          if (result.role === "MEMBER") {
+            const { count } = await ctx.supabase
+              .from("sessions")
+              .select("*", { count: "exact", head: true })
+              .eq("interviewId", id)
+              .in("status", ["IN_PROGRESS", "COMPLETED"]);
+            if ((count ?? 0) > 0) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message:
+                  "Cannot delete an interview with active or completed sessions. Contact an admin.",
+              });
+            }
+          }
         }),
       );
 
@@ -690,11 +856,12 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
-      assertMinRole(result.role, "MEMBER");
+      assertCanEditInterview(result, ctx.user.id);
 
       const slug = result.interview.publicSlug ?? nanoid(10);
 
@@ -713,11 +880,12 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
-      assertMinRole(result.role, "MEMBER");
+      assertCanEditInterview(result, ctx.user.id);
 
       await ctx.supabase
         .from("interviews")
@@ -734,6 +902,7 @@ export const interviewRouter = router({
         ctx.supabase,
         input.id,
         ctx.user.id,
+        { write: true },
       );
       if (!result) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -780,6 +949,7 @@ export const interviewRouter = router({
           projectId: source.projectId,
           aiPersona: source.aiPersona,
           aiName: source.aiName,
+          aiGender: (source as { aiGender?: string }).aiGender ?? "FEMALE",
           aiTone: source.aiTone,
           followUpDepth: source.followUpDepth,
           language: source.language,
@@ -792,7 +962,7 @@ export const interviewRouter = router({
           requireInvite: source.requireInvite,
           invitedEmails: source.invitedEmails,
           antiCheatingEnabled: source.antiCheatingEnabled,
-          headMovementDetectionEnabled: source.headMovementDetectionEnabled ?? false,
+          ...effectiveIntegrityConfig(source as IntegrityConfigInput),
         })
         .select()
         .single();
@@ -851,11 +1021,11 @@ export const interviewRouter = router({
       // Get all org IDs for the user
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       let orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
 
       if (input?.organizationId) {
@@ -879,10 +1049,11 @@ export const interviewRouter = router({
 
       let projectIds: string[];
       if (input?.projectId) {
-        const projAccess = await hasProjectAccess(
+        const projAccess = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          orgIds,
         );
         projectIds = projAccess ? [input.projectId] : [];
       } else {
@@ -961,20 +1132,21 @@ export const interviewRouter = router({
     .query(async ({ ctx, input }) => {
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       const orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
       if (orgIds.length === 0) return emptyDashboard();
 
       let projectIds: string[];
       if (input?.projectId) {
-        const ok = await hasProjectAccess(
+        const ok = await projectInScope(
           ctx.supabase,
           input.projectId,
           ctx.user.id,
+          orgIds,
         );
         projectIds = ok ? [input.projectId] : [];
       } else {
@@ -1003,10 +1175,11 @@ export const interviewRouter = router({
         .select("id", { count: "exact", head: true })
         .in("interviewId", interviewIds);
 
+      // List fields only — insights loaded later for the 5 recent completed rows.
       const { data: sessions } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail, insights",
+          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail",
         )
         .in("interviewId", interviewIds);
       const allSessions = sessions ?? [];
@@ -1016,19 +1189,15 @@ export const interviewRouter = router({
         .select("id, type, createdAt")
         .in("interviewId", interviewIds);
 
-      // Message counts per session (batch)
+      // Total message count only (head). Avoid selecting every message row.
       let totalMessages = 0;
-      const sessionMsgMap: Record<string, number> = {};
       if (allSessions.length > 0) {
         const sIds = allSessions.map((s) => s.id);
-        const { data: msgs } = await ctx.supabase
+        const { count } = await ctx.supabase
           .from("messages")
-          .select("sessionId")
+          .select("id", { count: "exact", head: true })
           .in("sessionId", sIds);
-        for (const m of msgs ?? []) {
-          sessionMsgMap[m.sessionId] = (sessionMsgMap[m.sessionId] ?? 0) + 1;
-          totalMessages++;
-        }
+        totalMessages = count ?? 0;
       }
 
       // Summary numbers
@@ -1085,7 +1254,14 @@ export const interviewRouter = router({
           dateMap[day].sessionMinutes += Math.round(
             ((s.totalDurationSeconds as number) ?? 0) / 60,
           );
-          dateMap[day].messages += sessionMsgMap[s.id] ?? 0;
+        }
+      }
+      // Approx daily messages from session share (avoids loading every message row).
+      if (totalSessions > 0 && totalMessages > 0) {
+        for (const day of Object.keys(dateMap)) {
+          dateMap[day].messages = Math.round(
+            (totalMessages * dateMap[day].sessions) / totalSessions,
+          );
         }
       }
       for (const i of interviews ?? []) {
@@ -1137,34 +1313,53 @@ export const interviewRouter = router({
         .slice(0, 8)
         .map(([theme, count]) => ({ theme, count }));
 
-      // Recent completed sessions
-      const recentSessions = [...allSessions]
+      // Recent completed sessions (fetch insights only for these 5)
+      const recentIds = [...allSessions]
         .filter((s) => s.status === "COMPLETED")
-        .sort((a, b) =>
-          (b.createdAt as string).localeCompare(a.createdAt as string),
-        )
+        .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
         .slice(0, 5)
-        .map((s) => {
-          const score = getSessionOverallScore(
-            s.insights as {
-              questionEvaluations?: { score: number }[];
-              criteriaEvaluations?: { score: number }[];
-            } | null,
-          );
-          return {
-            id: s.id,
-            interviewId: s.interviewId as string,
-            name:
-              (s.participantName as string) ||
-              (s.participantEmail as string) ||
-              "Anonymous",
-            status: s.status as string,
-            duration: (s.totalDurationSeconds as number) ?? 0,
-            messages: sessionMsgMap[s.id] ?? 0,
-            date: s.createdAt as string,
-            score,
-          };
-        });
+        .map((s) => s.id as string);
+      const insightsById = new Map<string, unknown>();
+      if (recentIds.length > 0) {
+        const { data: recentRows } = await ctx.supabase
+          .from("sessions")
+          .select("id, insights")
+          .in("id", recentIds);
+        for (const r of recentRows ?? []) insightsById.set(r.id as string, r.insights);
+      }
+      const recentMsgCount = new Map<string, number>();
+      if (recentIds.length > 0) {
+        const { data: recentMsgs } = await ctx.supabase
+          .from("messages")
+          .select("sessionId")
+          .in("sessionId", recentIds);
+        for (const m of recentMsgs ?? []) {
+          const sid = m.sessionId as string;
+          recentMsgCount.set(sid, (recentMsgCount.get(sid) ?? 0) + 1);
+        }
+      }
+      const recentSessions = recentIds.map((id) => {
+        const s = allSessions.find((row) => row.id === id)!;
+        const score = getSessionOverallScore(
+          insightsById.get(id) as {
+            questionEvaluations?: { score: number }[];
+            criteriaEvaluations?: { score: number }[];
+          } | null,
+        );
+        return {
+          id: s.id,
+          interviewId: s.interviewId as string,
+          name:
+            (s.participantName as string) ||
+            (s.participantEmail as string) ||
+            "Anonymous",
+          status: s.status as string,
+          duration: (s.totalDurationSeconds as number) ?? 0,
+          messages: recentMsgCount.get(id) ?? 0,
+          date: s.createdAt as string,
+          score,
+        };
+      });
 
       return {
         totalInterviews: interviewIds.length,

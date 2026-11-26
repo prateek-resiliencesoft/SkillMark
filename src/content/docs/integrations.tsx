@@ -5,20 +5,20 @@ export const integrationsArticles: DocArticle[] = [
     slug: "integrations-overview",
     categorySlug: "integrations",
     title: "Integrations & API Overview",
-    description: "Connect Skillmark with ATS platforms, webhooks, and AI automation tools",
+    description: "Connect ResilienceSoft Interview with ATS platforms, webhooks, and AI automation tools",
     audience: "creators",
     order: 1,
     content: () => (
       <>
         <h2>Overview</h2>
         <p>
-          Skillmark supports seamless integration with applicant tracking systems (ATS), automation platforms like Zapier and Make, custom backend systems, and external AI agents.
+          ResilienceSoft Interview supports seamless integration with applicant tracking systems (ATS), automation platforms like Zapier and Make, custom backend systems, and external AI agents.
         </p>
 
         <h3>Available Integration Channels</h3>
         <ul>
           <li>
-            <strong>API Keys</strong> — Authenticate REST requests using <code>Bearer dlv_...</code> tokens to ingest candidates and trigger interview sessions.
+            <strong>API Keys</strong> — Authenticate REST requests using <code>Bearer rsi_...</code> tokens to ingest candidates and trigger interview sessions.
           </li>
           <li>
             <strong>Interview Forms</strong> — Generate shareable applicant application forms connected directly to specific interview pipelines.

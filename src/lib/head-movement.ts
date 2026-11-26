@@ -4,7 +4,27 @@
  * and the server (violation counting + disqualification).
  */
 
-export const MAX_HEAD_VIOLATIONS = 3; // 1st & 2nd = warning, 3rd = disqualify
+export const MAX_HEAD_VIOLATIONS = 4; // 1st–3rd = warning, 4th = disqualify
+/** Shared strike policy: every anti-cheating violation type counts. The 4th strike disqualifies. */
+export const MAX_STRIKES = MAX_HEAD_VIOLATIONS;
+/** The strike the AI announces out loud (the last warning before disqualification). */
+export const AI_WARNING_STRIKE = MAX_STRIKES - 1;
+export const STRIKE_TYPES = new Set([
+  "page_departure", "tab_switch", "focus_lost", "head_movement", "multi_screen", "paste", "copy", "cut",
+  "offscreen_voice", "device_switch",
+]);
+export const STRIKE_LABEL: Record<string, string> = {
+  page_departure: "Left the interview page",
+  tab_switch: "Switched tabs",
+  focus_lost: "Left the interview window",
+  head_movement: "Looked away from the screen",
+  multi_screen: "Additional display detected",
+  paste: "Pasted external content",
+  copy: "Copied content",
+  cut: "Cut content",
+  offscreen_voice: "Another voice detected while your mouth was closed",
+  device_switch: "Camera or microphone was switched",
+};
 
 export type HeadFrameState = "ok" | "looking_away" | "no_face" | "multiple_faces";
 
@@ -103,24 +123,62 @@ export class HeadMovementMonitor {
   }
 }
 
+export interface StrikeDisplayInfo {
+  count: number;
+  screens?: { label?: string; width: number; height: number; isPrimary?: boolean }[];
+  /** Browser can only pixel-capture the shared display, not every monitor. */
+  capturedSharedOnly: boolean;
+}
+
+export interface StrikeEvidenceFields {
+  type: string;
+  when: string;
+  whatDetected: string;
+  strikeNumber: number;
+  displaysSummary: string;
+  evidenceAttached: string;
+}
+
 export interface LoggedViolation {
   type: string;
   timestamp: number;
   detail?: string;
   imageUrl?: string;
   imagePath?: string;
+  screenImageUrl?: string;
+  screenImagePath?: string;
+  displayInfo?: StrikeDisplayInfo;
+  evidence?: StrikeEvidenceFields;
+  narrative?: string;
 }
 
 export function countHeadViolations(log: unknown[]): number {
   return log.filter((v) => (v as { type?: string })?.type === "head_movement").length;
 }
 
-/** Server-side: append a violation and decide whether the session is disqualified. */
+export function countStrikes(log: unknown[]): number {
+  return log.filter((v) => STRIKE_TYPES.has(String((v as { type?: string })?.type))).length;
+}
+
+/**
+ * Server-side: append a violation and decide whether the session is
+ * disqualified. All violation types share one strike count (4th disqualifies).
+ */
 export function applyAntiCheatingViolation(prevLog: unknown[], violation: LoggedViolation) {
-  const log = [...prevLog, violation];
-  const headViolations = countHeadViolations(log);
-  const disqualify = violation.type === "head_movement" && headViolations >= MAX_HEAD_VIOLATIONS;
-  return { log, headViolations, disqualify };
+  let log = [...prevLog, violation];
+  const strikes = countStrikes(log);
+  const disqualify = STRIKE_TYPES.has(violation.type) && strikes >= MAX_STRIKES;
+  if (disqualify) {
+    log = [
+      ...log,
+      {
+        type: "disqualified",
+        timestamp: violation.timestamp,
+        detail: `Disqualified after ${strikes} anti-cheating violations (last: ${STRIKE_LABEL[violation.type] ?? violation.type})`,
+      },
+    ];
+  }
+  return { log, strikes, headViolations: countHeadViolations(log), disqualify };
 }
 
 /** Exponential smoothing of head pose across frames (reduces jitter). */
@@ -134,6 +192,33 @@ export class PoseSmoother {
     this.pitch = this.pitch === null ? p.pitch : this.alpha * p.pitch + (1 - this.alpha) * this.pitch;
     return { yaw: this.yaw, pitch: this.pitch };
   }
+}
+
+/**
+ * Reviewer-facing reason saved as the automatic "doubtful" remark when a session
+ * is disqualified: how many strikes, and what each one was.
+ */
+export function disqualificationRemark(log: unknown[]): string {
+  const reasons = log
+    .filter((v) => STRIKE_TYPES.has(String((v as { type?: string })?.type)))
+    .map((v, i) => {
+      const type = String((v as { type: string }).type);
+      return `${i + 1}. ${STRIKE_LABEL[type] ?? type}`;
+    });
+  return `Disqualified automatically after ${reasons.length} anti-cheating strikes. Reasons: ${reasons.join("; ")}.`.slice(0, 1000);
+}
+
+/**
+ * What the AI says aloud on the third strike (the last warning). Returns null for
+ * every other strike count. `reason` is the human label of the violation.
+ */
+export function aiStrikeNotice(strikes: number, reason: string): string | null {
+  if (strikes !== AI_WARNING_STRIKE) return null;
+  return (
+    `This is your third strike, because you ${reason.toLowerCase()}. ` +
+    `Please do not do this again, or else we will have to disqualify you. ` +
+    `The next strike will disqualify you. Now let's continue with the interview.`
+  );
 }
 
 export function headWarningMessage(count: number): string {

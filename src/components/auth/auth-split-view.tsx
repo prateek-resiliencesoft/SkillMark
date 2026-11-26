@@ -1,53 +1,77 @@
 "use client";
 
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
+import Image from "next/image";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { Button } from "@/components/ui/button";
-import { DitheredLogo } from "@/components/ui/dithered-logo";
-import { CursorDrivenParticleTypography } from "@/components/ui/cursor-driven-particle-typography";
-import { LiquidGlassLogoReveal } from "@/components/ui/liquid-glass-logo-reveal";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { DEFAULT_NEXT_PATH, safeNextPath } from "@/lib/safe-next";
 import { createClient } from "@/lib/supabase/client";
-import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "motion/react";
-import { useTheme } from "next-themes";
 import {
   ArrowRight,
+  CalendarClock,
   Eye,
   EyeOff,
+  FileBarChart2,
   Lock,
+  LogIn,
   Mail,
-  Sparkles,
+  Mic,
+  ShieldCheck,
   User,
+  UserPlus,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface AuthSplitViewProps {
   defaultTab?: "login" | "register";
+  googleEnabled?: boolean;
 }
 
-type AnimationStage = "glass_center" | "gliding" | "gathering" | "settled";
-
-const INTRO_SESSION_KEY = "skillmark_intro_played";
-
-export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
+export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: AuthSplitViewProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const rawNext = searchParams.get("next");
-  const nextUrl =
-    rawNext && rawNext.startsWith("/") && !rawNext.startsWith("//") && !rawNext.includes("://")
-      ? rawNext
-      : "/dashboard";
-  const nextQuery = rawNext && nextUrl === rawNext
-    ? `?next=${encodeURIComponent(rawNext)}`
-    : "";
+  const validNext = safeNextPath(searchParams.get("next"), "");
+  const nextUrl = validNext || DEFAULT_NEXT_PATH;
+  const addMode = searchParams.has("add");
+  const prefillEmail = searchParams.get("email") ?? "";
+  const sessionExpired = searchParams.get("reason") === "session_expired";
+  const nextQuery = (() => {
+    const q = new URLSearchParams();
+    if (validNext) q.set("next", validNext);
+    if (addMode) q.set("add", "1");
+    if (prefillEmail) q.set("email", prefillEmail);
+    const str = q.toString();
+    return str ? `?${str}` : "";
+  })();
+  const fromInvite = nextUrl.startsWith("/invite/");
+  const googleHref = `/api/auth/google/start?${new URLSearchParams({
+    next: nextUrl,
+    ...(prefillEmail ? { email: prefillEmail } : {}),
+  }).toString()}`;
+  const oauthError = (() => {
+    switch (searchParams.get("error")) {
+      case "google_unavailable":
+        return "Google sign-in isn't set up on this server.";
+      case "google_cancelled":
+        return "Google sign-in was cancelled.";
+      case "google_state":
+        return "Your Google sign-in expired. Please try again.";
+      case "account_paused":
+        return "This account is paused. Please contact support to restore access.";
+      case "google_failed":
+        return "Google sign-in failed. Please try again.";
+      default:
+        return null;
+    }
+  })();
 
   const { toast } = useToast();
   const { t } = useAppLocale();
-  const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === "dark";
 
   const [activeTab, setActiveTab] = useState<"login" | "register">(defaultTab);
   const [loading, setLoading] = useState(false);
@@ -58,81 +82,47 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
   const switchTab = useCallback(
     (tab: "login" | "register") => {
+      if (tab === activeTab) return;
       setActiveTab(tab);
-      router.replace(tab === "login" ? `/login${nextQuery}` : `/register${nextQuery}`);
+      // Update the URL without a route change, so the page shell never remounts.
+      const url = tab === "login" ? `/login${nextQuery}` : `/register${nextQuery}`;
+      window.history.replaceState(window.history.state, "", url);
     },
-    [router, nextQuery],
+    [activeTab, nextQuery],
   );
+
+  // Keep the tab in sync if the URL changes underneath us (back/forward).
+  useEffect(() => {
+    const onPop = () => {
+      const path = window.location.pathname;
+      if (path.startsWith("/register")) setActiveTab("register");
+      else if (path.startsWith("/login")) setActiveTab("login");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Smooth card height between the login and register forms.
+  const cardContentRef = useRef<HTMLDivElement>(null);
+  const [cardHeight, setCardHeight] = useState<number | "auto">("auto");
+  useEffect(() => {
+    const el = cardContentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setCardHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Form states
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(prefillEmail);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
-  // Animation choreography states
-  const [stage, setStage] = useState<AnimationStage>("settled");
-  const [isFirstPlay, setIsFirstPlay] = useState(false);
-  const [gatherCount, setGatherCount] = useState(0);
-  const glassTimerRef = useRef<NodeJS.Timeout | null>(null);
-
+  // Keep email in sync when arriving via invite / switch-account query params.
   useEffect(() => {
-    // Check if intro has already run in this session
-    try {
-      const played = sessionStorage.getItem(INTRO_SESSION_KEY);
-      if (!played) {
-        setIsFirstPlay(true);
-        setStage("glass_center");
-      }
-    } catch {
-      // Fallback if sessionStorage is disabled
-      setStage("settled");
-    }
-  }, []);
-
-  const advanceFromGlass = useCallback(() => {
-    setStage((prev) => {
-      if (prev !== "glass_center") return prev;
-      return "gliding";
-    });
-
-    // Schedule subsequent choreography stages
-    setTimeout(() => {
-      setStage("gathering");
-      setGatherCount((c) => c + 1);
-    }, 450);
-
-    setTimeout(() => {
-      setStage("settled");
-      try {
-        sessionStorage.setItem(INTRO_SESSION_KEY, "true");
-      } catch {
-        // no-op
-      }
-    }, 1100);
-  }, []);
-
-  // Safety fallback timer for glass reveal if WebGL takes too long or device is slow
-  useEffect(() => {
-    if (stage === "glass_center") {
-      glassTimerRef.current = setTimeout(() => {
-        advanceFromGlass();
-      }, 2600);
-    }
-    return () => {
-      if (glassTimerRef.current) clearTimeout(glassTimerRef.current);
-    };
-  }, [stage, advanceFromGlass]);
-
-  const replayIntro = () => {
-    try {
-      sessionStorage.removeItem(INTRO_SESSION_KEY);
-    } catch {
-      // no-op
-    }
-    setIsFirstPlay(true);
-    setStage("glass_center");
-  };
+    if (prefillEmail) setEmail(prefillEmail);
+  }, [prefillEmail]);
 
   const supabase = createClient();
 
@@ -142,19 +132,19 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
     try {
       const { error } = await supabase.auth.signInWithPassword({
-        email,
+        email: email.trim(),
         password,
       });
 
       if (error) {
-        const errorDesc =
+        const invalidCreds =
           error.message?.toLowerCase().includes("invalid login credentials") ||
-          error.message?.toLowerCase().includes("invalid email or password")
-            ? "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
-            : error.message || "Unable to sign in. Please check your credentials.";
+          error.message?.toLowerCase().includes("invalid email or password");
         toast({
           title: "Sign In Failed",
-          description: errorDesc,
+          description: invalidCreds
+            ? "Invalid email or password. If you haven't created an account yet, switch to the 'Create Account' tab above."
+            : error.message || "Unable to sign in. Please check your credentials.",
           variant: "destructive",
         });
         setLoading(false);
@@ -167,7 +157,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
         title: "Connection Error",
         description:
           msg ||
-          "Unable to reach the Skillmark server. Ensure the app and database (docker compose up -d) are running.",
+          "Unable to reach the ResilienceSoft Interview server. Ensure the app and database (docker compose up -d) are running.",
         variant: "destructive",
       });
       setLoading(false);
@@ -180,7 +170,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
 
     try {
       const { error, data } = await supabase.auth.signUp({
-        email,
+        email: email.trim(),
         password,
         options: {
           data: {
@@ -199,7 +189,7 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
       } else if (data.session) {
         toast({
           title: "Account Created",
-          description: "Welcome to Skillmark! Redirecting...",
+          description: "Welcome to ResilienceSoft Interview! Redirecting...",
         });
         window.location.href = nextUrl;
       } else {
@@ -221,288 +211,290 @@ export function AuthSplitView({ defaultTab = "login" }: AuthSplitViewProps) {
     }
   };
 
+  const isLogin = activeTab === "login";
+  const features = [
+    { icon: CalendarClock, title: "Scheduled AI interviews", text: "Set up a role once and invite candidates in minutes." },
+    { icon: Mic, title: "Voice interview from any device", text: "Candidates join from a browser, no installs needed." },
+    { icon: FileBarChart2, title: "Clear scored reports", text: "Skill scores, transcripts and a hiring summary." },
+  ];
+
   return (
-    <div className="relative min-h-screen w-full flex flex-col lg:grid lg:grid-cols-12 bg-background overflow-hidden selection:bg-primary/20">
-      {/* ── STAGE 1: Fullscreen Liquid Glass Logo Reveal in Center ── */}
-      <AnimatePresence>
-        {stage === "glass_center" && (
-          <motion.div
-            key="liquid-glass-opening-stage"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0, scale: 0.94, filter: "blur(8px)" }}
-            transition={{ duration: 0.5, ease: "easeInOut" }}
-            className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/95 backdrop-blur-2xl"
-          >
-            {/* Ambient background glow */}
-            <div className="absolute h-96 w-96 rounded-full bg-primary/20 blur-[130px] pointer-events-none animate-pulse" />
+    <div className="h-dvh w-full overflow-hidden bg-background lg:grid lg:grid-cols-2">
+      {/* ── Left: brand + interview illustration (desktop) ── */}
+      <aside className="relative hidden overflow-hidden bg-gradient-to-br from-[#F1EEFE] via-[#ECE8FD] to-[#F7EEF6] dark:from-[#14112A] dark:via-[#120F22] dark:to-[#1A1020] lg:flex lg:flex-col">
+        {/* soft blobs */}
+        <div aria-hidden className="pointer-events-none absolute -left-24 -top-24 h-80 w-80 rounded-full bg-[#5941F2]/15 blur-3xl dark:bg-[#5941F2]/25" />
+        <div aria-hidden className="pointer-events-none absolute -right-20 top-1/3 h-72 w-72 rounded-full bg-[#D9328E]/10 blur-3xl dark:bg-[#D9328E]/20" />
+        <div aria-hidden className="pointer-events-none absolute bottom-10 left-1/4 h-64 w-64 rounded-full bg-[#8734BF]/10 blur-3xl dark:bg-[#8734BF]/20" />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute right-12 top-12 h-24 w-32 opacity-40 dark:opacity-25"
+          style={{ backgroundImage: "radial-gradient(#5941F2 1.5px, transparent 1.5px)", backgroundSize: "16px 16px" }}
+        />
 
-            {/* Liquid Glass Reveal Canvas */}
-            <div className="relative w-80 h-80 sm:w-96 sm:h-96 flex items-center justify-center">
-              <LiquidGlassLogoReveal
-                logo="/images/skillmark-logo.png"
-                look={isDark ? "dark" : "light"}
-                background={isDark ? "#09090b" : "#ffffff"}
-                logoColor="#5941F2"
-                tileSize={300}
-                logoScale={0.7}
-                finalScale={0.72}
-                loop={false}
-                hold={0}
-                speed={1.05}
-                className="w-full h-full rounded-3xl"
-                onComplete={advanceFromGlass}
-              />
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        <div className="relative z-10 flex flex-col px-12 pt-8 xl:px-16">
+          <BrandWordmark height={40} priority />
 
-      {/* ── Left Column: Interactive Dithered Canvas & Branding ── */}
-      <div className="relative lg:col-span-6 xl:col-span-7 flex flex-col items-center justify-center p-8 lg:p-14 border-b lg:border-b-0 lg:border-r border-border/40 bg-gradient-to-b from-muted/15 via-background to-muted/20">
-        {/* Subtle ambient glow behind canvas */}
-        <div className="absolute h-80 w-80 md:h-96 md:w-96 rounded-full bg-primary/15 blur-[120px] pointer-events-none" />
+          <h1 className="mt-8 font-heading text-3xl font-bold leading-tight tracking-tight text-foreground xl:text-4xl [@media(max-height:760px)]:mt-5">
+            Your next interview,
+            <br />
+            made{" "}
+            <span className="bg-gradient-to-r from-[#5941F2] via-[#8734BF] to-[#F23064] bg-clip-text text-transparent">
+              simple
+            </span>
+          </h1>
+          <p className="mt-2 text-base text-muted-foreground">Practice. Interview. Grow.</p>
 
-        <div className="relative z-10 flex flex-col items-center text-center max-w-lg">
-          {/* Logo element that slides and morphs from center into left column */}
-          <motion.div
-            key="dithered-logo-container"
-            initial={isFirstPlay ? { scale: 1.25, y: -30, opacity: 0 } : false}
-            animate={{ scale: 1, y: 0, opacity: 1 }}
-            transition={{
-              type: "spring",
-              stiffness: 180,
-              damping: 22,
-              duration: 0.8,
-            }}
-            className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.02]"
-          >
-            <DitheredLogo
-              imageSrc="/images/skillmark-logo.png"
-              particleColor="#5941F2"
-              scale={0.55}
-              gridSize={160}
-              className="h-64 w-64 sm:h-72 sm:w-72 md:h-80 md:w-80"
-            />
-          </motion.div>
-
-          {/* Product Brand Title & Tagline with Particle Gathering Typography */}
-          <motion.div
-            key="particle-typography-container"
-            initial={isFirstPlay ? { opacity: 0, y: 20 } : false}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: isFirstPlay ? 0.3 : 0 }}
-            className="mt-6 w-full max-w-lg h-36 sm:h-40"
-          >
-            <CursorDrivenParticleTypography
-              text="SKILLMARK"
-              subtitle="Measure what matters"
-              fontSize={54}
-              subtitleFontSize={14}
-              particleSize={0.7}
-              particleDensity={1.1}
-              dispersionStrength={13}
-              returnSpeed={0.08}
-              interactionRadius={75}
-              className="h-full w-full"
-              gatherOnMount={isFirstPlay}
-              triggerGather={gatherCount}
-            />
-          </motion.div>
-
-          {/* Replay intro action */}
-          <motion.button
-            type="button"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.8, duration: 0.5 }}
-            onClick={replayIntro}
-            className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-background/50 px-3 py-1 text-[11px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 transition-all shadow-xs backdrop-blur-sm"
-          >
-            <Sparkles className="h-3 w-3 text-primary" />
-            <span>Replay opening reveal</span>
-          </motion.button>
+          <ul className="mt-6 space-y-3 [@media(max-height:760px)]:mt-4 [@media(max-height:760px)]:space-y-2">
+            {features.map(({ icon: Icon, title, text }) => (
+              <li key={title} className="flex items-start gap-3.5">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-[#5941F2] shadow-sm ring-1 ring-[#5941F2]/10 dark:bg-white/10 dark:text-[#A99AF7] dark:ring-white/10">
+                  <Icon className="h-5 w-5" />
+                </span>
+                <div className="pt-0.5">
+                  <p className="text-sm font-semibold text-foreground">{title}</p>
+                  <p className="text-xs text-muted-foreground [@media(max-height:760px)]:hidden">{text}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
-      </div>
 
-      {/* ── Right Column: Animated Auth Form & Segmented Controls ── */}
-      <div className="lg:col-span-6 xl:col-span-5 flex flex-col items-center justify-center p-6 sm:p-10 lg:p-14">
-        <motion.div
-          key="auth-form-container"
-          initial={isFirstPlay ? { opacity: 0, x: 80, scale: 0.96 } : false}
-          animate={stage === "settled" ? { opacity: 1, x: 0, scale: 1 } : isFirstPlay ? { opacity: 0, x: 80, scale: 0.96 } : { opacity: 1, x: 0, scale: 1 }}
-          transition={{
-            type: "spring",
-            stiffness: 170,
-            damping: 22,
-            duration: 0.8,
-          }}
-          className="w-full max-w-md space-y-6"
-        >
-          {/* Animated Segmented Switch */}
-          <div className="relative flex rounded-2xl bg-muted/60 p-1.5 border border-border/60 backdrop-blur-md">
-            {/* Sliding Pill Active Indicator */}
-            <div
-              className={cn(
-                "absolute inset-y-1.5 rounded-xl bg-primary shadow-sm transition-all duration-300 ease-out",
-                activeTab === "login"
-                  ? "left-1.5 w-[calc(50%-6px)]"
-                  : "left-[calc(50%+3px)] w-[calc(50%-6px)]",
-              )}
-            />
+        {/* brand-tinted curved floor behind the desk base */}
+        <div aria-hidden className="pointer-events-none absolute -bottom-24 -left-16 z-0 h-56 w-[85%] rounded-[50%] bg-gradient-to-tr from-[#5941F2]/20 via-[#8734BF]/12 to-transparent blur-2xl dark:from-[#5941F2]/30 dark:via-[#8734BF]/20" />
+        <div className="relative z-10 mt-4 min-h-0 w-[94%] flex-1 [@media(max-height:760px)]:mt-3">
+          <Image
+            src="/images/auth/interview-pov.webp"
+            alt="Candidate taking an AI video interview on a laptop"
+            fill
+            priority
+            sizes="(min-width: 1024px) 48vw, 0px"
+            className="select-none object-contain object-left-bottom"
+          />
+        </div>
+      </aside>
 
-            <button
-              type="button"
-              onClick={() => switchTab("login")}
-              className={cn(
-                "relative z-10 flex-1 py-2.5 text-sm font-semibold transition-colors duration-200 text-center rounded-xl",
-                activeTab === "login"
-                  ? "text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Sign In
-            </button>
+      {/* ── Right: form ── */}
+      <main className="relative flex h-dvh flex-col overflow-hidden px-6 py-5 sm:px-12 sm:py-8">
+        {/* compact logo on mobile */}
+        <div className="flex justify-center lg:hidden">
+          <BrandWordmark height={32} priority />
+        </div>
 
-            <button
-              type="button"
-              onClick={() => switchTab("register")}
-              className={cn(
-                "relative z-10 flex-1 py-2.5 text-sm font-semibold transition-colors duration-200 text-center rounded-xl",
-                activeTab === "register"
-                  ? "text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Create Account
-            </button>
-          </div>
-
-          {/* Auth Card Container */}
-          <div className="rounded-2xl border border-border/80 bg-card/90 p-8 shadow-xl shadow-black/5 backdrop-blur-lg transition-all duration-300">
-            <div className="mb-6 space-y-1">
-              <h2 className="font-heading text-2xl font-bold tracking-tight text-foreground">
-                {activeTab === "login"
-                  ? t("auth.welcomeBack") || "Welcome back"
-                  : t("auth.createAccount") || "Get started with Skillmark"}
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                {activeTab === "login"
-                  ? t("auth.signInSubtitle") || "Enter your credentials to access your dashboard"
-                  : "Create your recruiter or admin account in seconds"}
-              </p>
+        <div className="flex min-h-0 flex-1 items-center justify-center py-4">
+          <div className="w-full max-w-md rounded-2xl sm:border sm:border-border/60 sm:bg-card sm:p-8 sm:shadow-xl sm:shadow-primary/5 [@media(max-height:760px)]:sm:p-6">
+            {/* Sign In / Create Account tabs with sliding indicator */}
+            <div className="relative mb-7 flex rounded-xl border border-border bg-muted/60 p-1 [@media(max-height:760px)]:mb-4">
+              <span
+                aria-hidden
+                className={`absolute inset-y-1 w-[calc(50%-4px)] rounded-lg bg-primary shadow-sm transition-all duration-300 ease-out ${isLogin ? "left-1" : "left-[calc(50%+0px)]"}`}
+              />
+              {(["login", "register"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => switchTab(tab)}
+                  aria-pressed={activeTab === tab}
+                  className={`relative z-10 flex-1 rounded-lg py-2 text-sm font-semibold transition-colors duration-200 ${
+                    activeTab === tab ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab === "login" ? t("auth.signIn") || "Sign In" : t("auth.createAccount") || "Create Account"}
+                </button>
+              ))}
             </div>
 
-            {/* Form */}
-            <form
-              onSubmit={activeTab === "login" ? handleSignIn : handleSignUp}
-              className="space-y-4"
+            <motion.div
+              initial={false}
+              animate={{ height: cardHeight }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className="overflow-hidden"
             >
-              {activeTab === "register" && (
-                <div className="space-y-2 animate-in fade-in-50 duration-200">
-                  <Label htmlFor="auth-name" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Full Name
-                  </Label>
-                  <div className="relative">
-                    <User className="absolute left-3.5 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
-                    <Input
-                      id="auth-name"
-                      type="text"
-                      placeholder="Jane Doe"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className="pl-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-2">
-                <Label htmlFor="auth-email" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {t("auth.email") || "Email Address"}
-                </Label>
-                <div className="relative">
-                  <Mail className="absolute left-3.5 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
-                  <Input
-                    id="auth-email"
-                    type="email"
-                    placeholder="name@company.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                    className="pl-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="auth-password" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    {t("auth.password") || "Password"}
-                  </Label>
-                  {activeTab === "login" && (
-                    <span className="text-xs text-muted-foreground/80 hover:text-primary transition-colors cursor-pointer">
-                      Forgot password?
-                    </span>
-                  )}
-                </div>
-                <div className="relative">
-                  <Lock className="absolute left-3.5 top-3 h-4 w-4 text-muted-foreground pointer-events-none" />
-                  <Input
-                    id="auth-password"
-                    type={showPassword ? "text" : "password"}
-                    placeholder="••••••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    minLength={6}
-                    className="pl-10 pr-10 h-11 rounded-xl bg-background border-border/80 focus-visible:ring-primary"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-3 text-muted-foreground hover:text-foreground transition-colors"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+              <div ref={cardContentRef}>
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={activeTab}
+                    initial={{ opacity: 0, x: isLogin ? -12 : 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: isLogin ? 12 : -12 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
                   >
-                    {showPassword ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
+                    <div className="mb-7 flex flex-col items-center text-center [@media(max-height:760px)]:mb-4">
+                      <span className="mb-3 flex h-11 w-11 items-center [@media(max-height:760px)]:hidden justify-center rounded-2xl bg-gradient-to-br from-[#5941F2] to-[#8734BF] text-white shadow-lg shadow-[#5941F2]/30">
+                        {isLogin ? <LogIn className="h-5 w-5" /> : <UserPlus className="h-5 w-5" />}
+                      </span>
+                      <h2 className="font-heading text-2xl font-bold tracking-tight text-foreground">
+                        {isLogin ? "Welcome back!" : t("auth.createAccount") || "Create your account"}
+                      </h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {isLogin
+                          ? addMode
+                            ? "Sign in to add another account to this browser"
+                            : fromInvite
+                              ? "Sign in with the invited email to accept"
+                              : t("auth.signInSubtitle") || "Sign in to continue to your dashboard"
+                          : fromInvite
+                            ? "Create an account with the invited email to join"
+                            : "Create your recruiter or admin account in seconds"}
+                      </p>
+                    </div>
+
+                    {sessionExpired && (
+                      <div
+                        role="alert"
+                        className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive"
+                      >
+                        Your session{prefillEmail ? ` for ${prefillEmail}` : ""} has expired. Sign in again to continue.
+                      </div>
                     )}
-                  </button>
-                </div>
+
+                    {oauthError && (
+                      <div
+                        role="alert"
+                        className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-sm text-destructive"
+                      >
+                        {oauthError}
+                      </div>
+                    )}
+
+                    {googleEnabled && (
+                      <>
+                        <a
+                          href={googleHref}
+                          className="flex h-11 w-full items-center justify-center gap-2.5 rounded-lg border border-input bg-background text-sm font-semibold text-foreground transition-colors hover:bg-muted"
+                        >
+                          <svg aria-hidden viewBox="0 0 48 48" className="h-4 w-4">
+                            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.2-.1-2.3-.4-3.5z" />
+                            <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+                            <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+                            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.2-.1-2.3-.4-3.5z" />
+                          </svg>
+                          Continue with Google
+                        </a>
+                        <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground [@media(max-height:760px)]:my-3">
+                          <span className="h-px flex-1 bg-border" />
+                          or use email
+                          <span className="h-px flex-1 bg-border" />
+                        </div>
+                      </>
+                    )}
+
+                    <form onSubmit={isLogin ? handleSignIn : handleSignUp} className="space-y-5 [@media(max-height:760px)]:space-y-3">
+                      {!isLogin && (
+                        <div className="space-y-2">
+                          <Label htmlFor="auth-name" className="text-sm font-medium text-foreground">
+                            Full name
+                          </Label>
+                          <div className="relative">
+                            <User className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
+                            <Input
+                              id="auth-name"
+                              type="text"
+                              placeholder="Jane Doe"
+                              value={name}
+                              onChange={(e) => setName(e.target.value)}
+                              className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        <Label htmlFor="auth-email" className="text-sm font-medium text-foreground">
+                          {t("auth.email") || "Email address"}
+                        </Label>
+                        <div className="relative">
+                          <Mail className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            id="auth-email"
+                            type="email"
+                            placeholder="Enter your email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            required
+                            readOnly={fromInvite && !!prefillEmail}
+                            className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary read-only:bg-muted/50"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="auth-password" className="text-sm font-medium text-foreground">
+                          {t("auth.password") || "Password"}
+                        </Label>
+                        <div className="relative">
+                          <Lock className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            id="auth-password"
+                            type={showPassword ? "text" : "password"}
+                            placeholder="Enter your password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            required
+                            minLength={8}
+                            className="h-11 rounded-lg border-input bg-background pl-10 placeholder:text-muted-foreground/70 focus-visible:ring-primary pr-10"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-3.5 top-3.5 text-muted-foreground transition-colors hover:text-foreground"
+                            aria-label={showPassword ? "Hide password" : "Show password"}
+                          >
+                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                        {isLogin && (
+                          <div className="flex justify-end pt-1">
+                            <span className="cursor-pointer text-sm font-medium text-primary hover:underline">
+                              Forgot password?
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <Button
+                        type="submit"
+                        disabled={loading}
+                        className="!mt-7 flex h-11 [@media(max-height:760px)]:!mt-5 w-full items-center justify-center gap-2 rounded-lg bg-primary text-sm font-semibold text-primary-foreground shadow-md shadow-primary/25 transition-all hover:bg-primary/90"
+                      >
+                        {loading ? (
+                          <span className="flex items-center gap-2">
+                            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+                            Please wait...
+                          </span>
+                        ) : (
+                          <>
+                            {isLogin ? t("auth.signIn") || "Sign in" : t("auth.createAccount") || "Create account"}
+                            <ArrowRight className="h-4 w-4" />
+                          </>
+                        )}
+                      </Button>
+                    </form>
+
+                    {addMode && (
+                      <button
+                        type="button"
+                        onClick={() => router.push(nextUrl)}
+                        className="mt-4 w-full text-center text-sm text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        Cancel and go back
+                      </button>
+                    )}
+                  </motion.div>
+                </AnimatePresence>
               </div>
+            </motion.div>
 
-              <Button
-                type="submit"
-                disabled={loading}
-                className="w-full h-11 mt-2 rounded-xl bg-primary text-primary-foreground font-semibold shadow-md shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2"
-              >
-                {loading ? (
-                  <div className="flex items-center gap-2">
-                    <span className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                    <span>Please wait...</span>
-                  </div>
-                ) : (
-                  <>
-                    <span>
-                      {activeTab === "login"
-                        ? t("auth.signIn") || "Sign In"
-                        : t("auth.createAccount") || "Create Account"}
-                    </span>
-                    <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </Button>
-            </form>
+            <div className="mt-6 flex items-center justify-center gap-2 text-xs text-muted-foreground [@media(max-height:760px)]:mt-4">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              Your data is safe with us
+            </div>
+            <p className="mt-1.5 text-center text-[11px] leading-relaxed text-muted-foreground/80">
+              By continuing, you agree to ResilienceSoft Interview&apos;s Terms of Service and Privacy Policy.
+            </p>
           </div>
-
-          {/* Footer details */}
-          <div className="text-center text-xs text-muted-foreground/80 leading-relaxed">
-            By continuing, you agree to Skillmark&apos;s Terms of Service and Privacy Policy.
-          </div>
-        </motion.div>
-      </div>
+        </div>
+      </main>
     </div>
   );
 }

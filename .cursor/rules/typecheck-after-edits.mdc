@@ -1,0 +1,19 @@
+---
+description: Always run typecheck after TypeScript/TSX edits before finishing
+alwaysApply: true
+---
+
+# Typecheck after code changes
+
+After any edit to TypeScript or TSX (or types that affect them), **before** saying the task is done:
+
+1. Run `npm run typecheck` (`tsc --noEmit`).
+2. If it fails, fix errors you introduced (or clearly pre-existing blockers in touched files).
+3. Re-run until clean, or report remaining failures with file:line.
+
+Also prefer:
+
+- Fixing real type errors over `as any` / `as unknown` escapes.
+- Matching existing patterns (e.g. React Query v4 uses `keepPreviousData`, not untyped `placeholderData` callbacks).
+
+Do **not** skip typecheck because the change “looks small.” CI runs the same script.

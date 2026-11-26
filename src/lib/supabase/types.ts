@@ -50,12 +50,20 @@ export type Database = {
         };
         Relationships: [];
       };
-      workspaces: {
+      organizations: {
         Row: {
           id: string;
           name: string;
           slug: string;
           ownerId: string;
+          status: Database["public"]["Enums"]["OrgStatus"];
+          plan: Database["public"]["Enums"]["OrgPlan"];
+          limits: Json;
+          featureFlags: Json;
+          stripeCustomerId: string | null;
+          stripeSubscriptionId: string | null;
+          billingEmail: string | null;
+          defaultInterviewerGender: Database["public"]["Enums"]["InterviewerGender"];
           createdAt: string;
           updatedAt: string;
         };
@@ -64,6 +72,14 @@ export type Database = {
           name: string;
           slug: string;
           ownerId: string;
+          status?: Database["public"]["Enums"]["OrgStatus"];
+          plan?: Database["public"]["Enums"]["OrgPlan"];
+          limits?: Json;
+          featureFlags?: Json;
+          stripeCustomerId?: string | null;
+          stripeSubscriptionId?: string | null;
+          billingEmail?: string | null;
+          defaultInterviewerGender?: Database["public"]["Enums"]["InterviewerGender"];
           createdAt?: string;
           updatedAt?: string;
         };
@@ -72,29 +88,135 @@ export type Database = {
           name?: string;
           slug?: string;
           ownerId?: string;
+          status?: Database["public"]["Enums"]["OrgStatus"];
+          plan?: Database["public"]["Enums"]["OrgPlan"];
+          limits?: Json;
+          featureFlags?: Json;
+          stripeCustomerId?: string | null;
+          stripeSubscriptionId?: string | null;
+          billingEmail?: string | null;
           createdAt?: string;
           updatedAt?: string;
         };
         Relationships: [];
       };
-      workspace_members: {
+      platform_settings: {
+        Row: {
+          key: string;
+          value: Json;
+          updatedAt: string;
+          updatedBy: string | null;
+        };
+        Insert: {
+          key: string;
+          value?: Json;
+          updatedAt?: string;
+          updatedBy?: string | null;
+        };
+        Update: {
+          key?: string;
+          value?: Json;
+          updatedAt?: string;
+          updatedBy?: string | null;
+        };
+        Relationships: [];
+      };
+      platform_audit_logs: {
         Row: {
           id: string;
-          workspaceId: string;
+          actorId: string | null;
+          action: string;
+          targetType: string;
+          targetId: string | null;
+          meta: Json;
+          createdAt: string;
+        };
+        Insert: {
+          id?: string;
+          actorId?: string | null;
+          action: string;
+          targetType: string;
+          targetId?: string | null;
+          meta?: Json;
+          createdAt?: string;
+        };
+        Update: {
+          id?: string;
+          actorId?: string | null;
+          action?: string;
+          targetType?: string;
+          targetId?: string | null;
+          meta?: Json;
+          createdAt?: string;
+        };
+        Relationships: [];
+      };
+      organization_invites: {
+        Row: {
+          id: string;
+          organizationId: string;
+          email: string;
+          role: Database["public"]["Enums"]["MemberRole"];
+          token: string;
+          invitedBy: string | null;
+          status: string;
+          expiresAt: string;
+          acceptedAt: string | null;
+          acceptedBy: string | null;
+          projectId: string | null;
+          projectRole: Database["public"]["Enums"]["MemberRole"] | null;
+          createdAt: string;
+        };
+        Insert: {
+          id?: string;
+          organizationId: string;
+          email: string;
+          role?: Database["public"]["Enums"]["MemberRole"];
+          token: string;
+          invitedBy?: string | null;
+          status?: string;
+          expiresAt: string;
+          acceptedAt?: string | null;
+          acceptedBy?: string | null;
+          projectId?: string | null;
+          projectRole?: Database["public"]["Enums"]["MemberRole"] | null;
+          createdAt?: string;
+        };
+        Update: {
+          id?: string;
+          organizationId?: string;
+          email?: string;
+          role?: Database["public"]["Enums"]["MemberRole"];
+          token?: string;
+          invitedBy?: string | null;
+          status?: string;
+          expiresAt?: string;
+          acceptedAt?: string | null;
+          acceptedBy?: string | null;
+          projectId?: string | null;
+          projectRole?: Database["public"]["Enums"]["MemberRole"] | null;
+          createdAt?: string;
+        };
+        Relationships: [];
+      };
+      organization_members: {
+        Row: {
+          id: string;
+          organizationId: string;
           userId: string;
           role: Database["public"]["Enums"]["MemberRole"];
           joinedAt: string;
         };
         Insert: {
           id?: string;
-          workspaceId: string;
+          organizationId: string;
           userId: string;
           role?: Database["public"]["Enums"]["MemberRole"];
           joinedAt?: string;
         };
         Update: {
           id?: string;
-          workspaceId?: string;
+          organizationId?: string;
           userId?: string;
           role?: Database["public"]["Enums"]["MemberRole"];
           joinedAt?: string;
@@ -111,9 +233,10 @@ export type Database = {
           mode: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch: boolean;
           userId: string;
-          workspaceId: string | null;
+          projectId: string | null;
           aiPersona: string | null;
           aiName: string;
+          aiGender: Database["public"]["Enums"]["InterviewerGender"];
           aiTone: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth: Database["public"]["Enums"]["FollowUpDepth"];
           language: string;
@@ -140,9 +263,10 @@ export type Database = {
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;
           userId: string;
-          workspaceId?: string | null;
+          projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
+          aiGender?: Database["public"]["Enums"]["InterviewerGender"];
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth?: Database["public"]["Enums"]["FollowUpDepth"];
           language?: string;
@@ -169,9 +293,10 @@ export type Database = {
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;
           userId?: string;
-          workspaceId?: string | null;
+          projectId?: string | null;
           aiPersona?: string | null;
           aiName?: string;
+          aiGender?: Database["public"]["Enums"]["InterviewerGender"];
           aiTone?: Database["public"]["Enums"]["ToneLevel"];
           followUpDepth?: Database["public"]["Enums"]["FollowUpDepth"];
           language?: string;
@@ -527,12 +652,99 @@ export type Database = {
         };
         Relationships: [];
       };
+      question_bank_sections: {
+        Row: {
+          id: string;
+          organizationId: string;
+          name: string;
+          description: string | null;
+          order: number;
+          isEnabled: boolean;
+          createdAt: string;
+          updatedAt: string;
+        };
+        Insert: {
+          id?: string;
+          organizationId: string;
+          name: string;
+          description?: string | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Update: {
+          id?: string;
+          organizationId?: string;
+          name?: string;
+          description?: string | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Relationships: [];
+      };
+      question_bank_items: {
+        Row: {
+          id: string;
+          sectionId: string;
+          organizationId: string;
+          text: string;
+          description: string | null;
+          type: string;
+          options: Json | null;
+          starterCode: Json | null;
+          followUpPrompts: Json | null;
+          skipIf: Json | null;
+          order: number;
+          isEnabled: boolean;
+          createdAt: string;
+          updatedAt: string;
+        };
+        Insert: {
+          id?: string;
+          sectionId: string;
+          organizationId: string;
+          text: string;
+          description?: string | null;
+          type?: string;
+          options?: Json | null;
+          starterCode?: Json | null;
+          followUpPrompts?: Json | null;
+          skipIf?: Json | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Update: {
+          id?: string;
+          sectionId?: string;
+          organizationId?: string;
+          text?: string;
+          description?: string | null;
+          type?: string;
+          options?: Json | null;
+          starterCode?: Json | null;
+          followUpPrompts?: Json | null;
+          skipIf?: Json | null;
+          order?: number;
+          isEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
     Enums: {
+      InterviewerGender: "FEMALE" | "MALE",
       UserRole: "USER" | "ADMIN" | "ENTERPRISE";
       MemberRole: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
+      OrgStatus: "ACTIVE" | "SUSPENDED" | "DELETED";
+      OrgPlan: "FREE" | "PRO" | "ENTERPRISE" | "SELF_HOSTED";
       InterviewMode: "CHAT" | "VOICE" | "HYBRID";
       ToneLevel: "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY";
       FollowUpDepth: "LIGHT" | "MODERATE" | "DEEP";

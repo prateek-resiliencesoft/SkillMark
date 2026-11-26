@@ -110,17 +110,21 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasRef, WhiteboardCanvas
     // ── Auto-save on scene changes ────────────────────────────────
     // Track element versions so we only fire onDirty for real content changes
     // (Excalidraw's onChange fires for selections, cursor moves, etc.)
-    const lastElementsSnapshot = useRef<string>("");
+    // versionNonce sum is cheap; avoid JSON.stringify on every cursor/selection tick.
+    const lastElementsVersion = useRef(0);
 
     const handleChange = useCallback(() => {
       if (readOnly || !apiRef.current) return;
 
       const elements = apiRef.current.getSceneElements();
-      const snapshot = JSON.stringify(elements);
+      let version = elements.length;
+      for (const el of elements) {
+        const v = (el as { versionNonce?: number }).versionNonce;
+        if (typeof v === "number") version = (version + v) | 0;
+      }
 
-      // Only notify dirty and schedule auto-save when elements actually change
-      if (snapshot === lastElementsSnapshot.current) return;
-      lastElementsSnapshot.current = snapshot;
+      if (version === lastElementsVersion.current) return;
+      lastElementsVersion.current = version;
 
       onDirtyRef.current?.();
 
@@ -128,10 +132,11 @@ export const WhiteboardCanvas = forwardRef<WhiteboardCanvasRef, WhiteboardCanvas
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
       autoSaveTimer.current = setTimeout(() => {
         if (!onAutoSaveRef.current || !apiRef.current) return;
-        if (elements.length === 0) return;
+        const els = apiRef.current.getSceneElements();
+        if (els.length === 0) return;
 
         const data = JSON.stringify({
-          elements,
+          elements: els,
           appState: apiRef.current.getAppState(),
         });
         onAutoSaveRef.current(data);

@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:read");
   if (isAuthError(auth)) return auth;
 
   const { count: templateCount } = await supabaseAdmin
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   const { count: seatCount } = await supabaseAdmin
     .from("organization_members")
     .select("id", { count: "exact", head: true })
-    .eq("workspaceId", auth.organizationId);
+    .eq("organizationId", auth.organizationId);
 
   return Response.json({
     data: {

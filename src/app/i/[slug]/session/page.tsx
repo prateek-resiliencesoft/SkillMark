@@ -3,18 +3,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
+import { StrikeBadge } from "@/components/session/strike-badge";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding, PreviewWrapper } from "@/components/session/interviewee-onboarding";
+import { ScreenShareGate } from "@/components/session/screen-share-gate";
 import { IntervieweeTourOverlay } from "@/components/session/interviewee-tour-overlay";
 import { IntervieweeTourProvider } from "@/components/session/interviewee-tour-provider";
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { PreparingScreen } from "@/components/session/preparing-screen";
-import { Card, CardContent } from "@/components/ui/card";
 import type { InterviewContext } from "@/hooks/use-voice";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
-import { CheckCircle2 } from "lucide-react";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import dynamic from "next/dynamic";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCandidateLanguage } from "@/hooks/use-candidate-language";
 
 const STORAGE_PREFIX = "aural_session_";
 
@@ -60,12 +64,40 @@ export default function SlugSessionPage() {
     { id: sessionId! },
     { enabled: !!sessionId, retry: false },
   );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sessionRow = session.data as any;
+  const { candidateLanguage, chooseLanguage } = useCandidateLanguage(sessionRow?.id, interview.data?.language, sessionRow?.language);
 
   useEffect(() => {
     if (!sessionId || session.isError) {
       router.replace(`/i/${slug}`);
     }
   }, [sessionId, session.isError, slug, router]);
+
+  // Report uncaught browser errors to this session's Error Log report.
+  useEffect(() => {
+    if (!sessionId) return;
+    const onErr = (e: ErrorEvent) =>
+      reportSessionError(sessionId, {
+        category: "client",
+        message: e.message || "Uncaught error",
+        context: { stage: "window.onerror", file: e.filename?.split("?")[0], line: e.lineno, col: e.colno },
+      });
+    const onRej = (e: PromiseRejectionEvent) => {
+      const r = e.reason as { message?: string } | string | undefined;
+      reportSessionError(sessionId, {
+        category: "client",
+        message: typeof r === "string" ? r : r?.message || "Unhandled promise rejection",
+        context: { stage: "unhandledrejection" },
+      });
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, [sessionId]);
 
 
   if (interview.isLoading || session.isLoading || !interview.data || !session.data) {
@@ -79,28 +111,11 @@ export default function SlugSessionPage() {
 
   if (session.data.status === "COMPLETED" || completed) {
     try { localStorage.removeItem(STORAGE_PREFIX + slug); } catch { /* noop */ }
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-        <Card className="w-full max-w-md">
-          <CardContent className="py-12 text-center">
-            <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-            <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-            {completionReason === "TIME_LIMIT_EXCEEDED" && (
-              <p className="mt-2 text-sm text-amber-600">
-                The session time limit has been reached and the interview was ended automatically.
-              </p>
-            )}
-            <p className="mt-2 text-muted-foreground">
-              Your interview has been completed successfully. We appreciate your
-              time and thoughtful responses.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} sessionId={isPreview ? null : session.data.id} />;
   }
 
   const antiCheatingEnabled = !isPreview && !!interview.data.antiCheatingEnabled;
+  const integrity = effectiveIntegrityConfig({ ...interview.data, antiCheatingEnabled });
 
   if (!onboardingDone) {
     return (
@@ -111,6 +126,8 @@ export default function SlugSessionPage() {
         questionCount={interview.data.questions.length}
         timeLimitMinutes={interview.data.timeLimitMinutes}
         language={interview.data.language}
+        candidateLanguage={candidateLanguage}
+        onLanguageChange={isPreview ? undefined : chooseLanguage}
         antiCheatingEnabled={antiCheatingEnabled}
         voiceEnabled={!!interview.data.voiceEnabled}
         chatEnabled={!!interview.data.chatEnabled}
@@ -154,7 +171,8 @@ export default function SlugSessionPage() {
     const mode = useVoice ? "voice" : "chat";
     const mockContext: InterviewContext = {
       title: interview.data.title,
-      aiName: interview.data.aiName ?? "AI Interviewer",
+      aiName: interview.data.aiName ?? "ResilienceSoft Interview",
+      aiGender: interview.data.aiGender ?? "FEMALE",
       aiTone: "professional",
       language: interview.data.language ?? "en-US",
       followUpDepth: "medium",
@@ -173,7 +191,7 @@ export default function SlugSessionPage() {
               sessionId="__preview__"
               interviewId="__preview__"
               interviewTitle={interview.data.title}
-              aiName={interview.data.aiName ?? "AI Interviewer"}
+              aiName={interview.data.aiName ?? "ResilienceSoft Interview"}
               questionCount={interview.data.questions.length}
               interviewContext={mockContext}
               durationMinutes={interview.data.timeLimitMinutes ?? undefined}
@@ -187,7 +205,7 @@ export default function SlugSessionPage() {
               interview={{
                 id: "__preview__",
                 title: interview.data.title,
-                aiName: interview.data.aiName ?? "AI Interviewer",
+                aiName: interview.data.aiName ?? "ResilienceSoft Interview",
                 mode: "CHAT",
                 questions: mockContext.questions.map((q, i) => ({
                   id: `preview-q-${i}`,
@@ -211,10 +229,24 @@ export default function SlugSessionPage() {
       title: interview.data.title,
       objective: interview.data.objective,
       aiName: interview.data.aiName,
+      aiGender: interview.data.aiGender,
       aiTone: interview.data.aiTone,
       language: interview.data.language,
+      candidateLanguage,
       followUpDepth: interview.data.followUpDepth,
+      integrityProbing: integrity.integrityChecksEnabled,
       startQuestionIndex: isResuming ? resumeQuestionIndex : undefined,
+      // Reload mid-interview: the AI continues from the saved transcript
+      // instead of greeting again (questions before the current one count as asked).
+      resume: isResuming
+        ? {
+            recent: (resumeTextMessages ?? []).slice(-8).map((m: any) => ({
+              role: m.role === "USER" ? ("user" as const) : ("assistant" as const),
+              text: String(m.content ?? ""),
+            })),
+            askedQuestionIndexes: [],
+          }
+        : undefined,
       questions: interview.data.questions.map((q: any) => ({
         text: q.text,
         type: q.type,
@@ -222,12 +254,14 @@ export default function SlugSessionPage() {
         options: q.options,
         starterCode: q.starterCode as { language: string; code: string } | null,
         order: q.order,
+        skipIf: q.skipIf ?? null,
       })),
     };
 
     return (
-      <>
-        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} />
+      <ScreenShareGate optional={isPreview} sessionId={sessionId ?? undefined}>
+        <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+        <StrikeBadge sessionId={sessionId!} enabled={antiCheatingEnabled} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={sessionId!}
@@ -243,13 +277,14 @@ export default function SlugSessionPage() {
           onComplete={handleComplete}
           videoMode={isPreview ? false : !!interview.data.videoEnabled}
         />
-      </>
+      </ScreenShareGate>
     );
   }
 
   return (
-    <>
-      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} />
+    <ScreenShareGate optional={isPreview} sessionId={sessionId ?? undefined}>
+      <AntiCheatingGuard enabled={antiCheatingEnabled} sessionId={sessionId!} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+      <StrikeBadge sessionId={sessionId!} enabled={antiCheatingEnabled} />
         <HeadMovementGuard enabled={antiCheatingEnabled && !!interview.data.headMovementDetectionEnabled} sessionId={sessionId!} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={sessionId!}
@@ -272,6 +307,6 @@ export default function SlugSessionPage() {
         initialQuestionIndex={isResuming ? resumeQuestionIndex : undefined}
         onComplete={handleComplete}
       />
-    </>
+    </ScreenShareGate>
   );
 }

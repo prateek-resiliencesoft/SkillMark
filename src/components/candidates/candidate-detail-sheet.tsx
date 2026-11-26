@@ -1,5 +1,6 @@
 "use client";
 
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -12,10 +13,22 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
+import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
+import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
+import { PreflightProgress } from "@/components/candidates/preflight-progress";
+import { sessionStatusNote } from "@/lib/session-activity";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { CreateRoundTwoSheet } from "@/components/round-two/create-round-two-sheet";
+import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -25,7 +38,9 @@ import {
     Check,
     Copy,
     ExternalLink,
+    FileText,
     GraduationCap,
+    Languages,
     Loader2,
     Mail,
     MessageCircle,
@@ -33,8 +48,12 @@ import {
     Phone,
     Send,
     Sparkles,
+    Star,
     User,
+    Video,
 } from "lucide-react";
+import Link from "next/link";
+import { interviewLanguageLabel } from "@/lib/interview-language";
 import { useEffect, useMemo, useState } from "react";
 import {
     CandidateFormFields,
@@ -66,6 +85,13 @@ const STATUS_STYLE: Record<string, string> = {
   IN_PROGRESS: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
   ABANDONED: "bg-destructive/10 text-destructive border-destructive/20",
   DISQUALIFIED: "bg-destructive/10 text-destructive border-destructive/20",
+  "Opened link": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "Setting up": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  "In Progress": "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/20",
+  Completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20",
+  Abandoned: "bg-destructive/10 text-destructive border-destructive/20",
+  Disqualified: "bg-destructive/10 text-destructive border-destructive/20",
+  "Not Started": "bg-muted text-muted-foreground",
 };
 
 function SendPill({ label, status, at }: { label: string; status?: string | null; at?: string | null }) {
@@ -92,6 +118,99 @@ function Row({ icon: Icon, label, value }: { icon: React.ComponentType<{ classNa
   );
 }
 
+type InviteMessageView = {
+  channel: "email" | "whatsapp";
+  source: "exact" | "reconstructed";
+  status: string | null;
+  sentAt: string | null;
+  provider: string | null;
+  to: string | null;
+  subject?: string | null;
+  text: string | null;
+  templateName?: string | null;
+};
+
+function InviteMessagesSection({ views }: { views?: InviteMessageView[] | null }) {
+  const [openChannel, setOpenChannel] = useState<"email" | "whatsapp" | null>(null);
+  if (!views?.length) return null;
+
+  return (
+    <section className="rounded-xl border bg-card p-4 shadow-sm">
+      <h4 className="mb-3 text-sm font-semibold">Invite messages</h4>
+      <div className="space-y-2">
+        {views.map((v) => {
+          const isOpen = openChannel === v.channel;
+          const Icon = v.channel === "email" ? Mail : MessageCircle;
+          const title = v.channel === "email" ? "Email" : "WhatsApp";
+          return (
+            <div key={v.channel} className="rounded-lg border bg-background/60">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted/40"
+                onClick={() => setOpenChannel(isOpen ? null : v.channel)}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="font-medium">{title}</span>
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                    v.source === "exact"
+                      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                      : "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                  )}
+                >
+                  {v.source === "exact" ? "Exact (saved)" : "Reconstructed"}
+                </span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  {v.status ?? "not sent"}
+                  {v.sentAt ? ` · ${fmt(v.sentAt)}` : ""}
+                </span>
+              </button>
+              {isOpen && (
+                <div className="space-y-2 border-t px-3 py-3 text-xs">
+                  <div className="grid gap-1.5 sm:grid-cols-2">
+                    <div>
+                      <span className="text-muted-foreground">To</span>
+                      <p className="break-all font-medium text-foreground">{v.to || "—"}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Provider</span>
+                      <p className="font-medium text-foreground">{v.provider || "—"}</p>
+                    </div>
+                    {v.channel === "email" && (
+                      <div className="sm:col-span-2">
+                        <span className="text-muted-foreground">Subject</span>
+                        <p className="font-medium text-foreground">{v.subject || "—"}</p>
+                      </div>
+                    )}
+                    {v.channel === "whatsapp" && v.templateName ? (
+                      <div className="sm:col-span-2">
+                        <span className="text-muted-foreground">Template</span>
+                        <p className="font-medium text-foreground">{v.templateName}</p>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Message</span>
+                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 p-2.5 font-sans text-[12px] leading-relaxed text-foreground code-scrollbar">
+                      {v.text?.trim() || "—"}
+                    </pre>
+                  </div>
+                  {v.source === "reconstructed" && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Rebuilt from the current org template. Resend to save the exact message that went out.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function CandidateDetailSheet({
   candidateId,
   onOpenChange,
@@ -107,17 +226,47 @@ export function CandidateDetailSheet({
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const open = !!candidateId;
-  const q = trpc.candidate.getById.useQuery({ id: candidateId ?? "" }, { enabled: open });
+  const q = trpc.candidate.getById.useQuery(
+    { id: candidateId ?? "" },
+    { enabled: open, refetchInterval: (data) => livePollInterval(data) },
+  );
   const c = q.data as any;
   const delivery = trpc.candidate.deliveryOptions.useQuery(
     { interviewId: c?.interviewId ?? "" },
     { enabled: !!c?.interviewId },
   );
+  const profile = c?.profile as
+    | { cvPath?: string; resumeMarkdown?: string; fileName?: string }
+    | null
+    | undefined;
+  const isFormApplicant = typeof c?.notes === "string" && /applied via|hosted form/i.test(c.notes);
+  const hasResume =
+    isFormApplicant ||
+    !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName);
+  const cvQ = trpc.candidate.resumeAccess.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId && hasResume, retry: false },
+  );
+  const [cvOpening, setCvOpening] = useState(false);
+  const feedbackQ = trpc.candidate.feedback.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId && !!c?.sessionId, retry: false },
+  );
+  const feedback = feedbackQ.data;
 
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<CandidateFormState>(EMPTY_CANDIDATE_FORM);
   const [confirmDiscard, setConfirmDiscard] = useState<null | "close" | "cancel">(null);
   const [copied, setCopied] = useState(false);
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [sendEmail, setSendEmail] = useState(false);
+  const [sendWhatsapp, setSendWhatsapp] = useState(false);
+  const [roundTwoOpen, setRoundTwoOpen] = useState(false);
+  const roundTwoQ = trpc.roundTwo.forCandidate.useQuery(
+    { candidateId: candidateId ?? "" },
+    { enabled: open && !!candidateId, retry: false },
+  );
+  const existingRoundTwo = roundTwoQ.data;
 
   const original = useMemo(() => (c ? toForm(c) : null), [c]);
   useEffect(() => {
@@ -127,7 +276,17 @@ export function CandidateDetailSheet({
     setEditing(open && startInEdit);
   }, [open, startInEdit, candidateId]);
 
-  const dirty = editing && !!original && JSON.stringify(form) !== JSON.stringify(original);
+  const dirty =
+    editing &&
+    !!original &&
+    (Object.keys(form) as (keyof typeof form)[]).some((k) => {
+      const a = form[k];
+      const b = original[k];
+      if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length !== b.length || a.some((v, i) => v !== b[i]);
+      }
+      return a !== b;
+    });
   useEffect(() => {
     if (!dirty) return;
     const h = (e: BeforeUnloadEvent) => {
@@ -140,9 +299,33 @@ export function CandidateDetailSheet({
 
   const errors = validateCandidateForm(form);
   const sessionStatus: string = c?.session?.status ?? "NOT_STARTED";
-  const started = !!c?.session && sessionStatus !== "NOT_STARTED";
+  const sessionLabel = formatSessionStatusLabel(c?.session ?? null);
+  const activity = (c?.activity ?? null) as {
+    messages: { id: string; role: string; content: string; timestamp?: string | null }[];
+    messageCount: number;
+    candidateLines: number;
+    questionsAnswered: number;
+    durationSeconds: number | null;
+    firstMessageAt: string | null;
+    lastMessageAt: string | null;
+    recordingUrl: string | null;
+    hasRecording: boolean;
+  } | null;
+  const [showTranscript, setShowTranscript] = useState(false);
+  const interviewBegun = !!(
+    c?.session?.interviewBeganAt ||
+    sessionStatus === "COMPLETED" ||
+    sessionStatus === "DISQUALIFIED" ||
+    (activity?.messageCount ?? 0) > 0 ||
+    activity?.hasRecording
+  );
+  const statusNote = interviewBegun ? sessionStatusNote(sessionStatus, c?.session?.endReason) : null;
+  const fmtDur = (s: number | null | undefined) =>
+    s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   const score = c?.session?.insights ? getSessionOverallScore(c.session.insights) : null;
   const link = c?.inviteToken && typeof window !== "undefined" ? `${window.location.origin}/i/invite/${c.inviteToken}` : null;
+  const needsNewLink = needsFreshInviteLink({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
+  const linkExpired = isLinkExpired({ session: c?.session ?? null, expiresAt: c?.expiresAt ?? null });
   const tailored: { text: string; skill?: string | null }[] = Array.isArray(c?.tailoredQuestions) ? c.tailoredQuestions : [];
 
   const update = trpc.candidate.update.useMutation({
@@ -158,21 +341,41 @@ export function CandidateDetailSheet({
     onError: (err) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
   });
 
+  const canEmail = !!delivery.data?.email && !!String(c?.email ?? "").trim();
+  const phoneTrim = String(c?.phone ?? "").replace(/[\s()-]/g, "");
+  const canWhatsapp = !!delivery.data?.whatsapp && phoneTrim.startsWith("+");
+  const canSendAny = canEmail || canWhatsapp;
+
+  useEffect(() => {
+    // Default to every channel that is actually sendable for this candidate.
+    setSendEmail(canEmail);
+    setSendWhatsapp(canWhatsapp);
+  }, [canEmail, canWhatsapp, candidateId]);
+
+  const selectedChannels = {
+    email: sendEmail && canEmail,
+    whatsapp: sendWhatsapp && canWhatsapp,
+  };
+  const hasSelectedChannel = selectedChannels.email || selectedChannels.whatsapp;
+
   const resend = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
-      const parts: string[] = [];
-      let fail = false;
-      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-        const r = d[ch];
-        if (!r) continue;
-        if (r.status !== "sent") fail = true;
-        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-      }
-      toast({ title: fail ? "Some messages not sent" : "Invite link sent", description: parts.join(" · ") || "Nothing to send", variant: fail ? "destructive" : undefined });
+      const s = summarizeDelivery(d, { verb: "resent" });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
       void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
       onSaved();
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
+  });
+
+  const sendNew = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      const s = summarizeDelivery(d.delivery, { newLink: true });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
+      void utils.candidate.getById.invalidate({ id: candidateId ?? "" });
+      onSaved();
+    },
+    onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
   });
 
   const save = () => {
@@ -223,10 +426,29 @@ export function CandidateDetailSheet({
                   <SheetTitle className="truncate text-lg">{c.name}</SheetTitle>
                   <SheetDescription className="truncate">{c.interview?.title}</SheetDescription>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
-                      {sessionStatus.replace("_", " ").toLowerCase()}
+                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", STATUS_STYLE[sessionLabel] ?? STATUS_STYLE[sessionStatus] ?? "bg-muted text-muted-foreground")}>
+                      Round 1 · {sessionLabel}
                     </span>
-                    {score != null && <Badge variant="outline" className="text-[11px]">Score {Math.round(score)}</Badge>}
+                    {existingRoundTwo ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="text-[11px] text-muted-foreground">Round 2</span>
+                        <RoundTwoStatusBadge status={existingRoundTwo.status} />
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-muted-foreground/30 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        Round 2 · None
+                      </span>
+                    )}
+                    <QuitEarlyBadge session={c?.session} />
+                    {neverReachedFirstQuestion(c?.session ?? null) ? (
+                      <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
+                    ) : null}
+                    {score != null && (
+                      <ScoreWithBreakdown
+                        insights={c?.session?.insights}
+                        variant="badge"
+                      />
+                    )}
                     <SendPill label="WhatsApp" status={c.whatsappStatus} at={c.whatsappSentAt} />
                     <SendPill label="Email" status={c.emailStatus} at={c.emailSentAt} />
                   </div>
@@ -245,7 +467,7 @@ export function CandidateDetailSheet({
             {q.isError && <p className="text-sm text-destructive">{q.error.message}</p>}
             {c && editing && (
               <div className="space-y-3">
-                {started && (
+                {interviewBegun && (
                   <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     This interview is already {sessionStatus === "COMPLETED" ? "completed" : "in progress"}. Changes update the
@@ -261,39 +483,188 @@ export function CandidateDetailSheet({
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
                   <h4 className="mb-2 text-sm font-semibold">Invite link</h4>
                   {link ? (
-                    <div className="flex items-center gap-2">
-                      <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">{link}</code>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(link);
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 1500);
-                        }}
-                      >
-                        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={resend.isLoading || !(delivery.data?.email || delivery.data?.whatsapp)}
-                        title={delivery.data?.email || delivery.data?.whatsapp ? "Send the link again" : "Configure WhatsApp/Email in Integrations"}
-                        onClick={() =>
-                          resend.mutate({
-                            candidateId: c.id,
-                            channels: { email: !!delivery.data?.email && !!c.email, whatsapp: !!delivery.data?.whatsapp && !!c.phone },
-                          })
-                        }
-                      >
-                        {resend.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
-                        Resend
-                      </Button>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">{link}</code>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(link);
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 1500);
+                          }}
+                        >
+                          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+
+                      {linkExpired ? (
+                        <div className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                          <div className="flex items-center gap-2">
+                            <ExpiredBadge />
+                            <span className="text-xs text-muted-foreground">Expired on {fmt(c.expiresAt)}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            The candidate cannot open this link. Extend the expiry to enable sending it again.
+                          </p>
+                          <Button size="sm" onClick={() => setExtendOpen(true)}>
+                            <CalendarClock className="mr-1.5 h-3.5 w-3.5" />
+                            Extend expiry
+                          </Button>
+                        </div>
+                      ) : canSendAny ? (
+                        <div className="space-y-2 rounded-lg border bg-background/60 p-3">
+                          <p className="text-xs font-medium text-foreground">
+                            {needsNewLink ? "Send new link via" : "Resend via"}
+                          </p>
+                          {canWhatsapp && (
+                            <label className="flex items-start gap-2 text-sm">
+                              <Checkbox
+                                checked={sendWhatsapp}
+                                onCheckedChange={(v) => setSendWhatsapp(v === true)}
+                              />
+                              <span>
+                                WhatsApp
+                                <span className="block text-[11px] text-muted-foreground">To {phoneTrim}</span>
+                              </span>
+                            </label>
+                          )}
+                          {canEmail && (
+                            <label className="flex items-start gap-2 text-sm">
+                              <Checkbox
+                                checked={sendEmail}
+                                onCheckedChange={(v) => setSendEmail(v === true)}
+                              />
+                              <span>
+                                Email
+                                <span className="block text-[11px] text-muted-foreground">To {String(c.email).trim()}</span>
+                              </span>
+                            </label>
+                          )}
+                          <Button
+                            size="sm"
+                            className="mt-1"
+                            disabled={resend.isLoading || sendNew.isLoading || !hasSelectedChannel}
+                            title={
+                              needsNewLink
+                                ? "Invalidate this link, start a fresh session, and send the new link"
+                                : "Send the current link on the selected channels"
+                            }
+                            onClick={() => {
+                              if (needsNewLink) {
+                                sendNew.mutate({ candidateId: c.id, channels: selectedChannels });
+                              } else {
+                                resend.mutate({ candidateId: c.id, channels: selectedChannels });
+                              }
+                            }}
+                          >
+                            {resend.isLoading || sendNew.isLoading ? (
+                              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Send className="mr-1.5 h-3.5 w-3.5" />
+                            )}
+                            {needsNewLink ? "Send new link" : "Resend"}
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-xs text-muted-foreground">
+                            {!delivery.data?.email && !delivery.data?.whatsapp
+                              ? "No email or WhatsApp provider connected. Configure them in Settings → Integrations to resend invites."
+                              : !c.email && !phoneTrim
+                                ? "Add an email or phone (+country code) on this candidate to send the invite."
+                                : delivery.data?.whatsapp && phoneTrim && !phoneTrim.startsWith("+")
+                                  ? "Phone must start with a country code (e.g. +91…) for WhatsApp."
+                                  : "No sendable channel for this candidate with the connected providers."}
+                          </p>
+                          {needsNewLink && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={sendNew.isLoading}
+                              onClick={() =>
+                                sendNew.mutate({
+                                  candidateId: c.id,
+                                  channels: { email: false, whatsapp: false },
+                                })
+                              }
+                            >
+                              {sendNew.isLoading ? (
+                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                              ) : null}
+                              Create new link (no send)
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground">No invite link.</p>
                   )}
                   {c.lastSendError && <p className="mt-2 text-xs text-destructive">Last send error: {c.lastSendError}</p>}
                 </section>
+
+                <LeftFollowupAction
+                  candidateId={c.id}
+                  candidate={c}
+                  session={c.session}
+                  variant="card"
+                  onDone={onSaved}
+                />
+
+                <ExtendExpiryDialog
+                  open={extendOpen}
+                  onOpenChange={setExtendOpen}
+                  candidateId={c.id}
+                  candidateName={c.name}
+                  expiresAt={c.expiresAt}
+                  onExtended={() => onSaved()}
+                />
+
+                <InviteMessagesSection views={c.inviteMessageViews} />
+
+                {hasResume && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-semibold">Resume</h4>
+                    {cvQ.isLoading ? (
+                      <p className="text-xs text-muted-foreground">Looking up resume…</p>
+                    ) : cvQ.data?.url || cvQ.data?.markdown ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={cvQ.data.name}>
+                          {cvQ.data.name}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={cvOpening}
+                          onClick={() => {
+                            setCvOpening(true);
+                            try {
+                              if (cvQ.data?.url) {
+                                window.open(cvQ.data.url, "_blank", "noopener,noreferrer");
+                              } else if (cvQ.data?.markdown) {
+                                const blob = new Blob([cvQ.data.markdown], { type: "text/markdown" });
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, "_blank", "noopener,noreferrer");
+                                setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                              }
+                            } finally {
+                              setCvOpening(false);
+                            }
+                          }}
+                        >
+                          {cvOpening ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <FileText className="mr-1.5 h-3.5 w-3.5" />}
+                          View resume
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {cvQ.error?.message ?? "No resume on file for this candidate."}
+                      </p>
+                    )}
+                  </section>
+                )}
 
                 {/* Details */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
@@ -311,10 +682,20 @@ export function CandidateDetailSheet({
                   <h4 className="mb-1 text-sm font-semibold">Schedule & status</h4>
                   <Row icon={CalendarClock} label="Created" value={fmt(c.createdAt)} />
                   <Row icon={CalendarClock} label="Scheduled" value={fmt(c.scheduledAt)} />
-                  <Row icon={CalendarClock} label="Link expires" value={fmt(c.expiresAt)} />
-                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.startedAt ?? c.session?.createdAt)} />
+                  <Row icon={CalendarClock} label="Link expires" value={linkExpired ? `${fmt(c.expiresAt)} (expired)` : fmt(c.expiresAt)} />
+                  <Row icon={CalendarClock} label="Started" value={fmt(c.session?.interviewBeganAt ?? (interviewBegun ? (c.session?.startedAt ?? c.session?.createdAt) : null))} />
                   <Row icon={CalendarClock} label="Completed" value={fmt(c.session?.completedAt)} />
-                  {started && (
+                  <Row icon={Languages} label="Language" value={interviewLanguageLabel(c.interview?.language, c.session?.language)} />
+                  <PreflightProgress
+                    events={c.preflightEvents}
+                    inviteToken={c.inviteToken}
+                    device={c.session?.preflightDevice}
+                    lastActivityAt={c.session?.lastActivityAt}
+                    available={c.preflightAvailable !== false}
+                    session={c.session ?? null}
+                    firstMessageAt={activity?.firstMessageAt ?? null}
+                  />
+                  {interviewBegun && (
                     <a
                       href={`/interviews/${c.interviewId}/edit/sessions?session=${c.session.id}`}
                       target="_blank"
@@ -325,6 +706,120 @@ export function CandidateDetailSheet({
                     </a>
                   )}
                 </section>
+
+                {/* Round 2 — same schedule flow as the session report actions */}
+                {c.sessionId && interviewBegun && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+                      <Video className="h-3.5 w-3.5 text-primary" />
+                      Round 2 live interview
+                    </h4>
+                    {existingRoundTwo && existingRoundTwo.status !== "draft" ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <RoundTwoStatusBadge status={existingRoundTwo.status} />
+                          <p className="text-xs text-muted-foreground">
+                            {existingRoundTwo.status === "scheduled"
+                              ? existingRoundTwo.scheduledAt
+                                ? `Scheduled for ${fmt(existingRoundTwo.scheduledAt)}`
+                                : "Scheduled"
+                              : existingRoundTwo.status === "live"
+                                ? "Live now"
+                                : existingRoundTwo.status === "ended"
+                                  ? "Ended"
+                                  : null}
+                          </p>
+                        </div>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link href={`/round-two/${existingRoundTwo.id}`}>
+                            Open round 2 <ExternalLink className="ml-1.5 h-3 w-3" />
+                          </Link>
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-xs text-muted-foreground">
+                          {existingRoundTwo?.status === "draft"
+                            ? "A draft plan is ready — finish scheduling when you are."
+                            : "Build a question plan from round 1, invite the panel, and send the candidate a join link."}
+                        </p>
+                        <Button size="sm" onClick={() => setRoundTwoOpen(true)}>
+                          <Video className="mr-1.5 h-3.5 w-3.5" />
+                          {existingRoundTwo?.status === "draft" ? "Continue scheduling" : "Schedule round 2"}
+                        </Button>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {feedback ? (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-2 text-sm font-semibold">Candidate feedback</h4>
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex" aria-label={`${feedback.rating} of 5`}>
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <Star key={n} className={cn("h-4 w-4", n <= feedback.rating ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30")} />
+                        ))}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{new Date(feedback.createdAt).toLocaleString()}</span>
+                    </div>
+                    {feedback.tags?.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {feedback.tags.map((t) => (
+                          <span key={t} className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {feedback.comment ? <p className="mt-2 whitespace-pre-line text-sm">{feedback.comment}</p> : null}
+                  </section>
+                ) : null}
+
+                {/* Interview activity — shown for any status once the candidate attempted it */}
+                {c.session && interviewBegun && (
+                  <section className="rounded-xl border bg-card p-4 shadow-sm">
+                    <h4 className="mb-1 text-sm font-semibold">Interview</h4>
+                    {statusNote && <p className="mb-2 text-xs text-muted-foreground">{statusNote}</p>}
+                    <Row icon={CalendarClock} label="Duration" value={fmtDur(activity?.durationSeconds)} />
+                    <Row icon={MessageCircle} label="Questions answered" value={activity ? String(activity.questionsAnswered) : null} />
+                    <Row
+                      icon={MessageCircle}
+                      label="Transcript"
+                      value={activity ? `${activity.messageCount} lines (${activity.candidateLines} from the candidate)` : null}
+                    />
+                    {activity?.recordingUrl ? (
+                      <audio controls preload="none" src={activity.recordingUrl} className="mt-2 w-full" />
+                    ) : activity?.hasRecording ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Recording saved. Open the report to play it.</p>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">No recording saved.</p>
+                    )}
+                    {(activity?.messageCount ?? 0) > 0 && (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-primary hover:underline"
+                          onClick={() => setShowTranscript((v) => !v)}
+                        >
+                          {showTranscript ? "Hide transcript" : "Show transcript"}
+                        </button>
+                        {showTranscript && (
+                          <ol className="mt-2 max-h-80 space-y-1.5 overflow-y-auto rounded-md border p-2 text-xs">
+                            {activity!.messages.map((m) => (
+                              <li key={m.id}>
+                                <span className="font-semibold">
+                                  {String(m.role).toUpperCase() === "USER" ? "Candidate" : "Interviewer"}:
+                                </span>{" "}
+                                {m.content}
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 {/* Skills & tailoring */}
                 <section className="rounded-xl border bg-card p-4 shadow-sm">
@@ -403,6 +898,17 @@ export function CandidateDetailSheet({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <CreateRoundTwoSheet
+        open={roundTwoOpen}
+        onOpenChange={(o) => {
+          setRoundTwoOpen(o);
+          if (!o) void utils.roundTwo.forCandidate.invalidate({ candidateId: candidateId ?? "" });
+        }}
+        candidateId={candidateId ?? undefined}
+        sessionId={(c?.session?.id as string | undefined) ?? (c?.sessionId as string | undefined)}
+        candidateName={c?.name as string | undefined}
+      />
     </>
   );
 }

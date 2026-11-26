@@ -1,23 +1,19 @@
 /**
- * Layout-aware document → Markdown extraction (server-only).
+ * Document → Markdown extraction (server-only).
  *
- * Tiered so the expensive path only runs when the cheap one can't read the file:
- *   1. Docling Serve (optional, DOCLING_SERVE_URL) — layout-aware parsing with
- *      reading order, multi-column, tables and built-in OCR for scans.
- *   2. Native text layers — DOCX via mammoth (keeps headings/lists/tables),
- *      PDF via pdf-parse page by page.
- *   3. Vision LLM — only for images and PDF pages without a usable text layer.
- *
- * Nothing here guesses: unreadable input is reported in `warnings` so callers
- * can flag the document for human review.
+ *   PDF:  pdf-parse (text layer) → vision AI if scanned/thin
+ *   DOCX: mammoth
+ *   Image: vision AI
  */
+import { configuredGeminiModel } from "@/lib/ai/gemini-models";
+import { unwrappingFetch } from "@/lib/ai/providers/compatible";
 import "server-only";
-import type { AnyNode, Element } from "domhandler";
-import { getChildren, getElementsByTagName, textContent } from "domutils";
-import { parseDocument } from "htmlparser2";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
+import { assertZipWithinLimits, htmlToMarkdown, normalise } from "@/lib/documents/docx-safety";
+import { budgetSignal, isAbortError, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
+import { classifyAiFailure, isAuthError, isQuotaError, keyChainExhaustedError } from "@/lib/ai/key-chain";
 import { createLogger } from "@/lib/logger";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
@@ -28,7 +24,7 @@ const log = createLogger("documents/extract");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
   buffer: Buffer,
-  options?: { pagerender?: (page: PdfPage) => Promise<string> },
+  options?: { pagerender?: (page: PdfPage) => Promise<string>; max?: number },
 ) => Promise<{ text: string; numpages: number }>;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -46,12 +42,13 @@ interface PdfPage {
 }
 
 export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+const MAX_PDF_PAGES = 50;
 
 /** Below this many characters a PDF page is treated as scanned (no text layer). */
 const MIN_CHARS_PER_PAGE = 80;
 const MAX_VISION_IMAGE_PX = 2000;
 
-export type ExtractionMethod = "docling" | "docx" | "pdf-text" | "vision" | "plain-text";
+export type ExtractionMethod = "docx" | "pdf-text" | "vision" | "plain-text";
 
 export interface ExtractedDocument {
   markdown: string;
@@ -76,7 +73,7 @@ export async function extractDocument(
   buffer: Buffer,
   fileName: string,
   mime: string,
-  options?: { organizationId?: string | null },
+  options?: { organizationId?: string | null; signal?: AbortSignal },
 ): Promise<ExtractedDocument> {
   if (buffer.byteLength > MAX_DOCUMENT_BYTES) {
     throw new Error(`File is larger than ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB`);
@@ -88,51 +85,30 @@ export async function extractDocument(
     return { markdown: normalise(buffer.toString("utf8")), method: "plain-text", pages: 1, warnings: [] };
   }
 
-  if (process.env.DOCLING_SERVE_URL) {
-    try {
-      const md = await extractWithDocling(buffer, fileName);
-      if (md.trim().length >= MIN_CHARS_PER_PAGE) {
-        return { markdown: md, method: "docling", pages: countPages(md), warnings: [] };
-      }
-    } catch (err) {
-      log.warn("Docling failed, falling back to native extraction:", err);
-    }
+  options?.signal?.throwIfAborted();
+
+  if (kind === "docx") {
+    return extractDocx(buffer);
   }
 
-  if (kind === "docx") return extractDocx(buffer);
-  if (kind === "pdf") return extractPdf(buffer, fileName, options?.organizationId);
-  return extractImage(buffer, options?.organizationId);
+  if (kind === "pdf") {
+    return extractPdf(buffer, fileName, options?.organizationId, options?.signal);
+  }
+
+  return extractImage(buffer, options?.organizationId, options?.signal);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Docling Serve                                                      */
-/* ------------------------------------------------------------------ */
-
-async function extractWithDocling(buffer: Buffer, fileName: string): Promise<string> {
-  const base = process.env.DOCLING_SERVE_URL!.replace(/\/$/, "");
-  const form = new FormData();
-  form.append("files", new Blob([new Uint8Array(buffer)]), fileName);
-  form.append("to_formats", "md");
-  form.append("do_ocr", "true");
-  form.append("table_mode", "accurate");
-  form.append("image_export_mode", "placeholder");
-
-  const res = await fetch(`${base}/v1/convert/file`, {
-    method: "POST",
-    body: form,
-    headers: process.env.DOCLING_SERVE_API_KEY ? { "X-Api-Key": process.env.DOCLING_SERVE_API_KEY } : undefined,
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw new Error(`Docling HTTP ${res.status}`);
-  const json = (await res.json()) as { document?: { md_content?: string }; status?: string };
-  return normalise(json.document?.md_content ?? "");
-}
+/** Vision LLM only when pdf-parse finds little text (scanned PDF). */
+const CV_VISION_BUDGET_MS = 20_000;
+/** Enough markdown from pdf-parse to skip AI vision. */
+const MIN_CHARS_GOOD_EXTRACT = 120;
 
 /* ------------------------------------------------------------------ */
 /*  DOCX                                                               */
 /* ------------------------------------------------------------------ */
 
 async function extractDocx(buffer: Buffer): Promise<ExtractedDocument> {
+  assertZipWithinLimits(buffer);
   const { value: html, messages } = await mammoth.convertToHtml({ buffer });
   const markdown = htmlToMarkdown(html);
   const warnings = messages
@@ -143,52 +119,6 @@ async function extractDocx(buffer: Buffer): Promise<ExtractedDocument> {
     warnings.push("DOCX contains little or no text (content may be embedded as images).");
   }
   return { markdown, method: "docx", pages: 1, warnings };
-}
-
-/**
- * Converts mammoth's semantic HTML to Markdown, keeping table rows intact.
- * Uses htmlparser2 rather than cheerio: cheerio pulls in the `undici` package,
- * which breaks pdf-parse's bundled pdf.js ("bad XRef entry") in the same process.
- */
-function htmlToMarkdown(html: string): string {
-  const isTag = (n: AnyNode): n is Element => "name" in n && typeof n.name === "string";
-  const text = (n: AnyNode) => textContent(n).replace(/\s+/g, " ").trim();
-  const out: string[] = [];
-
-  for (const el of getChildren(parseDocument(html))) {
-    if (!isTag(el)) {
-      const t = text(el);
-      if (t) out.push(t, "");
-      continue;
-    }
-    const tag = el.name.toLowerCase();
-    if (/^h[1-6]$/.test(tag)) {
-      out.push(`${"#".repeat(Number(tag[1]))} ${text(el)}`);
-    } else if (tag === "ul" || tag === "ol") {
-      getChildren(el)
-        .filter((c) => isTag(c) && c.name === "li")
-        .forEach((li, i) => out.push(`${tag === "ol" ? `${i + 1}.` : "-"} ${text(li)}`));
-    } else if (tag === "table") {
-      const rows = getElementsByTagName("tr", el).map((tr) =>
-        getChildren(tr)
-          .filter((c) => isTag(c) && (c.name === "td" || c.name === "th"))
-          .map((c) => text(c).replace(/\|/g, "\\|")),
-      );
-      if (rows.length) {
-        const width = Math.max(...rows.map((r) => r.length));
-        const pad = (r: string[]) => [...r, ...Array(width - r.length).fill("")];
-        out.push(`| ${pad(rows[0]).join(" | ")} |`);
-        out.push(`| ${Array(width).fill("---").join(" | ")} |`);
-        for (const r of rows.slice(1)) out.push(`| ${pad(r).join(" | ")} |`);
-      }
-    } else {
-      const t = text(el);
-      if (t) out.push(t);
-    }
-    out.push("");
-  }
-
-  return normalise(out.join("\n"));
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,15 +162,21 @@ async function extractPdf(
   buffer: Buffer,
   fileName: string,
   organizationId?: string | null,
+  signal?: AbortSignal,
 ): Promise<ExtractedDocument> {
   const warnings: string[] = [];
+  signal?.throwIfAborted();
+
   let pages: string[] = [];
   let numPages = 0;
-
   try {
-    const parsed = await pdfParse(buffer, { pagerender: renderPdfPage });
+    const parsed = await pdfParse(buffer, { pagerender: renderPdfPage, max: MAX_PDF_PAGES });
     numPages = parsed.numpages;
-    pages = parsed.text.split("\f").map((p) => p.trim()).filter((_, i) => i < numPages);
+    pages = parsed.text
+      .split("\f")
+      .map((p) => p.trim())
+      .filter((_, i) => i < Math.min(numPages, MAX_PDF_PAGES));
+    if (numPages > MAX_PDF_PAGES) warnings.push(`Only the first ${MAX_PDF_PAGES} of ${numPages} pages were read.`);
   } catch (err) {
     log.warn("pdf-parse failed:", err);
     warnings.push("PDF text layer could not be read.");
@@ -248,32 +184,37 @@ async function extractPdf(
 
   const scannedPages = pages.filter((p) => p.length < MIN_CHARS_PER_PAGE).length;
   const textChars = pages.reduce((n, p) => n + p.length, 0);
-
-  // Mostly text: done, no vision call.
-  if (pages.length > 0 && scannedPages === 0) {
-    return {
-      markdown: normalise(pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")),
-      method: "pdf-text",
-      pages: numPages,
-      warnings,
-    };
-  }
-
-  // Some or all pages are scans: ask the vision model to read the PDF.
-  const vision = await getVisionClient(organizationId);
-  if (!vision) {
-    warnings.push(
-      `${scannedPages || "All"} page(s) look scanned and no vision model is configured (Settings → AI OpenAI/Gemini, or OPENAI_API_KEY) — review manually.`,
+  const textMarkdown = () =>
+    normalise(
+      pages.length
+        ? pages.map((p, i) => `<!-- page ${i + 1} -->\n${p}`).join("\n\n")
+        : "",
     );
-    return { markdown: normalise(pages.join("\n\n")), method: "pdf-text", pages: numPages, warnings };
+
+  if (textChars >= MIN_CHARS_GOOD_EXTRACT) {
+    if (scannedPages > 0) {
+      warnings.push(`${scannedPages} page(s) look scanned; used available text layer.`);
+    }
+    log.info(`PDF extract via pdf-parse: ${fileName} chars=${textChars}`);
+    return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
   }
 
+  // Vision only for scanned / empty text-layer PDFs.
+  signal?.throwIfAborted();
+  const visions = await getVisionClients(organizationId);
+  if (!visions.length) {
+    warnings.push(
+      "PDF has little text and no vision model is configured — review manually.",
+    );
+    return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
+  }
+
+  const visionSignal = budgetSignal(CV_VISION_BUDGET_MS, signal);
   try {
-    // Gemini's OpenAI-compat rejects `type:file`; use native generateContent + inline PDF.
-    const md =
+    const md = await withVisionFailover(visions, visionSignal, async (vision, callSignal) =>
       vision.kind === "gemini"
-        ? await geminiPdfToMarkdown(vision.apiKey, vision.model, buffer)
-        : await visionToMarkdown(vision, [
+        ? geminiPdfToMarkdown(vision.apiKey, vision.model, buffer, callSignal)
+        : visionToMarkdown(vision, callSignal, [
             {
               type: "file",
               file: {
@@ -281,32 +222,44 @@ async function extractPdf(
                 file_data: `data:application/pdf;base64,${buffer.toString("base64")}`,
               },
             },
-          ]);
-    // Keep whichever reading has more content; vision may skip clean text pages.
-    if (md.length >= textChars) {
-      return { markdown: md, method: "vision", pages: numPages, warnings };
+          ]),
+    );
+    if (md.trim().length >= MIN_CHARS_PER_PAGE) {
+      log.info(`PDF extract via vision AI: ${fileName} chars=${md.length}`);
+      return { markdown: md, method: "vision", pages: numPages || 1, warnings };
     }
   } catch (err) {
-    log.warn("Vision PDF extraction failed:", err);
-    warnings.push("Scanned pages could not be read by the vision model — review manually.");
+    if (isAbortError(err) || signal?.aborted || visionSignal.aborted) {
+      log.warn("Vision PDF timed out — using pdf-parse leftover");
+      warnings.push("Vision timed out — used pdf-parse text if any.");
+    } else if (classifyAiFailure(err) && !textChars) {
+      throw err;
+    } else {
+      log.warn("Vision PDF extraction failed:", err);
+      warnings.push("Vision could not read this PDF — review manually.");
+    }
   }
-  if (scannedPages > 0) warnings.push(`${scannedPages} page(s) have no text layer and may be incomplete.`);
-  return { markdown: normalise(pages.join("\n\n")), method: "pdf-text", pages: numPages, warnings };
+
+  return { markdown: textMarkdown(), method: "pdf-text", pages: numPages, warnings };
 }
 
 /* ------------------------------------------------------------------ */
 /*  Images                                                             */
 /* ------------------------------------------------------------------ */
 
-async function extractImage(buffer: Buffer, organizationId?: string | null): Promise<ExtractedDocument> {
-  const vision = await getVisionClient(organizationId);
-  if (!vision) {
+async function extractImage(
+  buffer: Buffer,
+  organizationId?: string | null,
+  signal?: AbortSignal,
+): Promise<ExtractedDocument> {
+  const visions = await getVisionClients(organizationId);
+  if (!visions.length) {
     return {
       markdown: "",
       method: "vision",
       pages: 1,
       warnings: [
-        "Image CVs need a vision model (Settings → AI OpenAI/Gemini, OPENAI_API_KEY, or DOCLING_SERVE_URL) — review manually.",
+        "Image CVs need a vision model (Settings → AI OpenAI/Gemini or OPENAI_API_KEY) — review manually.",
       ],
     };
   }
@@ -317,9 +270,11 @@ async function extractImage(buffer: Buffer, organizationId?: string | null): Pro
     .resize({ width: MAX_VISION_IMAGE_PX, height: MAX_VISION_IMAGE_PX, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality: 85 })
     .toBuffer();
-  const md = await visionToMarkdown(vision, [
-    { type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpeg.toString("base64")}`, detail: "high" } },
-  ]);
+  const md = await withVisionFailover(visions, signal, (vision, callSignal) =>
+    visionToMarkdown(vision, callSignal, [
+      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${jpeg.toString("base64")}`, detail: "high" } },
+    ]),
+  );
   const warnings = md.length < MIN_CHARS_PER_PAGE ? ["Very little text was read from the image."] : [];
   return { markdown: md, method: "vision", pages: 1, warnings };
 }
@@ -335,27 +290,66 @@ type VisionClient = {
   apiKey: string;
 };
 
-/** Org Settings → AI first (OpenAI, then Gemini); .env only when no org vision key. */
-async function getVisionClient(organizationId?: string | null): Promise<VisionClient | null> {
+/** Org Settings → AI: all OpenAI keys then Gemini keys (failover). .env only if no org vision key. */
+async function getVisionClients(organizationId?: string | null): Promise<VisionClient[]> {
   const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
   const preferOrg = (["openai", "gemini"] as const).some((id) => creds[id].from === "org");
+  const out: VisionClient[] = [];
 
   for (const id of ["openai", "gemini"] as const) {
     const c = creds[id];
-    if (!c.apiKey) continue;
+    if (!c.apiKeys.length) continue;
     if (preferOrg && c.from !== "org") continue;
     const model =
       id === "openai"
         ? process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini"
-        : process.env.GEMINI_MODEL || "gemini-3.5-flash";
-    return {
-      kind: id,
-      client: new OpenAI({ apiKey: c.apiKey, baseURL: c.baseUrl }),
-      model,
-      apiKey: c.apiKey,
-    };
+        : configuredGeminiModel();
+    for (const apiKey of c.apiKeys) {
+      out.push({
+        kind: id,
+        // maxRetries 0: we fail over across keys ourselves; SDK 429 backoff only burns the time budget.
+        client: new OpenAI({ apiKey, baseURL: c.baseUrl, maxRetries: 0, fetch: unwrappingFetch }),
+        model,
+        apiKey,
+      });
+    }
   }
-  return null;
+  return out;
+}
+
+/**
+ * One attempt per key. Quota/auth on every key throws a tagged error (see `classifyAiFailure`)
+ * so callers stop instead of retrying more passes.
+ */
+async function withVisionFailover(
+  clients: VisionClient[],
+  signal: AbortSignal | undefined,
+  run: (c: VisionClient, callSignal: AbortSignal) => Promise<string>,
+): Promise<string> {
+  let lastErr: unknown;
+  let sawQuota = false;
+  let onlyQuotaOrAuth = true;
+  for (let i = 0; i < clients.length; i++) {
+    signal?.throwIfAborted();
+    try {
+      return await run(clients[i], budgetSignal(VISION_CALL_TIMEOUT_MS, signal));
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      lastErr = err;
+      sawQuota ||= isQuotaError(err);
+      onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
+      if (i < clients.length - 1) {
+        log.warn(
+          `Vision ${clients[i].kind} key #${i + 1} failed — trying next`,
+          err instanceof Error ? err.message.slice(0, 120) : err,
+        );
+      }
+    }
+  }
+  if (onlyQuotaOrAuth && clients.length) {
+    throw keyChainExhaustedError(clients.map((c, i) => `${c.kind}#${i + 1}`).join(", "), lastErr, sawQuota, true);
+  }
+  throw lastErr;
 }
 
 const VISION_PROMPT = `Transcribe this document to GitHub-flavoured Markdown.
@@ -370,6 +364,7 @@ Return only the Markdown.`;
 
 async function visionToMarkdown(
   vision: { client: OpenAI; model: string },
+  signal: AbortSignal,
   parts: OpenAI.Chat.Completions.ChatCompletionContentPart[],
 ): Promise<string> {
   const res = await vision.client.chat.completions.create({
@@ -377,14 +372,19 @@ async function visionToMarkdown(
     temperature: 0,
     max_tokens: 6000,
     messages: [{ role: "user", content: [{ type: "text", text: VISION_PROMPT }, ...parts] }],
-  });
+  }, { signal });
   return normalise(
     (res.choices[0]?.message?.content ?? "").replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""),
   );
 }
 
 /** Native Gemini path — OpenAI-compat rejects PDF `type:file` parts. */
-async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer): Promise<string> {
+async function geminiPdfToMarkdown(
+  apiKey: string,
+  model: string,
+  buffer: Buffer,
+  signal: AbortSignal,
+): Promise<string> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -401,12 +401,13 @@ async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer
         ],
         generationConfig: { temperature: 0, maxOutputTokens: 6000 },
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal,
     },
   );
   if (!res.ok) {
     const body = (await res.text()).slice(0, 300);
-    throw new Error(body || `${res.status} status code (no body)`);
+    // Keep the HTTP status so quota (429) / auth (401, 403) are recognised by classifyAiFailure.
+    throw Object.assign(new Error(body || `${res.status} status code (no body)`), { status: res.status });
   }
   const json = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
@@ -415,17 +416,3 @@ async function geminiPdfToMarkdown(apiKey: string, model: string, buffer: Buffer
   return normalise(text.replace(/^```(?:markdown|md)?\s*\n?|\n?```\s*$/g, ""));
 }
 
-/* ------------------------------------------------------------------ */
-
-function normalise(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/[ \t]{2,}(?!\|)/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function countPages(md: string): number {
-  return Math.max(1, (md.match(/<!-- page/g) ?? []).length);
-}

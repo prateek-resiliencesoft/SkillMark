@@ -10,19 +10,20 @@ setInterval(() => {
   });
 }, 60_000).unref();
 
-export function checkRateLimit(identifier: string): Response | null {
+export function checkRateLimit(identifier: string, max: number = maxRequests, window: number = windowMs): Response | null {
   const now = Date.now();
+  const limit = max > 0 ? max : maxRequests;
   let entry = hits.get(identifier);
 
   if (!entry || entry.resetAt <= now) {
-    entry = { count: 1, resetAt: now + windowMs };
+    entry = { count: 1, resetAt: now + (window > 0 ? window : windowMs) };
     hits.set(identifier, entry);
     return null;
   }
 
   entry.count++;
 
-  if (entry.count > maxRequests) {
+  if (entry.count > limit) {
     const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
     return Response.json(
       {
@@ -36,7 +37,7 @@ export function checkRateLimit(identifier: string): Response | null {
         status: 429,
         headers: {
           "Retry-After": String(retryAfter),
-          "X-RateLimit-Limit": String(maxRequests),
+          "X-RateLimit-Limit": String(limit),
           "X-RateLimit-Remaining": "0",
           "X-RateLimit-Reset": String(Math.ceil(entry.resetAt / 1000)),
         },
@@ -45,4 +46,19 @@ export function checkRateLimit(identifier: string): Response | null {
   }
 
   return null;
+}
+
+export const PASSWORD_ATTEMPTS_PER_ACCOUNT = 10;
+export const PASSWORD_ATTEMPT_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Per-account cap on password checks (login + invite-join share it), so rotating
+ * client IPs cannot brute-force one account.
+ */
+export function checkPasswordAttemptLimit(email: string): Response | null {
+  return checkRateLimit(
+    `auth:password:${email.trim().toLowerCase()}`,
+    PASSWORD_ATTEMPTS_PER_ACCOUNT,
+    PASSWORD_ATTEMPT_WINDOW_MS,
+  );
 }

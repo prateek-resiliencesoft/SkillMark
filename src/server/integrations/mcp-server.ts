@@ -16,13 +16,22 @@ import {
 } from "@/server/integrations/applications";
 import { resolveFormForKey } from "@/server/integrations/form-access";
 import { generateQuestions } from "@/server/integrations/form-interview";
-import { assertSafeRemoteUrl } from "@/lib/network-security";
+import { assertSafeRemoteUrl, safeFetch } from "@/lib/network-security";
+import { filterAccessibleProjectIds } from "@/server/trpc";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ENDPOINTS } from "@/server/public-api/endpoints";
+import { runEndpoint, zodDetails } from "@/server/public-api/handler";
+import { ApiProblem } from "@/server/public-api/service";
 import { z } from "zod";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean; structuredContent?: Record<string, unknown> };
+
+/** MCP authenticates with no route scope, so `auth.projectIds` is the read-level list. */
+function writableProjectIds(auth: ApiKeyAuth): Promise<string[]> {
+  return filterAccessibleProjectIds(supabaseAdmin, auth.projectIds, auth.userId, { minRole: "MEMBER" });
+}
 
 function ok(data: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { data } as Record<string, unknown> };
@@ -39,10 +48,8 @@ async function fetchRemoteFile(url: string, filename?: string): Promise<Incoming
   } catch (err) {
     throw new SubmissionError("INVALID_FILE_URL", (err as Error).message, 400);
   }
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
   try {
-    const r = await fetch(u, { signal: ctrl.signal, redirect: "error" });
+    const r = await safeFetch(u, { redirect: "error", maxBytes: MAX_FILE_BYTES + 1, timeoutMs: 15000 });
     if (!r.ok || !r.body) throw new SubmissionError("FILE_FETCH_FAILED", `Could not download ${url} (${r.status})`, 400);
     const len = Number(r.headers.get("content-length") || "0");
     if (len > MAX_FILE_BYTES) throw new SubmissionError("PAYLOAD_TOO_LARGE", "Remote file exceeds 20 MB", 413);
@@ -64,8 +71,6 @@ async function fetchRemoteFile(url: string, filename?: string): Promise<Incoming
   } catch (err) {
     if (err instanceof SubmissionError) throw err;
     throw new SubmissionError("FILE_FETCH_FAILED", `Could not download ${url}`, 400);
-  } finally {
-    clearTimeout(t);
   }
 }
 
@@ -76,17 +81,17 @@ async function interviewInScope(id: string, auth: ApiKeyAuth) {
   return { interview: data };
 }
 
-const INSTRUCTIONS = `Skillmark AI interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results of a finished interview: list_sessions / get_session_results. All data is scoped to the organization of the API key.`;
+const INSTRUCTIONS = `ResilienceSoft Interview platform. Typical flow: list_interview_forms → get_interview_form (read field keys, required fields, file rules) → submit_application (candidate + answers keyed by field key) → share the returned interview_url with the candidate → get_application later for status (pending, in_progress, completed, disqualified) and results. Interviews: list_interviews / get_interview / create_interview; results: list_sessions (filter by status, interview_id, candidate_email, dates) → get_result for scores, summary, recommendation, strengths and weaknesses → get_transcript for the conversation; get_session for status; list_candidates for invited people. get_session_results is the older combined call. All data is scoped to the organization of the API key.`;
 
 /** Build an MCP server bound to one authenticated API key (stateless, per request). */
 export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
-  const server = new McpServer({ name: "skillmark", version: "1.0.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "resiliencesoft-interview-ai", version: "1.0.0" }, { instructions: INSTRUCTIONS });
   const base = appBaseUrl(request);
 
   const tool = <S extends z.ZodRawShape>(
     name: string,
     description: string,
-    scope: ApiKeyScope,
+    scope: ApiKeyScope | readonly ApiKeyScope[],
     shape: S,
     run: (args: z.infer<z.ZodObject<S>>) => Promise<ToolResult>,
     annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean },
@@ -96,7 +101,8 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
       { description, inputSchema: shape, annotations: { title: name.replace(/_/g, " "), ...annotations } },
       (async (args: z.infer<z.ZodObject<S>>) => {
         let res: ToolResult;
-        if (!keyHasScope(auth.scopes, scope)) res = fail("FORBIDDEN", `This API key lacks the "${scope}" permission.`);
+        const lacking = (typeof scope === "string" ? [scope] : scope).find((s) => !keyHasScope(auth.scopes, s));
+        if (lacking) res = fail("FORBIDDEN", `This API key lacks the "${lacking}" permission.`);
         else {
           try { res = await run(args); } catch (err) {
             res = err instanceof SubmissionError ? fail(err.code, err.message, err.details) : fail("INTERNAL_ERROR", err instanceof Error ? err.message : "Unexpected error");
@@ -143,6 +149,9 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
   }, async ({ form_id, candidate, answers, files }) => {
     const form = await resolveFormForKey(form_id, auth);
     if (form instanceof Response) return fail(form.status === 404 ? "NOT_FOUND" : "FORBIDDEN", (await form.json()).error.message);
+    if (form.projectId && !(await writableProjectIds(auth)).includes(form.projectId)) {
+      return fail("FORBIDDEN", "The API key owner's project role does not allow submitting applications to this form");
+    }
     const fileMap: Record<string, IncomingFile[]> = {};
     for (const f of files ?? []) {
       let file: IncomingFile;
@@ -165,7 +174,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
   }, async ({ form_id, limit }) => {
     const form = await resolveFormForKey(form_id, auth);
     if (form instanceof Response) return fail(form.status === 404 ? "NOT_FOUND" : "FORBIDDEN", (await form.json()).error.message);
-    const { data } = await supabaseAdmin.from("applications").select("*, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))").eq("formId", form.id).order("createdAt", { ascending: false }).limit(limit);
+    const { data } = await supabaseAdmin.from("applications").select("*, candidate:candidates(inviteToken, sessionId, session:sessions!candidates_sessionId_fkey(id, status))").eq("formId", form.id).order("createdAt", { ascending: false }).limit(limit);
     return ok(await Promise.all((data ?? []).map((a: any) => serializeApplication(a, form, a.candidate ?? null, a.candidate?.session ?? null, base, false))));
   }, { readOnlyHint: true });
 
@@ -208,14 +217,15 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     difficulty: z.enum(["easy", "medium", "hard"]).optional(),
     number_of_questions: z.number().int().min(1).max(30).optional(),
     duration_minutes: z.number().int().min(5).max(180).optional(),
-    language: z.string().max(10).default("en"),
+    language: z.string().max(10).default("en").describe('Interview language: "en" (English), "hi" (Hindi), or "multi" (Hindi + English; the candidate picks one and can switch or mix)'),
     mode: z.enum(["voice", "chat"]).default("voice"),
     questions: z.array(z.string().max(2000)).max(50).optional().describe("Predefined questions (always included)"),
     generate_questions: z.boolean().default(true),
     anti_cheating: z.boolean().default(false),
     head_movement_detection: z.boolean().default(false),
   }, async (a) => {
-    if (!auth.projectIds.length) return fail("FORBIDDEN", "No accessible project for this API key");
+    const writable = await writableProjectIds(auth);
+    if (!writable.length) return fail("FORBIDDEN", "No project where this API key's owner can create interviews");
     const cfg: InterviewConfig = { title: a.title, description: a.description, jobRole: a.job_role, jobDescription: a.job_description, experienceLevel: a.experience_level, interviewType: a.interview_type, difficulty: a.difficulty, numberOfQuestions: a.number_of_questions, durationMinutes: a.duration_minutes, language: a.language, mode: a.mode, predefinedQuestions: a.questions ?? [], questionSource: a.generate_questions ? "ai" : "predefined" };
     let qs: { text?: string; type?: string; description?: string; options?: unknown; starterCode?: unknown }[] = (a.questions ?? []).map((text) => ({ text, type: "OPEN_ENDED" }));
     let objective: string | null = null;
@@ -227,7 +237,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     }
     if (!qs.length) return fail("VALIDATION_ERROR", "Provide questions or set generate_questions=true");
     const { data: iv, error } = await supabaseAdmin.from("interviews").insert({
-      title: a.title, description: a.description ?? null, userId: auth.userId, projectId: auth.projectIds[0], language: a.language,
+      title: a.title, description: a.description ?? null, userId: auth.userId, projectId: writable[0], language: a.language,
       timeLimitMinutes: a.duration_minutes ?? null, voiceEnabled: a.mode === "voice", chatEnabled: true, mode: a.mode === "voice" ? "VOICE" : "CHAT",
       antiCheatingEnabled: a.anti_cheating, headMovementDetectionEnabled: a.anti_cheating && a.head_movement_detection,
       objective: [a.job_role ? `Role: ${a.job_role}` : "", a.job_description ? `Job description:\n${a.job_description}` : "", objective ?? ""].filter(Boolean).join("\n\n") || null,
@@ -238,23 +248,38 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     return ok({ id: iv.id, title: iv.title, question_count: qs.length, edit_url: `${base}/interviews/${iv.id}/edit` });
   }, { readOnlyHint: false });
 
-  tool("list_sessions", "List candidate sessions (interview attempts) for an interview, newest first.", "interviews:read", {
-    interview_id: z.string().uuid(),
-    status: z.enum(["IN_PROGRESS", "COMPLETED", "ABANDONED", "DISQUALIFIED"]).optional(),
-    limit: z.number().int().min(1).max(100).default(20),
-  }, async ({ interview_id, status, limit }) => {
-    const r = await interviewInScope(interview_id, auth);
-    if (r.error) return r.error;
-    let q = supabaseAdmin.from("sessions").select("id, status, participantName, participantEmail, startedAt, completedAt, totalDurationSeconds").eq("interviewId", interview_id).order("startedAt", { ascending: false }).limit(limit);
-    if (status) q = q.eq("status", status);
-    const { data } = await q;
-    return ok(data ?? []);
-  }, { readOnlyHint: true });
+  // Results API tools: same schemas, scopes and data access as /api/v1.
+  const ctx = { db: supabaseAdmin, auth: { organizationId: auth.organizationId, projectIds: auth.projectIds, scopes: auth.scopes, apiKeyId: auth.apiKeyId }, origin: base };
+  for (const e of ENDPOINTS) {
+    if (!e.mcpTool || e.mcpTool === "list_interviews" || e.method !== "GET") continue;
+    const shape: z.ZodRawShape = {
+      ...(e.params ? { session_id: z.string().uuid().describe("Session id (UUID).") } : {}),
+      ...(e.query ? e.query.shape : {}),
+    };
+    tool(e.mcpTool, `${e.summary}. ${e.description}`, e.scope, shape, async (args: Record<string, unknown>) => {
+      const { session_id, ...rest } = args;
+      let query: unknown;
+      if (e.query) {
+        const parsed = e.query.safeParse(rest);
+        if (!parsed.success) return fail("BAD_REQUEST", "Invalid arguments", zodDetails(parsed.error));
+        query = parsed.data;
+      }
+      try {
+        return ok(await runEndpoint(e, ctx, { params: session_id ? { id: String(session_id) } : undefined, query }));
+      } catch (err) {
+        if (err instanceof ApiProblem) return fail(err.code, err.message, err.details);
+        throw err;
+      }
+    }, { readOnlyHint: true });
+  }
 
-  tool("get_session_results", "Get the results of one interview session: status, summary, insights, themes, sentiment, integrity (anti-cheating) events and optionally the transcript.", "interviews:read", {
+  tool("get_session_results", "Get the results of one interview session: status, summary, insights, themes, sentiment, integrity (anti-cheating) events and optionally the transcript.", ["sessions:read", "results:read"], {
     session_id: z.string().uuid(),
     include_transcript: z.boolean().default(false),
   }, async ({ session_id, include_transcript }) => {
+    if (include_transcript && !keyHasScope(auth.scopes, "transcripts:read")) {
+      return fail("FORBIDDEN", `This API key lacks the "transcripts:read" permission.`);
+    }
     const { data: s } = await supabaseAdmin.from("sessions").select("id, interviewId, status, participantName, participantEmail, startedAt, completedAt, totalDurationSeconds, summary, insights, themes, sentiment, antiCheatingLog").eq("id", session_id).maybeSingle();
     if (!s) return fail("NOT_FOUND", "Session not found");
     const r = await interviewInScope(s.interviewId as string, auth);
@@ -262,7 +287,7 @@ export function buildMcpServer(auth: ApiKeyAuth, request: Request): McpServer {
     const log = Array.isArray(s.antiCheatingLog) ? s.antiCheatingLog : [];
     const out: Record<string, unknown> = { ...s, antiCheatingLog: undefined, integrity_events: log.map((e: any) => ({ type: e.type, timestamp: e.timestamp, detail: e.detail })) };
     if (include_transcript) {
-      const { data: m } = await supabaseAdmin.from("messages").select("role, content, timestamp").eq("sessionId", session_id).eq("contentType", "TEXT").order("timestamp").limit(500);
+      const { data: m } = await supabaseAdmin.from("messages").select("role, content, timestamp").eq("sessionId", session_id).eq("contentType", "TEXT").in("role", ["USER", "ASSISTANT"]).order("timestamp").limit(500);
       out.transcript = m ?? [];
     }
     return ok(out);

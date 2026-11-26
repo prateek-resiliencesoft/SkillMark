@@ -1,5 +1,6 @@
 "use client";
 
+import { listDurationSeconds } from "@/lib/session-activity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertDialog,
@@ -58,6 +59,8 @@ import {
   Download01Icon,
 } from "@/components/ui/hugeicon";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { rejectTagLabel } from "@/lib/reject-tags";
+import { cn } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -71,6 +74,11 @@ export interface SessionRow {
   totalDurationSeconds: number | null;
   createdAt: string | Date;
   _count: { messages: number };
+  integrityDoubtfulAt?: string | null;
+  integrityDoubtfulRemark?: string | null;
+  mediaReviewStatus?: string | null;
+  rejectReason?: string | null;
+  rejectTags?: string[] | null;
   interview?: { id: string; title: string };
 }
 
@@ -174,7 +182,7 @@ function getSortValue(session: SessionRow, key: SortKey): string | number {
     case "messages":
       return session._count.messages;
     case "duration":
-      return session.totalDurationSeconds ?? -1;
+      return listDurationSeconds(session) ?? -1;
     case "date":
       return new Date(session.createdAt).getTime();
   }
@@ -223,6 +231,18 @@ function SortableHead({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
+function formatFreed(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
 export function SessionsTable({
   sessions,
   isLoading,
@@ -235,6 +255,7 @@ export function SessionsTable({
   emptyMessage = "No sessions found.",
 }: SessionsTableProps) {
   const { toast } = useToast();
+  const utils = trpc.useUtils();
 
   // ── State ──
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
@@ -246,6 +267,8 @@ export function SessionsTable({
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<SessionRow | null>(null);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.defaultVisible).map((c) => c.key)),
   );
@@ -343,11 +366,33 @@ export function SessionsTable({
 
   // ── Mutations ──
   const deleteMutation = trpc.session.deleteMany.useMutation({
-    onSuccess: ({ deleted }) => {
-      toast({ title: `${deleted} session${deleted > 1 ? "s" : ""} deleted` });
+    onSuccess: ({ deleted, bytes }) => {
+      toast({
+        title: `${deleted} candidate${deleted === 1 ? "" : "s"} deleted`,
+        description: `All data and media files were erased${
+          bytes > 0 ? ` (${formatFreed(bytes)} freed)` : ""
+        }.`,
+      });
       setSelectedIds(new Set());
+      setDeleteTarget(null);
       onDeleteSuccess?.();
     },
+    onError: (err) =>
+      toast({ title: "Could not delete candidate data", description: err.message, variant: "destructive" }),
+  });
+
+  const archiveMutation = trpc.session.archiveMany.useMutation({
+    onSuccess: ({ archived }) => {
+      toast({
+        title: `${archived} moved to History`,
+        description: "Recordings and the transcript were deleted. Name and score were kept.",
+      });
+      setSelectedIds(new Set());
+      onDeleteSuccess?.();
+      void utils.session.listHistory.invalidate();
+    },
+    onError: (err) =>
+      toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
   });
 
   // ── Handlers ──
@@ -453,22 +498,75 @@ export function SessionsTable({
             {session.participantEmail || "-"}
           </span>
         );
-      case "status":
+      case "status": {
+        const review = session.mediaReviewStatus;
+        const reviewLabel =
+          review === "approved"
+            ? "Approved"
+            : review === "declined"
+              ? "Rejected"
+              : review === "set_aside"
+                ? "Put aside"
+                : null;
         return (
-          <Badge
-            variant={session.status === "COMPLETED" ? "default" : "secondary"}
-            className="whitespace-nowrap"
-          >
-            {session.status}
-          </Badge>
+          <span className="flex flex-col gap-1">
+            <span className="flex flex-wrap items-center gap-1.5">
+              <Badge
+                variant={session.status === "COMPLETED" ? "default" : "secondary"}
+                className="whitespace-nowrap"
+              >
+                {session.status}
+              </Badge>
+              {session.integrityDoubtfulAt && (
+                <Badge
+                  variant="destructive"
+                  className="whitespace-nowrap"
+                  title={session.integrityDoubtfulRemark ?? "Marked doubtful"}
+                >
+                  Doubtful
+                </Badge>
+              )}
+              {reviewLabel && (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "whitespace-nowrap text-[10px]",
+                    review === "approved" && "border-green-600 text-green-700",
+                    review === "declined" && "border-red-600 text-red-700",
+                    review === "set_aside" && "border-amber-600 text-amber-700",
+                  )}
+                >
+                  {reviewLabel}
+                </Badge>
+              )}
+            </span>
+            {review === "declined" && session.rejectReason ? (
+              <span className="line-clamp-1 max-w-[14rem] text-[10px] text-muted-foreground">
+                {session.rejectReason}
+              </span>
+            ) : null}
+            {review === "declined" && session.rejectTags && session.rejectTags.length > 0 ? (
+              <span className="flex flex-wrap gap-0.5">
+                {session.rejectTags.slice(0, 4).map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-red-600/25 px-1 text-[9px] text-muted-foreground"
+                  >
+                    {rejectTagLabel(t)}
+                  </span>
+                ))}
+              </span>
+            ) : null}
+          </span>
         );
+      }
       case "messages":
         return <span>{session._count.messages}</span>;
       case "duration":
         return (
           <span>
-            {session.totalDurationSeconds
-              ? `${Math.round(session.totalDurationSeconds / 60)}m`
+            {listDurationSeconds(session)
+              ? `${Math.max(1, Math.round((listDurationSeconds(session) ?? 0) / 60))}m`
               : "-"}
           </span>
         );
@@ -516,7 +614,7 @@ export function SessionsTable({
           case "email": record[col.label] = s.participantEmail || ""; break;
           case "status": record[col.label] = s.status; break;
           case "messages": record[col.label] = s._count.messages; break;
-          case "duration": record[col.label] = s.totalDurationSeconds ? `${Math.round(s.totalDurationSeconds / 60)}m` : ""; break;
+          case "duration": { const d = listDurationSeconds(s); record[col.label] = d ? `${Math.max(1, Math.round(d / 60))}m` : ""; break; }
           case "date": record[col.label] = formatDate(s.createdAt); break;
         }
       }
@@ -528,7 +626,7 @@ export function SessionsTable({
   return (
     <>
       {/* Filters row */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3 lg:flex-nowrap">
         <div className="relative flex-1">
           <Hugeicon icon={Search01Icon} className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -587,6 +685,18 @@ export function SessionsTable({
 
         {selectedIds.size > 0 && (
           <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmArchive(true)}
+              disabled={archiveMutation.isLoading || deleteMutation.isLoading}
+            >
+              {archiveMutation.isLoading ? (
+                <Hugeicon icon={Loading03Icon} className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Hugeicon icon={Delete02Icon} className="mr-2 h-4 w-4" />
+              )}
+              Delete data ({selectedIds.size})
+            </Button>
             <Button
               variant="destructive"
               onClick={() => setConfirmDelete(true)}
@@ -667,7 +777,7 @@ export function SessionsTable({
                     ))}
 
                     {/* Frozen right: gear icon */}
-                    <TableHead className="sticky right-0 z-20 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                    <TableHead className="sticky right-0 z-20 w-20 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button
@@ -785,21 +895,33 @@ export function SessionsTable({
                       {/* Frozen right: action */}
                       <TableCell
                         onClick={(e) => e.stopPropagation()}
-                        className="sticky right-0 z-10 w-10 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
+                        className="sticky right-0 z-10 w-20 bg-background shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]"
                       >
-                        {rowClickable && session.status === "COMPLETED" ? (
-                          <Hugeicon icon={ArrowRight01Icon} className="h-4 w-4 text-muted-foreground" />
-                        ) : (
+                        <div className="flex items-center gap-1">
+                          {rowClickable && session.status === "COMPLETED" ? (
+                            <Hugeicon icon={ArrowRight01Icon} className="h-4 w-4 text-muted-foreground" />
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="View session details"
+                              onClick={() => onSessionClick(session)}
+                            >
+                              <Hugeicon icon={ExternalLinkIcon} className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7"
-                            title="View session details"
-                            onClick={() => onSessionClick(session)}
+                            className="h-7 w-7 hover:bg-destructive/10"
+                            title="Delete candidate data and media"
+                            aria-label="Delete candidate data and media"
+                            onClick={() => setDeleteTarget(session)}
                           >
-                            <Hugeicon icon={ExternalLinkIcon} className="h-3.5 w-3.5 text-muted-foreground" />
+                            <Hugeicon icon={Delete02Icon} className="h-3.5 w-3.5 text-destructive" />
                           </Button>
-                        )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   )))}
@@ -864,6 +986,63 @@ export function SessionsTable({
         )}
       </div>
 
+      <AlertDialog open={confirmArchive} onOpenChange={setConfirmArchive}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete interview data</AlertDialogTitle>
+            <AlertDialogDescription>
+              Recordings, screenshots, and the transcript for {selectedIds.size} session
+              {selectedIds.size > 1 ? "s" : ""} are removed from storage. The candidate
+              name and score stay on the History tab.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                archiveMutation.mutate({ ids: Array.from(selectedIds) });
+                setConfirmArchive(false);
+              }}
+            >
+              Delete data
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Single-candidate delete confirmation */}
+      <AlertDialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this candidate&apos;s data?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Deleting {deleteTarget?.participantName || deleteTarget?.participantEmail || "this candidate"}
+              &apos;s data will also erase their media files. The session, transcript, candidate
+              record and every recording, proctoring image and CV will be permanently removed from
+              the database and server storage. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              onClick={(e) => {
+                e.preventDefault();
+                if (deleteTarget) deleteMutation.mutate({ ids: [deleteTarget.id] });
+              }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Confirm & delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Delete confirmation dialog */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
@@ -872,7 +1051,9 @@ export function SessionsTable({
             <AlertDialogDescription>
               Are you sure you want to delete {selectedIds.size} session
               {selectedIds.size > 1 ? "s" : ""}? This will permanently remove
-              all associated messages and data. This action cannot be undone.
+              all associated messages, candidate records and media files
+              (recordings, images, CV) from the database and server storage.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

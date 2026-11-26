@@ -2,13 +2,23 @@ import "server-only";
 import { decryptSecret } from "@/lib/messaging/secrets";
 import { sendBrevoEmail, sendResendEmail, sendResilioTemplate } from "@/lib/messaging/providers";
 import {
+  mergeInviteMessages,
+  type InviteMessages,
+} from "@/lib/messaging/invite-messages";
+import {
   emailHtml,
+  formatScheduleNotice,
   mergeTemplates,
   renderTemplate,
+  renderWhatsappPreview,
+  WHATSAPP_COMPLETION_META_TEMPLATE,
   whatsappBodyVariables,
+  whatsappCompletionBodyVariables,
+  type CompletionTemplateVars,
   type MessageTemplates,
   type TemplateVars,
 } from "@/lib/messaging/templates";
+import { inviteLink } from "./batch-access";
 import type { Context } from "./context";
 
 type Db = Context["supabase"];
@@ -20,7 +30,12 @@ export interface DeliveryConfig {
   defaultWhatsappProvider: "resilio";
   resend: { apiKey: string; from: string; replyTo: string | null } | null;
   brevo: { apiKey: string; fromEmail: string; fromName: string | null; replyTo: string | null } | null;
-  resilio: { apiKey: string; baseUrl: string | null; templateName: string } | null;
+  resilio: {
+    apiKey: string;
+    baseUrl: string | null;
+    templateName: string;
+    completionTemplateName: string;
+  } | null;
   outboundWebhook: { url: string; secret: string | null; events: string[] } | null;
   inboundWebhookSecret: string | null;
 }
@@ -35,7 +50,7 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
   const resilioKey = decryptSecret(row?.resilioApiKey);
 
   return {
-    organizationName: org?.name && org.name !== "Personal" ? org.name : "Skillmark",
+    organizationName: org?.name && org.name !== "Personal" ? org.name : "ResilienceSoft Interview",
     templates: mergeTemplates(row?.messageTemplates),
     defaultEmailProvider: (row?.defaultEmailProvider as "resend" | "brevo") || "resend",
     defaultWhatsappProvider: "resilio",
@@ -54,7 +69,14 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
         : null,
     resilio:
       resilioKey && row?.resilioTemplateName
-        ? { apiKey: resilioKey, baseUrl: row.resilioBaseUrl ?? null, templateName: row.resilioTemplateName }
+        ? {
+            apiKey: resilioKey,
+            baseUrl: row.resilioBaseUrl ?? null,
+            templateName: row.resilioTemplateName,
+            completionTemplateName:
+              (row.resilioCompletionTemplateName as string | null)?.trim() ||
+              WHATSAPP_COMPLETION_META_TEMPLATE.name,
+          }
         : null,
     outboundWebhook: row?.outboundWebhookUrl
       ? {
@@ -69,26 +91,44 @@ export async function loadDeliveryConfig(supabase: Db, organizationId: string): 
 
 export type ChannelOutcome = "sent" | "failed" | "skipped";
 
+export type EmailDeliveryResult = {
+  status: ChannelOutcome;
+  error?: string;
+  provider: string;
+  subject: string;
+  text: string;
+};
+
+export type WhatsappDeliveryResult = {
+  status: ChannelOutcome;
+  error?: string;
+  provider?: string;
+  text: string;
+  templateName?: string;
+};
+
 export async function deliverEmail(
   cfg: DeliveryConfig,
   to: string | null,
   vars: TemplateVars,
   idempotencyKey?: string,
   preferredProvider?: "resend" | "brevo",
-) {
+): Promise<EmailDeliveryResult> {
   const provider =
     preferredProvider ||
     cfg.defaultEmailProvider ||
     (cfg.brevo && !cfg.resend ? "brevo" : "resend");
 
-  if (!to) return { status: "skipped" as ChannelOutcome, error: "No email address", provider };
-
   const subject = renderTemplate(cfg.templates.emailSubject, vars);
   const text = renderTemplate(cfg.templates.emailBody, vars);
   const html = emailHtml(cfg.templates.emailBody, vars);
 
+  if (!to) return { status: "skipped", error: "No email address", provider, subject, text };
+
   if (provider === "brevo") {
-    if (!cfg.brevo) return { status: "failed" as ChannelOutcome, error: "Brevo is not configured", provider: "brevo" };
+    if (!cfg.brevo) {
+      return { status: "failed", error: "Brevo is not configured", provider: "brevo", subject, text };
+    }
     const r = await sendBrevoEmail({
       apiKey: cfg.brevo.apiKey,
       fromEmail: cfg.brevo.fromEmail,
@@ -100,11 +140,13 @@ export async function deliverEmail(
       html,
       text,
     });
-    return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "brevo" };
+    return { status: r.ok ? "sent" : "failed", error: r.error, provider: "brevo", subject, text };
   }
 
   // Resend
-  if (!cfg.resend) return { status: "failed" as ChannelOutcome, error: "Resend is not configured", provider: "resend" };
+  if (!cfg.resend) {
+    return { status: "failed", error: "Resend is not configured", provider: "resend", subject, text };
+  }
   const r = await sendResendEmail({
     apiKey: cfg.resend.apiKey,
     from: cfg.resend.from,
@@ -115,13 +157,29 @@ export async function deliverEmail(
     html,
     idempotencyKey,
   });
-  return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "resend" };
+  return { status: r.ok ? "sent" : "failed", error: r.error, provider: "resend", subject, text };
 }
 
-export async function deliverWhatsapp(cfg: DeliveryConfig, to: string | null, vars: TemplateVars) {
-  if (!cfg.resilio) return { status: "failed" as ChannelOutcome, error: "ResilioHub WhatsApp is not configured" };
-  if (!to) return { status: "skipped" as ChannelOutcome, error: "No phone number" };
-  if (!to.startsWith("+")) return { status: "skipped" as ChannelOutcome, error: "Phone needs a country code (e.g. +91…)" };
+export async function deliverWhatsapp(
+  cfg: DeliveryConfig,
+  to: string | null,
+  vars: TemplateVars,
+): Promise<WhatsappDeliveryResult> {
+  const text = renderWhatsappPreview(vars, cfg.templates.whatsappBody);
+  const templateName = cfg.resilio?.templateName;
+  if (!cfg.resilio) {
+    return { status: "failed", error: "ResilioHub WhatsApp is not configured", text, templateName };
+  }
+  if (!to) return { status: "skipped", error: "No phone number", text, templateName, provider: "resilio" };
+  if (!to.startsWith("+")) {
+    return {
+      status: "skipped",
+      error: "Phone needs a country code (e.g. +91…)",
+      text,
+      templateName,
+      provider: "resilio",
+    };
+  }
   const r = await sendResilioTemplate({
     apiKey: cfg.resilio.apiKey,
     baseUrl: cfg.resilio.baseUrl,
@@ -129,5 +187,168 @@ export async function deliverWhatsapp(cfg: DeliveryConfig, to: string | null, va
     templateName: cfg.resilio.templateName,
     bodyVariables: whatsappBodyVariables(vars),
   });
+  return {
+    status: r.ok ? "sent" : "failed",
+    error: r.error,
+    provider: "resilio",
+    text,
+    templateName,
+  };
+}
+
+/** Completion alert — uses the separate Meta `interview_completed` template. */
+export async function deliverCompletionWhatsapp(
+  cfg: DeliveryConfig,
+  to: string | null,
+  vars: CompletionTemplateVars,
+) {
+  if (!cfg.resilio) return { status: "failed" as ChannelOutcome, error: "ResilioHub WhatsApp is not configured" };
+  if (!to) return { status: "skipped" as ChannelOutcome, error: "No phone number" };
+  if (!to.startsWith("+")) return { status: "skipped" as ChannelOutcome, error: "Phone needs a country code (e.g. +91…)" };
+  const r = await sendResilioTemplate({
+    apiKey: cfg.resilio.apiKey,
+    baseUrl: cfg.resilio.baseUrl,
+    to,
+    templateName: cfg.resilio.completionTemplateName,
+    bodyVariables: whatsappCompletionBodyVariables(vars),
+  });
   return { status: (r.ok ? "sent" : "failed") as ChannelOutcome, error: r.error, provider: "resilio" };
+}
+
+type ChannelResult = { status: ChannelOutcome; error?: string };
+export interface InviteDeliveryResult {
+  email?: ChannelResult;
+  whatsapp?: ChannelResult;
+}
+
+/** Send invite link for one candidate. Never throws — errors returned per channel. */
+export async function sendCandidateInvite(
+  supabase: Db,
+  organizationId: string,
+  candidateId: string,
+  channels: { email: boolean; whatsapp: boolean },
+): Promise<InviteDeliveryResult> {
+  const out: InviteDeliveryResult = {};
+  if (!channels.email && !channels.whatsapp) return out;
+  try {
+    const { data: c } = await supabase
+      .from("candidates")
+      .select(
+        "id, name, email, phone, inviteToken, scheduledAt, expiresAt, inviteMessages, interview:interviews(title, timeLimitMinutes)",
+      )
+      .eq("id", candidateId)
+      .single();
+    if (!c || !c.inviteToken) {
+      const r: ChannelResult = { status: "failed", error: "Candidate has no invite link" };
+      if (channels.email) out.email = r;
+      if (channels.whatsapp) out.whatsapp = r;
+      return out;
+    }
+    const cfg = await loadDeliveryConfig(supabase, organizationId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const iv = c.interview as any;
+    const title = ((iv?.title as string | undefined) ?? "Interview").split(" · ")[0];
+    const vars: TemplateVars = {
+      name: c.name,
+      interviewTitle: title,
+      organization: cfg.organizationName,
+      link: inviteLink(c.inviteToken),
+      duration: iv?.timeLimitMinutes ? `${iv.timeLimitMinutes} minutes` : "",
+      batchName: title,
+      scheduledAt: (c.scheduledAt as string | null) ?? undefined,
+      expiresAt: (c.expiresAt as string | null) ?? undefined,
+      scheduleNotice: formatScheduleNotice(c.scheduledAt as string | null, c.expiresAt as string | null),
+    };
+    const update: Record<string, unknown> = {};
+    const messagePatch: InviteMessages = {};
+    const errors: string[] = [];
+    if (channels.email) {
+      const r = await deliverEmail(cfg, c.email, vars);
+      out.email = { status: r.status, error: r.error };
+      update.emailStatus = r.status;
+      update.emailProvider = r.provider;
+      if (r.status === "sent") {
+        const sentAt = new Date().toISOString();
+        update.emailSentAt = sentAt;
+        messagePatch.email = {
+          subject: r.subject,
+          text: r.text,
+          sentAt,
+          provider: r.provider,
+          to: String(c.email ?? ""),
+        };
+      }
+      if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
+    }
+    if (channels.whatsapp) {
+      const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
+      const r = await deliverWhatsapp(cfg, phone, vars);
+      out.whatsapp = { status: r.status, error: r.error };
+      update.whatsappStatus = r.status;
+      update.whatsappProvider = r.provider ?? "resilio";
+      if (r.status === "sent") {
+        const sentAt = new Date().toISOString();
+        update.whatsappSentAt = sentAt;
+        messagePatch.whatsapp = {
+          text: r.text,
+          sentAt,
+          provider: r.provider ?? "resilio",
+          to: phone ?? "",
+          templateName: r.templateName,
+        };
+      }
+      if (r.error) errors.push(`WhatsApp: ${r.error}`);
+    }
+    if (Object.keys(messagePatch).length) {
+      update.inviteMessages = mergeInviteMessages(c.inviteMessages, messagePatch);
+    }
+    update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;
+    await supabase.from("candidates").update(update).eq("id", c.id);
+  } catch (err) {
+    const r: ChannelResult = { status: "failed", error: err instanceof Error ? err.message : "Send failed" };
+    if (channels.email && !out.email) out.email = r;
+    if (channels.whatsapp && !out.whatsapp) out.whatsapp = r;
+  }
+  return out;
+}
+
+/** Resolve form invite schedule/expiry presets into ISO timestamps. */
+export function resolveInviteSchedule(settings: {
+  inviteSchedule?: "immediate" | "tomorrow" | "next_week" | "custom";
+  inviteScheduledAt?: string | null;
+  linkExpiryDays?: number | null;
+}): { scheduledAt: string | null; expiresAt: string | null } {
+  const now = new Date();
+  let scheduledAt: string | null = null;
+  const schedule = settings.inviteSchedule ?? "immediate";
+  if (schedule === "tomorrow") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(10, 0, 0, 0);
+    scheduledAt = d.toISOString();
+  } else if (schedule === "next_week") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 7);
+    d.setHours(10, 0, 0, 0);
+    scheduledAt = d.toISOString();
+  } else if (schedule === "custom" && settings.inviteScheduledAt) {
+    const t = Date.parse(settings.inviteScheduledAt);
+    if (!Number.isNaN(t)) scheduledAt = new Date(t).toISOString();
+  }
+
+  let expiresAt: string | null = null;
+  // Default 7-day expiry when unset; explicit 0/null = no expiry.
+  const days =
+    settings.linkExpiryDays === undefined || settings.linkExpiryDays === null
+      ? settings.linkExpiryDays === null
+        ? 0
+        : 7
+      : settings.linkExpiryDays;
+  if (typeof days === "number" && days > 0) {
+    const base = scheduledAt ? new Date(scheduledAt) : now;
+    const e = new Date(base);
+    e.setDate(e.getDate() + days);
+    expiresAt = e.toISOString();
+  }
+  return { scheduledAt, expiresAt };
 }

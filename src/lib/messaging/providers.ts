@@ -3,6 +3,8 @@
  * Both are plain fetch calls — no SDK needed.
  */
 import "server-only";
+import { safeFetch, UnsafeUrlError } from "@/lib/network-security";
+import { RESILIO_DEFAULT_BASE_URL, resilioSendUrl } from "./resilio-url";
 
 export interface SendResult {
   ok: boolean;
@@ -97,7 +99,7 @@ export async function sendBrevoEmail(opts: {
   }
 }
 
-export const RESILIO_DEFAULT_BASE_URL = "https://resiliohub.com";
+export { RESILIO_DEFAULT_BASE_URL };
 
 /** POST /api/v1/send_templet — approved Meta template via the client's WABA. */
 export async function sendResilioTemplate(opts: {
@@ -107,9 +109,16 @@ export async function sendResilioTemplate(opts: {
   templateName: string;
   bodyVariables: string[];
 }): Promise<SendResult> {
-  const base = (opts.baseUrl || RESILIO_DEFAULT_BASE_URL).replace(/\/$/, "");
+  let endpoint: string;
   try {
-    const res = await fetch(`${base}/api/v1/send_templet`, {
+    endpoint = resilioSendUrl(opts.baseUrl);
+  } catch {
+    return { ok: false, error: "ResilioHub base URL is invalid" };
+  }
+  try {
+    const res = await safeFetch(endpoint, {
+      redirect: "error",
+      maxBytes: 256 * 1024,
       method: "POST",
       headers: { Authorization: `Bearer ${opts.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -118,7 +127,7 @@ export async function sendResilioTemplate(opts: {
         body_variables: opts.bodyVariables,
         enableLog: true,
       }),
-      signal: AbortSignal.timeout(20_000),
+      timeoutMs: 20_000,
     });
     const json = (await res.json().catch(() => ({}))) as {
       success?: boolean;
@@ -131,6 +140,9 @@ export async function sendResilioTemplate(opts: {
     }
     return { ok: true, id: json.metaResponse?.messages?.[0]?.id };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "ResilioHub request failed" };
+    if (err instanceof UnsafeUrlError) {
+      return { ok: false, error: "ResilioHub base URL must be a public https:// address" };
+    }
+    return { ok: false, error: "ResilioHub request failed" };
   }
 }

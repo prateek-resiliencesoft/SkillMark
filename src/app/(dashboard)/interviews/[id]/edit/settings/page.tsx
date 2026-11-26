@@ -2,6 +2,12 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import {
+  CompletionNotifyPicker,
+  readyCompletionNotifyMembers,
+} from "@/components/interview/completion-notify-picker";
+import { useOrg } from "@/components/org-provider";
+import { useProject } from "@/components/project-provider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,8 +22,20 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import type { CompletionNotifyMember } from "@/lib/completion-notify";
+import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
+import { AI_TONES, FOLLOW_UP_DEPTHS } from "@/lib/constants";
+import { interviewLanguageSelectOptions, normalizeInterviewLanguageSetting } from "@/lib/interview-language";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  getInterviewerPersona,
+  isDefaultInterviewerName,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
+import { cn } from "@/lib/utils";
 import {
     Copy,
     Globe,
@@ -34,34 +52,17 @@ import { useCallback, useState } from "react";
 import { useEditInterview } from "../edit-context";
 
 function normalizeInterviewLanguage(language?: string | null): string {
-  const normalized = language?.trim().toLowerCase();
-  switch (normalized) {
-    case "zh":
-    case "zh-cn":
-    case "zh_hans":
-    case "chinese":
-    case "chinese (中文)":
-    case "中文":
-      return "zh";
-    case "es":
-    case "spanish":
-    case "español":
-      return "es";
-    case "fr":
-    case "french":
-    case "français":
-      return "fr";
-    case "en":
-    case "english":
-    default:
-      return "en";
-  }
+  return normalizeInterviewLanguageSetting(language);
 }
 
 export default function SettingsTab() {
   const { interview, interviewId, updateMutation } = useEditInterview();
   const { toast } = useToast();
   const utils = trpc.useUtils();
+  const { currentOrg } = useOrg();
+  const { currentProject } = useProject();
+  const organizationId =
+    currentProject?.organizationId || currentOrg?.id || "";
 
   const publishMutation = trpc.interview.publish.useMutation();
 
@@ -72,6 +73,9 @@ export default function SettingsTab() {
   const [voiceEnabled, setVoiceEnabled] = useState<boolean>(interview.voiceEnabled ?? false);
   const [videoEnabled, setVideoEnabled] = useState<boolean>(interview.videoEnabled ?? false);
   const [aiName, setAiName] = useState<string>(interview.aiName);
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender((interview as { aiGender?: string }).aiGender),
+  );
   const [aiTone, setAiTone] = useState<string>(interview.aiTone);
   const [followUpDepth, setFollowUpDepth] = useState<string>(interview.followUpDepth);
   const [language, setLanguage] = useState<string>(
@@ -84,6 +88,20 @@ export default function SettingsTab() {
     interview.antiCheatingEnabled ?? false,
   );
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>((interview as any).headMovementDetectionEnabled ?? false);
+  const [integrityChecksEnabled, setIntegrityChecksEnabled] = useState<boolean>((interview as any).integrityChecksEnabled ?? false);
+  const [livenessChallengesEnabled, setLivenessChallengesEnabled] = useState<boolean>((interview as any).livenessChallengesEnabled ?? false);
+  const [autoLeftFollowup, setAutoLeftFollowup] = useState<boolean>(
+    (interview as { autoLeftFollowup?: boolean }).autoLeftFollowup ?? true,
+  );
+  const integrity = effectiveIntegrityConfig({
+    antiCheatingEnabled,
+    headMovementDetectionEnabled,
+    integrityChecksEnabled,
+    livenessChallengesEnabled,
+  });
+  const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>(() =>
+    parseCompletionNotifyMembers((interview as any).completionNotifyMembers),
+  );
 
   const requireInvite = interview.requireInvite ?? true;
   const hasShareableLink = !requireInvite;
@@ -317,6 +335,30 @@ export default function SettingsTab() {
             <Input value={aiName} onChange={(e) => setAiName(e.target.value)} />
           </div>
           <div className="space-y-2">
+            <Label>Interviewer gender</Label>
+            <Select
+              value={aiGender}
+              onValueChange={(v) => {
+                const next = v as InterviewerGender;
+                setAiGender(next);
+                if (isDefaultInterviewerName(aiName)) {
+                  setAiName(getInterviewerPersona(next).name);
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                  <SelectItem key={g.value} value={g.value}>
+                    {g.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
             <Label>Tone</Label>
             <Select value={aiTone} onValueChange={setAiTone}>
               <SelectTrigger>
@@ -353,7 +395,7 @@ export default function SettingsTab() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {LANGUAGES.map((l) => (
+                {interviewLanguageSelectOptions(interview.language).map((l) => (
                   <SelectItem key={l.value} value={l.value}>
                     {l.label}
                   </SelectItem>
@@ -400,6 +442,46 @@ export default function SettingsTab() {
                   </div>
                 )}
                 {antiCheatingEnabled && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
+                    <div>
+                      <Label className={cn(!integrity.headMovementDetectionEnabled && "text-muted-foreground")}>
+                        Integrity Checks (AI copilots, other voices, virtual devices)
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Warns and strikes when another voice is heard while the candidate&apos;s mouth is closed, or the camera/mic is switched mid-interview.
+                        Silently records reviewer-only signals: virtual cameras/mics, voice vs. lip-movement correlation, uniform answer delays,
+                        reading-like eye movement and browser extensions injecting into the page. The AI interviewer also asks first-hand follow-ups.
+                        Audio checks run in voice interviews only.
+                      </p>
+                      {!integrity.headMovementDetectionEnabled && (
+                        <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-300">
+                          Turn on Head Movement Detection first: these checks use its face tracking.
+                        </p>
+                      )}
+                    </div>
+                    <Switch
+                      checked={integrity.integrityChecksEnabled}
+                      disabled={!integrity.headMovementDetectionEnabled}
+                      onCheckedChange={setIntegrityChecksEnabled}
+                    />
+                  </div>
+                )}
+                {integrity.integrityChecksEnabled && (
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-dashed p-2.5">
+                    <div>
+                      <Label>Liveness Prompts</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Twice per interview, at random times, asks the candidate to turn their head, cover their face, or smile.
+                        Catches pre-recorded video and many real-time face swaps. Results go to the report only, never strikes.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={integrity.livenessChallengesEnabled}
+                      onCheckedChange={setLivenessChallengesEnabled}
+                    />
+                  </div>
+                )}
+                {antiCheatingEnabled && (
               <div className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                 <p className="font-medium">When enabled, interviewees will experience:</p>
                 <ul className="mt-1 list-inside list-disc space-y-0.5">
@@ -417,6 +499,38 @@ export default function SettingsTab() {
         </CardContent>
       </Card>
 
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle>Completion alerts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CompletionNotifyPicker
+            organizationId={organizationId}
+            value={notifyMembers}
+            onChange={setNotifyMembers}
+          />
+        </CardContent>
+      </Card>
+
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle>Incomplete follow-up</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <Label>Auto follow-up on abandon</Label>
+              <p className="text-xs text-muted-foreground">
+                On by default: abandon / leave early auto-sends interview_incomplete_reminder (WhatsApp +
+                email if configured) with the resume link. If send fails, the candidate screen shows the
+                error so you can send manually.
+              </p>
+            </div>
+            <Switch checked={autoLeftFollowup} onCheckedChange={setAutoLeftFollowup} />
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="flex items-end">
         <Button
           onClick={() =>
@@ -429,6 +543,7 @@ export default function SettingsTab() {
               voiceEnabled,
               videoEnabled,
               aiName,
+              aiGender,
               aiTone,
               followUpDepth,
               language,
@@ -436,7 +551,9 @@ export default function SettingsTab() {
                 ? Number(timeLimitMinutes)
                 : null,
               antiCheatingEnabled,
-              headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
+              ...integrity,
+              autoLeftFollowup,
+              completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
             })
           }
           disabled={updateMutation.isLoading}

@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { listDurationSeconds } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -43,14 +45,24 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
+import { summarizeDelivery } from "@/lib/messaging/delivery-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { formatSessionStatusLabel, NEVER_REACHED_FIRST_QUESTION, neverReachedFirstQuestion } from "@/lib/preflight";
+import { cn } from "@/lib/utils";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { trpc } from "@/lib/trpc/client";
 import {
     ArrowDown,
     ArrowUp,
     ArrowUpDown,
     Calendar,
+    CalendarClock,
     Check,
     ChevronLeft,
     ChevronRight,
@@ -106,8 +118,14 @@ type CandidateRow = {
   workExperience: string | null;
   notes: string | null;
   inviteToken: string | null;
+  expiresAt: string | null;
+  followupSentAt: string | null;
+  followupSentToken: string | null;
+  followupError: string | null;
+  decisionStatus: string | null;
   session: any;
   createdAt: string;
+  hasResume?: boolean;
 };
 
 type WalkInRow = {
@@ -270,11 +288,17 @@ function getSessionBadgeVariant(
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "COMPLETED":
+    case "Completed":
       return "default";
     case "IN_PROGRESS":
+    case "In Progress":
+    case "Opened link":
+    case "Setting up":
       return "outline";
     case "ABANDONED":
+    case "Abandoned":
     case "DISQUALIFIED":
+    case "Disqualified":
       return "destructive";
     default:
       return "secondary";
@@ -306,6 +330,23 @@ function getStartDate(row: UnifiedRow): string | null {
 
 function getCandidateField(row: UnifiedRow): CandidateRow | null {
   return row.type === "candidate" ? (row as CandidateRow) : null;
+}
+
+function isFormApplicant(row: UnifiedRow): boolean {
+  if (row.type !== "candidate") return false;
+  const n = (row.notes ?? "").toLowerCase();
+  return n.includes("applied via") || n.includes("hosted form");
+}
+
+function hasResume(row: UnifiedRow): boolean {
+  if (row.type !== "candidate") return false;
+  return !!row.hasResume || isFormApplicant(row);
+}
+
+function getSourceLabel(row: UnifiedRow): "Walk-in" | "Form" | "Invited" {
+  if (row.type === "walkin") return "Walk-in";
+  if (isFormApplicant(row)) return "Form";
+  return "Invited";
 }
 
 function getSessionScore(row: UnifiedRow): number | null {
@@ -349,7 +390,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return row.session?.totalDurationSeconds ?? -1;
+      return listDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -357,7 +398,7 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
         ? new Date(row.session.completedAt).getTime()
         : -1;
     case "source":
-      return row.type === "walkin" ? "Walk-in" : "Invited";
+      return getSourceLabel(row);
     case "status":
       return getSessionStatus(row);
   }
@@ -423,11 +464,13 @@ export function CandidateManager({
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [resumeImportOpen, setResumeImportOpen] = useState(false);
   const [bulkUploadOpen, setBulkUploadOpen] = useState(false);
   const [detail, setDetail] = useState<{ id: string; edit: boolean } | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string | null; expiresAt: string | null } | null>(null);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
 
@@ -517,7 +560,10 @@ export function CandidateManager({
   }, [columnOrder]);
 
   // ── Data ──
-  const candidateList = trpc.candidate.list.useQuery({ interviewId });
+  const candidateList = trpc.candidate.list.useQuery(
+    { interviewId },
+    { refetchInterval: (data) => livePollInterval(data) },
+  );
   const insights = trpc.analysis.getInterviewInsights.useQuery({ interviewId });
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
@@ -544,28 +590,43 @@ export function CandidateManager({
   const invalidateAll = useCallback(() => {
     utils.candidate.list.invalidate({ interviewId });
     utils.analysis.getInterviewInsights.invalidate({ interviewId });
+    utils.session.listHistory.invalidate({ interviewId });
+    utils.session.listByInterview.invalidate({ interviewId });
   }, [utils, interviewId]);
+
+  const archiveMutation = trpc.session.archiveMany.useMutation({
+    onSuccess: ({ archived }) => {
+      invalidateAll();
+      toast({
+        title: `${archived} moved to History`,
+        description: "Recordings and the transcript were deleted. Name and score were kept.",
+      });
+      setSelectedIds(new Set());
+    },
+    onError: (err) =>
+      toast({ title: "Could not delete interview data", description: err.message, variant: "destructive" }),
+  });
 
   const resendInviteMutation = trpc.candidate.resendInvite.useMutation({
     onSuccess: (d) => {
       invalidateAll();
-      const parts: string[] = [];
-      let anyFail = false;
-      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
-        const r = d[ch];
-        if (!r) continue;
-        if (r.status !== "sent") anyFail = true;
-        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
-      }
-      toast({
-        title: anyFail ? "Some messages not sent" : "Invite link sent",
-        description: parts.join(" · ") || "Nothing to send",
-        variant: anyFail ? "destructive" : undefined,
-      });
+      const s = summarizeDelivery(d, { verb: "resent" });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
     },
     onError: (err) => toast({ title: "Resend failed", description: err.message, variant: "destructive" }),
   });
+  const sendNewLinkMutation = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      invalidateAll();
+      const s = summarizeDelivery(d.delivery, { newLink: true });
+      toast({ title: s.title, description: s.description, variant: s.destructive ? "destructive" : undefined });
+    },
+    onError: (err) => toast({ title: "Could not create a new link", description: err.message, variant: "destructive" }),
+  });
   const deliveryOptions = trpc.candidate.deliveryOptions.useQuery({ interviewId });
+  const [resendRowId, setResendRowId] = useState<string | null>(null);
+  const [rowSendEmail, setRowSendEmail] = useState(true);
+  const [rowSendWhatsapp, setRowSendWhatsapp] = useState(true);
 
   const handleCopyInviteLink = useCallback(
     (inviteToken: string) => {
@@ -578,24 +639,36 @@ export function CandidateManager({
 
   // ── Build unified rows ──
   const candidates: CandidateRow[] = (candidateList.data?.candidates ?? []).map(
-    (c: any) => ({
-      type: "candidate" as const,
-      id: c.id,
-      email: c.email,
-      name: c.name,
-      phone: c.phone,
-      gender: c.gender ?? null,
-      birthday: c.birthday ?? null,
-      education: c.education ?? null,
-      school: c.school ?? null,
-      major: c.major ?? null,
-      graduationYear: c.graduationYear ?? null,
-      workExperience: c.workExperience ?? null,
-      notes: c.notes ?? null,
-      inviteToken: c.inviteToken,
-      session: c.session,
-      createdAt: c.createdAt,
-    }),
+    (c: any) => {
+      const profile = c.profile as
+        | { cvPath?: string; resumeMarkdown?: string; fileName?: string }
+        | null
+        | undefined;
+      return {
+        type: "candidate" as const,
+        id: c.id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        gender: c.gender ?? null,
+        birthday: c.birthday ?? null,
+        education: c.education ?? null,
+        school: c.school ?? null,
+        major: c.major ?? null,
+        graduationYear: c.graduationYear ?? null,
+        workExperience: c.workExperience ?? null,
+        notes: c.notes ?? null,
+        inviteToken: c.inviteToken,
+        expiresAt: c.expiresAt ?? null,
+        followupSentAt: c.followupSentAt ?? null,
+        followupSentToken: c.followupSentToken ?? null,
+        followupError: c.followupError ?? null,
+        decisionStatus: (c as { decisionStatus?: string | null }).decisionStatus ?? "none",
+        session: c.session,
+        createdAt: c.createdAt,
+        hasResume: !!(profile?.cvPath || profile?.resumeMarkdown?.trim() || profile?.fileName),
+      };
+    },
   );
 
   const walkIns: WalkInRow[] = (candidateList.data?.walkInSessions ?? []).map(
@@ -628,6 +701,9 @@ export function CandidateManager({
     if (statusFilter !== "ALL") {
       result = result.filter((row) => {
         const s = getSessionStatus(row);
+        if (statusFilter === "EXPIRED") {
+          return row.type === "candidate" && isLinkExpired({ session: row.session, expiresAt: row.expiresAt });
+        }
         if (statusFilter === "NOT_STARTED") return s === "Not Started";
         return s === statusFilter;
       });
@@ -708,7 +784,24 @@ export function CandidateManager({
   }, [allPageSelected, pageIds]);
 
   const isBulkDeleting =
-    removeCandidatesMutation.isLoading || removeSessionsMutation.isLoading;
+    removeCandidatesMutation.isLoading || removeSessionsMutation.isLoading || archiveMutation.isLoading;
+
+  const selectedSessionIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const composite of selectedIds) {
+      if (composite.startsWith("walkin-")) {
+        ids.push(composite.slice("walkin-".length));
+        continue;
+      }
+      if (composite.startsWith("candidate-")) {
+        const candidateId = composite.slice("candidate-".length);
+        const row = candidates.find((c) => c.id === candidateId);
+        const sessionId = row?.session?.id as string | undefined;
+        if (sessionId) ids.push(sessionId);
+      }
+    }
+    return ids;
+  }, [selectedIds, candidates]);
 
   const handleBulkDelete = useCallback(() => {
     const candidateIds = Array.from(selectedIds)
@@ -805,7 +898,7 @@ export function CandidateManager({
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(session.totalDurationSeconds)
+              ? formatDuration(listDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -818,13 +911,10 @@ export function CandidateManager({
                 : "";
             break;
           case "source":
-            record[col.label] = row.type === "walkin" ? "Walk-in" : "Invited";
+            record[col.label] = getSourceLabel(row);
             break;
           case "status":
-            record[col.label] =
-              status === "Not Started"
-                ? "NOT STARTED"
-                : status.replace("_", " ");
+            record[col.label] = formatSessionStatusLabel(row.session);
             break;
         }
       }
@@ -926,7 +1016,9 @@ export function CandidateManager({
             <SelectItem value="ALL">All Status</SelectItem>
             <SelectItem value="COMPLETED">Completed</SelectItem>
             <SelectItem value="IN_PROGRESS">In Progress</SelectItem>
+            <SelectItem value="DISQUALIFIED">Disqualified</SelectItem>
             <SelectItem value="NOT_STARTED">Not Started</SelectItem>
+            <SelectItem value="EXPIRED">Link Expired</SelectItem>
           </SelectContent>
         </Select>
 
@@ -942,6 +1034,18 @@ export function CandidateManager({
         {/* Bulk actions / Import+Add */}
         {selectedIds.size > 0 ? (
           <>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmArchive(true)}
+              disabled={isBulkDeleting || selectedSessionIds.length === 0}
+            >
+              {archiveMutation.isLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 h-4 w-4" />
+              )}
+              Delete data ({selectedSessionIds.length})
+            </Button>
             <Button
               variant="destructive"
               onClick={() => setConfirmDelete(true)}
@@ -1121,6 +1225,7 @@ export function CandidateManager({
                 <TableBody>
                   {paginatedRows.map((row) => {
                     const status = getSessionStatus(row);
+                    const statusLabel = formatSessionStatusLabel(row.session);
                     const session = row.session;
                     const hasSession = !!session && status !== "Not Started";
                     const compositeId = `${row.type}-${row.id}`;
@@ -1185,26 +1290,11 @@ export function CandidateManager({
                           {c?.createdAt ? formatDate(c.createdAt) : "-"}
                         </span>
                       ),
-                      score: (() => {
-                        const sv = getSessionScore(row);
-                        if (sv === null)
-                          return (
-                            <span className="text-muted-foreground">-</span>
-                          );
-                        const sc =
-                          sv >= 7
-                            ? "text-green-700 dark:text-green-400"
-                            : sv >= 4
-                              ? "text-amber-700 dark:text-amber-400"
-                              : "text-red-700 dark:text-red-400";
-                        return (
-                          <span className={`font-semibold ${sc}`}>
-                            {sv.toFixed(1)}/10
-                          </span>
-                        );
-                      })(),
+                      score: (
+                        <ScoreWithBreakdown insights={session?.insights} />
+                      ),
                       duration: hasSession
-                        ? formatDuration(session.totalDurationSeconds)
+                        ? formatDuration(listDurationSeconds(session))
                         : "-",
                       started: (
                         <span className="whitespace-nowrap">
@@ -1218,31 +1308,66 @@ export function CandidateManager({
                             : "-"}
                         </span>
                       ),
-                      source:
-                        row.type === "walkin" ? (
-                          <Badge
-                            variant="secondary"
-                            className="whitespace-nowrap text-xs"
-                          >
-                            Walk-in
-                          </Badge>
-                        ) : (
+                      source: (() => {
+                        const src = getSourceLabel(row);
+                        if (src === "Walk-in") {
+                          return (
+                            <Badge variant="secondary" className="whitespace-nowrap text-xs">
+                              Walk-in
+                            </Badge>
+                          );
+                        }
+                        if (src === "Form") {
+                          return (
+                            <Badge
+                              variant="outline"
+                              className="whitespace-nowrap border-transparent bg-sky-500/10 text-xs text-sky-700 dark:text-sky-300"
+                            >
+                              Form
+                            </Badge>
+                          );
+                        }
+                        return (
                           <Badge
                             variant="outline"
                             className="whitespace-nowrap border-transparent bg-primary/5 text-xs text-primary"
                           >
                             Invited
                           </Badge>
-                        ),
+                        );
+                      })(),
                       status: (
-                        <Badge
-                          variant={getSessionBadgeVariant(status)}
-                          className="whitespace-nowrap"
-                        >
-                          {status === "Not Started"
-                            ? "NOT STARTED"
-                            : status.replace("_", " ")}
-                        </Badge>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <Badge
+                            variant={getSessionBadgeVariant(statusLabel)}
+                            className="whitespace-nowrap"
+                          >
+                            {statusLabel}
+                          </Badge>
+                          {row.type === "candidate" && decisionStatusLabel(row.decisionStatus) ? (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "whitespace-nowrap font-normal",
+                                row.decisionStatus === "approved" && "border-green-600 text-green-700",
+                                row.decisionStatus === "rejected" && "border-red-600 text-red-700",
+                                row.decisionStatus === "followup_sent" && "border-amber-600 text-amber-700",
+                              )}
+                            >
+                              {decisionStatusLabel(row.decisionStatus)}
+                            </Badge>
+                          ) : null}
+                          <QuitEarlyBadge session={row.session} />
+                          {neverReachedFirstQuestion(row.session) ? (
+                            <span className="text-[11px] text-muted-foreground">{NEVER_REACHED_FIRST_QUESTION}</span>
+                          ) : null}
+                          {row.type === "candidate" && isLinkExpired({ session: row.session, expiresAt: row.expiresAt }) ? (
+                            <ExpiredBadge />
+                          ) : null}
+                          {row.type === "candidate" ? (
+                            <LeftFollowupAction candidateId={row.id} candidate={row} session={row.session} variant="compact" />
+                          ) : null}
+                        </div>
                       ),
                     };
 
@@ -1308,7 +1433,42 @@ export function CandidateManager({
                               <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           )}
-                          {hasSession && status === "COMPLETED" ? (
+                          {row.type === "candidate" && hasResume(row) && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              title="View resume"
+                              onClick={async () => {
+                                try {
+                                  const cv = await utils.candidate.resumeAccess.fetch({
+                                    candidateId: row.id,
+                                  });
+                                  if (cv.url) {
+                                    window.open(cv.url, "_blank", "noopener,noreferrer");
+                                    return;
+                                  }
+                                  if (cv.markdown) {
+                                    const blob = new Blob([cv.markdown], { type: "text/markdown" });
+                                    const url = URL.createObjectURL(blob);
+                                    window.open(url, "_blank", "noopener,noreferrer");
+                                    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                                    return;
+                                  }
+                                  throw new Error("No resume file");
+                                } catch (e) {
+                                  toast({
+                                    title: "Resume unavailable",
+                                    description: e instanceof Error ? e.message : "Could not open resume",
+                                    variant: "destructive",
+                                  });
+                                }
+                              }}
+                            >
+                              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                          )}
+                          {hasSession && (status === "COMPLETED" || status === "ABANDONED" || status === "DISQUALIFIED" || (status === "IN_PROGRESS" && !!session.interviewBeganAt)) ? (
                             <Button
                               variant="ghost"
                               size="icon"
@@ -1332,27 +1492,113 @@ export function CandidateManager({
                               <LinkIcon className="h-3.5 w-3.5 text-muted-foreground" />
                             </Button>
                           ) : null}
-                          {row.type === "candidate" && row.inviteToken &&
-                            (deliveryOptions.data?.email || deliveryOptions.data?.whatsapp) ? (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7"
-                              title="Resend link (WhatsApp / Email)"
-                              disabled={resendInviteMutation.isLoading}
-                              onClick={() =>
-                                resendInviteMutation.mutate({
-                                  candidateId: row.id,
-                                  channels: {
-                                    email: !!deliveryOptions.data?.email,
-                                    whatsapp: !!deliveryOptions.data?.whatsapp,
-                                  },
-                                })
-                              }
-                            >
-                              <Send className="h-3.5 w-3.5 text-muted-foreground" />
-                            </Button>
-                          ) : null}
+                          {row.type === "candidate" && row.inviteToken ? (() => {
+                            const rowEmailOk = !!deliveryOptions.data?.email && !!String(row.email ?? "").trim();
+                            const rowPhone = String(row.phone ?? "").replace(/[\s()-]/g, "");
+                            const rowWaOk = !!deliveryOptions.data?.whatsapp && rowPhone.startsWith("+");
+                            if (isLinkExpired({ session: row.session, expiresAt: row.expiresAt })) {
+                              // Expired: no send options until the expiry is extended.
+                              return (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  title="Extend expiry"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExtendFor({ id: row.id, name: row.name, expiresAt: row.expiresAt });
+                                  }}
+                                >
+                                  <CalendarClock className="h-3.5 w-3.5 text-primary" />
+                                </Button>
+                              );
+                            }
+                            const fresh = needsFreshInviteLink({ session: row.session, expiresAt: row.expiresAt });
+                            if (!rowEmailOk && !rowWaOk && !fresh) return null;
+                            return (
+                              <Popover
+                                open={resendRowId === row.id}
+                                onOpenChange={(open) => {
+                                  setResendRowId(open ? row.id : null);
+                                  if (open) {
+                                    setRowSendEmail(rowEmailOk);
+                                    setRowSendWhatsapp(rowWaOk);
+                                  }
+                                }}
+                              >
+                                <PopoverTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    title={fresh ? "Send new link" : "Resend invite"}
+                                    disabled={resendInviteMutation.isLoading || sendNewLinkMutation.isLoading}
+                                  >
+                                    <Send className="h-3.5 w-3.5 text-muted-foreground" />
+                                  </Button>
+                                </PopoverTrigger>
+                                <PopoverContent align="end" className="w-64 space-y-3 p-3">
+                                  <p className="text-xs font-medium">
+                                    {fresh ? "Send new link via" : "Resend via"}
+                                  </p>
+                                  {rowWaOk && (
+                                    <label className="flex items-start gap-2 text-sm">
+                                      <Checkbox
+                                        checked={rowSendWhatsapp}
+                                        onCheckedChange={(v) => setRowSendWhatsapp(v === true)}
+                                      />
+                                      <span>
+                                        WhatsApp
+                                        <span className="block text-[11px] text-muted-foreground">To {rowPhone}</span>
+                                      </span>
+                                    </label>
+                                  )}
+                                  {rowEmailOk && (
+                                    <label className="flex items-start gap-2 text-sm">
+                                      <Checkbox
+                                        checked={rowSendEmail}
+                                        onCheckedChange={(v) => setRowSendEmail(v === true)}
+                                      />
+                                      <span>
+                                        Email
+                                        <span className="block text-[11px] text-muted-foreground">
+                                          To {String(row.email).trim()}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  )}
+                                  {!rowEmailOk && !rowWaOk && (
+                                    <p className="text-[11px] text-muted-foreground">
+                                      No connected channel for this candidate. You can still create a new link to copy.
+                                    </p>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    className="w-full"
+                                    disabled={
+                                      resendInviteMutation.isLoading ||
+                                      sendNewLinkMutation.isLoading ||
+                                      (!(rowSendEmail && rowEmailOk) && !(rowSendWhatsapp && rowWaOk) && !fresh)
+                                    }
+                                    onClick={() => {
+                                      const channels = {
+                                        email: rowSendEmail && rowEmailOk,
+                                        whatsapp: rowSendWhatsapp && rowWaOk,
+                                      };
+                                      if (fresh) {
+                                        sendNewLinkMutation.mutate({ candidateId: row.id, channels });
+                                      } else if (channels.email || channels.whatsapp) {
+                                        resendInviteMutation.mutate({ candidateId: row.id, channels });
+                                      }
+                                      setResendRowId(null);
+                                    }}
+                                  >
+                                    {fresh ? "Send new link" : "Resend"}
+                                  </Button>
+                                </PopoverContent>
+                              </Popover>
+                            );
+                          })() : null}
                         </TableCell>
                       </TableRow>
                     );
@@ -1415,6 +1661,30 @@ export function CandidateManager({
         )}
       </div>
 
+      <AlertDialog open={confirmArchive} onOpenChange={setConfirmArchive}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete interview data</AlertDialogTitle>
+            <AlertDialogDescription>
+              Recordings, screenshots, and the transcript for {selectedSessionIds.length} session
+              {selectedSessionIds.length === 1 ? "" : "s"} are removed. The candidate name and
+              score stay on the History tab.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                archiveMutation.mutate({ ids: selectedSessionIds });
+                setConfirmArchive(false);
+              }}
+            >
+              Delete data
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Delete confirmation dialog */}
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
@@ -1474,6 +1744,18 @@ export function CandidateManager({
         onOpenChange={(o) => !o && setDetail(null)}
         onSaved={invalidateAll}
       />
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={invalidateAll}
+          onExtendAndSend={() => setDetail({ id: extendFor.id, edit: false })}
+          sendLabel="Extend & open send options"
+        />
+      )}
     </div>
   );
 }

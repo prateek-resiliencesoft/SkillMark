@@ -1,22 +1,54 @@
 import { encryptSecret, maskSecret } from "@/lib/messaging/secrets";
 import { RESILIO_DEFAULT_BASE_URL } from "@/lib/messaging/providers";
-import { DEFAULT_TEMPLATES, mergeTemplates, type TemplateVars } from "@/lib/messaging/templates";
+import {
+  DEFAULT_TEMPLATES,
+  mergeTemplates,
+  type TemplateVars,
+} from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { appBaseUrl } from "../batch-access";
-import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
-import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
+import {
+  deliverCompletionWhatsapp,
+  deliverEmail,
+  deliverWhatsapp,
+  loadDeliveryConfig,
+} from "../invite-delivery";
+import { isPlatformAdmin } from "../tenant";
+import { assertMinRole, getOrgMembership, hasMinRole, protectedProcedure, router } from "../trpc";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 
+/** Returns true when the caller may manage integration credentials (ADMIN+ or platform admin). */
 async function requireOrgRole(
   supabase: Parameters<typeof getOrgMembership>[0],
   organizationId: string,
   userId: string,
   min: "VIEWER" | "ADMIN",
-) {
-  const membership = await getOrgMembership(supabase, organizationId, userId);
+): Promise<boolean> {
+  if (await isPlatformAdmin(supabase, userId)) return true;
+  const membership = await getOrgMembership(supabase, organizationId, userId, {
+    write: min !== "VIEWER",
+  });
   if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
   assertMinRole(membership.role, min);
+  return hasMinRole(membership.role, "ADMIN");
+}
+
+/** Org-configured outbound destinations must be public HTTPS hosts. */
+async function assertSafeOutboundUrl(raw: string, label: string, opts: { baseOnly?: boolean } = {}) {
+  try {
+    const url = await assertSafeRemoteUrl(raw);
+    if (url.username || url.password) throw new Error("URL must not contain credentials");
+    if (opts.baseOnly && (url.search || url.hash || raw.includes("?") || raw.includes("#"))) {
+      throw new Error("URL must not contain a query string or fragment");
+    }
+  } catch (err) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${label}: ${err instanceof Error ? err.message : "invalid URL"}`,
+    });
+  }
 }
 
 /** undefined = keep current, "" or null = clear, string = replace. */
@@ -24,7 +56,7 @@ const secretInput = z.string().max(500).nullable().optional();
 
 export const integrationRouter = router({
   get: protectedProcedure.input(z.object({ organizationId: z.string() })).query(async ({ ctx, input }) => {
-    await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "VIEWER");
+    const canManage = await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "VIEWER");
     const { data: row } = await ctx.supabase
       .from("org_integrations")
       .select("*")
@@ -47,6 +79,7 @@ export const integrationRouter = router({
         apiKeyHint: maskSecret(row?.resilioApiKey),
         baseUrl: (row?.resilioBaseUrl as string | null) ?? RESILIO_DEFAULT_BASE_URL,
         templateName: (row?.resilioTemplateName as string | null) ?? "",
+        completionTemplateName: (row?.resilioCompletionTemplateName as string | null) ?? "",
         templateLanguage: (row?.resilioTemplateLanguage as string | null) ?? "en",
       },
       defaultEmailProvider: ((row?.defaultEmailProvider as string | null) ?? "resend") as "resend" | "brevo",
@@ -57,7 +90,10 @@ export const integrationRouter = router({
         events: (row?.outboundWebhookEvents as string[]) ?? ["candidate.invited", "session.started", "session.completed"],
       },
       inboundWebhook: {
-        secret: (row?.inboundWebhookSecret as string | null) ?? "",
+        // The inbound secret alone authorizes candidate creation + invites: admins only.
+        secret: canManage ? ((row?.inboundWebhookSecret as string | null) ?? "") : "",
+        secretHint: maskSecret(row?.inboundWebhookSecret),
+        configured: !!row?.inboundWebhookSecret,
         endpointUrl: `${appBaseUrl()}/api/webhooks/candidates`,
       },
       templates: mergeTemplates(row?.messageTemplates),
@@ -80,6 +116,7 @@ export const integrationRouter = router({
         resilioApiKey: secretInput,
         resilioBaseUrl: z.string().url().max(200).optional().or(z.literal("")),
         resilioTemplateName: z.string().max(200).optional(),
+        resilioCompletionTemplateName: z.string().max(200).optional(),
         resilioTemplateLanguage: z.string().max(10).optional(),
         defaultEmailProvider: z.enum(["resend", "brevo"]).optional(),
         defaultWhatsappProvider: z.enum(["resilio"]).optional(),
@@ -98,6 +135,13 @@ export const integrationRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "ADMIN");
+
+      if (input.outboundWebhookUrl?.trim()) {
+        await assertSafeOutboundUrl(input.outboundWebhookUrl.trim(), "Outbound webhook URL");
+      }
+      if (input.resilioBaseUrl?.trim()) {
+        await assertSafeOutboundUrl(input.resilioBaseUrl.trim(), "ResilioHub base URL", { baseOnly: true });
+      }
 
       const patch: Record<string, unknown> = { organizationId: input.organizationId };
       const secret = (v: string | null | undefined) => (v === undefined ? undefined : v ? encryptSecret(v.trim()) : null);
@@ -121,6 +165,9 @@ export const integrationRouter = router({
 
       if (input.resilioBaseUrl !== undefined) patch.resilioBaseUrl = input.resilioBaseUrl.trim() || null;
       if (input.resilioTemplateName !== undefined) patch.resilioTemplateName = input.resilioTemplateName.trim() || null;
+      if (input.resilioCompletionTemplateName !== undefined) {
+        patch.resilioCompletionTemplateName = input.resilioCompletionTemplateName.trim() || null;
+      }
       if (input.resilioTemplateLanguage !== undefined) patch.resilioTemplateLanguage = input.resilioTemplateLanguage.trim() || null;
 
       if (input.defaultEmailProvider !== undefined) patch.defaultEmailProvider = input.defaultEmailProvider;
@@ -146,14 +193,17 @@ export const integrationRouter = router({
         organizationId: z.string(),
         channel: z.enum(["email", "whatsapp"]),
         provider: z.enum(["resend", "brevo", "resilio"]).optional(),
+        /** WhatsApp only: invite = interview_invite, completion = interview_completed */
+        whatsappTemplate: z.enum(["invite", "completion"]).optional().default("invite"),
         to: z.string().min(3).max(200),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgRole(ctx.supabase, input.organizationId, ctx.user.id, "ADMIN");
       const cfg = await loadDeliveryConfig(ctx.supabase, input.organizationId);
+      const displayName = ctx.user.email?.split("@")[0] ?? "Test User";
       const vars: TemplateVars = {
-        name: ctx.user.email?.split("@")[0] ?? "Test Candidate",
+        name: displayName,
         interviewTitle: "Sample Interview",
         organization: cfg.organizationName,
         link: `${appBaseUrl()}/i/invite/test-link`,
@@ -161,12 +211,35 @@ export const integrationRouter = router({
         batchName: "Test batch",
         scheduleNotice: "You may start at your convenience.",
       };
-      const r =
-        input.channel === "email"
-          ? await deliverEmail(cfg, input.to.trim(), vars, undefined, input.provider as "resend" | "brevo" | undefined)
-          : await deliverWhatsapp(cfg, input.to.replace(/[^\d+]/g, ""), vars);
+
+      if (input.channel === "email") {
+        const r = await deliverEmail(
+          cfg,
+          input.to.trim(),
+          vars,
+          undefined,
+          input.provider as "resend" | "brevo" | undefined,
+        );
+        if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
+        return { ok: true, provider: r.provider };
+      }
+
+      const phone = input.to.replace(/[^\d+]/g, "");
+      if (input.whatsappTemplate === "completion") {
+        const r = await deliverCompletionWhatsapp(cfg, phone, {
+          recipientName: displayName,
+          candidateName: "Priya Sharma",
+          interviewTitle: "Sample Interview",
+          organization: cfg.organizationName,
+          link: `${appBaseUrl()}/interviews/test/results?session=test`,
+        });
+        if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
+        return { ok: true, provider: r.provider, template: cfg.resilio?.completionTemplateName };
+      }
+
+      const r = await deliverWhatsapp(cfg, phone, vars);
       if (r.status !== "sent") throw new TRPCError({ code: "BAD_REQUEST", message: r.error ?? "Send failed" });
-      return { ok: true, provider: r.provider };
+      return { ok: true, provider: r.provider, template: cfg.resilio?.templateName };
     }),
 
   testOutboundWebhook: protectedProcedure
@@ -182,6 +255,7 @@ export const integrationRouter = router({
       if (!cfg.outboundWebhook?.url) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Outbound webhook URL is not configured" });
       }
+      await assertSafeOutboundUrl(cfg.outboundWebhook.url, "Outbound webhook URL");
       const result = await dispatchOutboundWebhook({
         url: cfg.outboundWebhook.url,
         secret: cfg.outboundWebhook.secret,
@@ -192,7 +266,7 @@ export const integrationRouter = router({
           test: true,
           candidateName: ctx.user.email?.split("@")[0] ?? "Test Candidate",
           interviewTitle: "Sample Interview",
-          message: "Skillmark outbound webhook test ping",
+          message: "ResilienceSoft Interview outbound webhook test ping",
         },
       });
       if (result.skipped) {

@@ -14,6 +14,10 @@ export interface GenerationParams {
   stream?: boolean;
   /** Ask for a JSON object response (OpenAI-compatible response_format). Ignored by providers without support. */
   jsonMode?: boolean;
+  /** Abort the call (time budget / client gone). Honoured by the OpenAI-compatible providers. */
+  signal?: AbortSignal;
+  /** SDK-level retries on 429/5xx (default 2). Set 0 when the caller fails over itself. */
+  maxRetries?: number;
 }
 
 export interface LLMResponse {
@@ -56,6 +60,7 @@ export interface GeneratedInterview {
     videoEnabled?: boolean;
     followUpDepth: "LIGHT" | "MODERATE" | "DEEP";
     aiTone: "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY";
+    aiGender?: "FEMALE" | "MALE";
     aiName: string;
   };
 }
@@ -71,4 +76,8 @@ export interface GeneratedQuestion {
   followUpPrompts?: string[];
   /** Starter code template for CODING questions. */
   starterCode?: { language: string; code: string };
+  /** Skip when prior user answers already cover these keywords. */
+  skipIf?: { answerContainsAny?: string[]; reason?: string } | null;
+  /** Screening/HR premade: overall score ignores these. */
+  validationRules?: { excludeFromScore?: boolean } | null;
 }

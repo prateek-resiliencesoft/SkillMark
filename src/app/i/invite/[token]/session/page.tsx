@@ -3,16 +3,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { AntiCheatingGuard } from "@/components/session/anti-cheating-banner";
+import { StrikeBadge } from "@/components/session/strike-badge";
 import { DisqualifiedScreen, HeadMovementGuard } from "@/components/session/head-movement-guard";
 import { IntervieweeOnboarding } from "@/components/session/interviewee-onboarding";
+import { ScreenShareGate } from "@/components/session/screen-share-gate";
 import { PreparingScreen } from "@/components/session/preparing-screen";
+import { CandidateThankYou, LinkExpiredScreen } from "@/components/session/candidate-end-screens";
 import { Card, CardContent } from "@/components/ui/card";
+import { useInterviewLinkGuard } from "@/hooks/use-interview-link-guard";
+import { effectiveIntegrityConfig } from "@/lib/integrity/config";
 import { trpc } from "@/lib/trpc/client";
-import { CheckCircle2, Clock } from "lucide-react";
+import { Clock } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useCandidateLanguage } from "@/hooks/use-candidate-language";
+import { EXPIRED_INVITE_MESSAGE, canRestartFromLink, startSessionWithRetry } from "@/lib/session-link";
 
 const ChatInterface = dynamic(
   () => import("@/components/session/chat-interface").then((m) => m.ChatInterface),
@@ -29,9 +36,16 @@ export default function InviteSessionPage() {
   const router = useRouter();
 
   const [completed, setCompleted] = useState(false);
+  // Set as soon as the interview starts finishing (before saves complete).
+  const endingRef = useRef(false);
   const [completionReason, setCompletionReason] = useState<string | undefined>();
   const [disqualified, setDisqualified] = useState(false);
   const [onboardingDone, setOnboardingDone] = useState(false);
+  const [linkExpired, setLinkExpired] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  /** A start request was sent for this session (it may have landed even if it errored). */
+  const [startRequested, setStartRequested] = useState(false);
 
   const handleComplete = (reason?: string) => {
     setCompletionReason(reason);
@@ -40,30 +54,77 @@ export default function InviteSessionPage() {
 
   const candidate = trpc.candidate.getByToken.useQuery(
     { token },
-    { retry: false },
+    {
+      retry: false,
+      // Always revalidate — invite page may have cached a pre-session payload.
+      refetchOnMount: "always",
+      staleTime: 0,
+    },
   );
 
   useEffect(() => {
     if (candidate.isError) {
       router.replace(`/i/invite/${token}`);
+      return;
     }
-    if (candidate.data) {
-      const session = (candidate.data as any).session;
-      if (!session) {
-        router.replace(`/i/invite/${token}`);
-      }
+    if (!candidate.data || candidate.isFetching) return;
+    const session = (candidate.data as any).session;
+    // Only bounce after a fresh fetch confirms there is still no session. An
+    // abandoned attempt goes back too: the invite page starts a fresh one.
+    if (!session || (canRestartFromLink(session.status) && !startRequested)) {
+      router.replace(`/i/invite/${token}`);
     }
-  }, [candidate.data, candidate.isError, token, router]);
+  }, [candidate.data, candidate.isError, candidate.isFetching, token, router, startRequested]);
 
-  if (candidate.isLoading || !candidate.data) {
+  const session = (candidate.data as any)?.session ?? null;
+  const interview = (candidate.data as any)?.interview;
+  const { candidateLanguage, chooseLanguage } = useCandidateLanguage(session?.id, interview?.language, session?.language);
+
+  // Heartbeats from the first start request: a start that landed but whose
+  // response was lost must not go stale while the candidate retries.
+  useInterviewLinkGuard({
+    sessionId: session?.id,
+    active: (onboardingDone || startRequested) && !completed && !disqualified && !linkExpired,
+    onExpired: () => setLinkExpired(true),
+    // Until the start is confirmed the interview has not begun: no local cut-off and no
+    // abandon beacon (a start that landed anyway goes stale server-side and restarts cleanly).
+    isEnding: () => endingRef.current || !onboardingDone,
+  });
+
+  // Onboarding accepted → mark the interview as begun. Retries reuse the same session.
+  const startInterview = async () => {
+    if (starting || !session?.id) return;
+    const isRetry = startRequested;
+    setStarting(true);
+    setStartRequested(true);
+    try {
+      const result = await startSessionWithRetry(session.id, { retry: isRetry });
+      if (result.ok) {
+        setStartError(null);
+        setOnboardingDone(true);
+      } else if (result.expired) {
+        if (canRestartFromLink(result.status)) router.replace(`/i/invite/${token}`);
+        else setLinkExpired(true);
+      } else {
+        setStartError(result.error);
+      }
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  // Wait through first load / cache refresh until session appears (or redirect).
+  if (candidate.isLoading || !candidate.data || (!session && candidate.isFetching)) {
     return <PreparingScreen />;
   }
 
-  const session = (candidate.data as any).session;
-  const interview = (candidate.data as any).interview;
-
   if (!session) {
     return <PreparingScreen />;
+  }
+
+  // Fresh completion in this tab → thank-you. Any other visit to a finished link → expired.
+  if (completed) {
+    return <CandidateThankYou timeLimitReached={completionReason === "TIME_LIMIT_EXCEEDED"} sessionId={session.id} inviteToken={token} />;
   }
 
   const isExpired = !!(
@@ -73,22 +134,22 @@ export default function InviteSessionPage() {
 
   if (isExpired && session.status !== "COMPLETED") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md border-amber-200/50 shadow-sm">
           <CardContent className="py-12 text-center">
             <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400">
               <Clock className="h-7 w-7" />
             </div>
-            <h2 className="text-xl font-semibold">Interview Link Expired</h2>
+            <h2 className="text-xl font-semibold">This link has expired</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              This interview invitation expired on{" "}
+              {EXPIRED_INVITE_MESSAGE}
+            </p>
+            <p className="mt-3 text-xs text-muted-foreground">
+              This invitation expired on{" "}
               <span className="font-medium text-foreground">
                 {formatDateTime(candidate.data.expiresAt)}
               </span>
               .
-            </p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              Please contact the hiring team or organization that invited you to request a new link or extension.
             </p>
           </CardContent>
         </Card>
@@ -100,22 +161,39 @@ export default function InviteSessionPage() {
     return <DisqualifiedScreen />;
   }
 
-  if (completed || session.status === "COMPLETED") {
+  if (linkExpired || session.status === "ABANDONED") {
+    // Opened on an abandoned attempt: the effect above sends it back for a fresh one.
+    if (!linkExpired && !startRequested) return <PreparingScreen />;
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
+      <LinkExpiredScreen
+        reason="interrupted"
+        sessionId={session.id}
+        inviteToken={token}
+        onRestart={() => window.location.assign(`/i/invite/${token}`)}
+      />
+    );
+  }
+
+  if (session.status === "COMPLETED") {
+    // Reload after finishing: the same thank-you screen, nothing else.
+    return <CandidateThankYou sessionId={session.id} inviteToken={token} />;
+  }
+
+  if (startError) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center bg-muted/30 p-4">
         <Card className="w-full max-w-md">
           <CardContent className="py-12 text-center">
-            <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-            <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-            {completionReason === "TIME_LIMIT_EXCEEDED" && (
-              <p className="mt-2 text-sm text-amber-600">
-                The session time limit has been reached and the interview was ended automatically.
-              </p>
-            )}
-            <p className="mt-2 text-muted-foreground">
-              Your interview has been completed successfully. We appreciate your
-              time and thoughtful responses.
-            </p>
+            <h2 className="text-xl font-semibold">Could not start interview</h2>
+            <p className="mt-2 text-sm text-muted-foreground">{startError}</p>
+            <button
+              type="button"
+              className="mt-4 text-sm font-medium text-primary hover:underline disabled:opacity-60"
+              disabled={starting}
+              onClick={() => void startInterview()}
+            >
+              {starting ? "Retrying…" : "Try again"}
+            </button>
           </CardContent>
         </Card>
       </div>
@@ -126,11 +204,14 @@ export default function InviteSessionPage() {
     return (
       <IntervieweeOnboarding
         sessionId={session?.id}
+        inviteToken={token}
         interviewTitle={interview.title}
         interviewDescription={interview.description}
         questionCount={interview.questions?.length ?? 0}
         timeLimitMinutes={interview.timeLimitMinutes}
         language={interview.language}
+        candidateLanguage={candidateLanguage}
+        onLanguageChange={chooseLanguage}
         antiCheatingEnabled={!!interview.antiCheatingEnabled}
         voiceEnabled={!!interview.voiceEnabled}
         chatEnabled={!!interview.chatEnabled}
@@ -138,21 +219,26 @@ export default function InviteSessionPage() {
         questionTypes={(interview.questions ?? []).map((q: any) => q.type as string)}
         scheduledAt={candidate.data.scheduledAt}
         expiresAt={candidate.data.expiresAt}
-        onComplete={() => setOnboardingDone(true)}
+        oneTimeLink
+        onComplete={() => void startInterview()}
       />
     );
   }
 
   const useVoice = interview.voiceEnabled;
+  const integrity = effectiveIntegrityConfig(interview);
 
   if (useVoice) {
     const interviewContext = {
       title: interview.title,
       objective: interview.objective,
       aiName: interview.aiName,
+      aiGender: interview.aiGender,
       aiTone: interview.aiTone,
       language: interview.language,
+      candidateLanguage,
       followUpDepth: interview.followUpDepth,
+      integrityProbing: integrity.integrityChecksEnabled,
       candidateFocus:
         (candidate.data as any).tailorInterview !== false
           ? {
@@ -167,12 +253,14 @@ export default function InviteSessionPage() {
         options: q.options,
         starterCode: q.starterCode as { language: string; code: string } | null,
         order: q.order,
+        skipIf: q.skipIf ?? null,
       })),
     };
 
     return (
-      <>
-        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} />
+      <ScreenShareGate sessionId={session.id} inviteToken={token}>
+        <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+        <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
         <VoiceInterface
           sessionId={session.id}
@@ -184,15 +272,19 @@ export default function InviteSessionPage() {
           durationMinutes={interview.timeLimitMinutes ?? undefined}
           chatEnabled={!!interview.chatEnabled}
           onComplete={handleComplete}
+          onEnding={() => {
+            endingRef.current = true;
+          }}
           videoMode={!!interview.videoEnabled}
         />
-      </>
+      </ScreenShareGate>
     );
   }
 
   return (
-    <>
-      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} />
+    <ScreenShareGate sessionId={session.id} inviteToken={token}>
+      <AntiCheatingGuard enabled={!!interview.antiCheatingEnabled} sessionId={session.id} integrityChecksEnabled={integrity.integrityChecksEnabled} livenessChallengesEnabled={integrity.livenessChallengesEnabled} onDisqualified={() => setDisqualified(true)} />
+      <StrikeBadge sessionId={session.id} enabled={!!interview.antiCheatingEnabled} />
         <HeadMovementGuard enabled={!!interview.antiCheatingEnabled && !!interview.headMovementDetectionEnabled} sessionId={session.id} onDisqualified={() => setDisqualified(true)} />
       <ChatInterface
         sessionId={session.id}
@@ -206,6 +298,6 @@ export default function InviteSessionPage() {
         durationMinutes={interview.timeLimitMinutes ?? undefined}
         onComplete={handleComplete}
       />
-    </>
+    </ScreenShareGate>
   );
 }

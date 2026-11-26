@@ -11,23 +11,24 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { InterviewContext } from "@/hooks/use-voice";
-import { getMicTestMessage, getSpeechSynthesisLocale } from "@/lib/i18n";
+import { getMicTestSamplePhrase } from "@/lib/i18n";
+import { isMultiLanguage, type CandidateLanguage } from "@/lib/interview-language";
+import { startInterviewVad, type InterviewVad } from "@/lib/voice/silero-vad-client";
 import {
-    setCameraSkipped,
-    setScreenSkipped,
-    setStoredScreenStream,
-} from "@/lib/media-stream-store";
-import {
-  buildRelayTargets,
-  isRecoverableRelayErrorMessage,
-  RelayConnector,
-  resolveRelayPrimaryPreference,
-} from "@/lib/voice/relay-routing";
+  evaluateMicTest,
+  MIC_TEST_CHECK,
+  micTestAudioSrc,
+} from "@/lib/voice/mic-test-check";
+import { getStoredScreenStream, setCameraSkipped, setStoredScreenStream } from "@/lib/media-stream-store";
+import { requestInterviewScreenShare } from "@/lib/screen-share-request";
+import { canUseDisplayMedia, screenShareErrorHelp } from "@/lib/screen-share";
+import { ScreenSharePrompt } from "@/components/session/screen-share-gate";
 import { cn } from "@/lib/utils";
 import {
     AlertCircle,
@@ -37,14 +38,14 @@ import {
     CheckCircle2,
     Clock,
     Loader2,
-    Mic,
     Monitor,
     RefreshCw,
-    RotateCcw,
     ScreenShare,
     User,
 } from "lucide-react";
 import { formatDateTime } from "@/lib/messaging/templates";
+import { mediaErrorCode } from "@/lib/preflight";
+import { PreflightProvider, usePreflightReport } from "@/hooks/use-preflight-tracker";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatInterface } from "./chat-interface";
 import { IntervieweeTourOverlay } from "./interviewee-tour-overlay";
@@ -66,7 +67,54 @@ interface IntervieweeOnboardingProps {
   questionTypes?: string[];
   scheduledAt?: string | null;
   expiresAt?: string | null;
+  /** Invite links are single-use: closing the tab or losing connection ends the interview. */
+  oneTimeLink?: boolean;
+  /** Invite token used to authorize pre-interview activity events. */
+  inviteToken?: string;
+  /** Multi-language interviews: the language the candidate chose ("en" | "hi"). */
+  candidateLanguage?: CandidateLanguage | null;
+  onLanguageChange?: (language: CandidateLanguage) => void;
   onComplete: () => void;
+}
+
+/** Multi-language interviews: candidate picks the language to start in. */
+function LanguageChoice({
+  value,
+  onChange,
+}: {
+  value: CandidateLanguage | null;
+  onChange: (language: CandidateLanguage) => void;
+}) {
+  const options: Array<{ value: CandidateLanguage; label: string }> = [
+    { value: "en", label: "English" },
+    { value: "hi", label: "Hindi" },
+  ];
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="space-y-3 p-5">
+        <div>
+          <p className="font-medium">Interview language</p>
+          <p className="text-sm text-muted-foreground">
+            Choose the language to start in. You can switch or mix Hindi and English at any time.
+          </p>
+        </div>
+        <div className="flex gap-2" role="radiogroup" aria-label="Interview language">
+          {options.map((o) => (
+            <Button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={value === o.value}
+              variant={value === o.value ? "default" : "outline"}
+              onClick={() => onChange(o.value)}
+            >
+              {o.label}
+            </Button>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 type OnboardingStep = "info" | "checklist" | "howItWorks";
@@ -79,14 +127,15 @@ const STEPS = [
 
 function WelcomeIllustration() {
   return (
-    <div className="relative bg-gradient-to-br from-primary/10 via-primary/5 to-orange-50 px-6 pt-6 pb-0">
+    <div className="border-b border-border/60 bg-muted/40">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/images/marketing/interview-session-ui.webp"
-        alt="Interview interface preview"
-        className="block w-full rounded-t-lg"
+        src="/images/interview-tour-welcome.webp"
+        alt="A candidate taking an interview on ResilienceSoft Interview"
+        width={896}
+        height={504}
+        className="block aspect-video max-h-[34dvh] w-full object-cover"
       />
-      <div className="absolute -bottom-px left-0 right-0 h-6 bg-gradient-to-t from-white/90 to-transparent" />
     </div>
   );
 }
@@ -102,35 +151,48 @@ export function PreviewWrapper({
   const tourDone = tour?.finished ?? false;
   const [welcomed, setWelcomed] = useState(false);
   const showWelcome = !welcomed && !tour?.active && !tourDone;
+  const readyFiredRef = useRef(false);
+
+  const fireReady = useCallback(() => {
+    if (readyFiredRef.current) return;
+    readyFiredRef.current = true;
+    onReady();
+  }, [onReady]);
+
+  const report = usePreflightReport();
 
   const handleStartTour = useCallback(() => {
     setWelcomed(true);
+    report("tour", "shown");
     tour?.restart();
-  }, [tour]);
+  }, [tour, report]);
 
+  // Skipping the tour starts the interview straight away (still marks the tour as seen).
   const handleSkipTour = useCallback(() => {
     setWelcomed(true);
+    report("tour", "skipped");
     tour?.skip();
-  }, [tour]);
+    fireReady();
+  }, [tour, fireReady, report]);
+
+  // Finishing (or skipping mid-way through) the tour also starts the interview directly.
+  useEffect(() => {
+    if (tourDone) fireReady();
+  }, [tourDone, fireReady]);
 
   return (
-    <div className="relative flex h-screen flex-col bg-background">
+    <div className="relative flex h-[100dvh] flex-col bg-background">
       {children}
 
-      {/* Welcome overlay */}
       {showWelcome && (
-        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-          <div className="mx-4 w-full max-w-md overflow-hidden rounded-2xl border border-border/30 bg-white shadow-2xl">
+        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]">
+          <div className="w-full max-w-md overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-2xl">
             <WelcomeIllustration />
-            <div className="space-y-3 px-8 pb-8 pt-2 text-center">
-              <h3 className="text-xl font-bold text-gray-900">Welcome to your interview!</h3>
-              <p className="text-[15px] font-medium text-gray-700">
-                Take a quick tour of the interview interface.
-              </p>
-              <p className="text-sm leading-relaxed text-gray-500">
-                We&apos;ll walk you through the key features — voice controls,
-                transcript, whiteboard, and more — so you know exactly where
-                everything is.
+            <div className="space-y-2 px-6 pb-6 pt-5 text-center sm:px-8">
+              <h3 className="text-xl font-semibold">Welcome to your interview</h3>
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                Take a quick tour of the interview screen: voice controls,
+                transcript, whiteboard and more, so you know where everything is.
               </p>
               <div className="flex items-stretch gap-3 pt-3">
                 <Button
@@ -145,34 +207,6 @@ export function PreviewWrapper({
                   Take a quick tour
                 </Button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tour complete overlay */}
-      {tourDone && (
-        <div className="absolute inset-0 z-[9997] flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
-          <div className="mx-4 w-full max-w-md space-y-4 rounded-2xl border bg-card p-6 shadow-2xl">
-            <div className="text-center">
-              <h3 className="text-lg font-semibold">You&apos;re all set!</h3>
-              <p className="mt-1 text-sm text-muted-foreground">
-                You can start the interview now, or restart the tour if you&apos;d like another look.
-              </p>
-            </div>
-            <div className="flex items-stretch gap-3">
-              <Button
-                variant="outline"
-                size="lg"
-                className="gap-2"
-                onClick={() => tour?.restart()}
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Restart tour
-              </Button>
-              <Button className="flex-1" size="lg" onClick={onReady}>
-                Start Interview
-              </Button>
             </div>
           </div>
         </div>
@@ -247,6 +281,7 @@ function CameraCheck({
   onDone: () => void;
   allowSkip?: boolean;
 }) {
+  const report = usePreflightReport();
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -270,10 +305,20 @@ function CameraCheck({
       streamRef.current = stream;
       setPhoto(null);
       setStreaming(true);
-    } catch {
-      setError("Unable to access camera. Please check permissions.");
+      report("camera_permission", "granted");
+    } catch (err) {
+      const code = mediaErrorCode(err);
+      report("camera_permission", "denied");
+      report("error", "error", { code, source: "camera" });
+      setError(
+        code === "permission_denied"
+          ? "Camera permission was denied. Allow camera access for this site, then retry."
+          : code === "device_not_found"
+            ? "No camera was found. Connect a camera and retry."
+            : "Unable to access camera. Please check permissions.",
+      );
     }
-  }, []);
+  }, [report]);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -295,8 +340,9 @@ function CameraCheck({
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     stopCamera();
     setPhoto(dataUrl);
+    report("photo_captured", "done");
     onDone();
-  }, [stopCamera, onDone]);
+  }, [stopCamera, onDone, report]);
 
   const retake = useCallback(() => {
     setPhoto(null);
@@ -417,7 +463,7 @@ function CameraCheck({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setCameraSkipped(true); onDone(); }}>
+            <AlertDialogAction onClick={() => { setCameraSkipped(true); report("photo_captured", "skipped"); onDone(); }}>
               Skip anyway
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -427,12 +473,87 @@ function CameraCheck({
   );
 }
 
-type MicPhase = "idle" | "requesting" | "playing" | "listening" | "analyzing" | "confirm";
+type MicPhase =
+  | "idle"
+  | "requesting"
+  | "playing"
+  | "listening"
+  | "playback"
+  | "analyzing"
+  | "confirm";
 
-// Local level-meter detection (no transcription needed). Laptop mics with
-// noise suppression often peak ~0.01–0.03 RMS for normal speech.
-const MIC_SPEECH_RMS = 0.01;
-const MIC_SPEECH_MS = 700;
+const OUTPUT_SUSPENDED = "audio output suspended";
+
+/**
+ * Play a clip through an already-running AudioContext: the whole file is
+ * fetched and decoded first, then started after a short silent lead-in, so a
+ * waking speaker or Bluetooth headset can't swallow the first words.
+ */
+async function playClipWebAudio(ctx: AudioContext, src: string, cancelled: () => boolean): Promise<void> {
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${src}`);
+  const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+  if (ctx.state !== "running") {
+    await Promise.race([ctx.resume().catch(() => {}), new Promise((r) => setTimeout(r, 1_000))]);
+    if ((ctx.state as AudioContextState) !== "running") throw new Error(OUTPUT_SUSPENDED);
+  }
+  if (cancelled()) return;
+  await new Promise<void>((resolve) => {
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(ctx.destination);
+    const leadIn = MIC_TEST_CHECK.playbackLeadInSec;
+    const timer = setTimeout(() => resolve(), (leadIn + buffer.duration) * 1000 + 1_500);
+    node.onended = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    node.start(ctx.currentTime + leadIn);
+  });
+}
+
+/** Fallback: <audio>, started only once it can play through, after the same lead-in. */
+function playClipElement(src: string, audioRef: { current: HTMLAudioElement | null }): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const audio = new Audio();
+    audio.preload = "auto";
+    audio.playbackRate = 1;
+    audio.defaultPlaybackRate = 1;
+    audio.volume = 1;
+    audioRef.current = audio;
+    let started = false;
+    let settled = false;
+    const finish = (err?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(loadTimer);
+      audio.oncanplaythrough = null;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.onpause = null;
+      if (err) reject(err);
+      else resolve();
+    };
+    const start = () => {
+      if (started) return;
+      started = true;
+      setTimeout(() => {
+        if (audioRef.current !== audio) return finish(); // stopped meanwhile
+        const p = audio.play();
+        if (p && typeof p.then === "function") p.catch((err) => finish(err ?? new Error("play failed")));
+      }, MIC_TEST_CHECK.playbackLeadInSec * 1000);
+    };
+    audio.oncanplaythrough = start;
+    audio.onended = () => finish();
+    audio.onpause = () => {
+      if (!audio.ended) finish(); // Stop pressed
+    };
+    audio.onerror = () => finish(new Error(`Failed to play ${src}`));
+    const loadTimer = setTimeout(start, 5_000);
+    audio.src = src;
+    audio.load();
+  });
+}
 
 function describeMicError(err: unknown): string {
   const name = (err as { name?: string })?.name;
@@ -445,51 +566,70 @@ function describeMicError(err: unknown): string {
   return "Unable to access microphone. Please check permissions and retry.";
 }
 
-function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { done: boolean; onDone: () => void; language?: string; allowSkip?: boolean; sessionId?: string }) {
+function MicCheck({
+  done,
+  onDone,
+  language,
+  allowSkip = true,
+  sessionId,
+}: {
+  done: boolean;
+  onDone: () => void;
+  language?: string;
+  allowSkip?: boolean;
+  sessionId?: string;
+}) {
   const [phase, setPhase] = useState<MicPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [showSkipDialog, setShowSkipDialog] = useState(false);
   const [skipped, setSkipped] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [level, setLevel] = useState(0);
+  const [speakerOk, setSpeakerOk] = useState(false);
+  const [failMessage, setFailMessage] = useState<string | null>(null);
+  const report = usePreflightReport();
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const relayConnectorRef = useRef<RelayConnector<Record<string, unknown>> | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
-  // Level-based detection: passes once ~1s of speech above threshold is heard
-  // while listening. Does not depend on any transcription service.
-  const [level, setLevel] = useState(0);
+  const vadRef = useRef<InterviewVad | null>(null);
+  const recordChunksRef = useRef<Float32Array[]>([]);
+  const recordSamplesRef = useRef(0);
+  const speechMsRef = useRef(0);
+  const speechRmsSumRef = useRef(0);
+  const speechFramesRef = useRef(0);
+  const noiseRmsSumRef = useRef(0);
+  const noiseFramesRef = useRef(0);
+  const peakRef = useRef(0);
+  const vadSpeakingRef = useRef(false);
+  const finishedRef = useRef(false);
+  /** True only after the prompt ended: frames before that are not counted. */
+  const countingRef = useRef(false);
+  const listenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumped on every start / stop so a cancelled run never continues. */
+  const runIdRef = useRef(0);
+
   const phaseRef = useRef<MicPhase>("idle");
   phaseRef.current = phase;
-  const voicedMsRef = useRef(0);
-  const listenStartRef = useRef(0);
-  useEffect(() => {
-    if (phase === "listening") listenStartRef.current = Date.now();
-  }, [phase]);
-  const peakRef = useRef(0);
-  const [heardSomething, setHeardSomething] = useState(false);
 
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
   const languageRef = useRef(language);
   languageRef.current = language;
+  const samplePhrase = getMicTestSamplePhrase(language);
 
-  const stopAll = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+  const stopMicCapture = useCallback(() => {
+    countingRef.current = false;
+    if (listenTimerRef.current) {
+      clearTimeout(listenTimerRef.current);
+      listenTimerRef.current = null;
     }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
+    const vad = vadRef.current;
+    vadRef.current = null;
+    if (vad) {
+      void vad.pause().catch(() => {});
+      void vad.destroy().catch(() => {});
     }
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    relayConnectorRef.current?.close();
-    relayConnectorRef.current = null;
     if (micCtxRef.current) {
       micCtxRef.current.close().catch(() => {});
       micCtxRef.current = null;
@@ -498,381 +638,366 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
       micStreamRef.current.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
     }
+    setLevel(0);
   }, []);
 
-  const analyzeResponse = useCallback((text: string) => {
-    setPhase("analyzing");
-    const trimmed = text.trim();
-    if (trimmed.length > 0) {
-      setPhase("idle");
-      onDoneRef.current();
-      return;
-    }
-    setPhase("confirm");
-  }, []);
-
-  const getSpeechSynthesisApi = useCallback(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      return null;
-    }
-
-    return window.speechSynthesis;
-  }, []);
-
-  const stopTtsPlayback = useCallback(() => {
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
+  const stopSpeaker = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
     }
-    getSpeechSynthesisApi()?.cancel();
-  }, [getSpeechSynthesisApi]);
+  }, []);
 
-  const startListening = useCallback((quiet = false) => {
-    if (!quiet) {
-      setPhase("listening");
-      setTranscript("");
+  const stopAll = useCallback(() => {
+    runIdRef.current += 1;
+    stopSpeaker();
+    stopMicCapture();
+  }, [stopMicCapture, stopSpeaker]);
+
+  const playRecordingPreview = useCallback(async () => {
+    const chunks = recordChunksRef.current;
+    if (!chunks.length) return;
+    try {
+      const total = recordSamplesRef.current;
+      const merged = new Float32Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        merged.set(c, off);
+        off += c.length;
+      }
+      // Cap preview ~4s
+      const max = 16_000 * 4;
+      const slice = merged.length > max ? merged.subarray(0, max) : merged;
+      const ctx = new AudioContext({ sampleRate: 16_000 });
+      audioCtxRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+      const buf = ctx.createBuffer(1, slice.length, 16_000);
+      buf.copyToChannel(slice, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      setPhase("playback");
+      await new Promise<void>((resolve) => {
+        src.onended = () => resolve();
+        src.start();
+        setTimeout(resolve, (slice.length / 16_000) * 1000 + 200);
+      });
+      await ctx.close().catch(() => {});
+      audioCtxRef.current = null;
+    } catch {
+      /* preview is optional */
     }
+  }, []);
 
-    let lastAsrText = "";
-    let handled = false;
-    let micStarted = false;
+  const passTest = useCallback(async () => {
+    setFailMessage(null);
+    setError(null);
+    stopMicCapture();
+    await playRecordingPreview();
+    setPhase("idle");
+    report("mic_check", "passed");
+    onDoneRef.current();
+  }, [playRecordingPreview, stopMicCapture, report]);
 
-    const finish = (text: string) => {
-      if (handled) return;
-      handled = true;
-      stopTtsPlayback();
-      if (micCtxRef.current) {
-        micCtxRef.current.close().catch(() => {});
-        micCtxRef.current = null;
-      }
-      if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((t) => t.stop());
-        micStreamRef.current = null;
-      }
-      relayConnectorRef.current?.close();
-      relayConnectorRef.current = null;
-      setLevel(0);
-      if (text.trim()) {
-        analyzeResponse(text);
-      } else if (!quiet || phaseRef.current === "listening" || phaseRef.current === "playing") {
-        analyzeResponse("");
-      }
-    };
+  const failTest = useCallback(
+    (message: string) => {
+      stopMicCapture();
+      setFailMessage(message);
+      setError(null);
+      setPhase("confirm");
+      report("mic_check", "failed", { message });
+    },
+    [stopMicCapture, report],
+  );
 
-    const startMicCapture = async () => {
-      if (micStarted || handled) return;
-      micStarted = true;
-      voicedMsRef.current = 0;
-      peakRef.current = 0;
-      setHeardSomething(false);
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            sampleRate: 16000,
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        micStreamRef.current = stream;
-
-        const ctx = new AudioContext({ sampleRate: 16000 });
-        micCtxRef.current = ctx;
-        // Created after an await, so Chrome may start it suspended → no audio frames.
-        if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-
-        const workletCode = `
-          class MicProcessor extends AudioWorkletProcessor {
-            constructor() { super(); this._buf = new Float32Array(4096); this._pos = 0; }
-            process(inputs) {
-              const ch = inputs[0]?.[0];
-              if (!ch) return true;
-              for (let i = 0; i < ch.length; i++) {
-                this._buf[this._pos++] = ch[i];
-                if (this._pos >= 4096) { this.port.postMessage(this._buf); this._buf = new Float32Array(4096); this._pos = 0; }
-              }
-              return true;
-            }
-          }
-          registerProcessor('mic-processor', MicProcessor);
-        `;
-        const blob = new Blob([workletCode], { type: "application/javascript" });
-        const workletUrl = URL.createObjectURL(blob);
-        await ctx.audioWorklet.addModule(workletUrl);
-        URL.revokeObjectURL(workletUrl);
-
-        const source = ctx.createMediaStreamSource(stream);
-        const worklet = new AudioWorkletNode(ctx, "mic-processor");
-        source.connect(worklet);
-        worklet.connect(ctx.destination);
-
-        worklet.port.onmessage = (e) => {
-          if (handled) return;
-          const input = e.data as Float32Array;
-          let sum = 0;
-          for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-          const rms = Math.sqrt(sum / input.length);
-          setLevel(Math.min(1, rms * 8));
-          if (rms > peakRef.current) peakRef.current = rms;
-          if (rms > 0.004) setHeardSomething(true);
-          if (phaseRef.current === "listening" && rms > MIC_SPEECH_RMS) {
-            voicedMsRef.current += (input.length / ctx.sampleRate) * 1000;
-            if (voicedMsRef.current >= MIC_SPEECH_MS) {
-              finish(lastAsrText || "voice detected");
-              return;
-            }
-          }
-          if (!relayConnectorRef.current?.isReady) return;
-          const pcm = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            pcm[i] = Math.max(-32768, Math.min(32767, input[i] * 32768));
-          }
-          const bytes = new Uint8Array(pcm.buffer);
-          let hex = "";
-          for (let i = 0; i < bytes.length; i++) {
-            hex += bytes[i].toString(16).padStart(2, "0");
-          }
-          relayConnectorRef.current?.sendJson({ type: "audio", data: hex });
-        };
-      } catch (err) {
-        if (!handled) {
-          handled = true;
-          relayConnectorRef.current?.close();
-          relayConnectorRef.current = null;
-          setError(describeMicError(err));
-          setPhase("idle");
-        }
-      }
-    };
-
-    // Start metering right away; the relay transcript is optional.
-    void startMicCapture();
-
-    const connector = new RelayConnector<Record<string, unknown>>({
-      targets: buildRelayTargets({
-        language: languageRef.current,
-        voiceRelayUrl: process.env.NEXT_PUBLIC_VOICE_RELAY_URL,
-        openAiRelayUrl: process.env.NEXT_PUBLIC_OPENAI_VOICE_RELAY_URL,
-        primaryPreference: resolveRelayPrimaryPreference(
-          process.env.NEXT_PUBLIC_VOICE_RELAY_PRIMARY,
-        ),
-        browserProtocol: window.location.protocol,
-        browserHost: window.location.host,
-      }),
-      buildInitMessage: () => ({ type: "mic_test", language: languageRef.current, sessionId }),
-      onConnected: () => {
-        void startMicCapture();
+  /**
+   * Open the mic and start reading levels right away (before the prompt plays),
+   * so speech is caught the moment the prompt ends. Resolves once audio frames
+   * are flowing. Silero VAD loads in the background; energy detection covers
+   * the gap until it is ready.
+   */
+  const openMic = useCallback(async (runId: number) => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 16000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
       },
-      onJsonMessage: (msg, { connector: activeConnector }) => {
-        if (handled) return;
-        if (msg.type === "asr") {
-          const data = msg.data as { results?: Array<{ text?: string }> } | undefined;
-          const results = data?.results || [];
-          if (results.length > 0 && results[0].text) {
-            lastAsrText = results[0].text;
-            setTranscript(lastAsrText);
-            stopTtsPlayback();
-            setPhase("listening");
-          }
-        } else if (msg.type === "asr_ended") {
-          const text = ((msg.text as string) || lastAsrText).trim();
-          if (text) {
-            finish(text);
-          }
-        } else if (msg.type === "disconnected") {
-          if (activeConnector.canFailover) {
-            void activeConnector.failover("mic test relay disconnected");
-          } else if (lastAsrText) {
-            finish(lastAsrText);
-          }
-        } else if (msg.type === "error") {
-          const message = (msg.message as string) || "";
-          if (
-            isRecoverableRelayErrorMessage(message) &&
-            activeConnector.canFailover
-          ) {
-            return;
-          }
-          // Transcription is optional — keep metering locally.
-          if (lastAsrText) finish(lastAsrText);
-        } else if (msg.type === "timeout") {
-          if (lastAsrText) finish(lastAsrText);
-        }
+    });
+    if (runIdRef.current !== runId) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    micStreamRef.current = stream;
+
+    const ctx = new AudioContext({ sampleRate: 16000 });
+    micCtxRef.current = ctx;
+    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+
+    void startInterviewVad({
+      getStream: async () => micStreamRef.current ?? stream,
+      onSpeechStart: () => {
+        vadSpeakingRef.current = true;
       },
-      // Relay down/unreachable: transcription is optional, local meter continues.
-      onPermanentFailure: () => {},
+      onSpeechEnd: () => {
+        vadSpeakingRef.current = false;
+      },
+      // Follow each frame's probability so a misfire (e.g. the prompt's echo)
+      // can't leave "speaking" stuck on.
+      onSpeechProb: (p) => {
+        vadSpeakingRef.current = p >= 0.5;
+      },
+    }).then((vad) => {
+      if (!vad) return;
+      if (runIdRef.current === runId && micStreamRef.current === stream) vadRef.current = vad;
+      else {
+        void vad.pause().catch(() => {});
+        void vad.destroy().catch(() => {});
+      }
     });
 
-    relayConnectorRef.current = connector;
-    void connector.connect().catch(() => { /* optional transcription */ });
-
-    // Fallback: give up after ~15s of listening and offer retry / continue.
-    const startedAt = Date.now();
-    const watchdog = setInterval(() => {
-      if (handled) { clearInterval(watchdog); return; }
-      const p = phaseRef.current;
-      if (p === "listening" && Date.now() - startedAt > 8000 && Date.now() - listenStartRef.current > 15000) {
-        clearInterval(watchdog);
-        finish(lastAsrText);
-      } else if (Date.now() - startedAt > 45000) {
-        clearInterval(watchdog);
-        finish(lastAsrText);
+    // 1024-sample frames (64 ms) so the level bar and the speech count react fast.
+    const workletCode = `
+      class MicProcessor extends AudioWorkletProcessor {
+        constructor() { super(); this._buf = new Float32Array(1024); this._pos = 0; }
+        process(inputs) {
+          const ch = inputs[0]?.[0];
+          if (!ch) return true;
+          for (let i = 0; i < ch.length; i++) {
+            this._buf[this._pos++] = ch[i];
+            if (this._pos >= 1024) {
+              this.port.postMessage(this._buf);
+              this._buf = new Float32Array(1024);
+              this._pos = 0;
+            }
+          }
+          return true;
+        }
       }
-    }, 500);
-  }, [analyzeResponse, stopTtsPlayback]);
+      registerProcessor('mic-processor', MicProcessor);
+    `;
+    const source = ctx.createMediaStreamSource(stream);
+    let firstFrame: () => void = () => {};
+    const flowing = new Promise<void>((resolve) => {
+      firstFrame = resolve;
+    });
+    const onChunk = (input: Float32Array) => {
+      firstFrame();
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < input.length; i++) {
+        const v = input[i];
+        sum += v * v;
+        const a = Math.abs(v);
+        if (a > peak) peak = a;
+      }
+      const rms = Math.sqrt(sum / input.length);
+      setLevel(Math.min(1, rms * 8));
+      // Only count after the prompt has finished (never the prompt's echo).
+      if (!countingRef.current || finishedRef.current) return;
+      if (rms > peakRef.current) peakRef.current = rms;
 
-  const playTTS = useCallback(async () => {
+      // Keep a short recording for optional playback (max ~5s).
+      if (recordSamplesRef.current < 16_000 * 5) {
+        recordChunksRef.current.push(new Float32Array(input));
+        recordSamplesRef.current += input.length;
+      }
+
+      const frameMs = (input.length / ctx.sampleRate) * 1000;
+      const isSpeech = vadSpeakingRef.current || rms >= MIC_TEST_CHECK.minSpeechRms;
+      if (isSpeech) {
+        speechMsRef.current += frameMs;
+        speechRmsSumRef.current += rms;
+        speechFramesRef.current += 1;
+      } else {
+        noiseRmsSumRef.current += rms;
+        noiseFramesRef.current += 1;
+      }
+      if (speechMsRef.current >= MIC_TEST_CHECK.minSpeechMs) finishListeningRef.current(false);
+    };
+    // AudioWorklet from an inline Blob URL; if the browser can't load it, use
+    // a ScriptProcessor so the mic test still works.
+    try {
+      if (!ctx.audioWorklet) throw new Error("AudioWorklet not supported");
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const workletUrl = URL.createObjectURL(blob);
+      try {
+        await ctx.audioWorklet.addModule(workletUrl);
+      } finally {
+        URL.revokeObjectURL(workletUrl);
+      }
+      const worklet = new AudioWorkletNode(ctx, "mic-processor");
+      source.connect(worklet);
+      // Do not connect to destination (avoids feedback / echo into speakers).
+      worklet.port.onmessage = (e) => onChunk(e.data as Float32Array);
+    } catch {
+      const sp = ctx.createScriptProcessor(1024, 1, 1);
+      source.connect(sp);
+      // Chrome needs the node connected to run; output is silent (zeros).
+      sp.connect(ctx.destination);
+      sp.onaudioprocess = (ev) => {
+        ev.outputBuffer.getChannelData(0).fill(0);
+        onChunk(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      };
+    }
+    // Mic is "ready" once frames arrive (bounded wait; some devices start slowly).
+    await Promise.race([flowing, new Promise((r) => setTimeout(r, 2_000))]);
+  }, []);
+
+  /** Decide with what was heard so far (on enough speech, or at the timeout). */
+  const finishListening = useCallback(
+    (final: boolean) => {
+      if (finishedRef.current || !countingRef.current) return;
+      finishedRef.current = true;
+      countingRef.current = false;
+      if (listenTimerRef.current) {
+        clearTimeout(listenTimerRef.current);
+        listenTimerRef.current = null;
+      }
+      const meanSpeech =
+        speechFramesRef.current > 0 ? speechRmsSumRef.current / speechFramesRef.current : 0;
+      const noiseFloor =
+        noiseFramesRef.current > 0 ? noiseRmsSumRef.current / noiseFramesRef.current : undefined;
+      const verdict = evaluateMicTest(
+        {
+          speechMs: speechMsRef.current,
+          peakRms: peakRef.current,
+          meanSpeechRms: meanSpeech,
+          noiseFloorRms: noiseFloor,
+        },
+        { final },
+      );
+      setPhase("analyzing");
+      if (verdict.pass) void passTest();
+      else failTest(verdict.message);
+    },
+    [failTest, passTest],
+  );
+  const finishListeningRef = useRef(finishListening);
+  finishListeningRef.current = finishListening;
+
+  /** Prompt finished: count speech from this moment (mic is already open). */
+  const beginListening = useCallback(() => {
+    finishedRef.current = false;
+    speechMsRef.current = 0;
+    speechRmsSumRef.current = 0;
+    speechFramesRef.current = 0;
+    noiseRmsSumRef.current = 0;
+    noiseFramesRef.current = 0;
+    peakRef.current = 0;
+    vadSpeakingRef.current = false; // drop any state left from the prompt audio
+    recordChunksRef.current = [];
+    recordSamplesRef.current = 0;
+    setFailMessage(null);
+    countingRef.current = true;
+    setPhase("listening");
+    listenTimerRef.current = setTimeout(
+      () => finishListeningRef.current(true),
+      MIC_TEST_CHECK.listenTimeoutMs,
+    );
+  }, []);
+
+  /**
+   * Click → open the mic → play the prompt (fully loaded, after a short silent
+   * lead-in on an already-running output) → listen.
+   */
+  const playSpeakerClip = useCallback(async () => {
+    stopAll();
+    const runId = ++runIdRef.current;
     setError(null);
+    setFailMessage(null);
+    setLevel(0);
+
+    // Create and resume the output context inside the click, so the browser
+    // allows playback and the speaker / headset is awake before the prompt.
+    let outCtx: AudioContext | null = null;
+    try {
+      outCtx = new AudioContext();
+      audioCtxRef.current = outCtx;
+      void outCtx.resume().catch(() => {});
+    } catch {
+      outCtx = null;
+    }
     setPhase("requesting");
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("unsupported");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      await openMic(runId);
+      if (runIdRef.current !== runId) return;
+      report("mic_permission", "granted");
     } catch (err) {
+      if (runIdRef.current !== runId) return;
+      const code = mediaErrorCode(err);
+      report("mic_permission", "denied");
+      report("error", "error", { code, source: "microphone" });
       setError(describeMicError(err));
+      stopAll();
       setPhase("idle");
       return;
     }
 
-    startListening(true);
     setPhase("playing");
+    const lang = languageRef.current || "en";
+    const sources = [micTestAudioSrc(lang, "mp3"), micTestAudioSrc(lang, "wav")];
+    if (lang.toLowerCase().slice(0, 2) !== "en") sources.push(micTestAudioSrc("en", "mp3"), micTestAudioSrc("en", "wav"));
 
-    const msg = getMicTestMessage(language);
-
-    // Try S2S streaming endpoint first (same voice as interview); skip if there's nothing to say.
-    if (msg && msg.trim()) try {
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      const ttsTimer = setTimeout(() => abort.abort(), 8000);
-      const res = await fetch("/api/voice/tts-s2s", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: msg, language: languageRef.current }),
-        signal: abort.signal,
-      }).finally(() => clearTimeout(ttsTimer));
-
-      if (res.ok && res.body) {
-        const ctx = new AudioContext({ sampleRate: 24000 });
-        audioCtxRef.current = ctx;
-        const reader = res.body.getReader();
-        let playTime = ctx.currentTime;
-        let leftover: Uint8Array | null = null;
-        let samplesPlayed = 0;
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done: readerDone, value } = await reader.read();
-          if (readerDone || !value || value.length === 0) break;
-
-          // Merge leftover bytes from previous chunk to maintain
-          // float32 sample alignment (4 bytes per sample).
-          let bytes: Uint8Array;
-          if (leftover) {
-            bytes = new Uint8Array(leftover.length + value.length);
-            bytes.set(leftover);
-            bytes.set(value, leftover.length);
-            leftover = null;
-          } else {
-            bytes = value;
-          }
-
-          const remainder = bytes.length % 4;
-          const usable = bytes.length - remainder;
-          if (remainder > 0) {
-            leftover = bytes.slice(usable);
-          }
-          if (usable === 0) continue;
-
-          // Copy into a properly-aligned ArrayBuffer for Float32Array
-          const aligned = new ArrayBuffer(usable);
-          new Uint8Array(aligned).set(bytes.subarray(0, usable));
-          const float32 = new Float32Array(aligned);
-
-          if (float32.length === 0) continue;
-          samplesPlayed += float32.length;
-
-          const buf = ctx.createBuffer(1, float32.length, 24000);
-          buf.getChannelData(0).set(float32);
-          const source = ctx.createBufferSource();
-          source.buffer = buf;
-          source.connect(ctx.destination);
-
-          const startAt = Math.max(ctx.currentTime, playTime);
-          source.start(startAt);
-          playTime = startAt + buf.duration;
+    let played = false;
+    for (const src of sources) {
+      if (runIdRef.current !== runId) return;
+      try {
+        if (outCtx) await playClipWebAudio(outCtx, src, () => runIdRef.current !== runId);
+        else await playClipElement(src, audioRef);
+        played = true;
+        break;
+      } catch (err) {
+        if (runIdRef.current !== runId) return;
+        // File missing or undecodable: try the next one. Output blocked: same clip via <audio>.
+        if (!(err instanceof Error && err.message === OUTPUT_SUSPENDED)) continue;
+        try {
+          await playClipElement(src, audioRef);
+          played = true;
+          break;
+        } catch {
+          /* try the next file */
         }
-
-        // Wait for all scheduled audio to finish, then listen
-        const remaining = playTime - ctx.currentTime;
-        if (remaining > 0) {
-          await new Promise((r) => setTimeout(r, remaining * 1000 + 100));
-        }
-        ctx.close().catch(() => {});
-        audioCtxRef.current = null;
-        abortRef.current = null;
-        // Server streamed no audio (TTS provider error) → fall back to browser speech below.
-        if (samplesPlayed === 0) throw new Error("empty tts stream");
-        if (relayConnectorRef.current?.isReady || micCtxRef.current) {
-          setPhase("listening");
-        } else {
-          startListening();
-        }
-        return;
       }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError" && abortRef.current === null) return;
-      abortRef.current = null;
-      // S2S unavailable, fall back to browser SpeechSynthesis
     }
-
-    fallbackToSpeechSynthesis();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startListening]);
-
-  const fallbackToSpeechSynthesis = useCallback(() => {
-    const speechSynthesisApi = getSpeechSynthesisApi();
-    if (!speechSynthesisApi || typeof SpeechSynthesisUtterance === "undefined") {
-      startListening();
+    if (runIdRef.current !== runId) return;
+    stopSpeaker();
+    if (!played) {
+      report("error", "error", { code: "speaker_failed", source: "speaker" });
+      setError("Could not play the speaker test. Check your speakers or volume, then retry.");
+      stopMicCapture();
+      setPhase("idle");
       return;
     }
-
-    setPhase("playing");
-    const msg = getMicTestMessage(language);
-    const utterance = new SpeechSynthesisUtterance(msg);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    utterance.lang = getSpeechSynthesisLocale(language);
-    utterance.onend = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
-    utterance.onerror = () => { if (relayConnectorRef.current?.isReady || micCtxRef.current) { setPhase("listening"); } else { startListening(); } };
-    // Some browsers/OSes (e.g. Linux without TTS voices) never fire onend.
-    setTimeout(() => {
-      if (phaseRef.current === "playing") {
-        speechSynthesisApi.cancel();
-        setPhase("listening");
-      }
-    }, Math.max(5000, msg.length * 90));
-    speechSynthesisApi.speak(utterance);
-  }, [getSpeechSynthesisApi, startListening, language]);
+    setSpeakerOk(true);
+    report("speaker_test", "played");
+    beginListening();
+  }, [beginListening, openMic, report, stopAll, stopMicCapture, stopSpeaker]);
 
   useEffect(() => {
     return () => {
       stopAll();
-      getSpeechSynthesisApi()?.cancel();
     };
-  }, [getSpeechSynthesisApi, stopAll]);
+  }, [stopAll]);
 
-  const isBusy = phase === "requesting" || phase === "playing" || phase === "listening" || phase === "analyzing";
+  // Unused sessionId kept for API parity with callers / future ASR.
+  void sessionId;
+  void skipped;
+
+  const isBusy =
+    phase === "requesting" ||
+    phase === "playing" ||
+    phase === "listening" ||
+    phase === "playback" ||
+    phase === "analyzing";
 
   return (
     <Card className="overflow-hidden">
@@ -882,7 +1007,7 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <AudioLines
               className={cn(
                 "h-10 w-10 transition-colors",
-                isBusy ? "text-primary" : "text-muted-foreground/30"
+                isBusy ? "text-primary" : "text-muted-foreground/30",
               )}
             />
             {phase === "playing" && (
@@ -903,71 +1028,79 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
               <div className="flex flex-col items-center gap-1">
                 <div className="flex gap-1">
                   <div className="h-2 w-2 animate-pulse rounded-full bg-destructive" />
-                  <span className="text-[11px] font-medium text-destructive">Listening...</span>
-                </div>
-                {transcript && (
-                  <span className="max-w-[10rem] truncate text-[10px] text-muted-foreground">
-                    &quot;{transcript}&quot;
+                  <span className="text-[11px] font-medium text-destructive">
+                    Listening… speak now
                   </span>
-                )}
+                </div>
               </div>
             )}
-            {(phase === "playing" || phase === "listening" || phase === "confirm") && (
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted-foreground/20" aria-label="Microphone level">
-                <div className="h-full rounded-full bg-primary transition-[width] duration-100" style={{ width: `${Math.round(level * 100)}%` }} />
+            {phase === "playback" && (
+              <span className="text-[11px] text-muted-foreground">Playing your mic back...</span>
+            )}
+            {(phase === "playing" ||
+              phase === "listening" ||
+              phase === "confirm") && (
+              <div
+                className="h-1.5 w-28 overflow-hidden rounded-full bg-muted-foreground/20"
+                aria-label="Microphone level"
+              >
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-75"
+                  style={{ width: `${Math.round(level * 100)}%` }}
+                />
               </div>
-            )}
-            {phase === "analyzing" && (
-              <span className="text-[11px] text-muted-foreground">Analyzing...</span>
-            )}
-            {phase === "idle" && !done && (
-              <span className="text-[11px] text-muted-foreground/50">
-                Speaker &amp; Microphone
-              </span>
-            )}
-            {done && !skipped && (
-              <span className="text-xs font-medium text-secondary-600 dark:text-secondary-400">
-                Audio confirmed
-              </span>
             )}
           </div>
+
           {phase === "idle" && !done && (
-            <Button size="sm" onClick={playTTS} className="w-full">
-              <Mic className="mr-1.5 h-3.5 w-3.5" />
-              Test Microphone
-            </Button>
-          )}
-          {phase === "requesting" && (
-            <Button size="sm" disabled className="w-full">
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Requesting access...
+            <Button size="sm" onClick={() => void playSpeakerClip()} className="w-full">
+              Test speaker & mic
             </Button>
           )}
           {phase === "playing" && (
-            <Button size="sm" variant="outline" onClick={() => { stopAll(); setPhase("idle"); }} className="w-full">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                stopAll();
+                setPhase("idle");
+              }}
+              className="w-full"
+            >
               Stop
             </Button>
           )}
           {phase === "listening" && (
-            <Button size="sm" variant="outline" disabled className="w-full">
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Listening...
+            <Button size="sm" variant="outline" onClick={() => void playSpeakerClip()} className="w-full">
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              Start over
             </Button>
           )}
-          {phase === "analyzing" && (
-            <Button size="sm" disabled className="w-full">
+          {(phase === "analyzing" || phase === "playback") && (
+            <Button size="sm" variant="outline" disabled className="w-full">
               <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              Analyzing...
+              {phase === "playback" ? "Playing back..." : "Checking..."}
             </Button>
           )}
           {phase === "confirm" && !done && (
-            <Button size="sm" onClick={playTTS} className="w-full">
+            <Button size="sm" onClick={() => void playSpeakerClip()} className="w-full">
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
               Retry
             </Button>
           )}
-          {phase === "confirm" && !done && (allowSkip || heardSomething) && (
-            <Button size="sm" variant="outline" onClick={() => { stopAll(); setPhase("idle"); onDoneRef.current(); }} className="w-full">
+          {phase === "confirm" && !done && allowSkip && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                stopAll();
+                setPhase("idle");
+                setSkipped(true);
+                report("mic_check", "skipped");
+                onDoneRef.current();
+              }}
+              className="w-full"
+            >
               Continue anyway
             </Button>
           )}
@@ -979,28 +1112,31 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             properly.
           </p>
           <p className="text-xs text-muted-foreground">
-            {phase === "idle" && !done &&
-              "Click \"Test Microphone\" to hear a message from the voice agent. Then speak your response to confirm the audio works — just like in the actual interview."}
-            {phase === "requesting" &&
-              "Granting microphone access..."}
-            {phase === "playing" &&
-              "The voice agent is speaking — listen carefully..."}
-            {phase === "listening" &&
-              "Speak for a second or two (e.g. \"yes, I can hear you\") — the bar should move. It passes automatically."}
-            {phase === "analyzing" &&
-              "Checking your response..."}
-            {phase === "confirm" && !done && allowSkip &&
-              "We couldn't detect your voice. Try again, or "}
-            {phase === "confirm" && !done && allowSkip && (
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
-                skip this step
-              </button>
+            {phase === "idle" && !done && (
+              <>
+                Click &quot;Test speaker &amp; mic&quot; to hear a short message
+                in the interview voice, then say:{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{samplePhrase}&quot;
+                </span>
+              </>
             )}
-            {phase === "confirm" && !done && allowSkip && "."}
-            {phase === "confirm" && !done && !allowSkip &&
-              (heardSomething
-                ? "Your voice was too quiet to confirm. Move closer to the mic and retry, or continue anyway."
-                : "We couldn't detect any sound from your microphone. Check the selected input device and retry.")}
+            {phase === "requesting" && "Getting your microphone ready..."}
+            {phase === "playing" &&
+              "Listen to the short message. When it ends, you'll see \"Listening\"."}
+            {phase === "listening" && (
+              <>
+                Speak now:{" "}
+                <span className="font-medium text-foreground">
+                  &quot;{samplePhrase}&quot;
+                </span>{" "}
+                The level bar should move.
+              </>
+            )}
+            {phase === "playback" &&
+              "Playing back what we captured from your mic..."}
+            {phase === "analyzing" && "Checking your voice..."}
+            {phase === "confirm" && !done && (failMessage || "We couldn't hear you clearly. Please retry.")}
             {done &&
               "Audio test passed. Your speaker and microphone are working."}
           </p>
@@ -1008,7 +1144,11 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <div className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
               <AlertCircle className="h-3.5 w-3.5 shrink-0" />
               <span>{error}</span>
-              <button type="button" className="ml-auto font-medium underline" onClick={playTTS}>
+              <button
+                type="button"
+                className="ml-auto font-medium underline"
+                onClick={() => void playSpeakerClip()}
+              >
                 Retry
               </button>
             </div>
@@ -1016,7 +1156,11 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           {allowSkip && !error && phase === "idle" && !done && (
             <p className="text-xs text-muted-foreground">
               No microphone?{" "}
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
+              <button
+                type="button"
+                className="font-medium text-primary hover:underline"
+                onClick={() => setShowSkipDialog(true)}
+              >
                 Skip
               </button>
             </p>
@@ -1025,6 +1169,9 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
             <p className="text-xs text-amber-600 dark:text-amber-400">
               Microphone is required for this interview.
             </p>
+          )}
+          {speakerOk && !done && phase === "listening" && (
+            <p className="text-[11px] text-muted-foreground">Speaker clip played.</p>
           )}
         </div>
 
@@ -1054,7 +1201,14 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setPhase("idle"); setSkipped(true); onDone(); }}>
+            <AlertDialogAction
+              onClick={() => {
+                setPhase("idle");
+                setSkipped(true);
+                report("mic_check", "skipped");
+                onDone();
+              }}
+            >
               Skip anyway
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1067,98 +1221,63 @@ function MicCheck({ done, onDone, language, allowSkip = true, sessionId }: { don
 function ScreenCheck({
   done,
   onDone,
-  allowSkip = true,
+  onLost,
 }: {
   done: boolean;
   onDone: () => void;
-  allowSkip?: boolean;
+  onLost?: () => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const report = usePreflightReport();
+  const [errorKind, setErrorKind] = useState<"denied" | "not_entire" | "unsupported" | "failed" | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
-  const [showSkipDialog, setShowSkipDialog] = useState(false);
-
-  // getDisplayMedia is unavailable on iOS Safari and most mobile browsers
+  const [busy, setBusy] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
-  const autoSkippedRef = useRef(false);
 
   useEffect(() => {
-    const supported =
-      typeof navigator !== "undefined" &&
-      !!navigator.mediaDevices?.getDisplayMedia;
-    setIsSupported(supported);
-    if (!supported && !done && !autoSkippedRef.current) {
-      autoSkippedRef.current = true;
-      setScreenSkipped(true);
-      onDone();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setIsSupported(typeof navigator !== "undefined" && canUseDisplayMedia(navigator.mediaDevices));
+  }, []);
 
   const requestShare = useCallback(async () => {
-    setError(null);
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-      });
-
-      // Validate that the user shared the entire screen, not a tab or window
-      const videoTrack = stream.getVideoTracks()[0];
-      const settings = videoTrack?.getSettings() as MediaTrackSettings & { displaySurface?: string };
-      if (settings.displaySurface && settings.displaySurface !== "monitor") {
-        stream.getTracks().forEach((t) => t.stop());
-        setError(
-          "Please share your entire screen, not a window or tab. Click \"Share Screen\" and select \"Entire Screen\"."
-        );
-        return;
+    setBusy(true);
+    setErrorKind(null);
+    const result = await requestInterviewScreenShare();
+    setBusy(false);
+    if (!result.ok) {
+      setErrorKind(result.kind);
+      if (result.kind === "denied" || result.kind === "failed") {
+        report("screen_share", "denied");
+        report("error", "error", { code: result.kind, source: "screen" });
       }
-
-      const videoEl = document.createElement("video");
-      videoEl.srcObject = stream;
-      videoEl.muted = true;
-      videoEl.playsInline = true;
-      await videoEl.play();
-
-      await new Promise((r) => setTimeout(r, 300));
-
-      const canvas = document.createElement("canvas");
-      canvas.width = videoEl.videoWidth;
-      canvas.height = videoEl.videoHeight;
-      canvas.getContext("2d")?.drawImage(videoEl, 0, 0);
-      setThumbnail(canvas.toDataURL("image/jpeg", 0.7));
-
-      // Keep the stream alive for the interview recording to reuse
-      setStoredScreenStream(stream);
-      videoEl.srcObject = null;
-      onDone();
-    } catch {
-      setError("Screen capture was denied or cancelled.");
+      return;
     }
-  }, [onDone]);
+
+    const stream = result.stream;
+    const videoEl = document.createElement("video");
+    videoEl.srcObject = stream;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    await videoEl.play().catch(() => {});
+    await new Promise((r) => setTimeout(r, 300));
+    const canvas = document.createElement("canvas");
+    canvas.width = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+    canvas.getContext("2d")?.drawImage(videoEl, 0, 0);
+    if (canvas.width > 0 && canvas.height > 0) setThumbnail(canvas.toDataURL("image/jpeg", 0.7));
+    videoEl.srcObject = null;
+
+    setStoredScreenStream(stream);
+    stream.getVideoTracks()[0]?.addEventListener("ended", () => {
+      report("screen_share", "stopped");
+      if (getStoredScreenStream() === stream) setStoredScreenStream(null);
+      setThumbnail(null);
+      onLost?.();
+    });
+    report("screen_share", "started");
+    onDone();
+  }, [onDone, onLost, report]);
 
   if (!isSupported) {
-    return (
-      <Card className="overflow-hidden">
-        <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-start">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
-              <Monitor className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <div className="flex-1 space-y-1">
-              <p className="text-sm font-medium">Screen sharing unavailable</p>
-              <p className="text-xs text-muted-foreground">
-                Screen sharing requires a desktop browser (Chrome recommended).
-                This step has been automatically skipped on your device.
-              </p>
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center self-start pt-0.5">
-            <span className="flex items-center gap-1.5 text-sm font-medium text-secondary-600 dark:text-secondary-400">
-              <CheckCircle2 className="h-4 w-4" />
-              Skipped
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-    );
+    return <ScreenSharePrompt />;
   }
 
   return (
@@ -1183,45 +1302,29 @@ function ScreenCheck({
             )}
           </div>
           {!done && (
-            <Button size="sm" onClick={requestShare} className="w-full">
+            <Button size="sm" onClick={() => void requestShare()} className="w-full" disabled={busy}>
               <Monitor className="mr-1.5 h-3.5 w-3.5" />
-              Share Screen
+              {errorKind ? "Retry" : "Share Screen"}
             </Button>
           )}
         </div>
 
         <div className="flex-1 space-y-2">
           <p className="text-sm font-medium">
-            Screen capture requires authorization.
+            Screen sharing is required for this interview.
           </p>
           <p className="text-xs text-muted-foreground">
             After clicking &quot;Share Screen&quot;, please select{" "}
             <span className="font-medium text-foreground">
               &quot;Entire Screen&quot;
             </span>{" "}
-            in the pop-up window and click &quot;Share&quot;.
+            in the pop-up window and click &quot;Share&quot;. You cannot continue without it.
           </p>
-          {error && (
-            <div className="flex items-center gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-              <span>{error}</span>
-              <button type="button" className="ml-auto font-medium underline" onClick={requestShare}>
-                Retry
-              </button>
+          {errorKind && (
+            <div className="flex items-start gap-1.5 rounded-md bg-destructive/10 px-2.5 py-1.5 text-xs text-destructive">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{screenShareErrorHelp(errorKind)}</span>
             </div>
-          )}
-          {allowSkip && !error && !done && (
-            <p className="text-xs text-muted-foreground">
-              Can&apos;t share screen?{" "}
-              <button type="button" className="font-medium text-primary hover:underline" onClick={() => setShowSkipDialog(true)}>
-                Skip
-              </button>
-            </p>
-          )}
-          {!allowSkip && !error && !done && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              Screen sharing is required for this interview.
-            </p>
           )}
         </div>
 
@@ -1239,29 +1342,19 @@ function ScreenCheck({
           )}
         </div>
       </CardContent>
-      <AlertDialog open={showSkipDialog} onOpenChange={setShowSkipDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Skip screen sharing?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Skipping screen sharing is not recommended. Screen capture is used
-              to monitor your interview environment. Skipping may affect your
-              interview results.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Go back</AlertDialogCancel>
-            <AlertDialogAction onClick={() => { setScreenSkipped(true); onDone(); }}>
-              Skip anyway
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </Card>
   );
 }
 
-export function IntervieweeOnboarding({
+export function IntervieweeOnboarding(props: IntervieweeOnboardingProps) {
+  return (
+    <PreflightProvider token={props.inviteToken} sessionId={props.sessionId}>
+      <OnboardingBody {...props} />
+    </PreflightProvider>
+  );
+}
+
+function OnboardingBody({
   sessionId,
   interviewTitle,
   interviewDescription,
@@ -1271,12 +1364,19 @@ export function IntervieweeOnboarding({
   antiCheatingEnabled = false,
   voiceEnabled = false,
   chatEnabled = false,
-  aiName = "AI Interviewer",
+  aiName = "ResilienceSoft Interview",
   questionTypes = [],
   scheduledAt,
   expiresAt,
+  oneTimeLink = false,
+  candidateLanguage = null,
+  onLanguageChange,
   onComplete,
 }: IntervieweeOnboardingProps) {
+  const multiLanguage = isMultiLanguage(language);
+  /** Mic test and preview follow the chosen language in multi-language interviews. */
+  const effectiveLanguage = multiLanguage ? (candidateLanguage ?? "en") : language;
+  const report = usePreflightReport();
   const [step, setStep] = useState<OnboardingStep>("info");
   const [agreed, setAgreed] = useState(false);
 
@@ -1285,25 +1385,31 @@ export function IntervieweeOnboarding({
   const [screenDone, setScreenDone] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const allChecksDone = cameraDone && micDone && screenDone;
+  const allChecksDone = cameraDone && micDone && screenDone && (!multiLanguage || !onLanguageChange || !!candidateLanguage);
 
   const handleComplete = useCallback(() => {
+    if (!getStoredScreenStream()) {
+      setScreenDone(false);
+      setStep("checklist");
+      return;
+    }
+    report("interview_started", "done");
     setStarting(true);
     onComplete();
-  }, [onComplete]);
+  }, [onComplete, report]);
 
   const header = (
     <header className="sticky top-0 z-50 flex h-14 items-center border-b bg-card px-4 sm:px-6">
       <div className="flex items-center gap-1">
-        <AuralLogo size={28} className="shrink-0" />
-        <span className="font-heading text-base font-bold tracking-[2px]">SKILLMARK</span>
+        <ProductLogo size={28} className="shrink-0 sm:hidden" />
+        <BrandWordmark height={36} className="hidden sm:inline-flex" />
       </div>
     </header>
   );
 
   if (step === "info") {
     return (
-      <div className="flex min-h-screen flex-col bg-muted/30">
+      <div className="flex min-h-[100dvh] flex-col bg-muted/30">
         {header}
         <StepIndicator current="info" />
         <div className="mx-auto w-full max-w-2xl flex-1 px-4 pb-8 sm:px-6">
@@ -1345,6 +1451,34 @@ export function IntervieweeOnboarding({
               )}
             </CardContent>
           </Card>
+
+          {oneTimeLink && (
+            <Card className="mt-4 border-destructive/40">
+              <CardContent className="space-y-3 p-4 sm:p-6">
+                <h3 className="font-semibold text-destructive">
+                  Important: this link works only once
+                </h3>
+                <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+                  Once you start, this interview cannot be paused, restarted or reopened.
+                </div>
+                <ul className="list-inside list-disc space-y-2 text-sm text-muted-foreground">
+                  <li>
+                    Your interview link is valid for <span className="font-medium text-foreground">one attempt only</span>.
+                    After the interview ends, the link expires and cannot be opened again.
+                  </li>
+                  <li>
+                    If you <span className="font-medium text-foreground">get disconnected from the internet</span>,
+                    close this tab, or refresh the page, your link will expire and the
+                    interview will be over.
+                  </li>
+                  <li>
+                    Keep your laptop connected to a <span className="font-medium text-foreground">stable internet
+                    connection that will not drop</span> (and plugged in to power) for the whole interview.
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="mt-4">
             <CardContent className="space-y-3 p-4 sm:p-6">
@@ -1424,18 +1558,23 @@ export function IntervieweeOnboarding({
             </CardContent>
           </Card>
 
-          <div className="mt-6 flex flex-col items-center gap-4">
+          <div className="sticky bottom-0 -mx-4 mt-6 flex flex-col items-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:gap-4 sm:border-0 sm:bg-transparent sm:p-0 sm:backdrop-blur-none">
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={agreed}
                 onCheckedChange={(v) => setAgreed(v === true)}
               />
-              I agree to the above notice and interview guidelines
+              {oneTimeLink
+                ? "I understand this link works only once, and I agree to the above notices and guidelines"
+                : "I agree to the above notice and interview guidelines"}
             </label>
             <Button
               disabled={!agreed}
-              onClick={() => setStep("checklist")}
-              className="w-40"
+              onClick={() => {
+                report("consent_accepted", "done");
+                setStep("checklist");
+              }}
+              className="h-11 w-40 sm:h-10"
             >
               Next
             </Button>
@@ -1454,9 +1593,10 @@ export function IntervieweeOnboarding({
 
     const mockContext: InterviewContext = {
       title: interviewTitle,
-      aiName: aiName ?? "AI Interviewer",
+      aiName: aiName ?? "ResilienceSoft Interview",
       aiTone: "professional",
       language: language ?? "en-US",
+      candidateLanguage: effectiveLanguage,
       followUpDepth: "medium",
       questions: Array.from({ length: questionCount }, (_, i) => ({
         text: `Question ${i + 1}`,
@@ -1473,7 +1613,7 @@ export function IntervieweeOnboarding({
               sessionId="__preview__"
               interviewId="__preview__"
               interviewTitle={interviewTitle}
-              aiName={aiName ?? "AI Interviewer"}
+              aiName={aiName ?? "ResilienceSoft Interview"}
               questionCount={questionCount}
               interviewContext={mockContext}
               durationMinutes={timeLimitMinutes ?? undefined}
@@ -1487,7 +1627,7 @@ export function IntervieweeOnboarding({
               interview={{
                 id: "__preview__",
                 title: interviewTitle,
-                aiName: aiName ?? "AI Interviewer",
+                aiName: aiName ?? "ResilienceSoft Interview",
                 mode: "CHAT",
                 questions: mockContext.questions.map((q, i) => ({
                   id: `preview-q-${i}`,
@@ -1507,15 +1647,18 @@ export function IntervieweeOnboarding({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-muted/30">
+    <div className="flex min-h-[100dvh] flex-col bg-muted/30">
       {header}
       <StepIndicator current="checklist" />
       <div className="mx-auto w-full max-w-2xl flex-1 space-y-4 px-4 pb-8">
+        {multiLanguage && onLanguageChange && (
+          <LanguageChoice value={candidateLanguage} onChange={onLanguageChange} />
+        )}
         <CameraCheck done={cameraDone} onDone={() => setCameraDone(true)} allowSkip={!antiCheatingEnabled} />
-        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={language} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
-        <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} allowSkip={!antiCheatingEnabled} />
+        <MicCheck done={micDone} onDone={() => setMicDone(true)} language={effectiveLanguage} allowSkip={!antiCheatingEnabled} sessionId={sessionId} />
+        <ScreenCheck done={screenDone} onDone={() => setScreenDone(true)} onLost={() => setScreenDone(false)} />
 
-        <div className="flex items-center justify-center gap-3 pt-4">
+        <div className="sticky bottom-0 -mx-4 flex items-center justify-center gap-3 border-t bg-muted/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:static sm:mx-0 sm:border-0 sm:bg-transparent sm:px-0 sm:pb-0 sm:pt-4 sm:backdrop-blur-none">
           <Button variant="outline" onClick={() => setStep("info")}>
             Back
           </Button>

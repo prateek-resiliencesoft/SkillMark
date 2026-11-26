@@ -10,7 +10,7 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:write");
   if (isAuthError(auth)) return auth;
 
   const { id } = await params;
@@ -52,7 +52,7 @@ export async function POST(
     return apiError("INTERNAL_ERROR", updateError.message, 500);
   }
 
-  const base = (process.env.NEXT_PUBLIC_APP_URL ?? "https://aural-ai.com").replace(
+  const base = (process.env.NEXT_PUBLIC_APP_URL ?? "https://resiliencesoftinterview.com").replace(
     /\/$/,
     "",
   );

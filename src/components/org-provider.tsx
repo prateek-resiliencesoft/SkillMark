@@ -11,8 +11,11 @@ import {
 } from "react";
 import { trpc } from "@/lib/trpc/client";
 import { useAuth } from "@/components/auth-provider";
-
-const STORAGE_KEY = "aural:currentOrgId";
+import {
+  LAST_ORG_STORAGE_KEY as STORAGE_KEY,
+  readActiveOrgCookie,
+  writeActiveOrgCookie,
+} from "@/lib/active-org";
 
 export interface OrgInfo {
   id: string;
@@ -20,6 +23,10 @@ export interface OrgInfo {
   slug: string;
   ownerId: string;
   role: string;
+  /** ACTIVE | SUSPENDED — paused orgs are read-mostly for members. */
+  status?: string;
+  plan?: string;
+  defaultInterviewerGender?: "FEMALE" | "MALE";
 }
 
 interface OrgContextValue {
@@ -45,7 +52,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(() => {
     if (typeof window !== "undefined") {
-      return localStorage.getItem(STORAGE_KEY);
+      return readActiveOrgCookie() ?? localStorage.getItem(STORAGE_KEY);
     }
     return null;
   });
@@ -66,6 +73,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     setSelectedOrgId(orgId);
     if (typeof window !== "undefined") {
       localStorage.setItem(STORAGE_KEY, orgId);
+      writeActiveOrgCookie(orgId);
     }
   }, []);
 

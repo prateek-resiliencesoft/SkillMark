@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySession } from "@/lib/auth-session";
+import { safeNextPath } from "@/lib/safe-next";
 
 const PROTECTED = [
   "/dashboard",
@@ -13,19 +14,15 @@ const PROTECTED = [
   "/account",
   "/usage",
   "/integrations",
+  "/admin",
   "/batches",
+  "/round-two",
 ];
 
-const AUTH_PAGES = ["/login", "/register"];
+/** Round 2 room pages need a session; candidate (/r2/c/) and invite (/r2/join/) pages handle auth themselves. */
+const ROOM_PATH = /^\/r2\/[0-9a-f-]{36}\/room\/?$/i;
 
-/** Only allow same-origin relative paths as post-login destinations. */
-function safeNextPath(raw: string | null | undefined): string {
-  if (!raw) return "/dashboard";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) {
-    return "/dashboard";
-  }
-  return raw;
-}
+const AUTH_PAGES = ["/login", "/register"];
 
 /** Protects dashboard routes, cleans auth entry URLs, clears invalid session cookies. */
 export async function middleware(request: NextRequest) {
@@ -42,15 +39,21 @@ export async function middleware(request: NextRequest) {
   }
 
   // Already signed in → leave auth pages for the intended destination
-  if (user && AUTH_PAGES.some((p) => path === p || path.startsWith(p + "/"))) {
+  // (unless adding another account via ?add=1)
+  if (
+    user &&
+    !request.nextUrl.searchParams.has("add") &&
+    AUTH_PAGES.some((p) => path === p || path.startsWith(p + "/"))
+  ) {
     const url = request.nextUrl.clone();
-    url.pathname = safeNextPath(request.nextUrl.searchParams.get("next"));
-    url.search = "";
+    const dest = new URL(safeNextPath(request.nextUrl.searchParams.get("next")), url.origin);
+    url.pathname = dest.pathname;
+    url.search = dest.search;
     return NextResponse.redirect(url);
   }
 
   // Protected app routes require a session
-  if (!user && PROTECTED.some((p) => path === p || path.startsWith(p + "/"))) {
+  if (!user && (PROTECTED.some((p) => path === p || path.startsWith(p + "/")) || ROOM_PATH.test(path))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = `?next=${encodeURIComponent(path + request.nextUrl.search)}`;
@@ -61,6 +64,7 @@ export async function middleware(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-pathname", path);
+  requestHeaders.set("x-search", request.nextUrl.search);
   const res = NextResponse.next({ request: { headers: requestHeaders } });
   if (token && !user) res.cookies.delete(SESSION_COOKIE);
   return res;
@@ -68,6 +72,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!api|_next/static|_next/image|vad/|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

@@ -85,11 +85,11 @@ function McpTab({ baseUrl }: { baseUrl: string }) {
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">MCP server for AI assistants</CardTitle>
-          <CardDescription>Connect Cursor, Claude, VS Code Copilot, Windsurf, Antigravity, ChatGPT and other MCP clients to Skillmark. They can list forms, read form schemas, submit candidates, check application status and results, list/create interviews and read session results — all scoped to your organization and your key&apos;s permissions. Every call appears in the API usage log.</CardDescription>
+          <CardDescription>Connect Cursor, Claude, VS Code Copilot, Windsurf, Antigravity, ChatGPT and other MCP clients to ResilienceSoft Interview. They can list forms, read form schemas, submit candidates, check application status and results, list/create interviews and read session results — all scoped to your organization and your key&apos;s permissions. Every call appears in the API usage log.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <CodeBlock label="MCP server URL (Streamable HTTP)" code={mcpUrl} />
-          <p className="text-xs text-muted-foreground">Auth: <code>Authorization: Bearer dlv_…</code> (create a key under <Link className="text-primary underline" href="/integrations/api-keys">API keys</Link>; a read-only key — forms:read + applications:read + interviews:read — is safest for assistants). Tools: <code>list_interview_forms</code>, <code>get_interview_form</code>, <code>submit_application</code>, <code>list_applications</code>, <code>get_application</code>, <code>list_interviews</code>, <code>get_interview</code>, <code>create_interview</code>, <code>list_sessions</code>, <code>get_session_results</code>.</p>
+          <p className="text-xs text-muted-foreground">Auth: <code>Authorization: Bearer rsi_…</code> (create a key under <Link className="text-primary underline" href="/integrations/api-keys">API keys</Link>; a read-only key — forms:read + applications:read + interviews:read — is safest for assistants). Tools: <code>list_interview_forms</code>, <code>get_interview_form</code>, <code>submit_application</code>, <code>list_applications</code>, <code>get_application</code>, <code>list_interviews</code>, <code>get_interview</code>, <code>create_interview</code>, <code>list_sessions</code>, <code>get_session_results</code>.</p>
         </CardContent>
       </Card>
       <Card>
@@ -113,7 +113,7 @@ function McpTab({ baseUrl }: { baseUrl: string }) {
             <TabsContent value="chatgpt" className="mt-3 space-y-3">
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                 <p className="font-medium">ChatGPT limitation</p>
-                <p className="mt-1">ChatGPT custom MCP apps/connectors (developer mode, Business/Enterprise/Edu workspaces; web only) support only <strong>OAuth</strong> or <strong>No authentication</strong> — there is no field for a static API key header. Skillmark does not implement OAuth yet. As a workaround you can choose <em>No authentication</em> and put the key in the URL below. The key then lives inside the connector URL (and may appear in proxy/server logs): create a <strong>dedicated read-only key</strong> just for ChatGPT and rotate it if the URL is shared. The server must be reachable over public HTTPS.</p>
+                <p className="mt-1">ChatGPT custom MCP apps/connectors (developer mode, Business/Enterprise/Edu workspaces; web only) support only <strong>OAuth</strong> or <strong>No authentication</strong> — there is no field for a static API key header. ResilienceSoft Interview does not implement OAuth yet. As a workaround you can choose <em>No authentication</em> and put the key in the URL below. The key then lives inside the connector URL (and may appear in proxy/server logs): create a <strong>dedicated read-only key</strong> just for ChatGPT and rotate it if the URL is shared. The server must be reachable over public HTTPS.</p>
               </div>
               <CodeBlock label="ChatGPT → Settings → Apps → Create (developer mode) → Server URL" code={c.chatgptUrl} />
             </TabsContent>
@@ -136,7 +136,10 @@ function MyIntegrationsInner() {
   const [tab, setTab] = useState(params.get("tab") ?? "rest");
   const forms = trpc.interviewForm.list.useQuery({ organizationId: currentOrg?.id ?? "" }, { enabled: !!currentOrg?.id });
   const keys = trpc.apiKey.list.useQuery();
-  const logs = trpc.interviewForm.usageLogs.useQuery({ organizationId: currentOrg?.id ?? "", limit: 50 }, { enabled: !!currentOrg?.id, refetchInterval: 20000 });
+  const logs = trpc.interviewForm.usageLogs.useQuery(
+    { organizationId: currentOrg?.id ?? "", limit: 50 },
+    { enabled: !!currentOrg?.id, staleTime: 15_000, refetchInterval: 45_000 },
+  );
   const all = (forms.data ?? []) as any[];
   const published = all.filter((f) => f.status === "published" || f.id === selected);
   const active = selected ?? published[0]?.id ?? null;
@@ -149,7 +152,7 @@ function MyIntegrationsInner() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Interview Form Integration</h1>
-          <p className="text-sm text-muted-foreground">How to connect your website, CRM, ATS or AI assistant to Skillmark interview forms.</p>
+          <p className="text-sm text-muted-foreground">How to connect your website, CRM, ATS or AI assistant to ResilienceSoft Interview interview forms.</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" asChild><Link href="/integrations/api-keys"><KeyRound className="mr-1.5 h-4 w-4" />Manage API keys</Link></Button>
@@ -160,7 +163,7 @@ function MyIntegrationsInner() {
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">How to connect your service</CardTitle></CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-3">
-          <Step n={1} title="Create an API key" done={hasKey}>Under <Link className="text-primary underline" href="/integrations/api-keys">Manage API keys</Link>. Start with a <code>dlv_test_</code> key; the secret is shown once. Not needed for the hosted form.</Step>
+          <Step n={1} title="Create an API key" done={hasKey}>Under <Link className="text-primary underline" href="/integrations/api-keys">Manage API keys</Link>. Start with a <code>rsi_test_</code> key; the secret is shown once. Not needed for the hosted form.</Step>
           <Step n={2} title="Build & publish an interview form" done={all.some((f) => f.status === "published")}>Choose candidate fields and configure the interview in <Link className="text-primary underline" href="/integrations/forms">Interview Forms</Link>, then Publish to get a <code>frm_…</code> id.</Step>
           <Step n={3} title="Pick a connection method" done={(logs.data ?? []).length > 0}>REST API from your backend, hosted form / iframe, ready-made code for your CRM, or MCP for AI assistants. Results flow back via <code>GET /applications/&#123;id&#125;</code>.</Step>
         </CardContent>

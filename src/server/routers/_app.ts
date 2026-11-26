@@ -2,6 +2,7 @@ import { router } from "../trpc";
 import { interviewRouter } from "./interview";
 import { questionRouter } from "./question";
 import { sessionRouter } from "./session";
+import { codeRouter } from "./code";
 import { analysisRouter } from "./analysis";
 import { organizationRouter } from "./organization";
 import { orgMemberRouter } from "./orgMember";
@@ -17,6 +18,15 @@ import { batchRouter } from "./batch";
 import { integrationRouter } from "./integration";
 import { interviewFormRouter } from "./interviewForm";
 import { aiSettingsRouter } from "./aiSettings";
+import { platformRouter } from "./platform";
+import { platformOpsRouter } from "./platform-ops";
+import { errorLogsRouter } from "./error-logs";
+import { bugTriageRouter } from "./bug-triage";
+import { billingRouter } from "./billing";
+import { statusRouter } from "./status";
+import { aiRunsRouter } from "./aiRuns";
+import { roundTwoRouter } from "./roundTwo";
+import { landingRouter } from "@landing/server/router";
 
 export const appRouter = router({
   auth: authRouter,
@@ -24,6 +34,7 @@ export const appRouter = router({
   question: questionRouter,
   questionBank: questionBankRouter,
   session: sessionRouter,
+  code: codeRouter,
   analysis: analysisRouter,
   organization: organizationRouter,
   orgMember: orgMemberRouter,
@@ -37,6 +48,15 @@ export const appRouter = router({
   integration: integrationRouter,
   interviewForm: interviewFormRouter,
   aiSettings: aiSettingsRouter,
+  platform: platformRouter,
+  platformOps: platformOpsRouter,
+  errorLogs: errorLogsRouter,
+  bugTriage: bugTriageRouter,
+  billing: billingRouter,
+  status: statusRouter,
+  roundTwo: roundTwoRouter,
+  aiRuns: aiRunsRouter,
+  landing: landingRouter,
 });
 
 export type AppRouter = typeof appRouter;

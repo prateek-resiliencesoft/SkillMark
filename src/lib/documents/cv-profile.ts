@@ -6,8 +6,13 @@
  * model can't back up are dropped and flagged rather than kept as guesses.
  */
 import { extractJson } from "@/lib/ai/extract-json";
+import { AI_CALL_TIMEOUT_MS, budgetSignal, isAbortError } from "@/lib/ai/fail-fast";
+import { classifyAiFailure } from "@/lib/ai/key-chain";
 import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
 import type { LLMProvider } from "@/lib/ai/types";
+
+/** Cap one profile LLM call so Gemini 503/slow paths fall back before parse-cv's 75s budget dies. */
+const PROFILE_CALL_TIMEOUT_MS = Math.min(AI_CALL_TIMEOUT_MS, 22_000);
 
 export interface ReviewFlag {
   field: string;
@@ -74,7 +79,11 @@ Rules:
 - Never guess or infer missing values. Use null / [] instead.
 - Copy emails, phone numbers, dates and numbers character-for-character.
 - Keep experience in the order listed. Use "Present" for current roles only if the CV says so.
-- Return only the JSON object.`;
+- Return only the JSON object — no markdown fences, no trailing commas, no comments.`;
+
+const STRICT_RETRY_PROMPT = `Return ONE minified valid JSON object only. No markdown, no prose, no trailing commas.
+Keep arrays short (≤8 experience, ≤8 projects, ≤6 education, ≤20 techStack). Cap summary strings at 200 chars.
+Use null / [] when unknown.`;
 
 function isDeadModelError(msg: string): boolean {
   return /410|404|gone|retired|unavailable|no longer (available|supported)|not found/i.test(msg);
@@ -84,24 +93,53 @@ async function generateProfileJson(
   provider: LLMProvider,
   model: string,
   source: string,
+  opts: { strict?: boolean; jsonMode?: boolean; signal?: AbortSignal } = {},
 ) {
+  const { strict = false, jsonMode = false } = opts;
+  // Keep maxTokens modest — Gemini/OpenAI-compat often 400 on oversized max_tokens.
   return provider.generateResponse({
     model,
     temperature: 0,
-    maxTokens: 4096,
+    maxTokens: strict ? 2048 : 3072,
+    jsonMode,
+    // The key chain already fails over; SDK-level 429 retries would only burn the time budget.
+    maxRetries: 0,
+    signal: opts.signal,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: strict ? `${STRICT_RETRY_PROMPT}\n\n${SYSTEM_PROMPT}` : SYSTEM_PROMPT },
       { role: "user", content: source },
     ],
   });
 }
 
+function isRetryableProfileError(msg: string, err?: unknown): boolean {
+  const status = (err as { status?: number } | undefined)?.status;
+  if (status === 400 || status === 404 || status === 410 || status === 429 || status === 503) {
+    return true;
+  }
+  return (
+    /JSON|Unexpected token|Expected|position \d+|No JSON object/i.test(msg) ||
+    /\b400\b|\b404\b|\b410\b|\b429\b|no body|invalid.?argument|max.?tokens|context length|too many tokens/i.test(
+      msg,
+    ) ||
+    isDeadModelError(msg)
+  );
+}
+
 export async function extractCandidateProfile(
   markdown: string,
-  options: { defaultCountryCode?: string; organizationId?: string | null } = {},
+  options: {
+    defaultCountryCode?: string;
+    organizationId?: string | null;
+    /** Overall deadline: aborts in-flight calls and stops further attempts. */
+    signal?: AbortSignal;
+    /** Pre-resolved provider (tests); default resolves from Settings → AI. */
+    models?: { provider: LLMProvider; generatorModel: string };
+  } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
-  const { provider, generatorModel } = await resolveTaskModels(options.organizationId);
+  const { provider, generatorModel } =
+    options.models ?? (await resolveTaskModels(options.organizationId, "resume"));
 
   const attempts: { provider: LLMProvider; model: string }[] = [
     { provider, model: generatorModel },
@@ -113,37 +151,109 @@ export async function extractCandidateProfile(
     attempts.push(fb);
   }
 
-  let res: Awaited<ReturnType<LLMProvider["generateResponse"]>> | undefined;
   let lastErr: unknown;
+  // Keep to two variants — a third "strict" pass often burns the parse-cv budget after Gemini 503s.
+  const variants: { strict: boolean; jsonMode: boolean }[] = [
+    { strict: false, jsonMode: false },
+    { strict: false, jsonMode: true },
+  ];
+
   for (const attempt of attempts) {
-    try {
-      res = await generateProfileJson(attempt.provider, attempt.model, source);
-      break;
-    } catch (err) {
-      lastErr = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
-        throw new Error(
-          "AI provider rejected the request (invalid or missing API key). Add a key under Project Settings → AI, then try again.",
-        );
+    for (const variant of variants) {
+      if (options.signal?.aborted) {
+        return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
       }
-      // Dead/retired model → try next; quota/other → stop (retrying burns more quota).
-      if (!isDeadModelError(msg)) throw err;
+      try {
+        const res = await generateProfileJson(attempt.provider, attempt.model, source, {
+          ...variant,
+          signal: budgetSignal(PROFILE_CALL_TIMEOUT_MS, options.signal),
+        });
+        const raw = extractJson<Record<string, unknown>>(
+          res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
+        );
+        return validateProfile(raw, source, options.defaultCountryCode);
+      } catch (err) {
+        lastErr = err;
+        if (options.signal?.aborted || isAbortError(err)) {
+          return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
+        }
+        // Quota/auth: still try heuristic so bulk upload is not a hard 504.
+        if (classifyAiFailure(err)) {
+          return heuristicCandidateProfile(
+            source,
+            options.defaultCountryCode,
+            "AI quota/auth failed — used text heuristics",
+          );
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/401|unauthorized|api.?key|login fail|authorization/i.test(msg)) {
+          return heuristicCandidateProfile(
+            source,
+            options.defaultCountryCode,
+            "AI key rejected — used text heuristics",
+          );
+        }
+        if (!isRetryableProfileError(msg, err)) {
+          return heuristicCandidateProfile(source, options.defaultCountryCode, msg.slice(0, 120));
+        }
+        // else try next variant / model
+      }
     }
   }
 
-  if (!res) {
-    const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-    if (isDeadModelError(msg)) {
-      throw new Error(
-        `AI model unavailable (${generatorModel} via ${provider.name}). Set GEMINI_MODEL / OPENAI_MODEL to a current model id, or update Project Settings → AI.`,
-      );
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
-  }
+  const msg = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "");
+  return heuristicCandidateProfile(
+    source,
+    options.defaultCountryCode,
+    isDeadModelError(msg)
+      ? `AI model unavailable (${generatorModel}) — used text heuristics`
+      : "AI profile failed — used text heuristics",
+  );
+}
 
-  const raw = extractJson<Record<string, unknown>>(res.content.replace(/<think>[\s\S]*?<\/think>/g, ""));
-  return validateProfile(raw, source, options.defaultCountryCode);
+/**
+ * Fast no-LLM contact scrape so parse-cv still returns usable fields when Gemini is slow/503.
+ */
+export function heuristicCandidateProfile(
+  source: string,
+  defaultCountryCode?: string,
+  reason = "Used text heuristics",
+): { profile: CandidateProfile; reviewFlags: ReviewFlag[] } {
+  const emailMatch = source.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  const phoneMatch = source.match(/(?:\+?\d[\d\s()./-]{7,}\d)/);
+  const lines = source
+    .split(/\n/)
+    .map((l) => l.replace(/^#+\s*/, "").replace(/[*_`]+/g, "").trim())
+    .filter(Boolean);
+  let name: string | null = null;
+  for (const line of lines.slice(0, 10)) {
+    if (EMAIL_RE.test(line)) continue;
+    if (/https?:\/\//i.test(line)) continue;
+    if (/\d{6,}/.test(line)) continue;
+    if (line.length < 3 || line.length > 60) continue;
+    if (!/[A-Za-z]/.test(line)) continue;
+    name = line.split(/[|,•·]/)[0]?.trim() || line;
+    break;
+  }
+  const { profile, reviewFlags } = validateProfile(
+    {
+      name,
+      email: emailMatch?.[0] ?? null,
+      phone: phoneMatch?.[0] ?? null,
+      location: null,
+      headline: null,
+      totalExperienceYears: null,
+      techStack: [],
+      experience: [],
+      projects: [],
+      education: [],
+      summary: null,
+    },
+    source,
+    defaultCountryCode,
+  );
+  reviewFlags.unshift({ field: "document", reason });
+  return { profile, reviewFlags };
 }
 
 /* ------------------------------------------------------------------ */

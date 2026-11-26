@@ -1,3 +1,4 @@
+import { interviewerPromptIdentity } from "../src/lib/interviewer-persona";
 /**
  * Bilingual prompt templates for the voice relay server.
  *
@@ -22,6 +23,7 @@ import {
 
 export interface ResponsePromptParams {
   aiName: string;
+  aiGender?: string;
   title: string;
   qNum: number;
   totalQs: number;
@@ -54,8 +56,8 @@ export const SPOKEN = {
 
   systemText(aiName: string, toneKey: string): BiText {
     return {
-      zh: `你是${aiName}，一位${AI_TONE_ZH[toneKey] || AI_TONE_ZH_DEFAULT}的面试官。你只负责朗读系统提供给你的内容。不要自己编造任何回复。`,
-      en: `You are ${aiName}, a ${toneKey} interviewer. You only read aloud what the system provides via SayHello. Do not generate your own responses.`,
+      zh: `${interviewerPromptIdentity(aiName, undefined, toneKey, "zh").line} 你只负责朗读系统提供给你的内容。不要自己编造任何回复。`,
+      en: `${interviewerPromptIdentity(aiName, undefined, toneKey, "en").line} You only read aloud what the system provides via SayHello. Do not generate your own responses.`,
     };
   },
 
@@ -312,7 +314,7 @@ Important: when you are asking the participant to explain their approach (catego
         ? `\n**语言要求：你必须用${p.forceLanguage === "en" ? "英文" : "中文"}回复，无论问题是什么语言。** / **Language: You MUST respond in ${p.forceLanguage === "en" ? "English" : "Chinese"}, regardless of the question language.**\n`
         : "";
       return {
-        zh: `你是面试官"${p.aiName}"，正在进行一场关于"${p.title}"的访谈。
+        zh: `${interviewerPromptIdentity(p.aiName, p.aiGender, undefined, "zh").line} 你正在进行一场关于"${p.title}"的访谈。
 ${memZh}${langInstr}
 当前问题（第${p.qNum}/${p.totalQs}个）：「${p.qText}」${descZh}${p.choiceInstruction}
 ${codeZh}${wbZh}${visibilityZh}
@@ -341,7 +343,7 @@ ${p.followUpInstruction}
 - 禁止编造不相关的问题或话题
 - 如果受访者之前已经讨论过的内容与当前问题相关，可以引用但不要重复追问
 - 不要重复你之前已经说过的话，每次回复都要有新的内容`,
-        en: `You are interviewer "${p.aiName}" conducting an interview about "${p.title}".
+        en: `${interviewerPromptIdentity(p.aiName, p.aiGender, undefined, "en").line} You are conducting an interview about "${p.title}".
 ${memEn}${langInstr}
 Current question (${p.qNum}/${p.totalQs}): "${p.qText}"${descEn}${p.choiceInstruction}
 ${codeEn}${wbEn}${visibilityEn}
@@ -384,7 +386,7 @@ Rules:
         ? `\n**语言要求：你必须用${p.forceLanguage === "en" ? "英文" : "中文"}回复，无论问题是什么语言。** / **Language: You MUST respond in ${p.forceLanguage === "en" ? "English" : "Chinese"}, regardless of the question language.**\n`
         : "";
       return {
-        zh: `你是面试官"${p.aiName}"，正在进行一场关于"${p.title}"的访谈。
+        zh: `${interviewerPromptIdentity(p.aiName, p.aiGender, undefined, "zh").line} 你正在进行一场关于"${p.title}"的访谈。
 ${memZh}${langInstr}
 当前问题（第${p.qNum}/${p.totalQs}个）：「${p.qText}」${descZh}${p.choiceInstruction}
 对方已回答了${p.userTurns}轮。
@@ -412,7 +414,7 @@ ${p.followUpInstruction}
 - 禁止编造不相关的问题或话题
 - 如果受访者之前已经讨论过的内容与当前问题相关，可以引用但不要重复追问
 - 不要重复你之前已经说过的话，每次回复都要有新的内容`,
-        en: `You are interviewer "${p.aiName}" conducting an interview about "${p.title}".
+        en: `${interviewerPromptIdentity(p.aiName, p.aiGender, undefined, "en").line} You are conducting an interview about "${p.title}".
 ${memEn}${langInstr}
 Current question (${p.qNum}/${p.totalQs}): "${p.qText}"${descEn}${p.choiceInstruction}
 The participant has responded ${p.userTurns} time(s) so far.

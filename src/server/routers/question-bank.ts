@@ -1,6 +1,20 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { parseSkipIf, questionSkipIfSchema } from "@/lib/question-conditions";
+import type { PremadeBankQuestion } from "@/lib/premade-sections";
 import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
+
+export type EnabledBankSection = {
+  id: string;
+  name: string;
+  order: number;
+  isEnabled: boolean;
+};
+
+export type EnabledBankQuestionsResult = {
+  sections: EnabledBankSection[];
+  questions: PremadeBankQuestion[];
+};
 
 export const DEFAULT_QUESTION_BANK_SECTIONS = [
   {
@@ -95,6 +109,22 @@ async function seedDefaultSections(
   }
 }
 
+async function assertSectionInOrg(
+  supabase: Parameters<typeof getOrgMembership>[0],
+  sectionId: string,
+  organizationId: string,
+) {
+  const { data: section } = await supabase
+    .from("question_bank_sections")
+    .select("id")
+    .eq("id", sectionId)
+    .eq("organizationId", organizationId)
+    .maybeSingle();
+  if (!section) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Round not found in this organization" });
+  }
+}
+
 export const questionBankRouter = router({
   list: protectedProcedure
     .input(z.object({ organizationId: z.string() }))
@@ -174,6 +204,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) {
         throw new TRPCError({ code: "FORBIDDEN" });
@@ -234,6 +265,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         sec.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -273,6 +305,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         sec.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -314,6 +347,7 @@ export const questionBankRouter = router({
           .nullable()
           .optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: questionSkipIfSchema,
         isEnabled: z.boolean().default(true),
       }),
     )
@@ -322,9 +356,11 @@ export const questionBankRouter = router({
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
+      await assertSectionInOrg(ctx.supabase, input.sectionId, input.organizationId);
 
       const { data: maxOrderRow } = await ctx.supabase
         .from("question_bank_items")
@@ -347,6 +383,7 @@ export const questionBankRouter = router({
           options: input.options ?? null,
           starterCode: input.starterCode ?? null,
           followUpPrompts: input.followUpPrompts ?? null,
+          skipIf: parseSkipIf(input.skipIf),
           order: nextOrder,
           isEnabled: input.isEnabled,
         })
@@ -372,6 +409,7 @@ export const questionBankRouter = router({
         options: z.any().optional(),
         starterCode: z.any().optional(),
         followUpPrompts: z.any().optional(),
+        skipIf: questionSkipIfSchema,
         isEnabled: z.boolean().optional(),
         order: z.number().optional(),
         sectionId: z.string().optional(),
@@ -390,15 +428,20 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
+      if (input.sectionId !== undefined) {
+        await assertSectionInOrg(ctx.supabase, input.sectionId, itm.organizationId);
+      }
 
-      const { id, ...updates } = input;
+      const { id, skipIf, ...rest } = input;
       const { data: updated, error } = await ctx.supabase
         .from("question_bank_items")
         .update({
-          ...updates,
+          ...rest,
+          ...(skipIf !== undefined ? { skipIf: parseSkipIf(skipIf) } : {}),
           updatedAt: new Date().toISOString(),
         })
         .eq("id", id)
@@ -429,6 +472,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -467,6 +511,7 @@ export const questionBankRouter = router({
         ctx.supabase,
         itm.organizationId,
         ctx.user.id,
+        { write: true },
       );
       if (!membership) throw new TRPCError({ code: "FORBIDDEN" });
       assertMinRole(membership.role, "MEMBER");
@@ -488,19 +533,24 @@ export const questionBankRouter = router({
   getEnabledQuestions: protectedProcedure
     .input(
       z.object({
-        organizationId: z.string(),
+        organizationId: z.string().min(1),
         sectionIds: z.array(z.string()).optional(),
       }),
     )
-    .query(async ({ ctx, input }) => {
+    .query(async ({ ctx, input }): Promise<EnabledBankQuestionsResult> => {
       const membership = await getOrgMembership(
         ctx.supabase,
         input.organizationId,
         ctx.user.id,
       );
-      if (!membership) return { sections: [], questions: [] };
+      if (!membership) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You are not a member of this organization",
+        });
+      }
 
-      // Query active sections
+      // Query active sections (same org as Questions bank)
       let secQuery = ctx.supabase
         .from("question_bank_sections")
         .select("id, name, order, isEnabled")
@@ -512,29 +562,107 @@ export const questionBankRouter = router({
         secQuery = secQuery.in("id", input.sectionIds);
       }
 
-      const { data: sections } = await secQuery;
+      const { data: initialSections, error: secErr } = await secQuery;
+      if (secErr) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: secErr.message,
+        });
+      }
+
+      let sections = initialSections;
+
+      // Parity with list(): seed defaults once so picker is never empty on a new org
+      if ((!sections || sections.length === 0) && !input.sectionIds?.length) {
+        const { count } = await ctx.supabase
+          .from("question_bank_sections")
+          .select("id", { count: "exact", head: true })
+          .eq("organizationId", input.organizationId);
+        if (!count) {
+          await seedDefaultSections(ctx.supabase, input.organizationId);
+          const seeded = await ctx.supabase
+            .from("question_bank_sections")
+            .select("id, name, order, isEnabled")
+            .eq("organizationId", input.organizationId)
+            .eq("isEnabled", true)
+            .order("order", { ascending: true });
+          sections = seeded.data ?? [];
+          if (seeded.error) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: seeded.error.message,
+            });
+          }
+        }
+      }
+
       if (!sections || sections.length === 0) {
         return { sections: [], questions: [] };
       }
 
-      const activeSecIds = sections.map((s) => s.id);
-      const { data: items } = await ctx.supabase
+      const activeSecIds = sections.map((s: EnabledBankSection) => s.id);
+      // Prefer * so missing optional columns (e.g. skipIf pre-migrate) don't 500 the picker
+      const { data: initialItems, error: itemsErr } = await ctx.supabase
         .from("question_bank_items")
         .select("*")
+        .eq("organizationId", input.organizationId)
         .in("sectionId", activeSecIds)
         .eq("isEnabled", true)
         .order("order", { ascending: true });
 
-      const secMap = new Map(sections.map((s) => [s.id, s.name]));
+      let items = initialItems;
+      if (itemsErr) {
+        // Fallback without filter if schema cache lag — still try to return questions
+        const retry = await ctx.supabase
+          .from("question_bank_items")
+          .select("id, sectionId, text, type, description, options, starterCode, order, isEnabled")
+          .eq("organizationId", input.organizationId)
+          .in("sectionId", activeSecIds)
+          .eq("isEnabled", true)
+          .order("order", { ascending: true });
+        if (retry.error) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: itemsErr.message,
+          });
+        }
+        items = retry.data;
+      }
 
-      const questions = (items ?? []).map((q) => ({
-        ...q,
-        sectionName: secMap.get(q.sectionId) ?? "Standard",
-      }));
+      const secMap = new Map(
+        (sections as EnabledBankSection[]).map((s) => [s.id, s.name]),
+      );
+
+      const questions: PremadeBankQuestion[] = (
+        (items ?? []) as Array<{
+          id: string;
+          sectionId: string;
+          text: string;
+          type: string | null;
+          description: string | null;
+          options: unknown;
+          starterCode: unknown;
+          skipIf?: unknown;
+          isEnabled?: boolean;
+        }>
+      )
+        .filter((q) => q.isEnabled !== false)
+        .map((q) => ({
+          id: q.id,
+          sectionId: q.sectionId,
+          sectionName: secMap.get(q.sectionId) ?? "Standard",
+          text: q.text,
+          type: q.type,
+          description: q.description,
+          options: q.options ?? null,
+          starterCode: q.starterCode ?? null,
+          skipIf: parseSkipIf(q.skipIf),
+        }));
 
       return {
-        sections,
+        sections: sections as EnabledBankSection[],
         questions,
       };
     }),
 });
+

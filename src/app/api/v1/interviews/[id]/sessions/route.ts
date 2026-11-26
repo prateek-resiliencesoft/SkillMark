@@ -17,7 +17,7 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, ["sessions:read", "results:read"]);
   if (isAuthError(auth)) return auth;
 
   const { id: interviewId } = await params;

@@ -61,8 +61,10 @@ export default function NewOrgPage() {
       if (onCreateOrgStep) {
         tour.completeStep("create-org");
       }
-      // First-time onboarding: optional project step next. Extra orgs → org list.
-      router.push(mustCreate ? "/projects/new?onboarding=1" : "/organizations");
+      // Enter the new org directly (setCurrentOrg above marks it active).
+      // Keep the guided-tour project step only while the tour is running.
+      if (onCreateOrgStep) router.push("/projects/new?onboarding=1");
+      else window.location.href = "/dashboard";
     } catch {
       // mutation error already handled by onError
     } finally {
@@ -91,8 +93,8 @@ export default function NewOrgPage() {
           <CardDescription>
             {mustCreate
               ? isZh
-                ? "Skillmark 是多租户产品。请输入组织名称后继续——此步骤不能跳过。"
-                : "Skillmark is multitenant. Enter your organization name to continue — this step cannot be skipped."
+                ? "ResilienceSoft Interview 是多租户产品。请输入组织名称后继续——此步骤不能跳过。"
+                : "ResilienceSoft Interview is multitenant. Enter your organization name to continue — this step cannot be skipped."
               : isZh
                 ? "创建一个新组织以与你的团队协作。"
                 : "Create a new organization to collaborate with your team."}

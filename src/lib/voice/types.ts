@@ -13,5 +13,6 @@ export interface VoiceSessionConfig {
   sessionId: string;
   interviewTitle: string;
   aiName: string;
+  aiGender?: string;
   questionCount: number;
 }

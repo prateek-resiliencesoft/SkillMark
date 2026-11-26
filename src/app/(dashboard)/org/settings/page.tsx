@@ -1,13 +1,25 @@
 "use client";
 
 import { useAppLocale } from "@/components/app-locale-provider";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { trpc } from "@/lib/trpc/client";
 import { useOrg } from "@/components/org-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import {
   Card,
   CardContent,
@@ -38,6 +50,16 @@ export default function OrgSettingsGeneralPage() {
   const isZh = locale === "zh";
 
   const [name, setName] = useState(currentOrg?.name ?? "");
+  const [defaultInterviewerGender, setDefaultInterviewerGender] =
+    useState<InterviewerGender>(
+      normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+    );
+  useEffect(() => {
+    setName(currentOrg?.name ?? "");
+    setDefaultInterviewerGender(
+      normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+    );
+  }, [currentOrg?.id, currentOrg?.name, currentOrg?.defaultInterviewerGender]);
 
   const updateMutation = trpc.organization.update.useMutation({
     onSuccess: () => {
@@ -55,7 +77,12 @@ export default function OrgSettingsGeneralPage() {
 
   const deleteMutation = trpc.organization.delete.useMutation({
     onSuccess: () => {
-      toast({ title: isZh ? "组织已删除" : "Organization deleted" });
+      toast({
+        title: isZh ? "组织已关闭" : "Organization closed",
+        description: isZh
+          ? "成员将无法再访问此组织。"
+          : "Members can no longer access this organization.",
+      });
       utils.organization.list.invalidate();
       router.push("/organizations");
     },
@@ -67,6 +94,41 @@ export default function OrgSettingsGeneralPage() {
       });
     },
   });
+
+  const exportQuery = trpc.organization.exportData.useQuery(
+    { organizationId: currentOrg?.id ?? "" },
+    { enabled: false },
+  );
+
+  const handleExport = async () => {
+    if (!currentOrg) return;
+    try {
+      const data = await exportQuery.refetch();
+      if (!data.data) {
+        toast({
+          title: isZh ? "导出失败" : "Export failed",
+          variant: "destructive",
+        });
+        return;
+      }
+      const blob = new Blob([JSON.stringify(data.data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${currentOrg.slug || "organization"}-export.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: isZh ? "导出已开始" : "Download started" });
+    } catch (err) {
+      toast({
+        title: isZh ? "导出失败" : "Export failed",
+        description: err instanceof Error ? err.message : undefined,
+        variant: "destructive",
+      });
+    }
+  };
 
   if (!currentOrg) {
     return (
@@ -123,36 +185,114 @@ export default function OrgSettingsGeneralPage() {
         </CardContent>
       </Card>
 
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{isZh ? "默认面试官" : "Default interviewer"}</CardTitle>
+            <CardDescription>
+              {isZh
+                ? "新建面试时默认使用的面试官性别。单个面试仍可覆盖此设置。"
+                : "Used when creating a new interview. You can still change it on each interview."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>{isZh ? "面试官性别" : "Interviewer gender"}</Label>
+              <Select
+                value={defaultInterviewerGender}
+                onValueChange={(v) =>
+                  setDefaultInterviewerGender(v as InterviewerGender)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>
+                      {isZh ? g.labelZh : g.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              onClick={() =>
+                updateMutation.mutate({
+                  id: currentOrg.id,
+                  defaultInterviewerGender,
+                })
+              }
+              disabled={
+                updateMutation.isPending ||
+                defaultInterviewerGender ===
+                  normalizeInterviewerGender(currentOrg.defaultInterviewerGender)
+              }
+            >
+              {updateMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              {isZh ? "保存" : "Save"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{isZh ? "导出数据" : "Export data"}</CardTitle>
+            <CardDescription>
+              {isZh
+                ? "下载组织、成员、项目和面试的摘要（JSON）。"
+                : "Download a JSON summary of this organization, people, projects, and interviews."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              onClick={handleExport}
+              disabled={exportQuery.isFetching}
+            >
+              {exportQuery.isFetching && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
+              {isZh ? "下载导出" : "Download export"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {isOwner && (
         <Card className="border-destructive">
           <CardHeader>
             <CardTitle className="text-destructive">
-              {isZh ? "危险区域" : "Danger Zone"}
+              {isZh ? "关闭组织" : "Close organization"}
             </CardTitle>
             <CardDescription>
               {isZh
-                ? "永久删除此组织及其所有数据。"
-                : "Permanently delete this organization and all its data."}
+                ? "关闭后成员将无法访问。可先导出数据。"
+                : "Members lose access immediately. Export your data first if you need a copy."}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive">
-                  {isZh ? "删除组织" : "Delete Organization"}
+                  {isZh ? "关闭组织" : "Close organization"}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>
                     {isZh
-                      ? `删除“${currentOrg.name}”？`
-                      : `Delete "${currentOrg.name}"?`}
+                      ? `关闭“${currentOrg.name}”？`
+                      : `Close "${currentOrg.name}"?`}
                   </AlertDialogTitle>
                   <AlertDialogDescription>
                     {isZh
-                      ? "此操作无法撤销。所有项目、面试、会话和成员数据都将被永久删除。"
-                      : "This action is irreversible. All projects, interviews, sessions, and member data will be permanently deleted."}
+                      ? "组织将从成员列表中消失，待处理邀请会被取消。此操作面向所有者，请确认后继续。"
+                      : "The organization will disappear from member lists and pending invites will be cancelled. Only the owner can do this."}
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -166,7 +306,7 @@ export default function OrgSettingsGeneralPage() {
                     {deleteMutation.isPending && (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     )}
-                    {isZh ? "永久删除" : "Delete permanently"}
+                    {isZh ? "确认关闭" : "Close organization"}
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>

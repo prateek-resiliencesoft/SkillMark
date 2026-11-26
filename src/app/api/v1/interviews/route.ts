@@ -1,3 +1,5 @@
+import { routeHandler } from "@/server/public-api/handler";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import {
   apiError,
   isAuthError,
@@ -6,8 +8,8 @@ import {
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-export async function GET(request: Request) {
-  const auth = await validateApiKey(request);
+async function legacyGet(request: Request) {
+  const auth = await validateApiKey(request, "interviews:read");
   if (isAuthError(auth)) return auth;
 
   const { searchParams } = new URL(request.url);
@@ -85,7 +87,7 @@ function isAssessmentCriteria(
 }
 
 export async function POST(request: Request) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "interviews:write");
   if (isAuthError(auth)) return auth;
 
   if (auth.projectIds.length === 0) {
@@ -118,7 +120,9 @@ export async function POST(request: Request) {
   const chatEnabled = typeof body.chatEnabled === "boolean" ? body.chatEnabled : true;
   const voiceEnabled = typeof body.voiceEnabled === "boolean" ? body.voiceEnabled : false;
   const videoEnabled = typeof body.videoEnabled === "boolean" ? body.videoEnabled : false;
-  const aiName = typeof body.aiName === "string" && body.aiName.trim() ? body.aiName.trim() : "Skillmark";
+  const aiGender = normalizeInterviewerGender(typeof body.aiGender === "string" ? body.aiGender : undefined);
+  const rawName = typeof body.aiName === "string" && body.aiName.trim() ? body.aiName.trim() : undefined;
+  const aiName = resolveInterviewerName(rawName, aiGender);
   const aiTone = body.aiTone === "CASUAL" || body.aiTone === "PROFESSIONAL" || body.aiTone === "FORMAL" || body.aiTone === "FRIENDLY" ? body.aiTone : "PROFESSIONAL";
   const followUpDepth = body.followUpDepth === "LIGHT" || body.followUpDepth === "MODERATE" || body.followUpDepth === "DEEP" ? body.followUpDepth : "MODERATE";
   const language = typeof body.language === "string" && body.language.trim() ? body.language.trim() : "en";
@@ -142,6 +146,7 @@ export async function POST(request: Request) {
     voiceEnabled,
     videoEnabled,
     aiName,
+    aiGender,
     aiTone,
     followUpDepth,
     language,
@@ -165,4 +170,12 @@ export async function POST(request: Request) {
   }
 
   return Response.json({ data: interview });
+}
+
+const listInterviews = routeHandler("listInterviews");
+
+/** Older dlv_ keys keep the original response shape; rsi_ keys get the documented one. */
+export async function GET(request: Request) {
+  if (/^Bearer\s+dlv_/i.test(request.headers.get("authorization") ?? "")) return legacyGet(request);
+  return listInterviews(request);
 }

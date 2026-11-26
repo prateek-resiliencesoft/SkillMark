@@ -6,14 +6,32 @@
  * during onboarding, so downstream code knows not to re-prompt.
  */
 
+import { registerMediaTrack } from "@/lib/integrity/bus";
+
 let cameraStream: MediaStream | null = null;
 let screenStream: MediaStream | null = null;
 let cameraSkipped = false;
 let screenSkipped = false;
+const screenListeners = new Set<() => void>();
+
+function notifyScreenListeners() {
+  for (const fn of screenListeners) fn();
+}
+
+/** Subscribe to screen-share store changes (start, stop, or skip). */
+export function subscribeScreenStream(listener: () => void): () => void {
+  screenListeners.add(listener);
+  return () => {
+    screenListeners.delete(listener);
+  };
+}
 
 export function setStoredCameraStream(stream: MediaStream | null) {
   cameraStream = stream;
-  if (stream) cameraSkipped = false;
+  if (stream) {
+    cameraSkipped = false;
+    stream.getVideoTracks().forEach(registerMediaTrack);
+  }
 }
 
 export function getStoredCameraStream(): MediaStream | null {
@@ -33,6 +51,7 @@ export function wasCameraSkipped(): boolean {
 export function setStoredScreenStream(stream: MediaStream | null) {
   screenStream = stream;
   if (stream) screenSkipped = false;
+  notifyScreenListeners();
 }
 
 export function getStoredScreenStream(): MediaStream | null {
@@ -43,6 +62,7 @@ export function getStoredScreenStream(): MediaStream | null {
 
 export function setScreenSkipped(skipped: boolean) {
   screenSkipped = skipped;
+  notifyScreenListeners();
 }
 
 export function wasScreenSkipped(): boolean {

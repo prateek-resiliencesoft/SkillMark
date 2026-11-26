@@ -10,8 +10,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   TEMPLATE_PLACEHOLDERS,
+  WHATSAPP_COMPLETION_META_TEMPLATE,
+  WHATSAPP_FOLLOWUP_META_TEMPLATE,
   WHATSAPP_META_TEMPLATE,
   renderTemplate,
+  renderWhatsappCompletionPreview,
+  renderWhatsappFollowupPreview,
   renderWhatsappPreview,
   type TemplateVars,
 } from "@/lib/messaging/templates";
@@ -242,7 +246,7 @@ function ProviderTile({
 }
 
 function CategoryRail({
-  id,
+  id: _id,
   open,
   onToggle,
   icon,
@@ -328,6 +332,7 @@ export default function IntegrationsSettingsPage() {
   const [resilioKey, setResilioKey] = useState("");
   const [resilioBaseUrl, setResilioBaseUrl] = useState("");
   const [resilioTemplate, setResilioTemplate] = useState("");
+  const [resilioCompletionTemplate, setResilioCompletionTemplate] = useState("");
   const [emailSubject, setEmailSubject] = useState("");
   const [emailBody, setEmailBody] = useState("");
   const [whatsappBody, setWhatsappBody] = useState("");
@@ -343,10 +348,13 @@ export default function IntegrationsSettingsPage() {
   const [testEmail, setTestEmail] = useState("");
   const [testEmailProvider, setTestEmailProvider] = useState<"resend" | "brevo">("resend");
   const [testPhone, setTestPhone] = useState("");
+  const [testWhatsappTemplate, setTestWhatsappTemplate] = useState<"invite" | "completion">("invite");
   const [testWebhookEvent, setTestWebhookEvent] = useState<"candidate.invited" | "session.started" | "session.completed">(
     "candidate.invited",
   );
   const [copiedMeta, setCopiedMeta] = useState(false);
+  const [copiedCompletionMeta, setCopiedCompletionMeta] = useState(false);
+  const [copiedFollowupMeta, setCopiedFollowupMeta] = useState(false);
   const [copiedInboundUrl, setCopiedInboundUrl] = useState(false);
   const [copiedInboundCurl, setCopiedInboundCurl] = useState(false);
 
@@ -362,6 +370,7 @@ export default function IntegrationsSettingsPage() {
     setTestEmailProvider(d.defaultEmailProvider || "resend");
     setResilioBaseUrl(d.resilio.baseUrl);
     setResilioTemplate(d.resilio.templateName);
+    setResilioCompletionTemplate(d.resilio.completionTemplateName || WHATSAPP_COMPLETION_META_TEMPLATE.name);
     setEmailSubject(d.templates.emailSubject);
     setEmailBody(d.templates.emailBody);
     setWhatsappBody(d.templates.whatsappBody || d.defaults.whatsappBody);
@@ -409,12 +418,33 @@ export default function IntegrationsSettingsPage() {
     expiresAt: activeScenario.expiresAt,
     scheduleNotice: activeScenario.notice,
   };
+  const completionSample = {
+    recipientName: "Alex Chen",
+    candidateName: "Priya Sharma",
+    interviewTitle: "Senior React Developer",
+    organization: SAMPLE.organization,
+    link: `${d.appUrl}/interviews/abc/results?session=xyz789`,
+  };
 
   const copyMetaTemplate = async () => {
     await navigator.clipboard.writeText(whatsappBody || WHATSAPP_META_TEMPLATE.body);
     setCopiedMeta(true);
     toast({ title: "Template body copied" });
     setTimeout(() => setCopiedMeta(false), 2000);
+  };
+
+  const copyFollowupMetaTemplate = async () => {
+    await navigator.clipboard.writeText(WHATSAPP_FOLLOWUP_META_TEMPLATE.body);
+    setCopiedFollowupMeta(true);
+    toast({ title: "Follow-up template copied" });
+    setTimeout(() => setCopiedFollowupMeta(false), 2000);
+  };
+
+  const copyCompletionMetaTemplate = async () => {
+    await navigator.clipboard.writeText(WHATSAPP_COMPLETION_META_TEMPLATE.body);
+    setCopiedCompletionMeta(true);
+    toast({ title: "Completion template copied" });
+    setTimeout(() => setCopiedCompletionMeta(false), 2000);
   };
 
   const copyInboundUrl = async () => {
@@ -830,7 +860,7 @@ export default function IntegrationsSettingsPage() {
                     disabled={!canEdit}
                   />
                 </Field>
-                <Field label="Approved template name">
+                <Field label="Invite template name">
                   <Input
                     placeholder={WHATSAPP_META_TEMPLATE.name}
                     value={resilioTemplate}
@@ -843,12 +873,22 @@ export default function IntegrationsSettingsPage() {
                 </Field>
               </div>
 
+              <Field label="Completion template name">
+                <Input
+                  placeholder={WHATSAPP_COMPLETION_META_TEMPLATE.name}
+                  value={resilioCompletionTemplate}
+                  onChange={(e) => setResilioCompletionTemplate(e.target.value)}
+                  disabled={!canEdit}
+                />
+              </Field>
+
               <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold">Template body</p>
+                    <p className="text-sm font-semibold">Invite template body</p>
                     <p className="text-xs text-muted-foreground">
                       UTILITY · en · <code>{resilioTemplate || WHATSAPP_META_TEMPLATE.name}</code>
+                      {" · "}candidate invite / interview ready
                     </p>
                   </div>
                   <Button size="sm" variant="outline" onClick={copyMetaTemplate} className="h-8">
@@ -882,6 +922,111 @@ export default function IntegrationsSettingsPage() {
                 </div>
               </div>
 
+              <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">Completion template body</p>
+                    <p className="text-xs text-muted-foreground">
+                      UTILITY · en ·{" "}
+                      <code>
+                        {resilioCompletionTemplate || WHATSAPP_COMPLETION_META_TEMPLATE.name}
+                      </code>
+                      {" · "}team alert when candidate finishes
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={copyCompletionMetaTemplate} className="h-8">
+                    {copiedCompletionMeta ? (
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {copiedCompletionMeta ? "Copied" : "Copy for ResilioHub"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Vars: {"{{1}}"} recipient · {"{{2}}"} candidate · {"{{3}}"} interview · {"{{4}}"} org ·{" "}
+                  {"{{5}}"} report link (must not be last line — keep brand closer after).
+                </p>
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Meta body (fixed — submit in ResilioHub)</Label>
+                    <Textarea
+                      rows={8}
+                      value={WHATSAPP_COMPLETION_META_TEMPLATE.body}
+                      readOnly
+                      className="font-mono text-xs leading-relaxed"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Bubble preview</Label>
+                    <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
+                      <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
+                        <div className="whitespace-pre-wrap">
+                          {renderWhatsappCompletionPreview(completionSample)}
+                        </div>
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
+                          <span>10:00 AM</span>
+                          <Check className="h-3 w-3 stroke-[3]" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 rounded-2xl border bg-background/70 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">Incomplete-interview reminder</p>
+                    <p className="text-xs text-muted-foreground">
+                      UTILITY · {WHATSAPP_FOLLOWUP_META_TEMPLATE.language} · APPROVED ·{" "}
+                      <code>{WHATSAPP_FOLLOWUP_META_TEMPLATE.name}</code>
+                      {" · "}auto-sent on abandon / leave early (resume link in {"{{4}}"})
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={copyFollowupMetaTemplate} className="h-8">
+                    {copiedFollowupMeta ? (
+                      <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    {copiedFollowupMeta ? "Copied" : "Copy for ResilioHub"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Header: {WHATSAPP_FOLLOWUP_META_TEMPLATE.header}. Vars: {"{{1}}"} candidate ·{" "}
+                  {"{{2}}"} interview name · {"{{3}}"} support phone (Project → General) · {"{{4}}"} resume
+                  link · {"{{5}}"} expiry. Skipped if project has no contact number; failures show on
+                  candidate screens for manual send.
+                </p>
+                <div className="grid gap-5 lg:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Meta body (fixed — submit in ResilioHub)</Label>
+                    <Textarea
+                      rows={8}
+                      value={WHATSAPP_FOLLOWUP_META_TEMPLATE.body}
+                      readOnly
+                      className="font-mono text-xs leading-relaxed"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Bubble preview</Label>
+                    <div className="mt-2 max-w-md rounded-2xl bg-[#EFEAE2] p-4 shadow-inner dark:bg-stone-900">
+                      <div className="relative rounded-2xl rounded-tl-none bg-[#DCF8C6] p-3 text-xs leading-relaxed text-black shadow-sm dark:bg-emerald-950/80 dark:text-emerald-100">
+                        <div className="mb-2 border-b border-black/10 pb-1 text-[11px] font-semibold dark:border-white/10">
+                          {WHATSAPP_FOLLOWUP_META_TEMPLATE.header}
+                        </div>
+                        <div className="whitespace-pre-wrap">{renderWhatsappFollowupPreview()}</div>
+                        <div className="mt-2 flex items-center justify-end gap-1 text-[10px] text-emerald-800 dark:text-emerald-300/70">
+                          <span>10:00 AM</span>
+                          <Check className="h-3 w-3 stroke-[3]" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {canEdit && (
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -893,6 +1038,7 @@ export default function IntegrationsSettingsPage() {
                         resilioApiKey: resilioKey || undefined,
                         resilioBaseUrl,
                         resilioTemplateName: resilioTemplate,
+                        resilioCompletionTemplateName: resilioCompletionTemplate,
                         templates: { emailSubject, emailBody, whatsappBody },
                       })
                     }
@@ -918,7 +1064,7 @@ export default function IntegrationsSettingsPage() {
           icon={<Webhook className="h-5 w-5 text-indigo-500" />}
           title="Webhooks"
           hint="Outbound event stream and inbound ATS triggers"
-          connectedCount={Number(!!d.outboundWebhook.url) + Number(!!d.inboundWebhook.secret)}
+          connectedCount={Number(!!d.outboundWebhook.url) + Number(!!d.inboundWebhook.configured)}
           total={2}
         >
           <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -935,7 +1081,7 @@ export default function IntegrationsSettingsPage() {
             />
             <ProviderTile
               selected={webhookPane === "inbound"}
-              connected={!!d.inboundWebhook.secret}
+              connected={!!d.inboundWebhook.configured}
               logo={<WebhookLogo tone="in" />}
               title="Inbound webhook"
               subtitle="Create candidates from ATS / Zapier"
@@ -1170,7 +1316,39 @@ export default function IntegrationsSettingsPage() {
             </div>
 
             <div className="space-y-3 rounded-2xl border bg-background/80 p-4">
-              <p className="text-xs font-semibold">WhatsApp</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold">WhatsApp</p>
+                <div className="inline-flex rounded-md border p-0.5 text-[10px]">
+                  {(
+                    [
+                      { id: "invite" as const, label: "invite" },
+                      { id: "completion" as const, label: "completed" },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setTestWhatsappTemplate(opt.id)}
+                      className={cn(
+                        "rounded px-2 py-0.5",
+                        testWhatsappTemplate === opt.id
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Template:{" "}
+                <code>
+                  {testWhatsappTemplate === "completion"
+                    ? resilioCompletionTemplate || WHATSAPP_COMPLETION_META_TEMPLATE.name
+                    : resilioTemplate || WHATSAPP_META_TEMPLATE.name}
+                </code>
+              </p>
               <Input
                 placeholder="+919876543210"
                 value={testPhone}
@@ -1181,10 +1359,17 @@ export default function IntegrationsSettingsPage() {
                 variant="outline"
                 size="sm"
                 disabled={!testPhone || !d.resilio.apiKeyHint || test.isLoading}
-                onClick={() => test.mutate({ organizationId: orgId, channel: "whatsapp", to: testPhone })}
+                onClick={() =>
+                  test.mutate({
+                    organizationId: orgId,
+                    channel: "whatsapp",
+                    whatsappTemplate: testWhatsappTemplate,
+                    to: testPhone,
+                  })
+                }
               >
                 {test.isLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <MessageCircle className="mr-1.5 h-3.5 w-3.5" />}
-                Send WhatsApp
+                {testWhatsappTemplate === "completion" ? "Send completed test" : "Send invite test"}
               </Button>
             </div>
 

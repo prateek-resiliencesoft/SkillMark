@@ -1,15 +1,24 @@
 "use client";
 
-import { FlagsPopover } from "@/components/batch/bulk-cv-generator";
+import { BulkCvGenerator, FlagsPopover } from "@/components/batch/bulk-cv-generator";
 import { SendInvitesDialog } from "@/components/batch/send-invites-dialog";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import {
+  CompletionNotifyPicker,
+  readyCompletionNotifyMembers,
+} from "@/components/interview/completion-notify-picker";
 import { useOrg } from "@/components/org-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { CompletionNotifyMember } from "@/lib/completion-notify";
+import { parseCompletionNotifyMembers } from "@/lib/completion-notify";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -25,15 +34,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
+import { leftFollowupState, needsLeftFollowup } from "@/lib/left-followup";
+import { isLinkExpired, needsFreshInviteLink } from "@/lib/session-link";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/switch";
 import { motion } from "motion/react";
 import {
   ArrowLeft,
   BarChart3,
   Calendar,
+  CalendarClock,
   CalendarDays,
   Check,
   Clock,
@@ -46,11 +61,12 @@ import {
   Search,
   Send,
   Trash2,
+  UserPlus,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Status = "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ABANDONED" | "DISQUALIFIED";
 const STATUS_META: Record<Status, { label: string; className: string }> = {
@@ -61,7 +77,12 @@ const STATUS_META: Record<Status, { label: string; className: string }> = {
   DISQUALIFIED: { label: "Disqualified", className: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300" },
 };
 
-type Filter = "all" | "pending" | Status;
+type Filter = "all" | "pending" | "expired" | Status;
+
+function isInviteExpired(c: { expiresAt?: string | null; status: Status; completedAt?: string | null }): boolean {
+  if (c.completedAt) return false;
+  return isLinkExpired({ session: { status: c.status }, expiresAt: c.expiresAt });
+}
 
 export default function BatchDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -69,13 +90,63 @@ export default function BatchDetailPage() {
   const { toast } = useToast();
   const { currentOrg } = useOrg();
   const utils = trpc.useUtils();
-  const batch = trpc.batch.getById.useQuery({ id }, { refetchInterval: 30_000 });
+  const batch = trpc.batch.getById.useQuery(
+    { id },
+    {
+      staleTime: 15_000,
+      refetchInterval: (data) => {
+        const rows = (data as { candidates?: { session?: { status?: string; reportStatus?: string } | null }[] } | undefined)
+          ?.candidates;
+        if (!rows?.length) return false;
+        return rows.some(
+          (c) =>
+            c.session?.status === "IN_PROGRESS" ||
+            c.session?.reportStatus === "PENDING" ||
+            c.session?.reportStatus === "GENERATING",
+        )
+          ? 30_000
+          : false;
+      },
+    },
+  );
+  const setAutoLeftFollowup = trpc.batch.setAutoLeftFollowup.useMutation({
+    onSuccess: (r) => {
+      void utils.batch.getById.invalidate({ id });
+      toast({
+        title: r.enabled ? "Auto follow-up on" : "Auto follow-up off",
+        description: r.enabled
+          ? "Left-early candidates will get the incomplete reminder automatically."
+          : "Use Send follow-up manually when needed.",
+      });
+    },
+    onError: (err) => toast({ title: "Failed", description: err.message, variant: "destructive" }),
+  });
 
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sendTo, setSendTo] = useState<string[] | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<{ id: string; name: string; email: string; phone: string } | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string; expiresAt: string | null } | null>(null);
+  const [notifyMembers, setNotifyMembers] = useState<CompletionNotifyMember[]>([]);
+
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const settings = batch.data?.settings as any;
+    if (settings) {
+      setNotifyMembers(parseCompletionNotifyMembers(settings.completionNotifyMembers));
+    }
+  }, [batch.data?.settings]);
+
+  const updateSettings = trpc.batch.updateSettings.useMutation({
+    onSuccess: () => {
+      void utils.batch.getById.invalidate({ id });
+      toast({ title: "Completion alerts saved" });
+    },
+    onError: (e) =>
+      toast({ title: "Could not save alerts", description: e.message, variant: "destructive" }),
+  });
 
   const updateContact = trpc.batch.updateContact.useMutation({
     onSuccess: () => {
@@ -89,13 +160,85 @@ export default function BatchDetailPage() {
     onSuccess: () => router.push("/batches"),
     onError: (e) => toast({ title: "Could not delete", description: e.message, variant: "destructive" }),
   });
+  const removeCandidate = trpc.batch.removeCandidate.useMutation({
+    onSuccess: () => {
+      void utils.batch.getById.invalidate({ id });
+      toast({ title: "Candidate removed" });
+    },
+    onError: (e) => toast({ title: "Could not remove", description: e.message, variant: "destructive" }),
+  });
+  const removeCandidates = trpc.batch.removeCandidates.useMutation({
+    onSuccess: (r) => {
+      setSelected(new Set());
+      void utils.batch.getById.invalidate({ id });
+      toast({
+        title: `Removed ${r.removed} candidate${r.removed === 1 ? "" : "s"}`,
+        description: r.blocked ? `${r.blocked} already started — left in batch` : undefined,
+      });
+    },
+    onError: (e) => toast({ title: "Could not remove", description: e.message, variant: "destructive" }),
+  });
+
+  const copyLink = async (text: string) => {
+    await navigator.clipboard.writeText(text);
+    toast({ title: "Link copied" });
+  };
+
+  const sendNewLink = trpc.candidate.sendNewLink.useMutation({
+    onSuccess: (d) => {
+      void utils.batch.getById.invalidate({ id });
+      const delivery = d.delivery as
+        | { email?: { status: string; error?: string }; whatsapp?: { status: string; error?: string } }
+        | undefined;
+      const parts: string[] = [];
+      let fail = false;
+      for (const [ch, label] of [["whatsapp", "WhatsApp"], ["email", "Email"]] as const) {
+        const r = delivery?.[ch];
+        if (!r) continue;
+        if (r.status !== "sent") fail = true;
+        parts.push(`${label}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+      }
+      const sent = parts.join(" · ");
+      toast({
+        title: fail ? "New link created, but some messages were not sent" : sent ? "New link sent" : "New link created",
+        description: sent || "Copy the link to share it with the candidate.",
+        variant: fail ? "destructive" : undefined,
+        action: (
+          <ToastAction altText="Copy link" onClick={() => void copyLink(d.inviteLink)}>
+            Copy link
+          </ToastAction>
+        ),
+      });
+    },
+    onError: (e) =>
+      toast({ title: "Could not create a new link", description: e.message, variant: "destructive" }),
+  });
+
+  const sendLeftFollowups = trpc.batch.sendLeftFollowups.useMutation({
+    onSuccess: (r) => {
+      void utils.batch.getById.invalidate({ id });
+      const parts = [
+        r.sent ? `${r.sent} sent` : null,
+        r.failed ? `${r.failed} failed` : null,
+        r.skipped ? `${r.skipped} skipped` : null,
+      ].filter(Boolean);
+      toast({
+        title: r.sent && !r.failed && !r.skipped ? "Follow-ups sent" : r.sent ? "Follow-ups partly sent" : "No follow-ups sent",
+        description: [parts.join(" · "), r.firstError].filter(Boolean).join(". ") || undefined,
+        variant: r.sent ? undefined : "destructive",
+      });
+    },
+    onError: (e) => toast({ title: "Could not send follow-ups", description: e.message, variant: "destructive" }),
+  });
 
   const candidates = useMemo(() => batch.data?.candidates ?? [], [batch.data]);
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return candidates.filter((c) => {
       if (filter === "pending" && (c.status === "COMPLETED" || c.status === "DISQUALIFIED")) return false;
-      if (filter !== "all" && filter !== "pending" && c.status !== filter) return false;
+      if (filter === "expired") {
+        if (!isInviteExpired(c)) return false;
+      } else if (filter !== "all" && filter !== "pending" && c.status !== filter) return false;
       if (!q) return true;
       return [c.name, c.email, c.phone, ...(c.profile?.techStack ?? [])].some((v) => v?.toLowerCase().includes(q));
     });
@@ -116,15 +259,16 @@ export default function BatchDetailPage() {
 
   const b = batch.data;
   const invited = candidates.filter((c) => c.emailStatus === "sent" || c.whatsappStatus === "sent").length;
+  const unsentIds = candidates
+    .filter((c) => c.emailStatus !== "sent" && c.whatsappStatus !== "sent")
+    .map((c) => c.id);
+  const expiredCount = candidates.filter((c) => isInviteExpired(c)).length;
+  // Left early, link still valid, and the WhatsApp follow-up has not gone out for the current link.
+  const followupPending = candidates.filter((c) => needsLeftFollowup(c, c.session));
   const allVisibleSelected = visible.length > 0 && visible.every((c) => selected.has(c.id));
   const recipients = (sendTo ?? [])
     .map((cid) => candidates.find((c) => c.id === cid))
     .filter((c): c is (typeof candidates)[number] => !!c);
-
-  const copy = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    toast({ title: "Link copied" });
-  };
 
   const exportRows = () =>
     exportToXlsx(
@@ -139,6 +283,12 @@ export default function BatchDetailPage() {
         "WhatsApp invite": c.whatsappStatus ?? "",
         "Started at": c.startedAt ?? "",
         "Completed at": c.completedAt ?? "",
+        "Link expires": c.expiresAt ?? "",
+        "Link expired": isInviteExpired(c) ? "Yes" : "",
+        "Left-interview follow-up": (() => {
+          const f = leftFollowupState(c, c.session);
+          return f.sent ? "Sent" : c.status === "ABANDONED" ? "Not sent" : "";
+        })(),
         "Interview link": c.inviteLink,
       })),
       b.name.replace(/[^\w-]+/g, "_"),
@@ -149,7 +299,9 @@ export default function BatchDetailPage() {
     { label: "Completed", value: b.counts.completed, filter: "COMPLETED" },
     { label: "In progress", value: b.counts.inProgress, filter: "IN_PROGRESS" },
     { label: "Not started", value: b.counts.notStarted, filter: "NOT_STARTED" },
-    { label: "Left (pending)", value: b.counts.total - b.counts.completed - b.counts.disqualified, filter: "pending" },
+    { label: "Left early", value: b.counts.abandoned, filter: "ABANDONED" },
+    { label: "Link expired", value: expiredCount, filter: "expired" },
+    { label: "Not finished", value: b.counts.total - b.counts.completed - b.counts.disqualified, filter: "pending" },
   ];
 
   return (
@@ -167,16 +319,98 @@ export default function BatchDetailPage() {
               Created {new Date(b.createdAt).toLocaleString()} · {invited} of {b.counts.total} invited
             </p>
             {b.settings.roleDescription && <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{b.settings.roleDescription}</p>}
+            {b.canEdit && (
+              <div className="mt-3 flex max-w-xl items-center justify-between gap-3 rounded-lg border p-3">
+                <div>
+                  <Label className="text-sm">Auto follow-up on abandon</Label>
+                  <p className="text-xs text-muted-foreground">
+                    On by default. Left-early candidates get interview_incomplete_reminder with the resume
+                    link; failures show on the candidate row for manual send.
+                  </p>
+                </div>
+                <Switch
+                  checked={!!b.autoLeftFollowup}
+                  disabled={setAutoLeftFollowup.isLoading}
+                  onCheckedChange={(enabled) => setAutoLeftFollowup.mutate({ batchId: id, enabled })}
+                />
+              </div>
+            )}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={exportRows}>
               <Download className="mr-2 h-4 w-4" />
               Export
             </Button>
             {b.canEdit && (
+              <Button variant="outline" onClick={() => setAddOpen(true)}>
+                <UserPlus className="mr-2 h-4 w-4" />
+                Add candidates
+              </Button>
+            )}
+            {b.canEdit && unsentIds.length > 0 && (
+              <Button variant="outline" onClick={() => setSendTo(unsentIds)}>
+                <Send className="mr-2 h-4 w-4" />
+                Send to unsent ({unsentIds.length})
+              </Button>
+            )}
+            {b.canEdit && followupPending.length > 0 && (
+              <Button
+                variant="outline"
+                disabled={sendLeftFollowups.isLoading}
+                title="Send the WhatsApp message that lets them restart the interview from where they left"
+                onClick={() => {
+                  if (
+                    !confirm(
+                      `Send the left-interview follow-up on WhatsApp to ${followupPending.length} candidate${followupPending.length === 1 ? "" : "s"} who left early?`,
+                    )
+                  ) {
+                    return;
+                  }
+                  sendLeftFollowups.mutate({ batchId: id, candidateIds: followupPending.map((c) => c.id) });
+                }}
+              >
+                <MessageCircle className="mr-2 h-4 w-4" />
+                Follow up left early ({followupPending.length})
+              </Button>
+            )}
+            {b.canEdit && (
               <Button onClick={() => setSendTo(selected.size ? Array.from(selected) : candidates.map((c) => c.id))} disabled={!candidates.length}>
                 <Send className="mr-2 h-4 w-4" />
                 {selected.size ? `Send to ${selected.size} selected` : "Send to all"}
+              </Button>
+            )}
+            {b.canEdit && selected.size > 0 && (
+              <Button
+                variant="outline"
+                className="text-destructive hover:text-destructive"
+                disabled={removeCandidates.isLoading}
+                onClick={() => {
+                  const removable = candidates.filter(
+                    (c) => selected.has(c.id) && c.status === "NOT_STARTED",
+                  );
+                  if (!removable.length) {
+                    toast({
+                      title: "Nothing to remove",
+                      description: "Only candidates who have not started can be removed",
+                      variant: "destructive",
+                    });
+                    return;
+                  }
+                  if (
+                    !confirm(
+                      `Remove ${removable.length} not-started candidate${removable.length === 1 ? "" : "s"} from this batch? Their interviews will be deleted.`,
+                    )
+                  ) {
+                    return;
+                  }
+                  removeCandidates.mutate({
+                    batchId: id,
+                    candidateIds: removable.map((c) => c.id),
+                  });
+                }}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Remove selected
               </Button>
             )}
             {b.canEdit && (
@@ -209,7 +443,7 @@ export default function BatchDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         {stats.map((s) => {
           const isSelected = filter === s.filter;
           return (
@@ -235,6 +469,33 @@ export default function BatchDetailPage() {
           );
         })}
       </div>
+
+      {b.canEdit && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Completion alerts</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <CompletionNotifyPicker
+              organizationId={currentOrg?.id ?? ""}
+              value={notifyMembers}
+              onChange={setNotifyMembers}
+            />
+            <Button
+              size="sm"
+              disabled={updateSettings.isLoading}
+              onClick={() =>
+                updateSettings.mutate({
+                  batchId: id,
+                  completionNotifyMembers: readyCompletionNotifyMembers(notifyMembers),
+                })
+              }
+            >
+              Save alert recipients
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="space-y-4 p-4">
@@ -264,7 +525,7 @@ export default function BatchDetailPage() {
                   <TableHead>Candidate</TableHead>
                   <TableHead>Profile</TableHead>
                   <TableHead>Interview</TableHead>
-                  <TableHead>Invites</TableHead>
+                  <TableHead>Messages</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
@@ -298,9 +559,10 @@ export default function BatchDetailPage() {
                         </p>
                       )}
                       {c.expiresAt && !c.completedAt && (
-                        <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <p className={cn("flex items-center gap-1 text-[11px]", isInviteExpired(c) ? "font-medium text-destructive" : "text-muted-foreground")}>
                           <Clock className="h-3 w-3" />
-                          Expires {new Date(c.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
+                          {isInviteExpired(c) ? "Expired" : "Expires"}{" "}
+                          {new Date(c.expiresAt).toLocaleDateString([], { month: "short", day: "numeric" })}
                         </p>
                       )}
                     </TableCell>
@@ -323,9 +585,36 @@ export default function BatchDetailPage() {
                       </p>
                     </TableCell>
                     <TableCell className="min-w-[160px]">
-                      <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
-                        {STATUS_META[c.status].label}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={cn("inline-block rounded-full px-2 py-0.5 text-xs font-medium", STATUS_META[c.status].className)}>
+                          {STATUS_META[c.status].label}
+                        </span>
+                        {decisionStatusLabel(c.decisionStatus) ? (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "font-normal",
+                              c.decisionStatus === "approved" && "border-green-600 text-green-700",
+                              c.decisionStatus === "rejected" && "border-red-600 text-red-700",
+                              c.decisionStatus === "followup_sent" && "border-amber-600 text-amber-700",
+                            )}
+                          >
+                            {decisionStatusLabel(c.decisionStatus)}
+                          </Badge>
+                        ) : null}
+                        {isInviteExpired(c) && <ExpiredBadge />}
+                      </div>
+                      {b.canEdit && isInviteExpired(c) && (
+                        <button
+                          type="button"
+                          onClick={() => setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt })}
+                          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                        >
+                          <CalendarClock className="h-3 w-3" />
+                          Extend expiry
+                        </button>
+                      )}
+
                       <p className="mt-1 text-xs text-muted-foreground">
                         {c.questionCount} questions
                         {c.completedAt && ` · ${new Date(c.completedAt).toLocaleDateString()}`}
@@ -335,6 +624,15 @@ export default function BatchDetailPage() {
                     <TableCell className="min-w-[140px]">
                       <InviteState icon={Mail} status={c.emailStatus} at={c.emailSentAt} />
                       <InviteState icon={MessageCircle} status={c.whatsappStatus} at={c.whatsappSentAt} />
+                      <div className="mt-1">
+                        <LeftFollowupAction
+                          candidateId={c.id}
+                          candidate={c}
+                          session={c.session}
+                          variant="compact"
+                          canSend={b.canEdit}
+                        />
+                      </div>
                       {c.lastSendError && (
                         <p className="mt-1 max-w-[220px] text-xs text-destructive" title={c.lastSendError}>
                           {c.lastSendError.slice(0, 90)}
@@ -349,13 +647,35 @@ export default function BatchDetailPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {b.canEdit && (
+                          {b.canEdit && isInviteExpired(c) ? (
+                            <DropdownMenuItem onClick={() => setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt })}>
+                              <CalendarClock className="mr-2 h-4 w-4" />
+                              Extend expiry
+                            </DropdownMenuItem>
+                          ) : b.canEdit && needsFreshInviteLink({ session: c.session, expiresAt: c.expiresAt }) ? (
+                            <DropdownMenuItem
+                              disabled={sendNewLink.isLoading}
+                              onClick={() => {
+                                if (
+                                  !confirm(
+                                    "Send a new link? The old link will stop working and the old attempt stays in records.",
+                                  )
+                                ) {
+                                  return;
+                                }
+                                sendNewLink.mutate({ candidateId: c.id });
+                              }}
+                            >
+                              <Send className="mr-2 h-4 w-4" />
+                              Send new link
+                            </DropdownMenuItem>
+                          ) : b.canEdit ? (
                             <DropdownMenuItem onClick={() => setSendTo([c.id])}>
                               <Send className="mr-2 h-4 w-4" />
                               Send link
                             </DropdownMenuItem>
-                          )}
-                          <DropdownMenuItem onClick={() => void copy(c.inviteLink)}>
+                          ) : null}
+                          <DropdownMenuItem onClick={() => void copyLink(c.inviteLink)}>
                             <Copy className="mr-2 h-4 w-4" />
                             Copy link
                           </DropdownMenuItem>
@@ -379,6 +699,33 @@ export default function BatchDetailPage() {
                                 <Pencil className="mr-2 h-4 w-4" />
                                 Edit contact
                               </DropdownMenuItem>
+                              {c.status === "NOT_STARTED" && (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    disabled={removeCandidate.isLoading}
+                                    onClick={() => {
+                                      if (
+                                        !confirm(
+                                          `Remove ${c.name} from this batch? Their interview will be deleted. This cannot be undone.`,
+                                        )
+                                      ) {
+                                        return;
+                                      }
+                                      removeCandidate.mutate({ batchId: id, candidateId: c.id });
+                                      setSelected((prev) => {
+                                        const next = new Set(prev);
+                                        next.delete(c.id);
+                                        return next;
+                                      });
+                                    }}
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Remove from batch
+                                  </DropdownMenuItem>
+                                </>
+                              )}
                             </>
                           )}
                         </DropdownMenuContent>
@@ -404,12 +751,57 @@ export default function BatchDetailPage() {
         onOpenChange={(o) => !o && setSendTo(null)}
         batchId={id}
         organizationId={currentOrg?.id}
-        recipients={recipients}
+        recipients={recipients.map((c) => ({
+          id: c.id,
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          scheduledAt: c.scheduledAt,
+          expiresAt: c.expiresAt,
+          emailStatus: c.emailStatus,
+          whatsappStatus: c.whatsappStatus,
+        }))}
         onSent={() => {
           setSelected(new Set());
           void utils.batch.getById.invalidate({ id });
         }}
       />
+
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={() => void utils.batch.getById.invalidate({ id })}
+          onExtendAndSend={() => {
+            // Open the send dialog only once the list holds the new expiry.
+            const cid = extendFor.id;
+            void utils.batch.getById.invalidate({ id }).then(() => setSendTo([cid]));
+          }}
+        />
+      )}
+
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Add candidates to {b.name}</DialogTitle>
+            <DialogDescription>
+              Upload more CVs. New interviews reuse this batch&apos;s role settings. Send invite links after they are generated.
+            </DialogDescription>
+          </DialogHeader>
+          <BulkCvGenerator
+            existingBatchId={id}
+            existingBatchName={b.name}
+            compact
+            onFinished={() => {
+              setAddOpen(false);
+              void utils.batch.getById.invalidate({ id });
+            }}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent className="max-w-md">

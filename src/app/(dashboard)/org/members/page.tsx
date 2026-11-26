@@ -53,7 +53,7 @@ export default function MembersPage() {
   const { toast } = useToast();
   const { locale } = useAppLocale();
   const { currentOrg } = useOrg();
-  useAuth();
+  const { user } = useAuth();
   const utils = trpc.useUtils();
   const isZh = locale === "zh";
   const roleLabel = (role: "OWNER" | "ADMIN" | "MEMBER" | "VIEWER") =>
@@ -68,9 +68,9 @@ export default function MembersPage() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"ADMIN" | "MEMBER" | "VIEWER">(
-    "MEMBER",
-  );
+  const [inviteRole, setInviteRole] = useState<
+    "OWNER" | "ADMIN" | "MEMBER" | "VIEWER"
+  >("MEMBER");
   const [editingRoleUserId, setEditingRoleUserId] = useState<string | null>(
     null,
   );
@@ -150,6 +150,10 @@ export default function MembersPage() {
   const isOwner = currentOrg.role === "OWNER";
   const isAdmin = isOwner || currentOrg.role === "ADMIN";
   const members = membersQuery.data ?? [];
+  const canRemoveMember = (role: string, userId: string) =>
+    isAdmin &&
+    userId !== user?.id &&
+    (role !== "OWNER" || isOwner);
 
   const roleVariant = (role: string) => {
     switch (role) {
@@ -188,8 +192,8 @@ export default function MembersPage() {
                 <DialogTitle>{isZh ? "邀请成员" : "Invite Member"}</DialogTitle>
                 <DialogDescription>
                   {isZh
-                    ? "被邀请人必须先拥有账户。"
-                    : "They must have an account to be invited."}
+                    ? "输入邮箱。对方可通过邀请链接注册或登录后加入。"
+                    : "Enter their email. They can register or sign in from the invite link."}
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-2">
@@ -212,9 +216,16 @@ export default function MembersPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ADMIN">
-                        {isZh ? "管理员" : "Admin"}
-                      </SelectItem>
+                      {isOwner && (
+                        <SelectItem value="OWNER">
+                          {isZh ? "所有者" : "Owner"}
+                        </SelectItem>
+                      )}
+                      {isOwner && (
+                        <SelectItem value="ADMIN">
+                          {isZh ? "管理员" : "Admin"}
+                        </SelectItem>
+                      )}
                       <SelectItem value="MEMBER">
                         {isZh ? "成员" : "Member"}
                       </SelectItem>
@@ -293,14 +304,19 @@ export default function MembersPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {editingRoleUserId === m.userId && m.role !== "OWNER" ? (
+                      {editingRoleUserId === m.userId &&
+                      (m.role !== "OWNER" || isOwner) ? (
                         <Select
                           value={m.role}
                           onValueChange={(v) =>
                             updateRoleMutation.mutate({
                               organizationId: currentOrg.id,
                               userId: m.userId,
-                              role: v as "ADMIN" | "MEMBER" | "VIEWER",
+                              role: v as
+                                | "OWNER"
+                                | "ADMIN"
+                                | "MEMBER"
+                                | "VIEWER",
                             })
                           }
                           onOpenChange={(open) => {
@@ -312,6 +328,11 @@ export default function MembersPage() {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            {isOwner && (
+                              <SelectItem value="OWNER">
+                                {isZh ? "所有者" : "OWNER"}
+                              </SelectItem>
+                            )}
                             {isOwner && (
                               <SelectItem value="ADMIN">
                                 {isZh ? "管理员" : "ADMIN"}
@@ -332,7 +353,7 @@ export default function MembersPage() {
                               m.role as "OWNER" | "ADMIN" | "MEMBER" | "VIEWER",
                             )}
                           </Badge>
-                          {isAdmin && m.role !== "OWNER" && (
+                          {isAdmin && (m.role !== "OWNER" || isOwner) && (
                             <button
                               onClick={() => setEditingRoleUserId(m.userId)}
                               className="text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
@@ -348,7 +369,7 @@ export default function MembersPage() {
                     </TableCell>
                     {isAdmin && (
                       <TableCell>
-                        {m.role !== "OWNER" && (
+                        {canRemoveMember(m.role, m.userId) && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
                               <Button

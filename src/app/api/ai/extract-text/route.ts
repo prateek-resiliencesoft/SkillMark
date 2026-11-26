@@ -1,5 +1,12 @@
 import { getAuthUser } from "@/lib/auth";
 import { createLogger } from "@/lib/logger";
+import {
+  fetchRemoteDocument,
+  MAX_REMOTE_DOCUMENT_BYTES,
+  RemoteDocumentError,
+  type RemoteDocument,
+} from "@/lib/documents/remote-text";
+import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { findAll, findOne, removeElement, textContent } from "domutils";
 import { parseDocument } from "htmlparser2";
 
@@ -8,9 +15,12 @@ const log = createLogger("api/ai/extract-text");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require("pdf-parse") as (
   buffer: Buffer,
+  options?: { max?: number },
 ) => Promise<{ text: string }>;
 
 const MAX_TEXT_LENGTH = 15_000;
+const MAX_SOURCE_BYTES = MAX_REMOTE_DOCUMENT_BYTES;
+const MAX_PDF_PAGES = 50;
 
 function truncate(text: string): string {
   if (text.length <= MAX_TEXT_LENGTH) return text;
@@ -63,8 +73,11 @@ export async function POST(req: Request) {
     let extractedText: string;
 
     if (file) {
+      if (file.size > MAX_SOURCE_BYTES) {
+        return Response.json({ error: "File is too large (max 10 MB)" }, { status: 413 });
+      }
       const buffer = Buffer.from(await file.arrayBuffer());
-      const pdfData = await pdfParse(buffer);
+      const pdfData = await pdfParse(buffer, { max: MAX_PDF_PAGES });
       extractedText = pdfData.text?.trim() ?? "";
 
       if (!extractedText) {
@@ -75,39 +88,26 @@ export async function POST(req: Request) {
       }
     } else {
       const targetUrl = url!.trim();
-      if (!/^https?:\/\//i.test(targetUrl)) {
+      try {
+        await assertSafeRemoteUrl(targetUrl);
+      } catch {
         return Response.json(
-          { error: "Invalid URL — must start with http:// or https://" },
+          { error: "Invalid URL — must be a public https:// address" },
           { status: 400 },
         );
       }
 
-      const res = await fetch(targetUrl, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (compatible; AuralBot/1.0; +https://aural.app)",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        signal: AbortSignal.timeout(15_000),
-      });
-
-      if (!res.ok) {
-        return Response.json(
-          { error: `Failed to fetch URL (HTTP ${res.status})` },
-          { status: 400 },
-        );
+      let doc: RemoteDocument;
+      try {
+        doc = await fetchRemoteDocument(targetUrl);
+      } catch (err) {
+        if (!(err instanceof RemoteDocumentError)) throw err;
+        return Response.json({ error: err.message }, { status: 400 });
       }
-
-      const contentType = res.headers.get("content-type") ?? "";
-
-      if (contentType.includes("application/pdf")) {
-        const buffer = Buffer.from(await res.arrayBuffer());
-        const pdfData = await pdfParse(buffer);
-        extractedText = pdfData.text?.trim() ?? "";
-      } else {
-        const html = await res.text();
-        extractedText = htmlToText(html);
-      }
+      extractedText =
+        doc.kind === "pdf"
+          ? ((await pdfParse(doc.buffer, { max: MAX_PDF_PAGES })).text?.trim() ?? "")
+          : htmlToText(doc.html);
 
       if (!extractedText) {
         return Response.json(
@@ -120,8 +120,6 @@ export async function POST(req: Request) {
     return Response.json({ text: truncate(extractedText) });
   } catch (err) {
     log.error("Text extraction error:", err);
-    const message =
-      err instanceof Error ? err.message : "Internal server error";
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json({ error: "Text extraction failed" }, { status: 500 });
   }
 }

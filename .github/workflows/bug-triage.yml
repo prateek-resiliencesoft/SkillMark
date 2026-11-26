@@ -1,0 +1,24 @@
+name: Bug triage worker
+
+on:
+  schedule:
+    # Every 10 minutes — drain triage_events queue
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call bug-triage endpoint
+        env:
+          APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "NEXT_PUBLIC_APP_URL or CRON_SECRET missing — skip"
+            exit 0
+          fi
+          curl -fsS -X POST "${APP_URL%/}/api/cron/bug-triage" \
+            -H "Authorization: Bearer ${CRON_SECRET}"

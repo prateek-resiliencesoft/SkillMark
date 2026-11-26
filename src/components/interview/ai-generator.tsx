@@ -1,7 +1,16 @@
 "use client";
 
+import { ReasoningTimeline } from "@/components/ai/reasoning-timeline";
+import type { ReasoningStep } from "@/lib/ai/graph/types";
 import { QUESTION_TYPE_STYLES, QuestionCard } from "@/components/interview/question-card";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
+import { useProject } from "@/components/project-provider";
+import { flattenEnabledBankList } from "@/lib/premade-sections";
+import { ensureIntroQuestion } from "@/lib/question-order";
 import { AiButton } from "@/components/ui/ai-button";
 import {
     AlertDialog,
@@ -46,6 +55,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { AssessmentCriterion, GeneratedInterview, GeneratedQuestion } from "@/lib/ai/types";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
 import { trpc } from "@/lib/trpc/client";
 import { cn } from "@/lib/utils";
 import {
@@ -84,6 +98,7 @@ import {
     Video,
     X,
 } from "lucide-react";
+import { readJsonResponse } from "@/lib/fetch-json";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -256,6 +271,9 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const router = useRouter();
   const { toast } = useToast();
   const { currentOrg } = useOrg();
+  const { currentProject } = useProject();
+  const bankOrgId =
+    currentProject?.organizationId || currentOrg?.id || "";
   const [description, setDescription] = useState("");
   const [activeTemplate, setActiveTemplate] = useState<number | null>(null);
   const [hlRanges, setHlRanges] = useState<HLRange[]>([]);
@@ -265,27 +283,38 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [aiTone, setAiTone] = useState<"CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY">("FRIENDLY");
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+  );
+  useEffect(() => {
+    if (currentOrg?.defaultInterviewerGender) {
+      setAiGender(normalizeInterviewerGender(currentOrg.defaultInterviewerGender));
+    }
+  }, [currentOrg?.defaultInterviewerGender]);
   const [followUpDepth, setFollowUpDepth] = useState<"LIGHT" | "MODERATE" | "DEEP">("MODERATE");
   const [language, setLanguage] = useState("en");
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>(false);
   const [includePremade, setIncludePremade] = useState(true);
-  const [selectedSectionIds, setSelectedSectionIds] = useState<Set<string>>(new Set());
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
+  const [premadeInterviewType, setPremadeInterviewType] = useState<
+    "technical" | "behavioral" | "mixed" | "screening"
+  >("mixed");
 
-  const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+  const bankListQuery = trpc.questionBank.list.useQuery(
+    { organizationId: bankOrgId },
+    { enabled: !!bankOrgId, staleTime: 30_000 },
+  );
+  const enabledPremadeQuestions = useMemo(
+    () => flattenEnabledBankList(bankListQuery.data).questions,
+    [bankListQuery.data],
   );
 
-  useEffect(() => {
-    if (enabledPremadeQuery.data?.sections) {
-      setSelectedSectionIds(new Set(enabledPremadeQuery.data.sections.map((s) => s.id)));
-    }
-  }, [enabledPremadeQuery.data?.sections]);
   const [generating, setGenerating] = useState(false);
   const [streamPhase, setStreamPhase] = useState<"idle" | "thinking" | "writing">("idle");
   const [thinkingText, setThinkingText] = useState("");
   const [contentText, setContentText] = useState("");
+  const [steps, setSteps] = useState<ReasoningStep[]>([]);
   const thinkingRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const streamEndRef = useRef<HTMLDivElement>(null);
@@ -363,6 +392,15 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
           if (payload.text) {
             setContentText((prev) => prev + payload.text);
           }
+        } else if (payload.type === "step") {
+          const st = payload.step as ReasoningStep;
+          setSteps((prev) => {
+            const i = prev.findIndex((x) => x.id === st.id);
+            if (i < 0) return [...prev, st];
+            const next = prev.slice();
+            next[i] = st;
+            return next;
+          });
         } else if (payload.type === "done") {
           result = payload.data as GeneratedInterview;
         } else if (payload.type === "error") {
@@ -379,9 +417,8 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     if (source.file) formData.append("file", source.file);
     if (source.url) formData.append("url", source.url);
     const res = await fetch("/api/ai/extract-text", { method: "POST", body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Extraction failed");
-    return data.text as string;
+    const data = await readJsonResponse<{ text: string }>(res);
+    return data.text;
   }, []);
 
   const handleJdFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -444,6 +481,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setStreamPhase("idle");
     setThinkingText("");
     setContentText("");
+    setSteps([]);
     setResult(null);
     setEditableCriteria([]);
     setEditableQuestions([]);
@@ -452,11 +490,11 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setFeedback("");
 
     try {
-      const premadeToInclude = includePremade
-        ? (enabledPremadeQuery.data?.questions ?? []).filter((q) =>
-            selectedSectionIds.size === 0 || selectedSectionIds.has(q.sectionId),
-          )
-        : [];
+      const premadeToInclude = selectedPremadePayload(
+        enabledPremadeQuestions,
+        selectedPremadeIds,
+        includePremade,
+      );
 
       const response = await fetch("/api/ai/generate", {
         method: "POST",
@@ -469,7 +507,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
           projectId,
           ...(jdText && { jobDescription: jdText }),
           ...(resumeText && { resumeText }),
-          ...(premadeToInclude.length > 0 && { premadeQuestions: premadeToInclude }),
+          ...(premadeToInclude?.length ? { premadeQuestions: premadeToInclude } : {}),
         }),
       });
 
@@ -478,16 +516,27 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
         throw new Error(errBody.error || "Generation failed");
       }
 
+      const prevExcluded = new Set(
+        editableQuestions
+          .filter((q) => q.validationRules?.excludeFromScore === true)
+          .map((q) => q.text.trim().toLowerCase()),
+      );
       const data = await consumeStream(response);
       setResult(data);
       setEditableCriteria(data.assessmentCriteria ?? []);
-      setEditableQuestions(data.questions.map((q, i) => ({
-        ...q,
-        order: i + 1,
-        starterCode: q.starterCode
-          ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
-          : undefined,
-      })));
+      setEditableQuestions(ensureIntroQuestion(data.questions, { language }).map((q, i) => {
+        const keepExcluded =
+          q.validationRules?.excludeFromScore === true ||
+          prevExcluded.has((q.text ?? "").trim().toLowerCase());
+        return {
+          ...q,
+          order: i + 1,
+          ...(keepExcluded ? { validationRules: { excludeFromScore: true } } : {}),
+          starterCode: q.starterCode
+            ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
+            : undefined,
+        };
+      }));
     } catch {
       toast({ title: "Generation failed", description: "Please try again or create the interview manually.", variant: "destructive" });
     } finally {
@@ -503,6 +552,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
     setStreamPhase("idle");
     setThinkingText("");
     setContentText("");
+    setSteps([]);
     try {
       const response = await fetch("/api/ai/refine", {
         method: "POST",
@@ -532,19 +582,27 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       const data = await consumeStream(response);
       setResult(data);
       setEditableCriteria(data.assessmentCriteria ?? []);
-      setEditableQuestions(data.questions.map((q, i) => ({
-        ...q,
-        order: i + 1,
-        starterCode: q.starterCode
-          ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
-          : undefined,
-      })));
+      setEditableQuestions(ensureIntroQuestion(data.questions, { language }).map((q, i) => {
+        const keepExcluded = q.validationRules?.excludeFromScore === true;
+        return {
+          ...q,
+          order: i + 1,
+          ...(keepExcluded ? { validationRules: { excludeFromScore: true } } : {}),
+          starterCode: q.starterCode
+            ? { ...q.starterCode, language: q.starterCode.language.toLowerCase() }
+            : undefined,
+        };
+      }));
       setFeedback("");
       setEditingIndex(null);
       setEditingCriterionIndex(null);
       toast({ title: "Interview refined based on your feedback!" });
-    } catch {
-      toast({ title: "Refinement failed", description: "Please try again.", variant: "destructive" });
+    } catch (err) {
+      toast({
+        title: "Refinement failed",
+        description: err instanceof Error && err.message ? err.message : "Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setRefining(false);
       setStreamPhase("idle");
@@ -567,6 +625,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
         videoEnabled,
         language,
         aiTone,
+        aiGender,
         aiName: result.recommendedSettings.aiName,
         followUpDepth,
         antiCheatingEnabled,
@@ -587,6 +646,8 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
             options: q.options ?? undefined,
             followUpPrompts: q.followUpPrompts ?? undefined,
             starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : undefined,
+            skipIf: q.skipIf ?? undefined,
+            validationRules: q.validationRules ?? undefined,
           })
         )
       );
@@ -960,6 +1021,21 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               </Select>
             </div>
             <div className="space-y-2">
+              <Label>Interviewer gender</Label>
+              <Select value={aiGender} onValueChange={(v) => setAiGender(v as InterviewerGender)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                    <SelectItem key={g.value} value={g.value}>
+                      {g.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
               <Label>Tone</Label>
               <Select value={aiTone} onValueChange={(v) => setAiTone(v as typeof aiTone)}>
                 <SelectTrigger>
@@ -1093,67 +1169,35 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
             </div>
           </div>
 
-          {/* Premade Section Questions */}
           <div className="space-y-2">
-            <Label className="font-semibold text-sm">Premade Section Questions</Label>
-            <div className="rounded-xl border border-border/80 bg-card/60 p-4 space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-semibold text-foreground">
-                    Include Standard Round Questions
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Automatically pulls enabled questions from your Question Bank (Screening, Technical, HR) and instructs the AI to generate complementary questions without duplicates.
-                  </p>
-                </div>
-                <Switch
-                  checked={includePremade}
-                  onCheckedChange={setIncludePremade}
-                />
-              </div>
-
-              {includePremade && (enabledPremadeQuery.data?.sections?.length ?? 0) > 0 && (
-                <div className="pt-2 border-t border-border/50 space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Rounds To Include ({enabledPremadeQuery.data?.questions.length ?? 0} questions active):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {(enabledPremadeQuery.data?.sections ?? []).map((sec) => {
-                      const isSelected = selectedSectionIds.has(sec.id);
-                      const count = (enabledPremadeQuery.data?.questions ?? []).filter(
-                        (q) => q.sectionId === sec.id,
-                      ).length;
-                      return (
-                        <button
-                          key={sec.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedSectionIds((prev) => {
-                              const next = new Set(prev);
-                              if (isSelected) next.delete(sec.id);
-                              else next.add(sec.id);
-                              return next;
-                            });
-                          }}
-                          className={cn(
-                            "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer",
-                            isSelected
-                              ? "bg-primary/10 border-primary text-primary"
-                              : "bg-muted/40 border-border text-muted-foreground hover:text-foreground",
-                          )}
-                        >
-                          <Check className={cn("h-3 w-3", isSelected ? "opacity-100" : "opacity-0")} />
-                          <span>{sec.name}</span>
-                          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-background/80 border">
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label className="text-sm font-semibold">Premade section questions</Label>
+              <Select
+                value={premadeInterviewType}
+                onValueChange={(v) =>
+                  setPremadeInterviewType(v as typeof premadeInterviewType)
+                }
+              >
+                <SelectTrigger className="h-8 w-[160px] text-xs">
+                  <SelectValue placeholder="Interview type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mixed">Mixed (all)</SelectItem>
+                  <SelectItem value="screening">Screening</SelectItem>
+                  <SelectItem value="technical">Technical</SelectItem>
+                  <SelectItem value="behavioral">Behavioral</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+            <PremadeQuestionPicker
+              organizationId={bankOrgId}
+              interviewType={premadeInterviewType}
+              includePremade={includePremade}
+              onIncludeChange={setIncludePremade}
+              selectedIds={selectedPremadeIds}
+              onSelectedChange={setSelectedPremadeIds}
+              compact
+            />
           </div>
 
           <AiButton
@@ -1177,9 +1221,13 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
       </Card>
 
       {/* Streaming display (generation only — refine stream is rendered inside the result card) */}
-      {generating && (thinkingText || contentText) && (
+      {!generating && !refining && result && steps.length > 0 && (
+        <ReasoningTimeline steps={steps} title="How these questions were built" collapsible defaultOpen={false} />
+      )}
+      {generating && (thinkingText || contentText || steps.length > 0) && (
         <Card className="border-dashed">
           <CardContent className="space-y-3 pt-4 pb-3">
+            <ReasoningTimeline steps={steps} title="What the AI is doing" className="border-0 bg-transparent p-0" />
             {/* Thinking section */}
             {thinkingText && (
               <div>
@@ -1234,6 +1282,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               {voiceEnabled && <Badge>Voice</Badge>}
               {videoEnabled && <Badge>Video</Badge>}
               <Badge variant="outline">{aiTone}</Badge>
+              <Badge variant="outline">{aiGender === "MALE" ? "Male" : "Female"}</Badge>
               <Badge variant="secondary">
                 ~{result.estimatedDurationMinutes} min
               </Badge>
@@ -1543,9 +1592,10 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
               </AiButton>
 
               {/* Refine streaming display */}
-              {refining && (thinkingText || contentText) && (
+              {refining && (thinkingText || contentText || steps.length > 0) && (
                 <Card className="border-dashed">
                   <CardContent className="space-y-3 pt-4 pb-3">
+                    <ReasoningTimeline steps={steps} title="What the AI is doing" className="border-0 bg-transparent p-0" />
                     {thinkingText && (
                       <div>
                         <div className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -1677,6 +1727,7 @@ function ImportDialog({
       isRequired: true,
       options: q.options as GeneratedQuestion["options"],
       starterCode: q.starterCode as GeneratedQuestion["starterCode"],
+      skipIf: q.skipIf ?? null,
     }));
     onImport(mapped);
     setSelectedIds(new Set());

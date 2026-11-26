@@ -1,0 +1,266 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { countStrikes, MAX_STRIKES } from "@/lib/head-movement";
+import { getSessionOverallScore, getSessionScoreBreakdown } from "@/lib/session-score";
+import { interviewLanguageLabel } from "@/lib/interview-language";
+import { findQuestionMessageIndex, mergeQuestionEvaluations, type PlannedQuestion } from "@/lib/question-report";
+import { stripInternalCueText } from "@/lib/transcript/sanitize";
+
+export type Recommendation = "hire" | "maybe" | "no";
+
+export interface ReportQuestion {
+  index: number;
+  question: string;
+  score: number | null;
+  excludeFromScore?: boolean;
+  evaluation: string;
+  highlights: string[];
+  improvements: string[];
+  answerExcerpt: string | null;
+}
+
+export interface ReportCoding {
+  label: string;
+  language: string | null;
+  question: string | null;
+  score: number;
+  evaluation: string;
+}
+
+export interface ReportData {
+  title: string;
+  participantName: string;
+  participantEmail: string | null;
+  avatarUrl: string | null;
+  status: string | null;
+  createdAt: string | null;
+  objective: string | null;
+  /** e.g. "Hindi" or "Multi-language (Hindi + English), Hindi chosen"; null when unknown. */
+  language: string | null;
+  durationMinutes: number | null;
+  overallScore: number | null;
+  /** Averages that make up / accompany the overall score. */
+  scoreDistribution: {
+    questions: number | null;
+    skills: number | null;
+    coding: number | null;
+    source: "questions" | "criteria" | null;
+  };
+  recommendation: Recommendation | null;
+  summary: string | null;
+  criteria: { name: string; score: number; reasoning: string }[];
+  questions: ReportQuestion[];
+  coding: ReportCoding[];
+  /** Questions in the list that have a recorded answer (scored or not). */
+  questionsAnswered: number;
+  /** Questions in the list that carry a mark (AI-generated technical ones only). */
+  questionsScored: number;
+  strengths: string[];
+  concerns: string[];
+  keyInsights: string[];
+  themes: string[];
+  integrity: { label: string; count: number }[];
+  integrityStrikes: number;
+  maxStrikes: number;
+  disqualified: boolean;
+  transcript: { id: string; role: "USER" | "ASSISTANT" | string; content: string; timestamp: string }[];
+}
+
+const INTEGRITY_LABELS: Record<string, string> = {
+  page_departure: "Page departure",
+  tab_switch: "Page departure",
+  focus_lost: "Page departure",
+  paste: "External paste blocked",
+  copy: "Copy attempt",
+  cut: "Cut attempt",
+  multi_screen: "Multi-screen detected",
+  head_movement: "Head movement / looking away",
+  offscreen_voice: "Another voice detected",
+  device_switch: "Camera / mic switched",
+};
+
+/** hire ≥ 7, maybe ≥ 5, else no. Disqualified sessions are always "no". */
+export function recommendationFor(score: number | null, disqualified: boolean): Recommendation | null {
+  if (disqualified) return "no";
+  if (score === null) return null;
+  if (score >= 7) return "hire";
+  if (score >= 5) return "maybe";
+  return "no";
+}
+
+/** Split long AI prose into short bullet points (sentences), capped. */
+export function toBullets(text: string | null | undefined, max = 6): string[] {
+  if (!text) return [];
+  const lines = text
+    .split(/\n+|(?<=[.!?])\s+(?=[A-Z0-9"“(])/)
+    .map((s) => s.replace(/^[-•*\d.)\s]+/, "").trim())
+    .filter((s) => s.length > 2);
+  return lines.slice(0, max);
+}
+
+function uniq(list: string[], max: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of list) {
+    const s = String(raw ?? "").trim();
+    const k = s.toLowerCase();
+    if (!s || seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Find the candidate's reply to a question in the transcript (best effort). */
+export function findAnswerExcerpt(
+  question: string,
+  messages: { role: string; content: string }[],
+  maxLen = 320,
+): string | null {
+  const qIdx = findQuestionMessageIndex(question, messages);
+  if (qIdx < 0) return null;
+  const parts: string[] = [];
+  for (let i = qIdx + 1; i < messages.length && messages[i].role === "USER"; i++) parts.push(messages[i].content);
+  const text = parts.join(" ").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.length > maxLen ? `${text.slice(0, maxLen).trimEnd()}…` : text;
+}
+
+/** Only signed `/api/files/…?token=` URLs minted by the server are rendered in reports. */
+export function isSignedFileUrl(url: unknown): url is string {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    const u = new URL(url, "http://local.invalid");
+    return (
+      (u.protocol === "http:" || u.protocol === "https:") &&
+      u.pathname.startsWith("/api/files/") &&
+      !!u.searchParams.get("token")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Normalize the analysis.getSessionSummary payload for the report UI + PDF. */
+export function buildReportData(d: any): ReportData {
+  const insights = d?.insights;
+  const obj = insights && !Array.isArray(insights) ? insights : {};
+  const keyInsights: string[] = Array.isArray(insights) ? insights.map(String) : (obj.keyInsights ?? []).map(String);
+  const criteria: { name: string; score: number; reasoning: string }[] = (obj.criteriaEvaluations ?? []).map((c: any) => ({
+    name: String(c?.name ?? ""),
+    score: Number(c?.score) || 0,
+    reasoning: String(c?.reasoning ?? ""),
+  }));
+  const aiQes = (obj.questionEvaluations ?? []) as any[];
+  const rawMessages = ((d?.messages ?? []) as any[])
+    .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
+    // Hide relay-internal cues ([CODE_UPDATE] …) that older sessions stored as chat lines.
+    .map((m) => ({ ...m, content: stripInternalCueText(String(m.content ?? "")) }))
+    .filter((m) => m.content.trim())
+    .slice()
+    .sort((a, b) => {
+      const ta = new Date(a.timestamp ?? 0).getTime();
+      const tb = new Date(b.timestamp ?? 0).getTime();
+      if (ta !== tb) return ta - tb;
+      return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+    });
+  const messages = rawMessages.map((m) => ({ role: String(m.role), content: String(m.content ?? "") }));
+  // Every question asked (HR / general / bank included) in interview order; the AI may have left some out.
+  const qes = mergeQuestionEvaluations({
+    planned: (d?.interviewQuestions ?? null) as PlannedQuestion[] | null,
+    evaluations: aiQes,
+    excludedTexts: (d?.excludedQuestionTexts ?? []) as string[],
+    messages,
+  }) as any[];
+  const questions: ReportQuestion[] = qes.map((q, i) => {
+    const excluded = q?.excludeFromScore === true;
+    const rawScore = q?.score == null ? NaN : Number(q.score);
+    const score = excluded || !Number.isFinite(rawScore) ? null : rawScore;
+    return {
+      index: i + 1,
+      question: String(q?.question ?? ""),
+      score,
+      excludeFromScore: excluded || score === null,
+      evaluation: String(q?.evaluation ?? ""),
+      highlights: (q?.highlights ?? []).map(String),
+      improvements: (q?.improvements ?? []).map(String),
+      answerExcerpt: findAnswerExcerpt(String(q?.question ?? ""), messages),
+    };
+  });
+
+  const overall = getSessionOverallScore({ questionEvaluations: qes as any, criteriaEvaluations: criteria });
+  const breakdown = getSessionScoreBreakdown(obj);
+  const coding: ReportCoding[] = (Array.isArray(obj.codeEvaluations) ? obj.codeEvaluations : [])
+    .map((c: any, i: number) => {
+      const score = Number(c?.score);
+      if (!Number.isFinite(score)) return null;
+      const label =
+        String(c?.snippetLabel ?? "").trim() ||
+        String(c?.question ?? "").trim() ||
+        (c?.language ? `${c.language} snippet` : "") ||
+        `Coding ${i + 1}`;
+      return {
+        label,
+        language: c?.language ? String(c.language) : null,
+        question: c?.question ? String(c.question) : null,
+        score,
+        evaluation: String(c?.evaluation ?? ""),
+      } satisfies ReportCoding;
+    })
+    .filter(Boolean) as ReportCoding[];
+  const log = (d?.antiCheatingLog ?? []) as { type: string }[];
+  const counts = new Map<string, number>();
+  for (const v of log) {
+    const label = INTEGRITY_LABELS[v.type] ?? v.type;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const disqualified = d?.status === "DISQUALIFIED";
+  const screenshots = (d?.screenshots ?? []) as { url: string; type: string }[];
+
+  return {
+    title: d?.interviewTitle ?? "Interview",
+    participantName: d?.participantName || d?.participantEmail || "Anonymous",
+    participantEmail: d?.participantEmail ?? null,
+    avatarUrl: screenshots.find((s) => s?.type === "camera" && isSignedFileUrl(s.url))?.url ?? null,
+    status: d?.status ?? null,
+    createdAt: d?.createdAt ?? null,
+    objective: d?.interviewObjective ?? null,
+    language: d?.interviewLanguage ? interviewLanguageLabel(d.interviewLanguage, d?.language) : null,
+    durationMinutes: d?.totalDurationSeconds != null ? Math.max(1, Math.round(d.totalDurationSeconds / 60)) : null,
+    overallScore: overall,
+    scoreDistribution: {
+      questions: breakdown.questions.avg,
+      skills: breakdown.criteria.avg,
+      coding: breakdown.coding.avg,
+      source: breakdown.source,
+    },
+    recommendation: recommendationFor(overall, disqualified),
+    summary: d?.summary ?? null,
+    criteria,
+    questions,
+    coding,
+    questionsAnswered: questions.filter((q) => q.answerExcerpt).length || questions.length || messages.filter((m) => m.role === "USER").length,
+    questionsScored: questions.filter((q) => q.score !== null && !q.excludeFromScore).length,
+    strengths: uniq([...questions.flatMap((q) => q.highlights), ...criteria.filter((c) => c.score >= 7).map((c) => c.name)], 6),
+    concerns: uniq([...questions.flatMap((q) => q.improvements), ...criteria.filter((c) => c.score < 5).map((c) => c.name)], 6),
+    keyInsights,
+    themes: (d?.themes ?? []).map(String),
+    integrity: Array.from(counts, ([label, count]) => ({ label, count })),
+    integrityStrikes: countStrikes(log),
+    maxStrikes: MAX_STRIKES,
+    disqualified,
+    transcript: rawMessages.map((m) => ({
+      id: String(m.id),
+      role: String(m.role),
+      content: String(m.content ?? ""),
+      timestamp: String(m.timestamp ?? ""),
+    })),
+  };
+}
+
+/** Tailwind-free colour scale used by both the UI and the PDF. */
+export function scoreColor(score: number): string {
+  if (score >= 7) return "#16a34a";
+  if (score >= 5) return "#d97706";
+  return "#dc2626";
+}

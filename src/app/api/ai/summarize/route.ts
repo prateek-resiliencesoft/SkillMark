@@ -1,177 +1,105 @@
-import { svgDataUrlToPng } from "@/lib/ai/convert-svg";
-import { extractJson } from "@/lib/ai/extract-json";
 import { createLogger } from "@/lib/logger";
-import { buildSummaryPrompt } from "@/lib/ai/prompts/summary";
-import { resolveTaskModels } from "@/lib/ai/registry";
+import { recordAiCallErrors } from "@/lib/session-error-log-server";
 import { getAuthUser } from "@/lib/auth";
+import { reportAccess } from "@/lib/report-access";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { runReportWithTimeout, setReportStatus } from "@/lib/session-report-server";
+import { hasProjectAccess } from "@/server/trpc";
+import { requireOrgAccess, type MemberRole } from "@/server/tenant";
+import { TRPCError } from "@trpc/server";
 import { NextResponse } from "next/server";
 
 const log = createLogger("api/ai/summarize");
 
+// Long transcripts can take a while with slower providers.
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type InterviewRef = { userId?: string | null; projectId?: string | null; project?: { organizationId?: string | null } | null };
+
+/**
+ * POST /api/ai/summarize  { sessionId }
+ * Manual "Generate report" from the session results page. Allowed for the
+ * same people who can open the report (org members with project access),
+ * not only the interview's creator.
+ */
 export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { sessionId } = await req.json();
+  const { sessionId } = (await req.json().catch(() => ({}))) as { sessionId?: string };
+  if (!sessionId || !UUID_RE.test(sessionId)) {
+    return NextResponse.json({ error: "Missing sessionId" }, { status: 400 });
+  }
+
+  const { data: row, error: loadError } = await supabaseAdmin
+    .from("sessions")
+    .select("id, interview:interviews!inner(userId, projectId, project:projects(organizationId))")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (loadError) {
+    log.error(`Loading session ${sessionId} failed:`, loadError.message);
+    return NextResponse.json({ error: "Could not load the session" }, { status: 500 });
+  }
+  const raw = (row as { interview?: InterviewRef | InterviewRef[] } | null)?.interview;
+  const interview = Array.isArray(raw) ? raw[0] : raw;
+  if (!row || !interview) {
+    return NextResponse.json({ error: "Session not found" }, { status: 404 });
+  }
+
+  const orgId = interview.project?.organizationId ?? null;
+  let orgRole: MemberRole | null = null;
+  if (orgId) {
+    try {
+      const { membership } = await requireOrgAccess(supabaseAdmin, orgId, user.id, { minRole: "MEMBER" });
+      orgRole = membership.role;
+    } catch (err) {
+      if (!(err instanceof TRPCError)) throw err;
+      return NextResponse.json({ error: err.message }, { status: 403 });
+    }
+  }
+  const projectAccess = !!interview.projectId && (await hasProjectAccess(supabaseAdmin, interview.projectId, user.id));
+  const access = reportAccess({
+    userId: user.id,
+    interviewOwnerId: interview.userId,
+    orgRole,
+    hasProjectAccess: projectAccess,
+  });
+  if (!access.ok) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
+  }
 
   try {
-    const { data: interviewSession } = await supabaseAdmin
-      .from("sessions")
-      .select(
-        `*, interview:interviews!inner(title, userId, projectId, objective, language, assessmentCriteria, questions(text, order, type), project:projects(organizationId)), messages(*)`,
-      )
-      .eq("id", sessionId)
-      .order("order", { referencedTable: "interviews.questions", ascending: true })
-      .order("timestamp", { referencedTable: "messages", ascending: true })
-      .single();
+    await setReportStatus(sessionId, "GENERATING", { reportStartedAt: new Date().toISOString(), reportError: null });
+    const outcome = await runReportWithTimeout(sessionId);
 
-    if (
-      !interviewSession ||
-      (interviewSession.interview as { userId: string }).userId !== user.id
-    ) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (outcome === "capture_failure") {
+      await setReportStatus(sessionId, "READY", { reportError: null });
+      return NextResponse.json({ captureFailure: true });
+    }
+    if (outcome === "no_messages") {
+      await setReportStatus(sessionId, "SKIPPED", { reportError: "No transcript" });
+      return NextResponse.json({ error: "No messages to summarize" }, { status: 400 });
     }
 
-    const interview = interviewSession.interview as {
-      title: string;
-      userId: string;
-      projectId: string;
-      objective: string | null;
-      language: string;
-      assessmentCriteria: { name: string; description: string }[] | null;
-      questions: { text: string; order: number; type?: string }[];
-      project?: { organizationId?: string } | null;
-    };
-
-    const msgs = (interviewSession.messages ?? []) as {
-      contentType: string;
-      whiteboardData: Record<string, unknown> | null;
-      whiteboardImageUrl: string | null;
-      role: string;
-      content: string;
-    }[];
-
-    const criteria = interview.assessmentCriteria;
-
-    const whiteboardDrawingsRaw = msgs
-      .filter((m) => m.contentType === "WHITEBOARD" && m.whiteboardData)
-      .map((m) => ({
-        label: (m.whiteboardData?.label as string) || "Untitled Drawing",
-        imageDataUrl: m.whiteboardImageUrl ?? null,
-      }));
-
-    const whiteboardDrawings = await Promise.all(
-      whiteboardDrawingsRaw.map(async (d) => ({
-        ...d,
-        imageDataUrl: d.imageDataUrl
-          ? await svgDataUrlToPng(d.imageDataUrl)
-          : null,
-      })),
-    );
-
-    const codeSnippetsInput = msgs
-      .filter((m) => m.contentType === "CODE" && m.whiteboardData)
-      .map((m) => ({
-        label: (m.whiteboardData?.label as string) || "Untitled Snippet",
-        code: (m.whiteboardData?.code as string) || "",
-        language: (m.whiteboardData?.language as string) || "plaintext",
-      }))
-      .filter((s) => s.code.trim().length > 0);
-
-    const { provider, reportModel } = await resolveTaskModels(interview.project?.organizationId);
-    const textMessages = msgs
-      .filter((m) => m.contentType === "TEXT")
-      .map((m) => ({ role: m.role, content: m.content }));
-    const drawingsInput =
-      whiteboardDrawings.length > 0 ? whiteboardDrawings : null;
-    const codeInput = codeSnippetsInput.length > 0 ? codeSnippetsInput : null;
-
-    const messages = buildSummaryPrompt(
-      interview.title,
-      textMessages,
-      interview.objective,
-      criteria,
-      interview.questions,
-      interview.language,
-      drawingsInput,
-      codeInput,
-    );
-
-    let response;
-    try {
-      response = await provider.generateResponse({
-        messages,
-        temperature: 0.3,
-        maxTokens: 8192,
-        model: reportModel,
-      });
-    } catch (err) {
-      const isVisionError =
-        err instanceof Error &&
-        /image.*not supported|vision.*not supported|does not support.*image/i.test(
-          err.message,
-        );
-      if (isVisionError && drawingsInput?.some((d) => d.imageDataUrl)) {
-        log.info("Model does not support images, retrying text-only");
-        const textOnlyDrawings = drawingsInput.map((d) => ({
-          ...d,
-          imageDataUrl: null,
-        }));
-        const fallbackMessages = buildSummaryPrompt(
-          interview.title,
-          textMessages,
-          interview.objective,
-          criteria,
-          interview.questions,
-          interview.language,
-          textOnlyDrawings,
-          codeInput,
-        );
-        response = await provider.generateResponse({
-          messages: fallbackMessages,
-          temperature: 0.3,
-          maxTokens: 8192,
-          model: reportModel,
-        });
-      } else {
-        throw err;
-      }
-    }
-
-    const parsed = extractJson(response.content);
-
-    const insightsData: Record<string, unknown> = {
-      keyInsights: parsed.keyInsights ?? [],
-    };
-    if (parsed.criteriaEvaluations) {
-      insightsData.criteriaEvaluations = parsed.criteriaEvaluations;
-    }
-    if (parsed.questionEvaluations) {
-      insightsData.questionEvaluations = parsed.questionEvaluations;
-    }
-    if (parsed.researchFindings) {
-      insightsData.researchFindings = parsed.researchFindings;
-    }
-    if (parsed.toneAnalysis) {
-      insightsData.toneAnalysis = parsed.toneAnalysis;
-    }
-
-    await supabaseAdmin
-      .from("sessions")
-      .update({
-        summary: String(parsed.summary ?? ""),
-        themes: (parsed.themes as string[]) ?? [],
-        sentiment: parsed.sentiment ?? null,
-        insights: insightsData,
-      })
-      .eq("id", sessionId);
-
-    return NextResponse.json(parsed);
+    await setReportStatus(sessionId, "READY", { reportError: null });
+    return NextResponse.json({ success: true });
   } catch (error) {
     log.error("Summary generation error:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    // Never leave the page on "Generating report…".
+    await setReportStatus(sessionId, "FAILED", { reportError: message.slice(0, 500) });
+    await recordAiCallErrors({
+      sessionId,
+      provider: null,
+      source: "api/ai/summarize",
+      category: "report",
+      finalError: error,
+    });
     return NextResponse.json(
       { error: "Failed to generate summary" },
       { status: 500 },

@@ -9,11 +9,27 @@ import {
   type FormField,
   type InterviewConfig,
 } from "@/lib/forms/schema";
-import { appBaseUrl, loadApplicationContext, serializeApplication, type FormRow } from "@/server/integrations/applications";
+import {
+  appBaseUrl,
+  applicationHasCv,
+  loadApplicationContext,
+  serializeApplication,
+  signApplicationCv,
+  type FormRow,
+} from "@/server/integrations/applications";
 import { syncFormInterview } from "@/server/integrations/form-interview";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { assertMinRole, getOrgMembership, protectedProcedure, router, type MemberRole } from "../trpc";
+import {
+  assertMinRole,
+  filterAccessibleProjectIds,
+  getEffectiveProjectRole,
+  getOrgMembership,
+  hasProjectAccess,
+  protectedProcedure,
+  router,
+  type MemberRole,
+} from "../trpc";
 
 const fieldSchema = z.object({
   id: z.string().max(64),
@@ -61,22 +77,59 @@ const configSchema = z.object({
 const settingsSchema = z.object({
   successMessage: z.string().max(1000).optional(),
   redirectToInterview: z.boolean().optional(),
+  sendInviteEmail: z.boolean().optional(),
+  sendInviteWhatsapp: z.boolean().optional(),
+  inviteSchedule: z.enum(["immediate", "tomorrow", "next_week", "custom"]).optional(),
+  inviteScheduledAt: z.string().max(64).nullable().optional(),
+  linkExpiryDays: z.number().int().min(0).max(365).nullable().optional(),
+  interviewMode: z.enum(["linked", "match_role"]).optional(),
+  allowedOrigins: z.array(z.string().max(300)).max(50).optional(),
 });
 
 type Ctx = { supabase: any; user: { id: string } };
 
+/** Anything above VIEWER is write intent (blocked while the org is paused). */
 async function requireOrg(ctx: Ctx, organizationId: string, min: MemberRole = "VIEWER") {
-  const m = await getOrgMembership(ctx.supabase, organizationId, ctx.user.id);
+  const m = await getOrgMembership(ctx.supabase, organizationId, ctx.user.id, { write: min !== "VIEWER" });
   if (!m) throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
-  assertMinRole(m.role, min);
   return m;
+}
+
+/** Org membership plus project ACL; `min` is checked against the effective project role. */
+async function requireProject(
+  ctx: Ctx,
+  organizationId: string,
+  projectId: string | null,
+  min: MemberRole = "VIEWER",
+) {
+  const m = await requireOrg(ctx, organizationId, min);
+  if (!projectId) {
+    assertMinRole(m.role, min);
+    return m.role;
+  }
+  const { data: project } = await ctx.supabase.from("projects").select("organizationId").eq("id", projectId).maybeSingle();
+  if (!project || project.organizationId !== organizationId || !(await hasProjectAccess(ctx.supabase, projectId, ctx.user.id))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this project" });
+  }
+  const role = await getEffectiveProjectRole(ctx.supabase, projectId, ctx.user.id, m.role);
+  assertMinRole(role, min);
+  return role;
 }
 
 async function loadForm(ctx: Ctx, id: string, min: MemberRole = "VIEWER"): Promise<FormRow> {
   const { data } = await ctx.supabase.from("interview_forms").select("*").eq("id", id).maybeSingle();
   if (!data) throw new TRPCError({ code: "NOT_FOUND", message: "Form not found" });
-  await requireOrg(ctx, data.organizationId, min);
+  await requireProject(ctx, data.organizationId, data.projectId ?? null, min);
   return data as FormRow;
+}
+
+/** Authorize reading an application through its form's project. */
+async function requireApplicationAccess(ctx: Ctx, app: { organizationId: string; formId?: string | null }) {
+  const { data: form } = app.formId
+    ? await ctx.supabase.from("interview_forms").select("organizationId, projectId").eq("id", app.formId).maybeSingle()
+    : { data: null };
+  if (form && form.organizationId !== app.organizationId) throw new TRPCError({ code: "NOT_FOUND" });
+  await requireProject(ctx, app.organizationId, form?.projectId ?? null);
 }
 
 export const interviewFormRouter = router({
@@ -84,10 +137,12 @@ export const interviewFormRouter = router({
     await requireOrg(ctx, input.organizationId);
     const { data } = await ctx.supabase
       .from("interview_forms")
-      .select("id, publicId, name, description, status, interviewId, fields, config, publishedAt, createdAt, updatedAt, applications(id)")
+      .select("id, publicId, name, description, status, projectId, interviewId, fields, config, publishedAt, createdAt, updatedAt, applications(id)")
       .eq("organizationId", input.organizationId)
       .order("updatedAt", { ascending: false });
-    return (data ?? []).map((f: any) => ({
+    const projectIds = Array.from(new Set((data ?? []).map((f: any) => f.projectId).filter(Boolean))) as string[];
+    const accessible = new Set(await filterAccessibleProjectIds(ctx.supabase, projectIds, ctx.user.id));
+    return (data ?? []).filter((f: any) => !f.projectId || accessible.has(f.projectId)).map((f: any) => ({
       ...f,
       fieldCount: Array.isArray(f.fields) ? f.fields.length : 0,
       applicationCount: Array.isArray(f.applications) ? f.applications.length : 0,
@@ -115,6 +170,7 @@ export const interviewFormRouter = router({
         projectId = p?.id ?? null;
       }
       if (!projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "Create a project first" });
+      await requireProject(ctx, input.organizationId, projectId, "MEMBER");
       const config: InterviewConfig = { ...defaultInterviewConfig(), title: input.name };
       const { data, error } = await ctx.supabase
         .from("interview_forms")
@@ -127,7 +183,15 @@ export const interviewFormRouter = router({
           status: "draft",
           fields: input.template === "default" ? defaultFormFields() : [],
           config,
-          settings: { redirectToInterview: true, successMessage: "Thanks for applying! You can start your interview now." },
+          settings: {
+            redirectToInterview: true,
+            successMessage: "Thanks for applying! You can start your interview now.",
+            sendInviteEmail: true,
+            sendInviteWhatsapp: true,
+            inviteSchedule: "immediate",
+            linkExpiryDays: 7,
+            interviewMode: "linked",
+          },
         })
         .select("*")
         .single();
@@ -171,6 +235,46 @@ export const interviewFormRouter = router({
       } catch (err) {
         throw new TRPCError({ code: "BAD_REQUEST", message: err instanceof Error ? err.message : "Failed to prepare interview" });
       }
+    }),
+
+  /** Attach an existing project interview to this form (no question regen). */
+  attachInterview: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), interviewId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const form = await loadForm(ctx, input.id, "MEMBER");
+      if (!form.projectId) throw new TRPCError({ code: "BAD_REQUEST", message: "Form has no project" });
+      const { data: interview } = await ctx.supabase
+        .from("interviews")
+        .select("id, projectId, title")
+        .eq("id", input.interviewId)
+        .maybeSingle();
+      if (!interview) throw new TRPCError({ code: "NOT_FOUND", message: "Interview not found" });
+      if (interview.projectId !== form.projectId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Interview must belong to the same project as the form" });
+      }
+      const { data, error } = await ctx.supabase
+        .from("interview_forms")
+        .update({ interviewId: interview.id, updatedAt: new Date().toISOString() })
+        .eq("id", form.id)
+        .select("*")
+        .single();
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return data as FormRow;
+    }),
+
+  /** Interviews in the form's project (for attach picker). */
+  projectInterviews: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const form = await loadForm(ctx, input.id);
+      if (!form.projectId) return [];
+      const { data } = await ctx.supabase
+        .from("interviews")
+        .select("id, title, description, updatedAt")
+        .eq("projectId", form.projectId)
+        .order("updatedAt", { ascending: false })
+        .limit(100);
+      return data ?? [];
     }),
 
   publish: protectedProcedure.input(z.object({ id: z.string().uuid() })).mutation(async ({ ctx, input }) => {
@@ -233,7 +337,7 @@ export const interviewFormRouter = router({
     const form = await loadForm(ctx, input.id);
     const { data } = await ctx.supabase
       .from("applications")
-      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, candidate:candidates(inviteToken, sessionId, session:sessions(id, status))")
+      .select("id, publicId, candidateName, candidateEmail, candidatePhone, status, source, environment, createdAt, files, candidate:candidates(inviteToken, sessionId, session:sessions!candidates_sessionId_fkey(id, status))")
       .eq("formId", form.id)
       .order("createdAt", { ascending: false })
       .limit(200);
@@ -250,17 +354,49 @@ export const interviewFormRouter = router({
       status: deriveApplicationStatus(a.status, a.candidate?.session),
       sessionId: a.candidate?.sessionId ?? null,
       interviewUrl: a.candidate?.inviteToken ? `${base}/i/invite/${a.candidate.inviteToken}` : null,
+      hasCv: applicationHasCv(a.files),
     }));
   }),
 
   application: protectedProcedure.input(z.object({ id: z.string().uuid() })).query(async ({ ctx, input }) => {
     const { data: app } = await ctx.supabase.from("applications").select("*").eq("id", input.id).maybeSingle();
     if (!app) throw new TRPCError({ code: "NOT_FOUND" });
-    await requireOrg(ctx, app.organizationId);
+    await requireApplicationAccess(ctx, app);
     const { data: form } = await ctx.supabase.from("interview_forms").select("publicId, name").eq("id", app.formId).single();
     const { candidate, session } = await loadApplicationContext(app);
     return serializeApplication(app, form!, candidate, session, appBaseUrl(), true);
   }),
+
+  /** Signed CV URL for a form application (by application id or candidate id). */
+  cvLink: protectedProcedure
+    .input(
+      z
+        .object({
+          applicationId: z.string().uuid().optional(),
+          candidateId: z.string().uuid().optional(),
+        })
+        .refine((v) => !!v.applicationId || !!v.candidateId, { message: "applicationId or candidateId required" }),
+    )
+    .query(async ({ ctx, input }) => {
+      let app: Record<string, any> | null = null;
+      if (input.applicationId) {
+        const { data } = await ctx.supabase.from("applications").select("id, organizationId, formId, files").eq("id", input.applicationId).maybeSingle();
+        app = data;
+      } else if (input.candidateId) {
+        const { data } = await ctx.supabase
+          .from("applications")
+          .select("id, organizationId, formId, files")
+          .eq("candidateId", input.candidateId)
+          .order("createdAt", { ascending: false })
+          .limit(1);
+        app = Array.isArray(data) ? data[0] ?? null : data;
+      }
+      if (!app) throw new TRPCError({ code: "NOT_FOUND", message: "No application / CV found" });
+      await requireApplicationAccess(ctx, app as { organizationId: string; formId?: string | null });
+      const cv = await signApplicationCv(app.files);
+      if (!cv) throw new TRPCError({ code: "NOT_FOUND", message: "No CV uploaded for this application" });
+      return cv;
+    }),
 
   usageLogs: protectedProcedure.input(z.object({ organizationId: z.string().uuid(), limit: z.number().int().min(1).max(200).default(50) })).query(async ({ ctx, input }) => {
     await requireOrg(ctx, input.organizationId);

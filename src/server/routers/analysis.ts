@@ -1,4 +1,13 @@
+import { loadAllBankQuestionsForExclusion } from "@/lib/auto-include-premade";
+import { collectExcludedScoreTexts } from "@/lib/premade-sections";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { effectiveDurationSeconds, lastMessageAt } from "@/lib/session-activity";
+import { assessIntegrity, type IntegritySignal } from "@/lib/integrity/signals";
+import {
+  objectPathFromSignedUrl,
+  pathBelongsToSession,
+  type SessionStorageScope,
+} from "@/lib/tenant-storage";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getOrgMembership, hasProjectAccess, protectedProcedure, router } from "../trpc";
@@ -10,10 +19,46 @@ interface ScreenshotEntry {
   type: "camera" | "screen";
 }
 
-async function resolveSignedUrl(bucket: string, path: string): Promise<string | null> {
+/** The session's project + media folder, which bound the storage paths it may reference. */
+export async function loadSessionStorageScope(sessionId: string): Promise<SessionStorageScope> {
+  const { data } = await supabaseAdmin
+    .from("sessions")
+    .select("mediaStoragePrefix, interview:interviews!inner(projectId)")
+    .eq("id", sessionId)
+    .maybeSingle();
+  const row = data as { mediaStoragePrefix?: string | null; interview?: { projectId?: string | null } | null } | null;
+  return {
+    projectId: row?.interview?.projectId ?? null,
+    mediaStoragePrefix: row?.mediaStoragePrefix ?? null,
+  };
+}
+
+/**
+ * Re-sign only when the object path is owned by this session (its project and
+ * media folder). Prevents a poisoned path/URL from minting access to another
+ * tenant's, project's, or candidate's media. Returns null when it can't sign;
+ * callers must then drop the URL rather than fall back to the stored value.
+ */
+export async function resolveSessionSignedUrl(
+  bucket: string,
+  urlOrPath: string,
+  sessionId: string,
+  organizationId: string,
+  scope?: SessionStorageScope,
+): Promise<string | null> {
+  const objectPath =
+    objectPathFromSignedUrl(bucket, urlOrPath) ??
+    (urlOrPath.includes("/") || !urlOrPath.includes("://")
+      ? urlOrPath.replace(/^\/+/, "").split("?")[0]
+      : null);
+  if (!objectPath) return null;
+  const sessionScope = scope ?? (await loadSessionStorageScope(sessionId));
+  if (!pathBelongsToSession(objectPath, sessionId, organizationId, sessionScope)) {
+    return null;
+  }
   const { data, error } = await supabaseAdmin.storage
     .from(bucket)
-    .createSignedUrl(path, 60 * 60 * 24); // 24 hours
+    .createSignedUrl(objectPath, 60 * 60 * 24); // 24 hours
   if (error || !data?.signedUrl) return null;
   return data.signedUrl;
 }
@@ -25,10 +70,11 @@ export const analysisRouter = router({
       const { data: session } = await ctx.supabase
         .from("sessions")
         .select(
-          `*, interview:interviews!inner(userId, title, objective, projectId, project:projects!inner(organizationId)), messages(*)`,
+          `*, interview:interviews!inner(userId, title, objective, language, projectId, project:projects!inner(organizationId), questions(text, order, type, description, validationRules)), messages(*)`,
         )
         .eq("id", input.sessionId)
         .order("timestamp", { referencedTable: "messages", ascending: true })
+        .order("id", { referencedTable: "messages", ascending: true })
         .single();
 
       if (!session) {
@@ -39,8 +85,10 @@ export const analysisRouter = router({
         userId: string;
         title: string;
         objective: string | null;
+        language?: string | null;
         projectId: string;
         project: { organizationId: string };
+        questions?: Array<{ text: string; order: number; type?: string | null; description?: string | null; validationRules?: unknown }> | null;
       };
 
       const membership = await getOrgMembership(ctx.supabase, interview.project.organizationId, ctx.user.id);
@@ -53,61 +101,140 @@ export const analysisRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "You do not have access to this project" });
       }
 
+      const organizationId = interview.project.organizationId;
       const mediaClearedAt = (session as { mediaClearedAt?: string | null }).mediaClearedAt ?? null;
+      const scope: SessionStorageScope = {
+        projectId: interview.projectId,
+        mediaStoragePrefix: (session as { mediaStoragePrefix?: string | null }).mediaStoragePrefix ?? null,
+      };
 
-      // Generate fresh signed URLs for recordings and screenshots (skip if media wiped)
+      // Fresh signed URLs only; stored client-supplied URLs are never echoed back.
       let audioRecordingUrl: string | null = null;
       if (!mediaClearedAt && session.audioRecordingUrl) {
-        const storedUrl = session.audioRecordingUrl as string;
-        if (storedUrl.startsWith("orgs/")) {
-          audioRecordingUrl = await resolveSignedUrl("recordings", storedUrl);
-        } else {
-          const pathMatch = storedUrl.match(/\/recordings\/(.+?)(?:\?|$)/);
-          if (pathMatch) {
-            audioRecordingUrl = await resolveSignedUrl("recordings", pathMatch[1]);
-          }
-        }
-        if (!audioRecordingUrl) {
-          audioRecordingUrl = storedUrl.startsWith("http") ? storedUrl : null;
-        }
+        audioRecordingUrl = await resolveSessionSignedUrl(
+          "recordings",
+          session.audioRecordingUrl as string,
+          input.sessionId,
+          organizationId,
+          scope,
+        );
       }
 
       let screenshots: ScreenshotEntry[] | null = null;
       const rawScreenshots = session.screenshots as ScreenshotEntry[] | null;
       if (!mediaClearedAt && rawScreenshots && rawScreenshots.length > 0) {
-        screenshots = await Promise.all(
+        const signedShots = await Promise.all(
           rawScreenshots.map(async (s) => {
-            const signed = s.path
-              ? await resolveSignedUrl("screenshots", s.path)
+            const signed = s?.path
+              ? await resolveSessionSignedUrl("screenshots", s.path, input.sessionId, organizationId, scope)
               : null;
-            return { ...s, url: signed || s.url };
+            return signed ? { ...s, url: signed } : null;
+          }),
+        );
+        screenshots = signedShots.filter((s): s is ScreenshotEntry => s !== null);
+      }
+
+      type StrikeLog = {
+        type: string;
+        timestamp: number;
+        detail?: string;
+        imageUrl?: string;
+        imagePath?: string;
+        screenImageUrl?: string;
+        screenImagePath?: string;
+        displayInfo?: unknown;
+        evidence?: unknown;
+        narrative?: string;
+      };
+      const rawLog = ((session as Record<string, unknown>).antiCheatingLog ?? null) as
+        | StrikeLog[]
+        | null;
+      let antiCheatingLog: StrikeLog[] | null = rawLog;
+      if (rawLog?.length) {
+        antiCheatingLog = await Promise.all(
+          rawLog.map(async (v) => {
+            const { imageUrl: _cam, screenImageUrl: _screen, ...rest } = v;
+            if (mediaClearedAt) return rest;
+            const camSource = v.imagePath || v.imageUrl;
+            const screenSource = v.screenImagePath || v.screenImageUrl;
+            const [camSigned, screenSigned] = await Promise.all([
+              camSource
+                ? resolveSessionSignedUrl("screenshots", camSource, input.sessionId, organizationId, scope)
+                : Promise.resolve(null),
+              screenSource
+                ? resolveSessionSignedUrl("screenshots", screenSource, input.sessionId, organizationId, scope)
+                : Promise.resolve(null),
+            ]);
+            return {
+              ...rest,
+              ...(camSigned ? { imageUrl: camSigned } : {}),
+              ...(screenSigned ? { screenImageUrl: screenSigned } : {}),
+            };
           }),
         );
       }
 
+      const rawSignals = (session as Record<string, unknown>).integritySignals;
+      const integritySignals = (Array.isArray(rawSignals) ? rawSignals : []) as IntegritySignal[];
+
+      // Saved questions + preset/bank texts so the report lists every question asked (HR / general ones unscored).
+      let bankQuestions: Array<{ text: string; sectionName: string }> = [];
+      try {
+        bankQuestions = await loadAllBankQuestionsForExclusion(supabaseAdmin, organizationId);
+      } catch {
+        /* the report still lists the saved questions */
+      }
+      const interviewQuestions = (interview.questions ?? [])
+        .slice()
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const excludedQuestionTexts = collectExcludedScoreTexts(interviewQuestions, bankQuestions);
+
       return {
+        organizationId,
+        interviewQuestions,
+        excludedQuestionTexts,
         interviewTitle: interview.title,
         interviewObjective: interview.objective,
+        interviewLanguage: interview.language ?? null,
         participantName: session.participantName,
         participantEmail: session.participantEmail,
+        candidateId: ((session as { candidateId?: string | null }).candidateId ?? null) as string | null,
         status: session.status,
         createdAt: session.createdAt,
         summary: session.summary,
+        reportStatus: (session as { reportStatus?: string | null }).reportStatus ?? null,
+        reportError: (session as { reportError?: string | null }).reportError ?? null,
+        reportStartedAt: (session as { reportStartedAt?: string | null }).reportStartedAt ?? null,
+        completedAt: (session as { completedAt?: string | null }).completedAt ?? null,
         insights: session.insights,
         themes: session.themes,
         sentiment: session.sentiment,
         messages: session.messages,
-        totalDurationSeconds: session.totalDurationSeconds,
+        totalDurationSeconds: effectiveDurationSeconds(
+          session as never,
+          lastMessageAt((session.messages ?? []) as { role: string; timestamp?: string }[]),
+        ),
+        lastHeartbeatAt: (session as { lastHeartbeatAt?: string | null }).lastHeartbeatAt ?? null,
+        interviewBeganAt: (session as { interviewBeganAt?: string | null }).interviewBeganAt ?? null,
         audioRecordingUrl,
         audioDuration: (session as Record<string, unknown>).audioDuration as number | null,
         screenshots,
-        antiCheatingLog: (session as Record<string, unknown>).antiCheatingLog as
-          | { type: string; timestamp: number; detail?: string }[]
-          | null,
+        antiCheatingLog,
+        integritySignals,
+        integrity: integritySignals.length ? assessIntegrity(integritySignals, rawLog ?? []) : null,
         mediaReviewStatus:
           (session as { mediaReviewStatus?: string | null }).mediaReviewStatus ?? "pending",
         mediaExpiresAt: (session as { mediaExpiresAt?: string | null }).mediaExpiresAt ?? null,
         mediaClearedAt,
+        rejectReason: (session as { rejectReason?: string | null }).rejectReason ?? null,
+        rejectTags: (session as { rejectTags?: string[] | null }).rejectTags ?? [],
+        doubtful: (session as { integrityDoubtfulAt?: string | null }).integrityDoubtfulAt
+          ? {
+              at: (session as { integrityDoubtfulAt: string }).integrityDoubtfulAt,
+              remark: (session as { integrityDoubtfulRemark?: string | null }).integrityDoubtfulRemark ?? "",
+              by: (session as { integrityDoubtfulBy?: string | null }).integrityDoubtfulBy ?? null,
+            }
+          : null,
       };
     }),
 

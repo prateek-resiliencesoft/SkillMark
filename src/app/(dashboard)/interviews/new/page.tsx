@@ -3,6 +3,10 @@
 import { useAppLocale } from "@/components/app-locale-provider";
 import { BulkCvGenerator } from "@/components/batch/bulk-cv-generator";
 import { AIGenerator } from "@/components/interview/ai-generator";
+import {
+  PremadeQuestionPicker,
+  selectedPremadePayload,
+} from "@/components/questions/premade-question-picker";
 import { useOrg } from "@/components/org-provider";
 import { useProject } from "@/components/project-provider";
 import { Button } from "@/components/ui/button";
@@ -27,11 +31,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { AI_TONES, FOLLOW_UP_DEPTHS, LANGUAGES } from "@/lib/constants";
+import {
+  INTERVIEWER_GENDER_OPTIONS,
+  normalizeInterviewerGender,
+  type InterviewerGender,
+} from "@/lib/interviewer-persona";
+import {
+  excludeFromScoreValidationRules,
+  flattenEnabledBankList,
+} from "@/lib/premade-sections";
+import { ensureIntroQuestion, sortGeneralQuestions } from "@/lib/question-order";
 import { trpc } from "@/lib/trpc/client";
 import {
   Files,
   Loader2,
-  Layers,
   MessageSquare,
   Mic,
   PenLine,
@@ -40,7 +53,7 @@ import {
   Video,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 export default function NewInterviewPage() {
   const router = useRouter();
@@ -50,6 +63,8 @@ export default function NewInterviewPage() {
   const { currentProject } = useProject();
   const projectId =
     searchParams.get("projectId") ?? currentProject?.id ?? undefined;
+  const bankOrgId =
+    currentProject?.organizationId || currentOrg?.id || "";
   const { toast } = useToast();
   const [tab, setTab] = useState(searchParams.get("tab") === "bulk" ? "bulk" : "ai");
   const isZh = locale === "zh";
@@ -62,6 +77,14 @@ export default function NewInterviewPage() {
   const [aiTone, setAiTone] = useState<
     "CASUAL" | "PROFESSIONAL" | "FORMAL" | "FRIENDLY"
   >("FRIENDLY");
+  const [aiGender, setAiGender] = useState<InterviewerGender>(
+    normalizeInterviewerGender(currentOrg?.defaultInterviewerGender),
+  );
+  useEffect(() => {
+    if (currentOrg?.defaultInterviewerGender) {
+      setAiGender(normalizeInterviewerGender(currentOrg.defaultInterviewerGender));
+    }
+  }, [currentOrg?.defaultInterviewerGender]);
   const [followUpDepth, setFollowUpDepth] = useState<
     "LIGHT" | "MODERATE" | "DEEP"
   >("MODERATE");
@@ -69,12 +92,21 @@ export default function NewInterviewPage() {
   const [duration, setDuration] = useState<number | undefined>(undefined);
   const [antiCheatingEnabled, setAntiCheatingEnabled] = useState(false);
   const [headMovementDetectionEnabled, setHeadMovementDetectionEnabled] = useState<boolean>(false);
+  const [autoLeftFollowup, setAutoLeftFollowup] = useState(true);
   const [includePremade, setIncludePremade] = useState(true);
+  const [selectedPremadeIds, setSelectedPremadeIds] = useState<Set<string>>(new Set());
+  const [premadeInterviewType, setPremadeInterviewType] = useState<
+    "technical" | "behavioral" | "mixed" | "screening"
+  >("mixed");
   const [loading, setLoading] = useState(false);
 
-  const enabledPremadeQuery = trpc.questionBank.getEnabledQuestions.useQuery(
-    { organizationId: currentOrg?.id ?? "" },
-    { enabled: !!currentOrg?.id, staleTime: 30_000 },
+  const bankListQuery = trpc.questionBank.list.useQuery(
+    { organizationId: bankOrgId },
+    { enabled: !!bankOrgId, staleTime: 30_000 },
+  );
+  const enabledPremadeQuestions = useMemo(
+    () => flattenEnabledBankList(bankListQuery.data).questions,
+    [bankListQuery.data],
   );
 
   const createQuestionMutation = trpc.question.create.useMutation();
@@ -102,22 +134,34 @@ export default function NewInterviewPage() {
         voiceEnabled,
         videoEnabled,
         aiTone,
+        aiGender,
         followUpDepth,
         language,
         timeLimitMinutes: duration,
         antiCheatingEnabled,
         headMovementDetectionEnabled: antiCheatingEnabled && headMovementDetectionEnabled,
+        autoLeftFollowup,
       });
 
-      if (includePremade && enabledPremadeQuery.data?.questions) {
-        const questionsToCreate = enabledPremadeQuery.data.questions;
-        for (let i = 0; i < questionsToCreate.length; i++) {
-          const q = questionsToCreate[i];
+      const pickedRaw = selectedPremadePayload(
+        enabledPremadeQuestions,
+        selectedPremadeIds,
+        includePremade,
+      );
+      // Canonical order: intro, CTC, location, bond, … plus a standard intro if the bank has none.
+      const picked = pickedRaw?.length
+        ? ensureIntroQuestion(sortGeneralQuestions(pickedRaw), { language })
+        : pickedRaw;
+      if (picked?.length) {
+        for (let i = 0; i < picked.length; i++) {
+          const q = picked[i];
+          const full = enabledPremadeQuestions.find((bq) => bq.text === q.text);
+          const qRules = (q as { validationRules?: { excludeFromScore?: boolean } }).validationRules;
           await createQuestionMutation.mutateAsync({
             interviewId: interview.id,
             order: i,
             text: q.text,
-            type: q.type as
+            type: (q.type ?? "OPEN_ENDED") as
               | "OPEN_ENDED"
               | "SINGLE_CHOICE"
               | "MULTIPLE_CHOICE"
@@ -125,10 +169,14 @@ export default function NewInterviewPage() {
               | "WHITEBOARD"
               | "RESEARCH",
             description: q.description ?? undefined,
-            options: q.options ?? undefined,
+            options: (full?.options ?? q.options) ?? undefined,
             starterCode:
-              (q.starterCode as { language: string; code: string } | null) ??
-              undefined,
+              ((full?.starterCode ?? q.starterCode) as {
+                language: string;
+                code: string;
+              } | null) ?? undefined,
+            validationRules:
+              qRules ?? excludeFromScoreValidationRules(q.sectionName) ?? undefined,
           });
         }
       }
@@ -402,12 +450,45 @@ export default function NewInterviewPage() {
                   </div>
                 </div>
 
+                <div className="space-y-2">
+                  <Label>{isZh ? "未完成跟进" : "Incomplete follow-up"}</Label>
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <Label>{isZh ? "离开时自动跟进" : "Auto follow-up on abandon"}</Label>
+                      <p className="text-xs text-muted-foreground">
+                        {isZh
+                          ? "默认开启。候选人中途离开会自动收到未完成提醒（含恢复链接）。关闭后需手动发送。"
+                          : "On by default. Candidates who leave mid-interview get interview_incomplete_reminder with their resume link. Turn off for manual send only."}
+                      </p>
+                    </div>
+                    <Switch checked={autoLeftFollowup} onCheckedChange={setAutoLeftFollowup} />
+                  </div>
+                </div>
+
                 {/* AI Configuration */}
                 <div className="mt-4 space-y-3">
                   <Label className="block text-sm font-medium">
                     {isZh ? "AI 配置" : "AI Configuration"}
                   </Label>
-                  <div className="grid gap-4 rounded-lg border p-3 sm:grid-cols-3">
+                  <div className="grid gap-4 rounded-lg border p-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label>{isZh ? "面试官性别" : "Interviewer gender"}</Label>
+                      <Select
+                        value={aiGender}
+                        onValueChange={(v) => setAiGender(v as InterviewerGender)}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {INTERVIEWER_GENDER_OPTIONS.map((g) => (
+                            <SelectItem key={g.value} value={g.value}>
+                              {isZh ? g.labelZh : g.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
                     <div className="space-y-2">
                       <Label>{isZh ? "语气" : "Tone"}</Label>
                       <Select
@@ -464,32 +545,37 @@ export default function NewInterviewPage() {
                   </div>
                 </div>
 
-                {/* Premade Question Bank Options */}
-                <div className="rounded-xl border border-border/80 bg-muted/20 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <Layers className="h-4 w-4 text-primary" />
-                      <div>
-                        <Label className="text-sm font-semibold cursor-pointer">
-                          {isZh ? "包含题库中的预设轮次题目" : "Include Premade Bank Questions"}
-                        </Label>
-                        <p className="text-xs text-muted-foreground">
-                          {isZh
-                            ? "自动添加筛选轮、技术轮和 HR 轮的默认题目"
-                            : "Auto-populates standard Screening, Technical, and HR round questions"}
-                        </p>
-                      </div>
-                    </div>
-                    <Switch
-                      checked={includePremade}
-                      onCheckedChange={setIncludePremade}
-                    />
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <Label className="text-sm font-semibold">
+                      {isZh ? "题库预设题目" : "Premade bank questions"}
+                    </Label>
+                    <Select
+                      value={premadeInterviewType}
+                      onValueChange={(v) =>
+                        setPremadeInterviewType(v as typeof premadeInterviewType)
+                      }
+                    >
+                      <SelectTrigger className="h-8 w-[160px] text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="mixed">Mixed (all)</SelectItem>
+                        <SelectItem value="screening">Screening</SelectItem>
+                        <SelectItem value="technical">Technical</SelectItem>
+                        <SelectItem value="behavioral">Behavioral</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  {includePremade && (enabledPremadeQuery.data?.questions?.length ?? 0) > 0 && (
-                    <div className="text-xs text-primary font-medium pt-1">
-                      ✓ {enabledPremadeQuery.data?.questions.length} premade questions will be automatically added to this interview
-                    </div>
-                  )}
+                  <PremadeQuestionPicker
+                    organizationId={bankOrgId}
+                    interviewType={premadeInterviewType}
+                    includePremade={includePremade}
+                    onIncludeChange={setIncludePremade}
+                    selectedIds={selectedPremadeIds}
+                    onSelectedChange={setSelectedPremadeIds}
+                    compact
+                  />
                 </div>
 
                 <Button type="submit" disabled={loading || !title}>

@@ -1,40 +1,57 @@
-import type { AiProviderId, ResolvedAiCredentials } from "./credentials";
-import { decryptAiProviders, resolveCredentials } from "./credentials";
+import type { AiProviderId, AiTaskKind, ResolvedAiCredentials } from "./credentials";
+import {
+  DEFAULT_TASK_ROUTING,
+  decryptAiProviders,
+  defaultModelForProvider,
+  resolveCredentials,
+  routingForTask,
+  taskModelOverride,
+} from "./credentials";
 import { createLogger } from "@/lib/logger";
+import { configuredGeminiModel, GEMINI_FALLBACK_MODELS, normalizeGeminiModel } from "./gemini-models";
+import { isAuthError, isQuotaError, keyChainExhaustedError, splitKeyList } from "./key-chain";
 import { AnthropicProvider } from "./providers/anthropic";
 import { CompatibleOpenAIProvider } from "./providers/compatible";
 import { KimiProvider } from "./providers/kimi";
 import { MinimaxProvider } from "./providers/minimax";
 import { OpenAIProvider } from "./providers/openai";
+import { tracedGenerate, tracedStream } from "./tracing";
 import type { LLMProvider } from "./types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 const log = createLogger("ai/registry");
 
-type ChainEntry = { provider: LLMProvider; model: string; source: "org" | "env" };
+type ChainEntry = {
+  provider: LLMProvider;
+  model: string;
+  source: "org" | "env";
+  keyIndex: number;
+};
 
 function modelFor(provider: LLMProvider, kind: "generator" | "report" = "generator"): string {
   const id = provider.id;
   if (kind === "report") {
     if (id === "openai") return process.env.OPENAI_REPORT_MODEL || process.env.OPENAI_MODEL || "gpt-4o";
-    if (id === "gemini") return process.env.GEMINI_REPORT_MODEL || process.env.GEMINI_MODEL || provider.defaultModel;
+    if (id === "gemini") return normalizeGeminiModel(process.env.GEMINI_REPORT_MODEL || process.env.GEMINI_MODEL || provider.defaultModel);
     if (id === "anthropic") return process.env.ANTHROPIC_REPORT_MODEL || process.env.ANTHROPIC_MODEL || provider.defaultModel;
   }
-  const envModel: Record<string, string | undefined> = {
-    openai: process.env.OPENAI_MODEL,
-    gemini: process.env.GEMINI_MODEL,
-    nvidia: process.env.NVIDIA_MODEL,
-    anthropic: process.env.ANTHROPIC_MODEL,
-    custom: process.env.CUSTOM_LLM_MODEL,
-    kimi: "moonshot-v1-8k",
-    minimax: "MiniMax-M2.1-lightning",
-  };
-  return envModel[id] || provider.defaultModel;
+  if (id === "kimi") return "moonshot-v1-8k";
+  if (id === "minimax") return "MiniMax-M2.1-lightning";
+  if (
+    id === "openai" ||
+    id === "gemini" ||
+    id === "nvidia" ||
+    id === "anthropic" ||
+    id === "custom"
+  ) {
+    return defaultModelForProvider(id);
+  }
+  return provider.defaultModel;
 }
 
 /** Org keys + env keys, read fresh from the DB on every call (no caching). */
-async function loadCredsPair(organizationId?: string | null) {
-  let orgPlain = {};
+export async function loadCredsPair(organizationId?: string | null) {
+  let orgPlain = decryptAiProviders({});
   if (organizationId) {
     const { data } = await supabaseAdmin
       .from("org_integrations")
@@ -42,52 +59,236 @@ async function loadCredsPair(organizationId?: string | null) {
       .eq("organizationId", organizationId)
       .maybeSingle();
     orgPlain = decryptAiProviders(data?.aiProviders);
+  } else {
+    // Platform ops / bug triage (no org): use superadmin-configured keys, then env.
+    try {
+      const { loadPlatformAiPlain } = await import("@/lib/ai/platform-credentials");
+      orgPlain = await loadPlatformAiPlain();
+    } catch {
+      orgPlain = decryptAiProviders({});
+    }
   }
-  return { merged: resolveCredentials(orgPlain), envOnly: resolveCredentials({}) };
+  return {
+    merged: resolveCredentials(orgPlain),
+    envOnly: resolveCredentials({}),
+    routing: orgPlain.routing ?? {},
+    orgPlain,
+  };
+}
+
+function providerInstance(
+  id: AiProviderId,
+  apiKey: string,
+  baseUrl: string | undefined,
+  untrustedBaseUrl = false,
+): LLMProvider | null {
+  if (!apiKey && id !== "custom") return null;
+  if (id === "openai") {
+    return new CompatibleOpenAIProvider({
+      id: "openai",
+      name: "OpenAI",
+      models: openaiModels(),
+      defaultModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      apiKey,
+      baseURL: baseUrl,
+    });
+  }
+  if (id === "gemini") {
+    return new CompatibleOpenAIProvider({
+      id: "gemini",
+      name: "Google Gemini",
+      models: geminiModels(),
+      defaultModel: configuredGeminiModel(),
+      apiKey,
+      baseURL: baseUrl,
+    });
+  }
+  if (id === "nvidia") {
+    return new CompatibleOpenAIProvider({
+      id: "nvidia",
+      name: "NVIDIA",
+      models: nvidiaModels(),
+      defaultModel: process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct",
+      apiKey,
+      baseURL: baseUrl,
+    });
+  }
+  if (id === "anthropic") {
+    return new AnthropicProvider({
+      apiKey,
+      defaultModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
+    });
+  }
+  if (id === "groq") {
+    return new CompatibleOpenAIProvider({
+      id: "groq",
+      name: "Groq",
+      models: groqModels(),
+      defaultModel: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+      apiKey,
+      baseURL: baseUrl,
+    });
+  }
+  if (id === "custom") {
+    return new CompatibleOpenAIProvider({
+      id: "custom",
+      name: "Custom / local",
+      models: customModels(),
+      defaultModel: process.env.CUSTOM_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini",
+      apiKey: apiKey || "ollama",
+      baseURL: baseUrl,
+      untrustedBaseUrl,
+    });
+  }
+  return null;
 }
 
 /**
- * Ordered candidates: the .env default keys FIRST (Settings order), then the
- * org's saved AI Provider keys (skipping keys identical to an env key). Legacy
- * Kimi/MiniMax last. Failover moves down this list on quota/auth errors.
+ * Ordered candidates for a workload:
+ * 1) Org routing order for the task (each provider's keys 1→N)
+ * 2) Remaining org providers/keys not already listed
+ * 3) Env keys
+ * 4) Legacy Kimi/MiniMax
+ *
+ * Failover walks this list silently until one works.
  */
-export async function resolveProviderChain(organizationId?: string | null): Promise<ChainEntry[]> {
-  const { merged, envOnly } = await loadCredsPair(organizationId);
-  const orgMap = buildFromCreds(merged);
-  const envMap = buildFromCreds(envOnly);
+export async function resolveProviderChain(
+  organizationId?: string | null,
+  task: AiTaskKind = "standard",
+): Promise<ChainEntry[]> {
+  const { merged, envOnly, routing, orgPlain } = await loadCredsPair(organizationId);
+  const order = routingForTask(routing, task);
   const chain: ChainEntry[] = [];
   const seenKeys = new Set<string>();
-  for (const id of SETTINGS_ORDER) {
-    const k = envOnly[id].apiKey;
-    if (envOnly[id].from === "env" && k && envMap.has(id)) {
-      chain.push({ provider: envMap.get(id)!, model: modelFor(envMap.get(id)!), source: "env" });
+
+  const pushKeys = (
+    id: AiProviderId,
+    keys: string[],
+    baseUrl: string | undefined,
+    source: "org" | "env",
+    untrustedBaseUrl = false,
+  ) => {
+    keys.forEach((k, keyIndex) => {
+      if (!k || seenKeys.has(`${id}:${k}`)) return;
+      const provider = providerInstance(id, k, baseUrl, untrustedBaseUrl);
+      if (!provider) return;
+      chain.push({
+        provider,
+        // Custom endpoint: honour the model the org configured for text work; then a
+        // per-task env override (AI_MODEL_<TASK>_<PROVIDER>); then the provider default.
+        model:
+          (id === "custom" && source === "org" && orgPlain.custom?.textModel) ||
+          taskModel(task, id) ||
+          modelFor(provider),
+        source,
+        keyIndex,
+      });
       seenKeys.add(`${id}:${k}`);
+    });
+  };
+
+  // Org keys in task priority order (primary → backups), each with up to 5 keys.
+  for (const id of order) {
+    if (merged[id].from === "org" && merged[id].apiKeys.length) {
+      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org", merged[id].untrustedBaseUrl);
+    }
+  }
+  // Any other org-configured providers not in the task list.
+  for (const id of SETTINGS_ORDER) {
+    if (order.includes(id)) continue;
+    if (merged[id].from === "org" && merged[id].apiKeys.length) {
+      pushKeys(id, merged[id].apiKeys, merged[id].baseUrl, "org", merged[id].untrustedBaseUrl);
+    }
+  }
+  // Env fallbacks last (platform defaults).
+  for (const id of order.length ? order : SETTINGS_ORDER) {
+    if (envOnly[id].from === "env" && envOnly[id].apiKeys.length) {
+      pushKeys(id, envOnly[id].apiKeys, envOnly[id].baseUrl, "env");
     }
   }
   for (const id of SETTINGS_ORDER) {
-    const k = merged[id].apiKey;
-    if (merged[id].from === "org" && k && !seenKeys.has(`${id}:${k}`) && orgMap.has(id)) {
-      chain.push({ provider: orgMap.get(id)!, model: modelFor(orgMap.get(id)!), source: "org" });
-      seenKeys.add(`${id}:${k}`);
+    if (envOnly[id].from === "env" && envOnly[id].apiKeys.length) {
+      pushKeys(id, envOnly[id].apiKeys, envOnly[id].baseUrl, "env");
     }
   }
-  if (process.env.KIMI_API_KEY && envMap.has("kimi")) chain.push({ provider: envMap.get("kimi")!, model: modelFor(envMap.get("kimi")!), source: "env" });
-  if (process.env.MINIMAX_API_KEY && envMap.has("minimax")) chain.push({ provider: envMap.get("minimax")!, model: modelFor(envMap.get("minimax")!), source: "env" });
+
+  const envMap = buildFromCreds(envOnly);
+  if (process.env.KIMI_API_KEY && envMap.has("kimi")) {
+    chain.push({
+      provider: envMap.get("kimi")!,
+      model: modelFor(envMap.get("kimi")!),
+      source: "env",
+      keyIndex: 0,
+    });
+  }
+  if (process.env.MINIMAX_API_KEY && envMap.has("minimax")) {
+    chain.push({
+      provider: envMap.get("minimax")!,
+      model: modelFor(envMap.get("minimax")!),
+      source: "env",
+      keyIndex: 0,
+    });
+  }
   return chain;
 }
 
-export function isQuotaError(err: unknown): boolean {
-  const e = err as { status?: number; message?: string; code?: string };
-  if (e?.status === 429) return true;
-  return /\b429\b|quota|RESOURCE_EXHAUSTED|rate.?limit/i.test(e?.message ?? "");
+function taskModel(task: AiTaskKind, id: AiProviderId): string | null {
+  const m = taskModelOverride(task, id);
+  if (!m) return null;
+  return id === "gemini" ? normalizeGeminiModel(m) : m;
 }
 
-/** Quota/limit, or a missing/invalid/unauthorized key → try the next key. */
+export { isQuotaError };
+
+/** Transient / auth / quota / dead model → try next key or provider. Client only sees error after chain exhausted. */
 export function shouldFailover(err: unknown): boolean {
-  const e = err as { status?: number; message?: string };
+  const e = err as { status?: number; message?: string; code?: string; name?: string };
   if (isQuotaError(err)) return true;
   if (e?.status === 401 || e?.status === 403) return true;
-  return /api key not valid|invalid api key|incorrect api key|API_KEY_INVALID|unauthori[sz]ed|permission denied/i.test(e?.message ?? "");
+  // Wrong/retired model id for this provider — try next key/provider with its own model.
+  if (e?.status === 404 || e?.status === 410) return true;
+  // 400 often = bad model id / max_tokens / unsupported response_format on compat APIs
+  if (e?.status === 400 || e?.status === 408 || e?.status === 500 || e?.status === 502 || e?.status === 503 || e?.status === 504) {
+    return true;
+  }
+  const msg = e?.message ?? "";
+  if (/api key not valid|invalid api key|incorrect api key|API_KEY_INVALID|unauthori[sz]ed|permission denied/i.test(msg)) {
+    return true;
+  }
+  if (/410\s+status code|gone|retired|no longer (available|supported)|model .*unavailable|not found/i.test(msg)) {
+    return true;
+  }
+  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|network|socket hang up|overloaded|unavailable/i.test(msg)) {
+    return true;
+  }
+  if (e?.name === "AbortError" || e?.code === "ECONNRESET") return true;
+  return false;
+}
+
+/** Never send a Gemini model id to OpenAI (or vice versa). */
+export function modelFitsProvider(provider: LLMProvider, model?: string | null): boolean {
+  if (!model?.trim()) return false;
+  const m = model.trim().toLowerCase();
+  if (provider.models.some((x) => x.toLowerCase() === m)) return true;
+  const id = provider.id;
+  if (id === "custom") return true; // custom endpoint accepts whatever the org configured
+  if (id === "gemini") return m.startsWith("gemini") || m.startsWith("models/gemini");
+  if (id === "openai") return /^(gpt-|o[1-9]|chatgpt|text-embedding|ft:)/.test(m);
+  if (id === "anthropic") return m.startsWith("claude");
+  if (id === "nvidia") return m.includes("/") || m.startsWith("meta") || m.startsWith("nvidia");
+  if (id === "groq") {
+    return (
+      m.includes("/") ||
+      m.startsWith("llama") ||
+      m.startsWith("gemma") ||
+      m.startsWith("mixtral") ||
+      m.startsWith("qwen") ||
+      m.includes("gpt-oss")
+    );
+  }
+  if (id === "kimi") return m.includes("moonshot") || m.includes("kimi");
+  if (id === "minimax") return m.toLowerCase().includes("minimax");
+  return false;
 }
 
 /**
@@ -100,6 +301,20 @@ export class FailoverProvider implements LLMProvider {
   models: string[];
   defaultModel: string;
   private last: ChainEntry;
+  /** Per-key failures seen by this instance (no key material — provider/source/slot only). */
+  failures: { provider: string; source: "org" | "env"; keyIndex: number; status?: number; message: string; at: string }[] = [];
+  /** Which entry finally served the call. */
+  served: { provider: string; source: "org" | "env"; keyIndex: number; failover: boolean } | null = null;
+  private noteFailure(e: ChainEntry, err: unknown) {
+    this.failures.push({
+      provider: e.provider.id,
+      source: e.source,
+      keyIndex: e.keyIndex,
+      status: (err as { status?: number })?.status,
+      message: err instanceof Error ? err.message : String(err),
+      at: new Date().toISOString(),
+    });
+  }
   constructor(private chain: ChainEntry[]) {
     this.last = chain[0];
     this.id = chain[0].provider.id;
@@ -114,62 +329,103 @@ export class FailoverProvider implements LLMProvider {
   get lastProviderLabel(): string {
     return `${this.last.provider.id}/${this.last.source}`;
   }
-  /** Clear error once every key has failed; keeps .status so callers can detect 429. */
-  private allFailed(err: unknown): Error {
-    const e = err as { status?: number; message?: string };
-    const tried = this.chain.map((c) => `${c.provider.id}/${c.source}`).join(", ");
-    const out = new Error(
-      `All AI keys failed (${tried}). Last error: ${e?.message ?? String(err)}. Add or check keys in Settings → AI Providers.`,
-    ) as Error & { status?: number };
-    out.status = e?.status;
-    log.error(`All AI keys failed: ${tried}`);
-    return out;
+  /** Clear error once every key has failed; status is 429 when any key was out of quota. */
+  private allFailed(err: unknown, sawQuota: boolean, onlyQuotaOrAuth: boolean): Error {
+    const tried = this.chain.map((c) => `${c.provider.id}/${c.source}#${c.keyIndex + 1}`).join(", ");
+    log.error(
+      `All AI keys failed${sawQuota ? " (quota)" : ""}: ${tried}\n` +
+        this.failures
+          .map((f) => `  ${f.provider}/${f.source}#${f.keyIndex + 1} → ${f.status ?? "err"}: ${f.message.replace(/\s+/g, " ").slice(0, 300)}`)
+          .join("\n"),
+    );
+    return keyChainExhaustedError(tried, err, sawQuota, onlyQuotaOrAuth);
   }
-  private modelForEntry(i: number, requested?: string) {
-    const e = this.chain[i];
-    if (i === 0 && requested) return requested;
-    if (requested && e.provider.models.some((m) => m.toLowerCase() === requested.toLowerCase())) return requested;
-    return e.model;
+  /**
+   * Per-entry model: use requested only if it belongs to THIS provider.
+   * Failover to OpenAI must never keep a Gemini model id (and vice versa).
+   */
+  private modelForEntry(_i: number, requested?: string) {
+    const e = this.chain[_i];
+    if (requested && modelFitsProvider(e.provider, requested)) return requested;
+    return e.model; // provider's own default (OPENAI_MODEL / GEMINI_MODEL / …)
   }
   async generateResponse(params: Parameters<LLMProvider["generateResponse"]>[0]) {
     let lastErr: unknown;
+    let sawQuota = false;
+    let onlyQuotaOrAuth = true;
     for (let i = 0; i < this.chain.length; i++) {
+      params.signal?.throwIfAborted(); // budget spent: don't start another key
       const e = this.chain[i];
       this.last = e;
       try {
-        const res = await e.provider.generateResponse({ ...params, model: this.modelForEntry(i, params.model) });
-        log.info(`AI call served by ${e.provider.id} (${e.source} key)${i > 0 ? " after failover" : ""}`);
+        const model = this.modelForEntry(i, params.model);
+        const res = await tracedGenerate(
+          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          params,
+          () => e.provider.generateResponse({ ...params, model }),
+        );
+        this.served = { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, failover: i > 0 };
+        log.info(
+          `AI call served by ${e.provider.id} (${e.source} key #${e.keyIndex + 1})${i > 0 ? " after failover" : ""}`,
+        );
         return res;
       } catch (err) {
         lastErr = err;
+        this.noteFailure(e, err);
+        if (params.signal?.aborted) throw err;
+        sawQuota ||= isQuotaError(err);
+        onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
         if (!shouldFailover(err)) throw err;
-        if (i === this.chain.length - 1) throw this.allFailed(err);
-        log.warn(`${e.provider.id} (${e.source} key) failed (${(err as { status?: number })?.status ?? "quota/auth"}) — trying next key`);
+        if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
+        log.warn(
+          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}): ${failureText(err)} — trying next`,
+        );
       }
     }
     throw lastErr;
   }
   async *streamResponse(params: Parameters<LLMProvider["streamResponse"]>[0]) {
     let lastErr: unknown;
+    let sawQuota = false;
+    let onlyQuotaOrAuth = true;
     for (let i = 0; i < this.chain.length; i++) {
+      params.signal?.throwIfAborted();
       const e = this.chain[i];
       this.last = e;
       let yielded = false;
       try {
-        for await (const t of e.provider.streamResponse({ ...params, model: this.modelForEntry(i, params.model) })) {
+        const model = this.modelForEntry(i, params.model);
+        for await (const t of tracedStream(
+          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          params,
+          () => e.provider.streamResponse({ ...params, model }),
+        )) {
           yielded = true;
           yield t;
         }
+        this.served = { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, failover: i > 0 };
         return;
       } catch (err) {
         lastErr = err;
+        this.noteFailure(e, err);
+        if (params.signal?.aborted) throw err;
+        sawQuota ||= isQuotaError(err);
+        onlyQuotaOrAuth &&= isQuotaError(err) || isAuthError(err);
+        // Mid-stream failure after tokens were sent cannot silently switch providers.
         if (yielded || !shouldFailover(err)) throw err;
-        if (i === this.chain.length - 1) throw this.allFailed(err);
-        log.warn(`${e.provider.id} (${e.source} key) failed (${(err as { status?: number })?.status ?? "quota/auth"}) — trying next key`);
+        if (i === this.chain.length - 1) throw this.allFailed(err, sawQuota, onlyQuotaOrAuth);
+        log.warn(
+          `${e.provider.id} (${e.source} key #${e.keyIndex + 1}) failed (${(err as { status?: number })?.status ?? "err"}): ${failureText(err)} — trying next`,
+        );
       }
     }
     throw lastErr;
   }
+}
+
+/** One-line error reason for logs (provider message only; requests and keys are never included). */
+function failureText(err: unknown): string {
+  return (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 300);
 }
 
 function openaiModels() {
@@ -184,15 +440,19 @@ function openaiModels() {
 
 function geminiModels() {
   // Prefer current Flash; keep aliases so dead-model retries can cascade.
-  const d = process.env.GEMINI_MODEL || "gemini-3.5-flash";
-  return Array.from(
-    new Set([d, "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"]),
-  );
+  return Array.from(new Set([configuredGeminiModel(), ...GEMINI_FALLBACK_MODELS, "gemini-flash-latest"]));
 }
 
 function nvidiaModels() {
   const d = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
   return Array.from(new Set([d, "meta/llama-3.1-8b-instruct", "meta/llama-3.1-70b-instruct"]));
+}
+
+function groqModels() {
+  const d = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+  return Array.from(
+    new Set([d, "openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]),
+  );
 }
 
 function customModels() {
@@ -202,71 +462,19 @@ function customModels() {
 
 function buildFromCreds(creds: ResolvedAiCredentials): Map<string, LLMProvider> {
   const map = new Map<string, LLMProvider>();
-
-  map.set(
-    "openai",
-    new CompatibleOpenAIProvider({
-      id: "openai",
-      name: "OpenAI",
-      models: openaiModels(),
-      defaultModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      apiKey: creds.openai.apiKey,
-      baseURL: creds.openai.baseUrl,
-    }),
-  );
-
-  map.set(
-    "gemini",
-    new CompatibleOpenAIProvider({
-      id: "gemini",
-      name: "Google Gemini",
-      models: geminiModels(),
-      defaultModel: process.env.GEMINI_MODEL || "gemini-3.5-flash",
-      apiKey: creds.gemini.apiKey,
-      baseURL: creds.gemini.baseUrl,
-    }),
-  );
-
-  map.set(
-    "nvidia",
-    new CompatibleOpenAIProvider({
-      id: "nvidia",
-      name: "NVIDIA",
-      models: nvidiaModels(),
-      defaultModel: process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct",
-      apiKey: creds.nvidia.apiKey,
-      baseURL: creds.nvidia.baseUrl,
-    }),
-  );
-
-  map.set(
-    "anthropic",
-    new AnthropicProvider({
-      apiKey: creds.anthropic.apiKey,
-      defaultModel: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
-    }),
-  );
-
-  map.set(
-    "custom",
-    new CompatibleOpenAIProvider({
-      id: "custom",
-      name: "Custom / local",
-      models: customModels(),
-      defaultModel: process.env.CUSTOM_LLM_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini",
-      apiKey: creds.custom.apiKey || "ollama",
-      baseURL: creds.custom.baseUrl,
-    }),
-  );
-
+  for (const id of SETTINGS_ORDER) {
+    const first = creds[id].apiKeys[0];
+    if (!first && id !== "custom") continue;
+    const p = providerInstance(id, first || "ollama", creds[id].baseUrl, creds[id].untrustedBaseUrl);
+    if (p) map.set(id, p);
+  }
   // Legacy env-only providers (not in Settings → AI UI).
   map.set("kimi", new KimiProvider());
   map.set("minimax", new MinimaxProvider());
-
   return map;
 }
 
-const SETTINGS_ORDER: AiProviderId[] = ["openai", "gemini", "nvidia", "anthropic", "custom"];
+const SETTINGS_ORDER: AiProviderId[] = ["openai", "gemini", "nvidia", "anthropic", "groq", "custom"];
 const LEGACY_ORDER = ["kimi", "minimax"] as const;
 
 function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials): LLMProvider {
@@ -275,7 +483,7 @@ function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials
   for (const id of SETTINGS_ORDER) {
     const from = creds[id].from;
     if (preferOrg ? from === "org" : from !== "none") {
-      if (map.has(id) && creds[id].apiKey) return map.get(id)!;
+      if (map.has(id) && creds[id].apiKeys.length) return map.get(id)!;
     }
   }
   // Legacy env-only providers (Kimi / MiniMax) — last resort, never above Settings.
@@ -284,7 +492,7 @@ function pickDefault(map: Map<string, LLMProvider>, creds: ResolvedAiCredentials
     if (id === "minimax" && process.env.MINIMAX_API_KEY) return map.get(id)!;
   }
   throw new Error(
-    "No LLM provider configured. Add an API key in Project Settings → AI, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY in .env.",
+    "No LLM provider configured. Add an API key in Project Settings → AI, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / GROQ_API_KEY in .env.",
   );
 }
 
@@ -297,33 +505,11 @@ function matchProvider(map: Map<string, LLMProvider>, idOrModel?: string | null)
   return null;
 }
 
+const keyOrEmpty = splitKeyList;
+
 /** Sync env-only resolver (tests / callers without org context). */
 export function getProvider(idOrModel?: string | null): LLMProvider {
-  // Empty org → env-only credentials
-  const empty = {
-    openai: { apiKey: process.env.OPENAI_API_KEY ?? "", baseUrl: process.env.OPENAI_BASE_URL, from: process.env.OPENAI_API_KEY ? "env" : "none" },
-    gemini: {
-      apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
-      baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
-      from: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? "env" : "none",
-    },
-    nvidia: {
-      apiKey: process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY || "",
-      baseUrl: "https://integrate.api.nvidia.com/v1",
-      from: process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY ? "env" : "none",
-    },
-    anthropic: {
-      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-      baseUrl: undefined,
-      from: process.env.ANTHROPIC_API_KEY ? "env" : "none",
-    },
-    custom: {
-      apiKey: process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY || "",
-      baseUrl: process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL,
-      from: process.env.CUSTOM_LLM_API_KEY || process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_API_KEY ? "env" : "none",
-    },
-  } as ResolvedAiCredentials;
-
+  const empty = resolveEmptyCreds();
   const map = buildFromCreds(empty);
   return matchProvider(map, idOrModel) ?? pickDefault(map, empty);
 }
@@ -334,62 +520,78 @@ export function listProviders(): LLMProvider[] {
 
 function resolveEmptyCreds(): ResolvedAiCredentials {
   return {
-    openai: { apiKey: process.env.OPENAI_API_KEY ?? "", baseUrl: process.env.OPENAI_BASE_URL, from: process.env.OPENAI_API_KEY ? "env" : "none" },
+    openai: {
+      apiKeys: keyOrEmpty(process.env.OPENAI_API_KEY),
+      baseUrl: process.env.OPENAI_BASE_URL,
+      from: process.env.OPENAI_API_KEY ? "env" : "none",
+    },
     gemini: {
-      apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
+      apiKeys: keyOrEmpty(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
       baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
       from: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? "env" : "none",
     },
     nvidia: {
-      apiKey: process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY || "",
+      apiKeys: keyOrEmpty(process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY),
       baseUrl: "https://integrate.api.nvidia.com/v1",
       from: process.env.NVIDIA_API_KEY || process.env.NGC_API_KEY ? "env" : "none",
     },
-    anthropic: { apiKey: process.env.ANTHROPIC_API_KEY ?? "", from: process.env.ANTHROPIC_API_KEY ? "env" : "none" },
+    anthropic: {
+      apiKeys: keyOrEmpty(process.env.ANTHROPIC_API_KEY),
+      from: process.env.ANTHROPIC_API_KEY ? "env" : "none",
+    },
+    groq: {
+      apiKeys: keyOrEmpty(process.env.GROQ_API_KEY),
+      baseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1",
+      from: process.env.GROQ_API_KEY ? "env" : "none",
+    },
     custom: {
-      apiKey: process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY || "",
+      apiKeys: keyOrEmpty(process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY),
       baseUrl: process.env.CUSTOM_LLM_BASE_URL || process.env.OPENAI_BASE_URL,
-      from: process.env.CUSTOM_LLM_BASE_URL || process.env.CUSTOM_LLM_API_KEY ? "env" : "none",
+      from: process.env.CUSTOM_LLM_BASE_URL || process.env.CUSTOM_LLM_API_KEY || process.env.OPENAI_API_KEY ? "env" : "none",
     },
   };
 }
 
-/** Provider with failover: .env default key first, then org-saved keys. */
+/** Provider with failover across keys then backup providers for a task. */
 export async function resolveProvider(opts?: {
   organizationId?: string | null;
+  /** @deprecated Soft hint only — Settings → AI task routing owns order. Kept for API compat. */
   idOrModel?: string | null;
+  task?: AiTaskKind;
 }): Promise<LLMProvider> {
-  const chain = await resolveProviderChain(opts?.organizationId);
+  const chain = await resolveProviderChain(opts?.organizationId, opts?.task ?? "standard");
   if (!chain.length) {
     throw new Error(
-      "No LLM provider configured. Add an API key in Settings → AI Providers, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY in .env.",
+      "No LLM provider configured. Add an API key in Settings → AI Providers, or set OPENAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY / NVIDIA_API_KEY / GROQ_API_KEY in .env.",
     );
   }
-  // Interview-level provider/model preference: move the first matching entry to the front.
-  if (opts?.idOrModel) {
-    const want = opts.idOrModel.toLowerCase();
-    const idx = chain.findIndex(
-      (e) => e.provider.id === want || e.provider.models.some((m) => m.toLowerCase() === want),
-    );
-    if (idx > 0) chain.unshift(...chain.splice(idx, 1));
-  }
+  // Do NOT reorder by interview.llmProvider — that forced Gemini model ids onto OpenAI after
+  // failover/routing. Task priority list in Settings → AI is the source of truth.
+  void opts?.idOrModel;
   log.info(
-    `AI provider chain${opts?.organizationId ? ` (org ${opts.organizationId.slice(0, 8)})` : " (no org)"}: ${chain
-      .map((e) => `${e.provider.id}/${e.source}`)
+    `AI provider chain task=${opts?.task ?? "standard"}${opts?.organizationId ? ` org=${opts.organizationId.slice(0, 8)}` : ""}: ${chain
+      .map((e) => `${e.provider.id}/${e.source}#${e.keyIndex + 1}:${e.model}`)
       .join(" → ")}`,
   );
   return new FailoverProvider(chain);
 }
 
-export async function resolveTaskModels(organizationId?: string | null): Promise<{
+export async function resolveTaskModels(
+  organizationId?: string | null,
+  task: AiTaskKind = "generate",
+): Promise<{
   provider: LLMProvider;
   generatorModel: string;
   reportModel: string;
 }> {
-  const provider = (await resolveProvider({ organizationId })) as FailoverProvider;
+  const mapped: AiTaskKind =
+    task === "report" ? "report" : task === "resume" ? "resume" : task === "generate" ? "generate" : task;
+  const provider = (await resolveProvider({ organizationId, task: mapped })) as FailoverProvider;
   const head = (provider as unknown as { chain: ChainEntry[] }).chain[0].provider;
   return { provider, generatorModel: modelFor(head), reportModel: modelFor(head, "report") };
 }
+
+export { DEFAULT_TASK_ROUTING };
 
 /** @deprecated Prefer resolveTaskModels — kept for sync callers. */
 export const REPORT_MODEL = process.env.OPENAI_API_KEY

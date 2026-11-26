@@ -110,12 +110,14 @@ export function ChatInterface({
     if (remainingSeconds === null || remainingSeconds <= 0) return;
     const id = setInterval(() => {
       setRemainingSeconds((prev) => {
-        if (prev === null) return null;
+        if (prev === null || prev <= 0) return prev;
         return prev <= 1 ? 0 : prev - 1;
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [remainingSeconds]);
+    // Start once when countdown becomes active — do not rebind every second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remainingSeconds !== null && remainingSeconds > 0]);
 
   // ── Multiple drawings state ───────────────────────────────────
   interface Drawing {
@@ -734,9 +736,11 @@ export function ChatInterface({
 
       // Advance question tracker only when AI explicitly moved to next question
       if (data.questionAdvanced) {
-        setCurrentQuestion((prev) =>
-          Math.min(prev + 1, interview.questions.length)
-        );
+        const target =
+          typeof data.nextQuestionIndex === "number"
+            ? data.nextQuestionIndex
+            : currentQuestion + 1;
+        setCurrentQuestion(Math.min(target, interview.questions.length));
       }
 
       // Check for interview completion signal
@@ -844,9 +848,11 @@ export function ChatInterface({
       setMessages((prev) => [...prev, aiMessage]);
 
       if (data.questionAdvanced) {
-        setCurrentQuestion((prev) =>
-          Math.min(prev + 1, interview.questions.length)
-        );
+        const target =
+          typeof data.nextQuestionIndex === "number"
+            ? data.nextQuestionIndex
+            : prevIdx + 1;
+        setCurrentQuestion(Math.min(target, interview.questions.length));
       }
     } catch (error) {
       console.error("Previous question error:", error);
@@ -1074,7 +1080,7 @@ export function ChatInterface({
   // ── CODING / WHITEBOARD question: split layout with problem panel ──
   if (isCodingQuestion || isWhiteboardQuestion) {
     return (
-      <div className="flex h-screen flex-col bg-background">
+      <div className="flex h-[100dvh] flex-col bg-background">
         {/* Compact header */}
         <div className="flex items-center justify-between border-b bg-card px-3 py-2 md:px-4">
           <div className="mr-2 flex min-w-0 items-center gap-2 md:gap-3">
@@ -1220,6 +1226,7 @@ export function ChatInterface({
               {renderCodeSnippetTabs()}
               <div className="h-[300px]">
                 <CodeEditorCanvas
+                  sessionId={sessionId}
                   ref={codeEditorRef}
                   fillParent
                   dark={isDark}
@@ -1289,6 +1296,7 @@ export function ChatInterface({
                 {renderCodeSnippetTabs()}
                 <div className="flex-1">
                   <CodeEditorCanvas
+                    sessionId={sessionId}
                     ref={codeEditorRef}
                     fillParent
                     dark={isDark}
@@ -1397,7 +1405,7 @@ export function ChatInterface({
 
   // ── Normal (non-coding) layout ────────────────────────────────
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-[100dvh] flex-col bg-background">
       {/* Header */}
       <div className="border-b bg-card px-3 py-2 md:px-4 md:py-3">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
@@ -1559,6 +1567,7 @@ export function ChatInterface({
             {renderCodeSnippetTabs()}
             <div className="h-[400px]">
               <CodeEditorCanvas
+                sessionId={sessionId}
                 ref={codeEditorRef}
                 fillParent
                 dark={isDark}

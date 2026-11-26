@@ -1,6 +1,8 @@
 import { extractJson } from "@/lib/ai/extract-json";
+import { normalizeInterviewerGender, resolveInterviewerName } from "@/lib/interviewer-persona";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import { resolveTaskModels } from "@/lib/ai/registry";
+import { classifyAiFailure } from "@/lib/ai/key-chain";
 import type { GeneratedInterview } from "@/lib/ai/types";
 import { LANGUAGES } from "@/lib/constants";
 import { experienceBucket, profileToResumeText, type CandidateProfile } from "@/lib/documents/cv-profile";
@@ -8,6 +10,9 @@ import { nanoid } from "@/lib/id";
 import { createLogger } from "@/lib/logger";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
 import { dispatchOutboundWebhook } from "@/lib/messaging/webhooks";
+import { resolvePremadeQuestions } from "@/lib/auto-include-premade";
+import { completionNotifyMembersSchema } from "@/lib/completion-notify";
+import { questionSkipIfSchema } from "@/lib/question-conditions";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -16,6 +21,7 @@ import {
   verifyBatchAccess,
   verifyProjectAccess,
 } from "../batch-access";
+import { mergeInviteMessages, type InviteMessages } from "@/lib/messaging/invite-messages";
 import { deliverEmail, deliverWhatsapp, loadDeliveryConfig } from "../invite-delivery";
 import { assertMinRole, protectedProcedure, router } from "../trpc";
 
@@ -33,6 +39,7 @@ const batchSettings = z.object({
   voiceEnabled: z.boolean().default(true),
   videoEnabled: z.boolean().default(true),
   aiTone: z.enum(["CASUAL", "PROFESSIONAL", "FORMAL", "FRIENDLY"]).default("FRIENDLY"),
+  aiGender: z.enum(["FEMALE", "MALE"]).default("FEMALE"),
   followUpDepth: z.enum(["LIGHT", "MODERATE", "DEEP"]).default("MODERATE"),
   antiCheatingEnabled: z.boolean().default(false),
   headMovementDetectionEnabled: z.boolean().default(false),
@@ -46,10 +53,13 @@ const batchSettings = z.object({
         description: z.string().optional(),
         options: z.any().optional(),
         starterCode: z.any().optional(),
+        skipIf: questionSkipIfSchema,
       }),
     )
     .max(50)
     .optional(),
+  /** Team members to WhatsApp when any candidate in this batch finishes. */
+  completionNotifyMembers: completionNotifyMembersSchema.optional(),
 });
 export type BatchSettings = z.infer<typeof batchSettings>;
 
@@ -93,7 +103,7 @@ export const batchRouter = router({
     .input(z.object({ projectId: z.string().optional(), name: z.string().min(1).max(160), settings: batchSettings }))
     .mutation(async ({ ctx, input }) => {
       const projectId = input.projectId ?? (await resolveDefaultProjectId(ctx.supabase, ctx.user.id));
-      const { role } = await verifyProjectAccess(ctx.supabase, projectId, ctx.user.id);
+      const { role } = await verifyProjectAccess(ctx.supabase, projectId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
 
       const { data, error } = await ctx.supabase
@@ -113,7 +123,7 @@ export const batchRouter = router({
 
       const { data: batches, error } = await ctx.supabase
         .from("interview_batches")
-        .select("id, name, createdAt, settings, candidates(id, emailStatus, whatsappStatus, session:sessions(status))")
+        .select("id, name, createdAt, settings, candidates(id, emailStatus, whatsappStatus, session:sessions!candidates_sessionId_fkey(status))")
         .eq("projectId", projectId)
         .order("createdAt", { ascending: false });
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
@@ -136,7 +146,7 @@ export const batchRouter = router({
     const { data: candidates, error } = await ctx.supabase
       .from("candidates")
       .select(
-        "*, session:sessions(id, status, startedAt, completedAt, totalDurationSeconds, insights), interview:interviews(id, title, questions(id))",
+        "*, session:sessions!candidates_sessionId_fkey(id, status, reportStatus, startedAt, completedAt, createdAt, interviewBeganAt, lastHeartbeatAt, lastActivityAt, totalDurationSeconds, insights, endReason), interview:interviews(id, title, questions(id))",
       )
       .eq("batchId", input.id)
       .order("createdAt", { ascending: true });
@@ -162,8 +172,22 @@ export const batchRouter = router({
       emailProvider: (c.emailProvider as string | null) ?? null,
       whatsappProvider: (c.whatsappProvider as string | null) ?? null,
       lastSendError: (c.lastSendError as string | null) ?? null,
+      followupSentAt: (c.followupSentAt as string | null) ?? null,
+      followupSentToken: (c.followupSentToken as string | null) ?? null,
+      followupError: (c.followupError as string | null) ?? null,
+      decisionStatus: (c.decisionStatus as string | null) ?? "none",
       status: candidateStatus(c),
       sessionId: (c.session?.id as string | undefined) ?? null,
+      session: c.session
+        ? {
+            status: (c.session.status as string | undefined) ?? "NOT_STARTED",
+            startedAt: (c.session.startedAt as string | undefined) ?? null,
+            createdAt: (c.session.createdAt as string | undefined) ?? null,
+            interviewBeganAt: (c.session.interviewBeganAt as string | undefined) ?? null,
+            lastHeartbeatAt: (c.session.lastHeartbeatAt as string | undefined) ?? null,
+            lastActivityAt: (c.session.lastActivityAt as string | undefined) ?? null,
+          }
+        : null,
       startedAt: (c.session?.startedAt as string | undefined) ?? null,
       completedAt: (c.session?.completedAt as string | undefined) ?? null,
       durationSeconds: (c.session?.totalDurationSeconds as number | undefined) ?? null,
@@ -172,16 +196,45 @@ export const batchRouter = router({
       questionCount: (c.interview?.questions?.length as number | undefined) ?? 0,
     }));
 
+    const { data: batchIv } = await ctx.supabase
+      .from("interviews")
+      .select("autoLeftFollowup")
+      .eq("batchId", input.id)
+      .limit(1)
+      .maybeSingle();
+
     return {
       id: batch.id as string,
       name: batch.name as string,
       createdAt: batch.createdAt as string,
       settings: batch.settings as BatchSettings,
       canEdit: role !== "VIEWER",
+      autoLeftFollowup: !!(batchIv as { autoLeftFollowup?: boolean } | null)?.autoLeftFollowup,
       counts: summarize(rows.map((r) => ({ session: { status: r.status === "NOT_STARTED" ? undefined : r.status } }))),
       candidates: rows,
     };
   }),
+
+  /** Toggle auto incomplete follow-up for every interview in this batch (default off). */
+  setAutoLeftFollowup: protectedProcedure
+    .input(z.object({ batchId: z.string(), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+      const { error } = await ctx.supabase
+        .from("interviews")
+        .update({ autoLeftFollowup: input.enabled })
+        .eq("batchId", input.batchId);
+      if (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: /autoLeftFollowup|42703|PGRST204/.test(`${error.code} ${error.message}`)
+            ? "Apply db/init/42-auto-followup-decision-status.sql first."
+            : error.message,
+        });
+      }
+      return { ok: true, enabled: input.enabled };
+    }),
 
   /** Generates one CV-tailored interview + candidate invite inside a batch. */
   generateCandidate: protectedProcedure
@@ -201,7 +254,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const settings = batch.settings as BatchSettings;
       const profile = { ...input.profile, name: input.contact.name, email: input.contact.email, phone: input.contact.phone } as CandidateProfile;
@@ -209,16 +262,22 @@ export const batchRouter = router({
       // Structured profile first (cheap, dense), raw text after for details it missed.
       const resumeText = `${profileToResumeText(profile)}\n\n---\nOriginal CV text (excerpt):\n${input.resumeMarkdown.slice(0, 6000)}`;
       const interviewType = settings.interviewType ?? "technical";
+      // Explicit picker selection, else Auto-include Question Bank (enabled rounds/items).
+      const premade = await resolvePremadeQuestions(
+        ctx.supabase,
+        organizationId,
+        settings.premadeQuestions,
+      );
       const messages = buildGeneratorPrompt(
         `${settings.roleDescription}\n\nInterview type: ${interviewType}. This interview is for one specific candidate (${input.contact.name}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
         settings.durationMinutes,
         LANGUAGES.find((l) => l.value === settings.language)?.label ?? settings.language,
         settings.jobDescription,
         resumeText,
-        settings.premadeQuestions,
+        premade,
       );
 
-      const { provider, generatorModel } = await resolveTaskModels(organizationId);
+      const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
       let generated: GeneratedInterview | null = null;
       let lastError: unknown;
       for (let attempt = 0; attempt < 3 && !generated; attempt++) {
@@ -230,6 +289,8 @@ export const batchRouter = router({
         } catch (err) {
           lastError = err;
           log.warn(`Batch generation attempt ${attempt + 1} failed`, err);
+          // Quota/auth on every key: more attempts hit the same wall and just burn time.
+          if (classifyAiFailure(err)) break;
         }
       }
       if (!generated) {
@@ -238,6 +299,22 @@ export const batchRouter = router({
           message: `Could not generate interview: ${lastError instanceof Error ? lastError.message : "unknown error"}`,
         });
       }
+
+      // Exact bank wording first, then complementary AI Qs, plus exactly one unscored intro.
+      const { finalizeGeneratedQuestions } = await import("@/lib/question-conditions");
+      generated.questions = finalizeGeneratedQuestions(
+        generated.questions,
+        premade,
+        settings.language,
+      ) as typeof generated.questions;
+
+      const { data: siblingIv } = await ctx.supabase
+        .from("interviews")
+        .select("autoLeftFollowup")
+        .eq("batchId", batch.id)
+        .limit(1)
+        .maybeSingle();
+      const inheritAutoFollowup = !!(siblingIv as { autoLeftFollowup?: boolean } | null)?.autoLeftFollowup;
 
       const { data: interview, error: ivError } = await ctx.supabase
         .from("interviews")
@@ -249,7 +326,11 @@ export const batchRouter = router({
           chatEnabled: settings.chatEnabled,
           voiceEnabled: settings.voiceEnabled,
           videoEnabled: settings.voiceEnabled && settings.videoEnabled,
-          aiName: generated.recommendedSettings?.aiName || "Skillmark",
+          aiGender: normalizeInterviewerGender(settings.aiGender ?? generated.recommendedSettings?.aiGender),
+          aiName: resolveInterviewerName(
+            generated.recommendedSettings?.aiName,
+            settings.aiGender ?? generated.recommendedSettings?.aiGender,
+          ),
           aiTone: settings.aiTone,
           followUpDepth: settings.followUpDepth,
           language: settings.language,
@@ -260,6 +341,8 @@ export const batchRouter = router({
           userId: ctx.user.id,
           requireInvite: true,
           batchId: batch.id,
+          completionNotifyMembers: settings.completionNotifyMembers ?? [],
+          autoLeftFollowup: inheritAutoFollowup,
         })
         .select("id, title")
         .single();
@@ -267,18 +350,29 @@ export const batchRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: ivError?.message ?? "Failed to create interview" });
       }
 
-      const questionRows = generated.questions.map((q, i) => ({
-        interviewId: interview.id,
-        order: i,
-        text: q.text,
-        type: (QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "OPEN_ENDED",
-        description: q.description ?? null,
-        timeLimitSeconds: q.timeLimitSeconds ?? null,
-        isRequired: q.isRequired ?? true,
-        options: q.options ?? null,
-        followUpPrompts: q.followUpPrompts ?? null,
-        starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
-      }));
+      const { excludeFromScoreValidationRules } = await import("@/lib/premade-sections");
+      const questionRows = generated.questions.map((q, i) => {
+        const pm = premade.find(
+          (p) => p.text.trim().toLowerCase() === (q.text ?? "").trim().toLowerCase(),
+        );
+        return {
+          interviewId: interview.id,
+          order: i,
+          text: q.text,
+          type: (QUESTION_TYPES as readonly string[]).includes(q.type) ? q.type : "OPEN_ENDED",
+          description: q.description ?? null,
+          timeLimitSeconds: q.timeLimitSeconds ?? null,
+          isRequired: q.isRequired ?? true,
+          options: q.options ?? null,
+          followUpPrompts: q.followUpPrompts ?? null,
+          starterCode: q.type === "CODING" && q.starterCode ? q.starterCode : null,
+          skipIf: pm?.skipIf ?? (q as { skipIf?: unknown }).skipIf ?? null,
+          validationRules:
+            (q as { validationRules?: unknown }).validationRules
+            ?? excludeFromScoreValidationRules(pm?.sectionName)
+            ?? null,
+        };
+      });
       const { error: qError } = await ctx.supabase.from("questions").insert(questionRows);
       if (qError) {
         await ctx.supabase.from("interviews").delete().eq("id", interview.id);
@@ -299,7 +393,13 @@ export const batchRouter = router({
           graduationYear: edu?.graduationYear ?? null,
           workExperience: experienceBucket(profile.totalExperienceYears) ?? null,
           notes: profile.summary,
-          profile: { ...profile, reviewFlags: input.reviewFlags, fileName: input.fileName, extractionMethod: input.extractionMethod },
+          profile: {
+            ...profile,
+            reviewFlags: input.reviewFlags,
+            fileName: input.fileName,
+            extractionMethod: input.extractionMethod,
+            resumeMarkdown: input.resumeMarkdown.slice(0, 60_000),
+          },
           inviteToken: nanoid(12),
         })
         .select("id, inviteToken")
@@ -318,6 +418,38 @@ export const batchRouter = router({
       };
     }),
 
+  /** Update premade (and related) settings for future candidate generation. */
+  updateSettings: protectedProcedure
+    .input(
+      z.object({
+        batchId: z.string(),
+        premadeQuestions: batchSettings.shape.premadeQuestions,
+        roleDescription: z.string().max(4000).optional(),
+        jobDescription: z.string().max(20_000).optional(),
+        completionNotifyMembers: completionNotifyMembersSchema.optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { batch, role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+      const prev = (batch.settings ?? {}) as BatchSettings;
+      const next: BatchSettings = {
+        ...prev,
+        ...(input.premadeQuestions !== undefined ? { premadeQuestions: input.premadeQuestions } : {}),
+        ...(input.roleDescription !== undefined ? { roleDescription: input.roleDescription } : {}),
+        ...(input.jobDescription !== undefined ? { jobDescription: input.jobDescription } : {}),
+        ...(input.completionNotifyMembers !== undefined
+          ? { completionNotifyMembers: input.completionNotifyMembers }
+          : {}),
+      };
+      const { error } = await ctx.supabase
+        .from("interview_batches")
+        .update({ settings: next })
+        .eq("id", input.batchId);
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { success: true };
+    }),
+
   updateContact: protectedProcedure
     .input(
       z.object({
@@ -330,7 +462,7 @@ export const batchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase.from("candidates").select("batchId").eq("id", input.candidateId).single();
       if (!c?.batchId) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
-      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const { error } = await ctx.supabase
         .from("candidates")
@@ -338,6 +470,117 @@ export const batchRouter = router({
         .eq("id", input.candidateId);
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       return { ok: true };
+    }),
+
+  /**
+   * Remove a candidate from a batch only when they have not started the interview.
+   * Deletes the per-candidate interview (cascades questions / sessions / candidate).
+   */
+  removeCandidate: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+
+      const { data: c, error: loadErr } = await ctx.supabase
+        .from("candidates")
+        .select("id, batchId, interviewId, session:sessions!candidates_sessionId_fkey(id, status, interviewBeganAt)")
+        .eq("id", input.candidateId)
+        .maybeSingle();
+      if (loadErr) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: loadErr.message });
+      }
+      if (!c || c.batchId !== input.batchId) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found in this batch" });
+      }
+
+      const session = c.session as
+        | { id?: string; status?: string; interviewBeganAt?: string | null }
+        | null
+        | undefined;
+      const status = candidateStatus({ session });
+      const began = !!session?.interviewBeganAt;
+      if (status !== "NOT_STARTED" || began) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Can only remove candidates who have not started the interview",
+        });
+      }
+
+      if (c.interviewId) {
+        const { error } = await ctx.supabase.from("interviews").delete().eq("id", c.interviewId);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      } else {
+        const { error } = await ctx.supabase.from("candidates").delete().eq("id", input.candidateId);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+      return { ok: true };
+    }),
+
+  /** Bulk remove not-started candidates from a batch. */
+  removeCandidates: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+
+      const { data: rows, error: loadErr } = await ctx.supabase
+        .from("candidates")
+        .select("id, batchId, interviewId, session:sessions!candidates_sessionId_fkey(id, status, interviewBeganAt)")
+        .eq("batchId", input.batchId)
+        .in("id", input.candidateIds);
+      if (loadErr) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: loadErr.message });
+      }
+
+      const removable: { id: string; interviewId: string | null }[] = [];
+      const blocked: string[] = [];
+      for (const c of rows ?? []) {
+        const session = c.session as
+          | { status?: string; interviewBeganAt?: string | null }
+          | null
+          | undefined;
+        const status = candidateStatus({ session });
+        if (status !== "NOT_STARTED" || session?.interviewBeganAt) {
+          blocked.push(c.id as string);
+          continue;
+        }
+        removable.push({
+          id: c.id as string,
+          interviewId: (c.interviewId as string | null) ?? null,
+        });
+      }
+
+      if (!removable.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: blocked.length
+            ? "Selected candidates have already started — none removed"
+            : "No matching candidates to remove",
+        });
+      }
+
+      const interviewIds = removable.map((r) => r.interviewId).filter(Boolean) as string[];
+      const orphanIds = removable.filter((r) => !r.interviewId).map((r) => r.id);
+
+      if (interviewIds.length) {
+        const { error } = await ctx.supabase.from("interviews").delete().in("id", interviewIds);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+      if (orphanIds.length) {
+        const { error } = await ctx.supabase.from("candidates").delete().in("id", orphanIds);
+        if (error) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+        }
+      }
+
+      return { removed: removable.length, blocked: blocked.length };
     }),
 
   updateSchedule: protectedProcedure
@@ -351,7 +594,7 @@ export const batchRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { data: c } = await ctx.supabase.from("candidates").select("batchId").eq("id", input.candidateId).single();
       if (!c?.batchId) throw new TRPCError({ code: "NOT_FOUND", message: "Candidate not found" });
-      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id);
+      const { role } = await verifyBatchAccess(ctx.supabase, c.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const patch: Record<string, unknown> = { updatedAt: new Date().toISOString() };
       if (input.scheduledAt !== undefined) patch.scheduledAt = input.scheduledAt || null;
@@ -359,6 +602,37 @@ export const batchRouter = router({
       const { error } = await ctx.supabase.from("candidates").update(patch).eq("id", input.candidateId);
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       return { ok: true };
+    }),
+
+  /**
+   * Send the "you left your interview" WhatsApp follow-up to every left-early candidate in the
+   * batch it has not reached (optionally limited to candidateIds). Sequential: each send is
+   * deduped and reports its own reason when skipped or failed.
+   */
+  sendLeftFollowups: protectedProcedure
+    .input(z.object({ batchId: z.string(), candidateIds: z.array(z.string()).max(500).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { role } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
+      assertMinRole(role, "MEMBER");
+      let q = ctx.supabase
+        .from("candidates")
+        .select("id, sessionId, session:sessions!candidates_sessionId_fkey(status)")
+        .eq("batchId", input.batchId);
+      if (input.candidateIds?.length) q = q.in("id", input.candidateIds);
+      const { data, error } = await q;
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+
+      const { sendLeftInterviewFollowup } = await import("../left-interview-followup");
+      const out = { sent: 0, failed: 0, skipped: 0, firstError: null as string | null };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const row of (data ?? []) as any[]) {
+        const session = Array.isArray(row.session) ? row.session[0] : row.session;
+        if (!row.sessionId || session?.status !== "ABANDONED") continue;
+        const r = await sendLeftInterviewFollowup(String(row.sessionId), { manual: true });
+        out[r.status]++;
+        if (r.status !== "sent" && r.error && !out.firstError) out.firstError = r.error;
+      }
+      return out;
     }),
 
   /** Sends invite links. Omit candidateIds to send to the whole batch. */
@@ -385,7 +659,7 @@ export const batchRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id);
+      const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       if (!input.channels.email && !input.channels.whatsapp) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Choose at least one channel" });
@@ -402,7 +676,9 @@ export const batchRouter = router({
 
       let query = ctx.supabase
         .from("candidates")
-        .select("id, name, email, phone, inviteToken, emailStatus, whatsappStatus, scheduledAt, expiresAt, interview:interviews(title)")
+        .select(
+          "id, name, email, phone, inviteToken, emailStatus, whatsappStatus, scheduledAt, expiresAt, inviteMessages, interview:interviews(title)",
+        )
         .eq("batchId", batch.id);
       if (input.candidateIds?.length) query = query.in("id", input.candidateIds);
       const { data: candidates, error } = await query;
@@ -442,21 +718,46 @@ export const batchRouter = router({
           const errors: string[] = [];
           const row: (typeof results)[number] = { candidateId: c.id };
 
+          const messagePatch: InviteMessages = {};
           if (input.channels.email && !(input.onlyUnsent && c.emailStatus === "sent")) {
             const r = await deliverEmail(cfg, c.email, vars, undefined, input.emailProvider);
             row.email = r.status;
             update.emailStatus = r.status;
             update.emailProvider = r.provider;
-            if (r.status === "sent") update.emailSentAt = new Date().toISOString();
+            if (r.status === "sent") {
+              const sentAt = new Date().toISOString();
+              update.emailSentAt = sentAt;
+              messagePatch.email = {
+                subject: r.subject,
+                text: r.text,
+                sentAt,
+                provider: r.provider,
+                to: String(c.email ?? ""),
+              };
+            }
             if (r.error) errors.push(`Email (${r.provider}): ${r.error}`);
           }
           if (input.channels.whatsapp && !(input.onlyUnsent && c.whatsappStatus === "sent")) {
-            const r = await deliverWhatsapp(cfg, c.phone, vars);
+            const phone = (c.phone as string | null)?.replace(/[\s()-]/g, "") || null;
+            const r = await deliverWhatsapp(cfg, phone, vars);
             row.whatsapp = r.status;
             update.whatsappStatus = r.status;
             update.whatsappProvider = r.provider;
-            if (r.status === "sent") update.whatsappSentAt = new Date().toISOString();
+            if (r.status === "sent") {
+              const sentAt = new Date().toISOString();
+              update.whatsappSentAt = sentAt;
+              messagePatch.whatsapp = {
+                text: r.text,
+                sentAt,
+                provider: r.provider ?? "resilio",
+                to: phone ?? "",
+                templateName: r.templateName,
+              };
+            }
             if (r.error) errors.push(`WhatsApp: ${r.error}`);
+          }
+          if (Object.keys(messagePatch).length) {
+            update.inviteMessages = mergeInviteMessages(c.inviteMessages, messagePatch);
           }
           if (Object.keys(update).length) {
             update.lastSendError = errors.length ? errors.join(" · ").slice(0, 500) : null;
@@ -506,7 +807,7 @@ export const batchRouter = router({
     }),
 
   delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
-    const { role } = await verifyBatchAccess(ctx.supabase, input.id, ctx.user.id);
+    const { role } = await verifyBatchAccess(ctx.supabase, input.id, ctx.user.id, { write: true });
     assertMinRole(role, "ADMIN");
     // Interviews cascade to their candidates, questions and sessions.
     await ctx.supabase.from("interviews").delete().eq("batchId", input.id);

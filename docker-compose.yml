@@ -1,4 +1,4 @@
-# Skillmark local/production data services: plain Postgres + PostgREST.
+# Resiliencesoft Interview AI local/production data services: plain Postgres + PostgREST.
 name: skillmark
 # PostgREST only listens on 127.0.0.1 and is used by the Next.js server (never the browser).
 services:
@@ -33,6 +33,18 @@ services:
       PGRST_DB_MAX_ROWS: "10000"
     ports:
       - "127.0.0.1:${POSTGREST_PORT:-3001}:3000"
+
+  # Round 2 live video (opt-in): docker compose --profile video up -d livekit
+  # Dev keys: LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret LIVEKIT_URL=ws://localhost:7880
+  livekit:
+    image: livekit/livekit-server:v1.9
+    profiles: ["video"]
+    restart: unless-stopped
+    command: ["--dev", "--bind", "0.0.0.0"]
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
 
 volumes:
   skillmark-pg:

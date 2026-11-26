@@ -99,10 +99,26 @@ export interface FormSettings {
   successMessage?: string;
   redirectToInterview?: boolean;
   allowedOrigins?: string[];
+  /** Send invite email after form submit (default true when email present). */
+  sendInviteEmail?: boolean;
+  /** Send invite WhatsApp after form submit (default true when phone present). */
+  sendInviteWhatsapp?: boolean;
+  /** When to schedule the interview window shown in the invite. */
+  inviteSchedule?: "immediate" | "tomorrow" | "next_week" | "custom";
+  /** ISO datetime when inviteSchedule is custom. */
+  inviteScheduledAt?: string | null;
+  /** Days after schedule (or now) until invite link expires. 0/omit = no expiry. */
+  linkExpiryDays?: number | null;
+  /**
+   * linked = always use form.interviewId.
+   * match_role = prefer project interview whose title matches job role / answers; else linked.
+   */
+  interviewMode?: "linked" | "match_role";
 }
 
 export const MAX_FILE_MB_LIMIT = 20;
 export const DEFAULT_FILE_MB = 10;
+export const MAX_FILES_PER_FIELD = 10;
 
 const KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -254,20 +270,24 @@ export function validateSubmission(
         continue;
       }
       if (!f.multiple && list.length > 1) err(f.key, "too_many_files", `${f.label} accepts a single file`);
+      if (list.length > MAX_FILES_PER_FIELD) {
+        err(f.key, "too_many_files", `${f.label} accepts at most ${MAX_FILES_PER_FIELD} files`);
+        continue;
+      }
       const maxMb = f.maxFileSizeMb ?? DEFAULT_FILE_MB;
+      const configured = (f.allowedFileTypes ?? []).map((t) => t.toLowerCase().replace(/^\./, "")).filter(Boolean);
+      const allowed = configured.length > 0 ? configured : DEFAULT_ALLOWED_FILE_TYPES;
       for (const file of list) {
         if (file.size > maxMb * 1024 * 1024) err(f.key, "file_too_large", `${f.label}: ${file.name} exceeds ${maxMb} MB`);
         if (file.size === 0) err(f.key, "empty_file", `${f.label}: ${file.name} is empty`);
-        const allowed = (f.allowedFileTypes ?? []).map((t) => t.toLowerCase().replace(/^\./, ""));
-        if (allowed.length > 0) {
-          const e = ext(file.name);
-          const detected = file.detected;
-          const extOk = allowed.includes(e);
-          const same = (a: string, b: string) => a === b || (["jpg", "jpeg"].includes(a) && ["jpg", "jpeg"].includes(b));
-          const magicOk = detected === undefined || detected === null || allowed.some((a) => same(a, detected));
-          if (!extOk || !magicOk)
-            err(f.key, "invalid_file_type", `${f.label}: ${file.name} must be one of ${allowed.join(", ")}`);
-        }
+        const e = ext(file.name);
+        const detected = file.detected;
+        const extOk = allowed.includes(e);
+        const same = (a: string, b: string) => a === b || (["jpg", "jpeg"].includes(a) && ["jpg", "jpeg"].includes(b));
+        const magicOk = detected === undefined || detected === null || allowed.some((a) => same(a, detected));
+        const declaredOk = !isActiveContentType(file.type);
+        if (!extOk || !magicOk || !declaredOk || detected === "html")
+          err(f.key, "invalid_file_type", `${f.label}: ${file.name} must be one of ${allowed.join(", ")}`);
       }
       continue;
     }
@@ -372,7 +392,72 @@ export function sniffFileType(bytes: Uint8Array): string | null {
   // text-like: no NUL bytes in first 512 bytes
   const n = Math.min(b.length, 512);
   for (let i = 0; i < n; i++) if (b[i] === 0) return "binary";
+  if (ACTIVE_MARKUP_RE.test(latin1(b, 4096))) return "html";
   return "txt";
+}
+
+function latin1(bytes: Uint8Array, max: number): string {
+  const end = Math.min(bytes.length, max);
+  let s = "";
+  for (let i = 0; i < end; i += 8192) {
+    s += String.fromCharCode(...Array.from(bytes.subarray(i, Math.min(i + 8192, end))));
+  }
+  return s;
+}
+
+/** Text a browser could render as a document or run (HTML, SVG, XML, script). */
+const ACTIVE_MARKUP_RE = /<\s*(!doctype|html|head|body|script|svg|iframe|object|embed|meta|link|style|img|\?xml|xsl)[\s>/]/i;
+
+/** Content types a browser renders as a document or runs as script (HTML, SVG, any XML, JS). */
+export function isActiveContentType(type: string | null | undefined): boolean {
+  const base = (type ?? "").split(";")[0].trim().toLowerCase();
+  return (
+    /^(text\/html|text\/xml|text\/xsl|application\/xml|text\/javascript|application\/(x-)?javascript|(text|application)\/ecmascript)$/.test(base) ||
+    base.endsWith("+xml")
+  );
+}
+
+/** Applied when a public file field has no allowlist of its own. */
+export const DEFAULT_ALLOWED_FILE_TYPES = ["pdf", "doc", "docx", "odt", "rtf", "txt", "md", "csv", "png", "jpg", "jpeg", "gif", "webp"];
+
+const OFFICE_MARKERS: Record<string, string[]> = {
+  docx: ["[Content_Types].xml", "word/"],
+  xlsx: ["[Content_Types].xml", "xl/"],
+  pptx: ["[Content_Types].xml", "ppt/"],
+  odt: ["mimetypeapplication/vnd.oasis.opendocument.text"],
+};
+
+/** A ZIP only counts as docx/xlsx/pptx/odt when its entry names say so. */
+export function zipMatchesOfficeType(bytes: Uint8Array, type: string): boolean {
+  const markers = OFFICE_MARKERS[type];
+  if (!markers) return false;
+  // Entry names sit in the local headers (front) and the central directory (end).
+  const text = latin1(bytes, 2 * 1024 * 1024) + latin1(bytes.subarray(Math.max(0, bytes.length - 256 * 1024)), 256 * 1024);
+  return markers.every((m) => text.includes(m));
+}
+
+const CANONICAL_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  rtf: "application/rtf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  txt: "text/plain; charset=utf-8",
+  md: "text/plain; charset=utf-8",
+  csv: "text/plain; charset=utf-8",
+  json: "text/plain; charset=utf-8",
+};
+
+/** Server-derived content type for a sniffed upload; never the client's header. */
+export function canonicalMimeForDetected(detected: string | null | undefined): string {
+  return (detected && CANONICAL_MIME[detected]) || "application/octet-stream";
 }
 
 /** Map detected magic type onto the allowed list semantics (jpeg==jpg, md/csv are txt). */

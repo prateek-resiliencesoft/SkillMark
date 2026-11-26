@@ -1,5 +1,6 @@
 "use client";
 
+import { CandidateThankYou } from "@/components/session/candidate-end-screens";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import {
     CodeEditorCanvas,
@@ -18,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,13 +32,16 @@ import {
     WhiteboardCanvas,
     type WhiteboardCanvasRef,
 } from "@/components/whiteboard/whiteboard-canvas";
+import { MicrophoneLevelMeter } from "@/components/interview/MicrophoneLevelMeter";
 import { useInterviewRecording } from "@/hooks/use-interview-recording";
+import { subscribeAiNotices } from "@/lib/integrity/bus";
+import { reportSessionError } from "@/lib/session-error-report-client";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { useVoice, type InterviewContext } from "@/hooks/use-voice";
+import { isMultiLanguage } from "@/lib/interview-language";
 import {
     AlertCircle,
     Check,
-    CheckCircle2,
     ChevronLeft,
     ChevronRight,
     ChevronDown,
@@ -372,6 +375,8 @@ interface VoiceInterfaceProps {
   initialDrawings?: Array<{ id: string; label: string; snapshotData: string }>;
   chatEnabled?: boolean;
   onComplete?: () => void;
+  /** Fires as soon as the interview starts ending (before saving finishes). */
+  onEnding?: () => void;
   videoMode?: boolean;
   /** Render in static preview mode — shows full layout without connecting */
   preview?: boolean;
@@ -393,6 +398,7 @@ export function VoiceInterface({
   initialDrawings,
   chatEnabled = false,
   onComplete,
+  onEnding,
   videoMode = false,
   preview = false,
 }: VoiceInterfaceProps) {
@@ -409,7 +415,6 @@ export function VoiceInterface({
       })) ?? [],
   );
   const [error, setError] = useState<string>("");
-  const [isSaving, setIsSaving] = useState(false);
   const [locallyCompleted, setLocallyCompleted] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [isStartingInterview, setIsStartingInterview] = useState(false);
@@ -591,10 +596,11 @@ export function VoiceInterface({
     window.addEventListener("pointerup", onUp);
   }, []);
 
-  // ── Recording hook (video mode) ──────────────────────────────────
+  // ── Recording hook (always audio; camera/screen only in video mode) ──
   const recording = useInterviewRecording({
     sessionId,
-    enabled: videoMode,
+    enabled: true,
+    captureVideo: videoMode,
   });
 
   const cameraPipRef = useRef<HTMLVideoElement>(null);
@@ -648,7 +654,10 @@ export function VoiceInterface({
     });
   }, []);
 
+  /** Mic permission refused (shown by the level meter; the error toast is unchanged). */
+  const [micDenied, setMicDenied] = useState(false);
   const handleError = useCallback((err: string) => {
+    if (/permission|notallowed|denied/i.test(err)) setMicDenied(true);
     setError(err);
     setTimeout(() => setError(""), 5000);
   }, []);
@@ -660,9 +669,27 @@ export function VoiceInterface({
     onTranscript: handleTranscript,
     onAIResponse: handleAIResponse,
     onError: handleError,
-    onTtsChunk: videoMode ? recording.addTtsChunk : undefined,
-    onInterrupt: videoMode ? recording.cancelTts : undefined,
+    onTtsChunk: recording.addTtsChunk,
+    onInterrupt: recording.cancelTts,
   });
+
+  const [micWasOn, setMicWasOn] = useState(false);
+  useEffect(() => {
+    if (voice.isListening) {
+      setMicDenied(false);
+      setMicWasOn(true);
+    }
+  }, [voice.isListening]);
+
+  const micMeter = (
+    <MicrophoneLevelMeter
+      compact={isMobile}
+      stream={voice.isListening ? voice.mediaStreamRef.current : null}
+      muted={micWasOn && !voice.isListening}
+      permissionDenied={micDenied && !voice.isListening}
+      expectSpeaking={voice.isListening && !voice.isSpeaking && !voice.isProcessing && !voice.isTransitioning}
+    />
+  );
 
   useEffect(() => {
     if (voice.isConnected) {
@@ -670,29 +697,41 @@ export function VoiceInterface({
     }
   }, [voice.isConnected]);
 
+  // Anti-cheating warnings the AI says aloud (the 3rd strike). Stable callback, so subscribe once.
+  const { announceToAi } = voice;
+  useEffect(() => subscribeAiNotices((text) => announceToAi(text)), [announceToAi]);
+
   useEffect(() => {
     if (error) {
       setIsStartingInterview(false);
     }
   }, [error]);
 
-  // ── Start recording when voice connects (video mode) ───────────
+  // ── Turn the mic on automatically once the interview connects ──
+  const micAutoStartedRef = useRef(false);
+  useEffect(() => {
+    if (preview || !voice.isConnected || micAutoStartedRef.current) return;
+    micAutoStartedRef.current = true;
+    if (!voice.isListening) void voice.startListening();
+  }, [voice.isConnected, preview]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Start recording when voice connects ────────────────────────
   const recordingStartedRef = useRef(false);
   useEffect(() => {
-    if (!videoMode || !voice.isConnected || recordingStartedRef.current) return;
+    if (!voice.isConnected || recordingStartedRef.current) return;
     recordingStartedRef.current = true;
     const micStream = voice.mediaStreamRef.current;
     recording.start(micStream ?? undefined);
-  }, [videoMode, voice.isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voice.isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Attach mic stream to recording when it becomes available
   useEffect(() => {
-    if (!videoMode || !voice.isListening) return;
+    if (!voice.isListening) return;
     const micStream = voice.mediaStreamRef.current;
     if (micStream) {
       recording.attachMicStream(micStream);
     }
-  }, [videoMode, voice.isListening]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [voice.isListening]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Countdown timer (starts when voice connects) ────────────────
   useEffect(() => {
@@ -701,16 +740,23 @@ export function VoiceInterface({
     setRemainingSeconds(durationMinutes * 60);
   }, [voice.isConnected, durationMinutes]);
 
+  // The clock stops while the voice connection is being restored, so a
+  // network drop doesn't eat the candidate's time.
+  const reconnectingRef = useRef(false);
+  reconnectingRef.current = voice.isReconnecting;
   useEffect(() => {
     if (remainingSeconds === null || remainingSeconds <= 0) return;
     const id = setInterval(() => {
+      if (reconnectingRef.current) return;
       setRemainingSeconds((prev) => {
-        if (prev === null) return null;
+        if (prev === null || prev <= 0) return prev;
         return prev <= 1 ? 0 : prev - 1;
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [remainingSeconds]);
+    // Start once when countdown becomes active — do not rebind every second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remainingSeconds !== null && remainingSeconds > 0]);
 
   // ── Whiteboard persistence ──────────────────────────────────────
   /** Persist a single drawing to the backend. */
@@ -1183,11 +1229,54 @@ export function VoiceInterface({
 
   // ── Common save-and-end logic ───────────────────────────────────
   const endingRef = useRef(false);
-  const handleEndInterview = useCallback(async () => {
+  /** The candidate pressed End Interview (explicit quit), as opposed to the timer / interviewer's goodbye. */
+  const quitRef = useRef(false);
+  const onEndingRef = useRef(onEnding);
+  onEndingRef.current = onEnding;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // Interview finished (AI said goodbye): treat it as ending even before the
+  // auto-close timer, so the tab-close beacon can't mark it Abandoned.
+  useEffect(() => {
+    if (voice.isInterviewComplete) onEndingRef.current?.();
+  }, [voice.isInterviewComplete]);
+
+  // Tab closing or hidden (mobile app switch, tab switch): save unsent
+  // transcript lines; complete the session when the interview was finished or
+  // already ending. Safe to repeat: lines carry ids, completion is idempotent.
+  useEffect(() => {
+    if (preview) return;
+    const onPageHide = () => {
+      const v = voiceRef.current;
+      const finishing = endingRef.current || v.isInterviewComplete;
+      if (finishing) onEndingRef.current?.();
+      v.beaconFlush(finishing);
+      if (finishing && sessionId && navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify({ sessionId, ...(quitRef.current ? { reason: "quit" } : {}) })], { type: "application/json" });
+        navigator.sendBeacon("/api/session/complete", blob);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onPageHide();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [preview, sessionId]);
+
+  /** `reason: "quit"` only from the candidate's own End Interview button. */
+  const handleEndInterview = useCallback(async (reason?: "quit") => {
     if (endingRef.current) return;
     endingRef.current = true;
+    if (reason === "quit") quitRef.current = true;
+    onEndingRef.current?.();
+    // Thank-you screen shows right away; saving below runs in the background
+    // and does not need the tab (keepalive fetch + tab-close beacons).
     setLocallyCompleted(true);
-    setIsSaving(true);
 
     voice.stopListening();
 
@@ -1197,29 +1286,49 @@ export function VoiceInterface({
         withTimeout(saveAllCodeSnippets(), 5000, "save code snippets"),
       ]);
 
+      // Mark the session COMPLETED first. The recording upload below can take
+      // up to ~40s; if the candidate closes the tab on the thank-you screen
+      // meanwhile, the session must already be complete (not Abandoned).
       try {
-        // Stop recording and save artifacts (video mode)
-        if (videoMode && recording.isRecording) {
-          const result = await withTimeout(recording.stop(), 8000, "stop recording");
-          await withTimeout(
-            fetch("/api/trpc/session.saveRecording", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                json: {
-                  sessionId,
-                  audioRecordingUrl: result.audioUrl,
-                  audioDuration: result.audioDuration,
-                  screenshots: result.screenshots,
-                },
+        await withTimeout(voice.completeSession(quitRef.current ? "quit" : undefined), 10_000, "complete session");
+      } catch (err) {
+        console.error("[voice] Early completion save failed (retried on disconnect):", err);
+      }
+
+      try {
+        // Stop + save audio (and screenshots when video mode) BEFORE session completes
+        if (recording.isRecording || recordingStartedRef.current) {
+          // Audio is uploaded in parts during the interview and the server joins
+          // them in the background, so this is normally a few seconds. The
+          // whole-file fallback is bounded (10 s drain + 20 s upload), hence 45 s.
+          const result = await withTimeout(recording.stop(), 45_000, "stop recording");
+          if (result.audioUrl || result.screenshots.length > 0) {
+            await withTimeout(
+              fetch("/api/trpc/session.saveRecording", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  json: {
+                    sessionId,
+                    audioRecordingUrl: result.audioUrl,
+                    audioDuration: result.audioDuration,
+                    screenshots: result.screenshots.length ? result.screenshots : undefined,
+                  },
+                }),
               }),
-            }),
-            8000,
-            "save recording",
-          );
+              12_000,
+              "save recording",
+            );
+          }
         }
       } catch (err) {
         console.error("[voice] Failed to save recording:", err);
+        reportSessionError(sessionId, {
+          category: "client",
+          severity: "warning",
+          message: `Saving the recording at the end did not finish: ${err instanceof Error ? err.message : String(err)}`,
+          context: { stage: "recording_stop" },
+        });
       }
 
       await withTimeout(voice.disconnect(), 8000, "voice disconnect");
@@ -1228,7 +1337,7 @@ export function VoiceInterface({
     } finally {
       onComplete?.();
     }
-  }, [saveAllDrawings, saveAllCodeSnippets, videoMode, recording, sessionId, voice, onComplete]);
+  }, [saveAllDrawings, saveAllCodeSnippets, recording, sessionId, voice, onComplete]);
 
   useEffect(() => {
     handleEndInterviewRef.current = handleEndInterview;
@@ -1309,20 +1418,8 @@ export function VoiceInterface({
     }, 8000);
     return () => clearTimeout(timer);
   }, [voice.isInterviewComplete, locallyCompleted, hasVisibleFarewell]);
-  const completionScreen = (
-    <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-      <Card className="w-full max-w-md">
-        <CardContent className="py-12 text-center">
-          <CheckCircle2 className="mx-auto h-16 w-16 text-secondary-500" />
-          <h2 className="mt-4 text-2xl font-bold">Thank you!</h2>
-          <p className="mt-2 text-muted-foreground">
-            Your interview has been completed successfully. We appreciate your
-            time and thoughtful responses.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
-  );
+  // Same thank-you screen as the session page uses after completion / on reload.
+  const completionScreen = <CandidateThankYou timeLimitReached={timerExpiredRef.current} sessionId={preview ? null : sessionId} />;
 
   const sortedQuestions = interviewContext.questions.slice().sort((a, b) => a.order - b.order);
   const currentQVoice = sortedQuestions[voice.currentQuestionIndex];
@@ -1500,20 +1597,53 @@ export function VoiceInterface({
 
   // ── Render ──────────────────────────────────────────────────────
   return shouldShowCompletionScreen ? completionScreen : (
-    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
-      {/* Saving overlay */}
-      {isSaving && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm">
-          <Loader2 className="h-10 w-10 animate-spin text-primary" />
-          <p className="mt-4 text-lg font-medium">Saving interview data...</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            This will only take a moment.
-          </p>
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-background">
+      {voice.isReconnecting && !locallyCompleted && (
+        <div
+          role="status"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        >
+          Connection lost. Reconnecting… Your answers so far are saved and the timer is paused.
         </div>
       )}
-
+      {voice.micCheckPrompt && voice.isConnected && !locallyCompleted && (
+        <div
+          role="alert"
+          className="fixed bottom-24 left-1/2 z-50 w-[min(92vw,26rem)] -translate-x-1/2 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900 shadow-lg dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          <div className="flex items-start gap-3">
+            <MicOff className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold">We can&apos;t hear you.</p>
+              <p className="mt-1 text-xs">
+                Check that your microphone is on, not muted, and selected in your browser. Then answer out loud.
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <Mic className="h-3.5 w-3.5 shrink-0" />
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-amber-200 dark:bg-amber-900" aria-label="Microphone level">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-[width] duration-100"
+                    style={{ width: `${Math.round(Math.min(1, voice.audioLevel) * 100)}%` }}
+                  />
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] opacity-80">
+                {voice.isListening ? "The bar should move when you speak." : "Your microphone is off — turn it on with the mic button."}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="rounded p-1 hover:bg-amber-100 dark:hover:bg-amber-900"
+              aria-label="Dismiss"
+              onClick={() => voice.dismissMicCheckPrompt()}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {/* Header */}
-      <div className="shrink-0 border-b bg-card px-3 py-2 md:px-6 md:py-3">
+      <div className="shrink-0 border-b bg-card px-3 pb-1.5 pt-[max(0.375rem,env(safe-area-inset-top))] md:px-6 md:py-3">
         <div className="flex items-center justify-between">
           <div className="mr-2 min-w-0 flex-1">
             <h1 className="truncate text-sm font-semibold md:text-base">{interviewTitle}</h1>
@@ -1528,6 +1658,23 @@ export function VoiceInterface({
                 <span className="text-[10px] font-medium text-destructive">REC</span>
               </div>
             )}
+            {isMultiLanguage(interviewContext.language) && (
+              <div className="flex overflow-hidden rounded-md border text-xs" role="radiogroup" aria-label="Interview language">
+                {(["en", "hi"] as const).map((lang) => (
+                  <button
+                    key={lang}
+                    type="button"
+                    role="radio"
+                    aria-checked={(voice.candidateLanguage ?? "en") === lang}
+                    disabled={preview || !voice.isConnected}
+                    className={`px-2 py-0.5 font-medium ${(voice.candidateLanguage ?? "en") === lang ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                    onClick={() => voice.setLanguage(lang)}
+                  >
+                    {lang === "en" ? "English" : "Hindi"}
+                  </button>
+                ))}
+              </div>
+            )}
             <Badge variant={preview ? "outline" : voice.isConnected ? "default" : "secondary"}>
               {preview ? "Preview" : voice.isConnected ? "Connected" : "Disconnected"}
             </Badge>
@@ -1535,7 +1682,7 @@ export function VoiceInterface({
           </div>
         </div>
         {/* Question progress + timer (mobile: timer in header to avoid blocking bottom buttons) */}
-        <div className="mt-2 flex items-center gap-3">
+        <div className="mt-1.5 flex items-center gap-3 md:mt-2">
           <Progress value={progress} className="h-1.5 flex-1" />
           <span className="shrink-0 text-xs font-medium text-muted-foreground">
             Q{voice.currentQuestionIndex + 1} / {voice.totalQuestions}
@@ -1557,7 +1704,7 @@ export function VoiceInterface({
 
       {/* Error display */}
       {error && (
-        <div className="mx-6 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 px-4 py-2 text-sm text-destructive">
+        <div className="mx-3 mt-2 flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive md:mx-6 md:px-4">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {error}
         </div>
@@ -1856,6 +2003,7 @@ export function VoiceInterface({
                     {/* Code editor */}
                     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                       <CodeEditorCanvas
+                        sessionId={sessionId}
                         key={`code-${voice.currentQuestionIndex}`}
                         ref={codeEditorRef}
                         fillParent
@@ -1869,6 +2017,7 @@ export function VoiceInterface({
                   </div>
                 ) : (
                   <CodeEditorCanvas
+                    sessionId={sessionId}
                     key={`code-${voice.currentQuestionIndex}`}
                     ref={codeEditorRef}
                     fillParent
@@ -2349,9 +2498,13 @@ export function VoiceInterface({
         )}
       </div>
 
+      {/* Mic level meter: passive tap on the shared mic stream (UI only). Mobile: own slim row, the button bar is full. */}
+      {isMobile && !preview && voice.isConnected && (
+        <div className="flex shrink-0 justify-center border-t bg-card px-3 pt-2">{micMeter}</div>
+      )}
       {/* ── Bottom control bar (Zoom-like) ──────────────────── */}
       {(voice.isConnected || preview) && (
-        <div className={`relative flex items-center justify-center gap-2 border-t bg-card px-3 py-2 md:gap-6 md:px-6${preview ? " pointer-events-none" : ""}`}>
+        <div className={`relative flex shrink-0 items-center justify-center gap-1 border-t bg-card px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:gap-6 md:px-6 md:py-2${preview ? " pointer-events-none" : ""}`}>
           {/* Timer — right-aligned on desktop only (mobile shows it in header) */}
           {remainingSeconds !== null && !isMobile && (
             <div className={`absolute right-3 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium tabular-nums md:right-6 md:px-2.5 ${isTimeLow ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"}`}>
@@ -2359,12 +2512,14 @@ export function VoiceInterface({
               <span>{formatTime(remainingSeconds)} left</span>
             </div>
           )}
+          {/* Desktop: pinned left like the timer on the right; in the row on narrow screens. */}
+          {!isMobile && <div className="lg:absolute lg:left-6">{micMeter}</div>}
           {/* Mic toggle */}
           <div data-tour="voice-mic" className="flex flex-col items-center gap-0.5">
             <Button
               size="icon"
               variant={voice.isListening ? "default" : "secondary"}
-              className={`h-9 w-9 rounded-full transition-all ${
+              className={`h-11 w-11 rounded-full md:h-9 md:w-9 transition-all ${
                 voice.isListening
                   ? "bg-secondary-500 hover:bg-secondary-600 border-secondary-500"
                   : ""
@@ -2394,7 +2549,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant={chatOpen ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={() => setChatOpen((prev) => !prev)}
               >
                 <MessageSquare className="h-4 w-4" />
@@ -2404,12 +2559,12 @@ export function VoiceInterface({
           )}
 
           {/* Whiteboard + Code Editor toggles */}
-          <div data-tour="voice-tools" className="flex items-center gap-2 md:gap-6">
+          <div data-tour="voice-tools" className="flex items-center gap-1 md:gap-6">
             <div className="flex flex-col items-center gap-0.5">
               <Button
                 size="icon"
                 variant={whiteboardActive ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleToggleWhiteboard}
               >
                 <PenLine className="h-4 w-4" />
@@ -2421,7 +2576,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant={codeEditorActive ? "default" : "secondary"}
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleToggleCodeEditor}
               >
                 <Code2 className="h-4 w-4" />
@@ -2431,12 +2586,12 @@ export function VoiceInterface({
           </div>
 
           {/* Previous / Next / End */}
-          <div data-tour="voice-progress" className="flex items-center gap-2 md:gap-6">
+          <div data-tour="voice-progress" className="flex items-center gap-1 md:gap-6">
             <div className="flex flex-col items-center gap-0.5">
               <Button
                 size="icon"
                 variant="secondary"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handlePreviousQuestion}
                 disabled={
                   voice.isTransitioning ||
@@ -2456,7 +2611,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant="secondary"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={handleNextQuestion}
                 disabled={
                   voice.isTransitioning ||
@@ -2476,7 +2631,7 @@ export function VoiceInterface({
               <Button
                 size="icon"
                 variant="destructive"
-                className="h-9 w-9 rounded-full"
+                className="h-11 w-11 rounded-full md:h-9 md:w-9"
                 onClick={() => setShowEndDialog(true)}
               >
                 <PhoneOff className="h-4 w-4" />
@@ -2495,7 +2650,7 @@ export function VoiceInterface({
             autoPlay
             playsInline
             muted
-            className="h-28 w-36 object-cover"
+            className="h-20 w-[6.5rem] object-cover sm:h-28 sm:w-36"
             style={{ transform: "scaleX(-1)" }}
           />
           <div className="absolute bottom-1 left-1 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5">
@@ -2518,7 +2673,7 @@ export function VoiceInterface({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={handleEndInterview}
+              onClick={() => void handleEndInterview("quit")}
             >
               End Interview
             </AlertDialogAction>
@@ -2531,7 +2686,7 @@ export function VoiceInterface({
         <Sheet open={chatOpen} onOpenChange={setChatOpen}>
           <SheetContent
             side="bottom"
-            className="flex h-[60vh] flex-col p-0"
+            className="flex h-[70dvh] max-h-[calc(100dvh-3rem)] flex-col p-0 pb-[env(safe-area-inset-bottom)] md:h-[60vh]"
             onOpenAutoFocus={(e) => e.preventDefault()}
           >
             <SheetHeader className="shrink-0 border-b px-4 py-3">

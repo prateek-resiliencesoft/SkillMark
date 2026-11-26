@@ -39,7 +39,11 @@ const log = createLogger("api/ai/parse-resume");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require("pdf-parse") as (
   buffer: Buffer,
+  options?: { max?: number },
 ) => Promise<{ text: string }>;
+
+const MAX_RESUME_BYTES = 10 * 1024 * 1024;
+const MAX_RESUME_PAGES = 30;
 
 
 
@@ -65,9 +69,16 @@ export async function POST(req: Request) {
       );
     }
 
+    if (file.size > MAX_RESUME_BYTES) {
+      return new Response(
+        JSON.stringify({ error: "File is too large (max 10 MB)." }),
+        { status: 413, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
     // Extract text locally using pdf-parse (preserves emails reliably)
     const buffer = Buffer.from(await file.arrayBuffer());
-    const pdfData = await pdfParse(buffer);
+    const pdfData = await pdfParse(buffer, { max: MAX_RESUME_PAGES });
     const resumeText = pdfData.text?.trim();
 
     if (!resumeText) {
@@ -77,7 +88,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { provider, generatorModel } = await resolveTaskModels(organizationId);
+    const { provider, generatorModel } = await resolveTaskModels(organizationId, "resume");
     log.info(`Resume parse for user ${user.id.slice(0, 8)} using org ${organizationId?.slice(0, 8) ?? "none (env keys)"}`);
 
     // Non-streamed JSON-mode call with tolerant parsing + one strict retry; the result is

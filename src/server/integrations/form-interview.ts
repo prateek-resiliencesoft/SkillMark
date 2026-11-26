@@ -2,6 +2,7 @@ import { resolveTaskModels } from "@/lib/ai/registry";
 import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import type { InterviewConfig } from "@/lib/forms/schema";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { normalizeInterviewLanguageSetting } from "@/lib/interview-language";
 
 type GeneratedQuestion = {
   text?: string;
@@ -38,7 +39,7 @@ export function describeConfig(c: InterviewConfig): string {
 
 /** Generate questions with the same prompt/provider as /api/ai/generate. */
 export async function generateQuestions(c: InterviewConfig, organizationId?: string | null) {
-  const { provider, generatorModel } = await resolveTaskModels(organizationId);
+  const { provider, generatorModel } = await resolveTaskModels(organizationId, "generate");
   const premade = (c.predefinedQuestions ?? []).filter((q) => q.trim()).map((text) => ({ text, type: "OPEN_ENDED" }));
   const messages = buildGeneratorPrompt(
     describeConfig(c),
@@ -79,7 +80,7 @@ export async function syncFormInterview(opts: {
   const row: Record<string, unknown> = {
     title: c.title.trim(),
     description: c.description || null,
-    language: c.language || "en",
+    language: normalizeInterviewLanguageSetting(c.language || "en"),
     timeLimitMinutes: c.durationMinutes || null,
     voiceEnabled: voice,
     chatEnabled: true,

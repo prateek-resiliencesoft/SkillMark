@@ -357,6 +357,7 @@ const drawParticles = (
   canvasW: number,
   canvasH: number,
   dpr: number,
+  gradientColors?: readonly string[] | null,
 ) => {
   ctx.clearRect(0, 0, canvasW * dpr, canvasH * dpr);
 
@@ -390,6 +391,18 @@ const drawParticles = (
   }
 
   ctx.globalAlpha = 1;
+
+  // Optional brand gradient: recolour the drawn particles by position.
+  if (gradientColors && gradientColors.length >= 2) {
+    const w = canvasW * dpr;
+    const h = canvasH * dpr;
+    const g = ctx.createLinearGradient(w, 0, 0, h);
+    gradientColors.forEach((c, i) => g.addColorStop(i / (gradientColors.length - 1), c));
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = "source-over";
+  }
 };
 
 export interface DitheredLogoProps {
@@ -406,6 +419,8 @@ export interface DitheredLogoProps {
   diffusionStrength?: number;
   serpentine?: boolean;
   particleColor?: string;
+  /** Gradient stops (top-right → bottom-left) applied over the particles. */
+  gradientColors?: readonly string[];
   style?: CSSProperties;
   className?: string;
 }
@@ -424,6 +439,7 @@ export function DitheredLogo({
   diffusionStrength = DEFAULTS.diffusionStrength,
   serpentine = DEFAULTS.serpentine,
   particleColor = "currentColor",
+  gradientColors,
   style,
   className,
 }: DitheredLogoProps) {
@@ -435,6 +451,8 @@ export function DitheredLogo({
   const runningRef = useRef(false);
   const prevConfigRef = useRef("");
   const [isMobile, setIsMobile] = useState(false);
+  const gradientRef = useRef<readonly string[] | null>(gradientColors ?? null);
+  gradientRef.current = gradientColors ?? null;
 
   const resolveParticleColor = useCallback(() => {
     const canvas = canvasRef.current;
@@ -488,6 +506,7 @@ export function DitheredLogo({
         rect.width,
         rect.height,
         dpr,
+        gradientRef.current,
       );
 
       if (needsMore) {
@@ -629,6 +648,7 @@ export function DitheredLogo({
           rect.width,
           rect.height,
           dpr,
+          gradientRef.current,
         );
       }
 

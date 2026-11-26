@@ -1,4 +1,4 @@
-# Contributing to Skillmark
+# Contributing to Resiliencesoft Interview AI
 
 Thanks for your interest in contributing! This guide will help you get started.
 
@@ -14,8 +14,8 @@ Thanks for your interest in contributing! This guide will help you get started.
 
 ```bash
 # 1. Fork and clone
-git clone https://github.com/<your-username>/aural-oss.git
-cd aural-oss
+git clone https://github.com/<your-username>/SkillMark.git
+cd SkillMark
 
 # 2. Install dependencies
 npm install
@@ -24,8 +24,10 @@ npm install
 cp .env.example .env
 # Edit .env with your API keys
 
-# 4. Start local Supabase
-npx supabase start
+# 4. Start Postgres + PostgREST (db/init/*.sql runs on first boot)
+npm run db:up
+# Existing database? Apply newer db/init migrations:
+npm run db:migrate
 
 # 5. Start the dev server
 npm run dev
@@ -78,7 +80,7 @@ npm run test:web      # Unit tests
 
 ## Reporting Bugs
 
-Please use the [Bug Report](https://github.com/1146345502/aural-oss/issues/new?template=bug_report.md) issue template. Include:
+Please use the [Bug Report](https://github.com/prateek-resiliencesoft/SkillMark/issues/new?template=bug_report.md) issue template. Include:
 
 - Steps to reproduce
 - Expected vs. actual behavior
@@ -87,7 +89,7 @@ Please use the [Bug Report](https://github.com/1146345502/aural-oss/issues/new?t
 
 ## Feature Requests
 
-Use the [Feature Request](https://github.com/1146345502/aural-oss/issues/new?template=feature_request.md) issue template. Describe:
+Use the [Feature Request](https://github.com/prateek-resiliencesoft/SkillMark/issues/new?template=feature_request.md) issue template. Describe:
 
 - The problem you're solving
 - Your proposed solution

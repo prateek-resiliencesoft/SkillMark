@@ -4,10 +4,11 @@ import {
     isAuthError,
     validateApiKey,
 } from "@/lib/api-key-auth";
+import { keyHasScope } from "@/lib/api-keys";
 import { nanoid } from "@/lib/id";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-const APP_BASE = process.env.NEXT_PUBLIC_APP_URL ?? "https://aural-ai.com";
+const APP_BASE = process.env.NEXT_PUBLIC_APP_URL ?? "https://resiliencesoftinterview.com";
 
 type CandidateInput = {
   name?: unknown;
@@ -25,7 +26,7 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "candidates:read");
   if (isAuthError(auth)) return auth;
 
   const { id: interviewId } = await params;
@@ -33,10 +34,14 @@ export async function GET(
   const access = await assertInterviewProjectAccess(interviewId, auth.projectIds);
   if (access instanceof Response) return access;
 
+  // Invite tokens let anyone take the interview as the candidate: only keys that may create invites see them.
+  const withTokens = keyHasScope(auth.scopes, "invites:write");
   const { data: candidates, error } = await supabaseAdmin
     .from("candidates")
     .select(
-      "id, name, email, phone, notes, inviteToken, sessionId, createdAt",
+      withTokens
+        ? "id, name, email, phone, notes, inviteToken, sessionId, createdAt"
+        : "id, name, email, phone, notes, sessionId, createdAt",
     )
     .eq("interviewId", interviewId)
     .order("createdAt", { ascending: false });
@@ -52,7 +57,7 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await validateApiKey(request);
+  const auth = await validateApiKey(request, "invites:write");
   if (isAuthError(auth)) return auth;
 
   const { id: interviewId } = await params;

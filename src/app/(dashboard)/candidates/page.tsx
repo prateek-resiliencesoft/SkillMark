@@ -1,6 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { latestTimestamp, timeRangeCutoff } from "@/lib/time-range";
+import { listDurationSeconds } from "@/lib/session-activity";
+import { livePollInterval } from "@/lib/live-poll";
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useProject } from "@/components/project-provider";
 import {
@@ -41,12 +44,18 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
+import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
+import { formatSessionStatusLabel } from "@/lib/preflight";
+import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
+import { decisionStatusLabel } from "@/lib/candidate-decision";
 import { trpc } from "@/lib/trpc/client";
+import { cn } from "@/lib/utils";
 import {
     ArrowDown,
     ArrowUp,
     ArrowUpDown,
     Calendar,
+    CalendarClock,
     Check,
     ChevronLeft,
     ChevronRight,
@@ -63,6 +72,17 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CandidateDetailSheet } from "@/components/candidates/candidate-detail-sheet";
+import { ExpiredBadge, ExtendExpiryDialog } from "@/components/candidates/extend-expiry-dialog";
+import { LeftFollowupAction } from "@/components/candidates/left-followup-action";
+import { leftFollowupState } from "@/lib/left-followup";
+import { isLinkExpired } from "@/lib/session-link";
+import { RoundFilterSegments } from "@/components/round-two/round-filter-segments";
+import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
+import {
+  candidateMatchesRound,
+  clampRoundFilter,
+  type RoundFilterValue,
+} from "@/lib/round-two/round-filter";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -83,6 +103,11 @@ type CandidateRow = {
   workExperience: string | null;
   notes: string | null;
   inviteToken: string | null;
+  expiresAt: string | null;
+  followupSentAt: string | null;
+  followupSentToken: string | null;
+  followupError: string | null;
+  decisionStatus: string | null;
   session: any;
   createdAt: string;
   interviewTitle: string;
@@ -120,7 +145,13 @@ type SortKey =
   | "finished"
   | "source"
   | "status"
-  | "created";
+  | "round"
+  | "decision"
+  | "link"
+  | "followup"
+  | "created"
+  /** Default: newest activity first (session start, else when the row was created). */
+  | "recent";
 
 type SortDir = "asc" | "desc";
 
@@ -176,6 +207,10 @@ const COLUMNS: ColumnDef[] = [
   },
   { key: "notes", label: "Notes", sortKey: "notes", defaultVisible: false },
   { key: "status", label: "Status", sortKey: "status", defaultVisible: true },
+  { key: "round", label: "Round", sortKey: "round", defaultVisible: true },
+  { key: "decision", label: "Decision", sortKey: "decision", defaultVisible: true },
+  { key: "link", label: "Link", sortKey: "link", defaultVisible: false },
+  { key: "followup", label: "Follow-up", sortKey: "followup", defaultVisible: false },
   { key: "score", label: "Score", sortKey: "score", defaultVisible: true },
   {
     key: "duration",
@@ -216,17 +251,7 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 
 function getTimeRangeCutoff(value: string): Date | null {
-  const now = Date.now();
-  const ms: Record<string, number> = {
-    "1d": 24 * 60 * 60 * 1000,
-    "3d": 3 * 24 * 60 * 60 * 1000,
-    "7d": 7 * 24 * 60 * 60 * 1000,
-    "14d": 14 * 24 * 60 * 60 * 1000,
-    "30d": 30 * 24 * 60 * 60 * 1000,
-    "90d": 90 * 24 * 60 * 60 * 1000,
-  };
-  if (!ms[value]) return null;
-  return new Date(now - ms[value]);
+  return timeRangeCutoff(value);
 }
 
 /* ------------------------------------------------------------------ */
@@ -239,16 +264,60 @@ function getSessionStatus(row: UnifiedRow): string {
   return session.status;
 }
 
+/** Media-review / recruiter outcome for list badges + filters. */
+function getReviewOutcome(
+  row: UnifiedRow,
+): "approved" | "rejected" | "put_aside" | "followup_sent" | null {
+  const decision = row.type === "candidate" ? row.decisionStatus : null;
+  const media = (row.session as { mediaReviewStatus?: string | null } | null)?.mediaReviewStatus ?? null;
+
+  if (decision === "approved" || media === "approved") return "approved";
+  if (decision === "rejected" || media === "declined") return "rejected";
+  if (media === "set_aside") return "put_aside";
+  if (decision === "followup_sent") return "followup_sent";
+  return null;
+}
+
+function reviewOutcomeLabel(
+  kind: ReturnType<typeof getReviewOutcome>,
+  isZh: boolean,
+): string {
+  switch (kind) {
+    case "approved":
+      return isZh ? "已通过" : "Approved";
+    case "rejected":
+      return isZh ? "已拒绝" : "Rejected";
+    case "put_aside":
+      return isZh ? "暂存" : "Put aside";
+    case "followup_sent":
+      return decisionStatusLabel("followup_sent");
+    default:
+      return "";
+  }
+}
+
 function getSessionBadgeVariant(
   status: string,
 ): "default" | "secondary" | "destructive" | "outline" {
   switch (status) {
     case "COMPLETED":
+    case "Completed":
+    case "已完成":
       return "default";
     case "IN_PROGRESS":
+    case "In Progress":
+    case "Opened link":
+    case "Setting up":
+    case "进行中":
+    case "已打开链接":
+    case "准备中":
       return "outline";
     case "ABANDONED":
+    case "Abandoned":
     case "DISQUALIFIED":
+    case "Disqualified":
+    case "已放弃":
+    case "已取消资格":
       return "destructive";
     default:
       return "secondary";
@@ -282,6 +351,15 @@ function getCandidateField(row: UnifiedRow): CandidateRow | null {
   return row.type === "candidate" ? (row as CandidateRow) : null;
 }
 
+function isRowLinkExpired(row: UnifiedRow): boolean {
+  const c = getCandidateField(row);
+  return !!c && isLinkExpired({ session: row.session, expiresAt: c.expiresAt });
+}
+
+function rowFollowup(row: UnifiedRow) {
+  return leftFollowupState(getCandidateField(row), row.session);
+}
+
 function getSessionScore(row: UnifiedRow): number | null {
   const session = row.session;
   if (!session?.insights) return null;
@@ -293,7 +371,25 @@ function getSessionScore(row: UnifiedRow): number | null {
   );
 }
 
-function getSortValue(row: UnifiedRow, key: SortKey): string | number {
+function rowHasRound2(row: UnifiedRow, r2Ids: Set<string>): boolean {
+  return row.type === "candidate" && r2Ids.has(row.id);
+}
+
+function formatRoundExport(
+  row: UnifiedRow,
+  r2Ids: Set<string>,
+  isZh: boolean,
+): string {
+  const parts = [isZh ? "第1轮" : "Round 1"];
+  if (rowHasRound2(row, r2Ids)) parts.push(isZh ? "第2轮" : "Round 2");
+  return parts.join(isZh ? "、" : " · ");
+}
+
+function getSortValue(
+  row: UnifiedRow,
+  key: SortKey,
+  r2Ids?: Set<string>,
+): string | number {
   const c = getCandidateField(row);
   switch (key) {
     case "interview":
@@ -322,10 +418,12 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return (c?.notes ?? "").toLowerCase();
     case "created":
       return c?.createdAt ? new Date(c.createdAt).getTime() : -1;
+    case "recent":
+      return latestTimestamp(row.session?.interviewBeganAt, getStartDate(row), c?.createdAt, row.session?.createdAt);
     case "score":
       return getSessionScore(row) ?? -1;
     case "duration":
-      return row.session?.totalDurationSeconds ?? -1;
+      return listDurationSeconds(row.session) ?? -1;
     case "started":
       return getStartDate(row) ? new Date(getStartDate(row)!).getTime() : -1;
     case "finished":
@@ -336,6 +434,17 @@ function getSortValue(row: UnifiedRow, key: SortKey): string | number {
       return row.type === "walkin" ? "Walk-in" : "Invited";
     case "status":
       return getSessionStatus(row);
+    case "round":
+      return rowHasRound2(row, r2Ids ?? new Set()) ? 2 : 1;
+    case "decision":
+      return getReviewOutcome(row) ?? "";
+    case "followup": {
+      const f = rowFollowup(row);
+      return !f.relevant ? 0 : f.sent ? 2 : 1;
+    }
+    case "link":
+      // Expired links first (ascending), then by how soon the live ones lapse.
+      return c?.expiresAt ? new Date(c.expiresAt).getTime() : Number.MAX_SAFE_INTEGER;
   }
 }
 
@@ -403,6 +512,8 @@ export default function CandidatesPage() {
     experience: isZh ? "经验" : "Experience",
     notes: isZh ? "备注" : "Notes",
     status: isZh ? "状态" : "Status",
+    round: isZh ? "轮次" : "Round",
+    decision: isZh ? "决定" : "Decision",
     score: isZh ? "分数" : "Score",
     duration: isZh ? "时长" : "Duration",
     started: isZh ? "开始时间" : "Started",
@@ -412,6 +523,7 @@ export default function CandidatesPage() {
   };
   const timeRangeOptions = [
     { value: "ALL", label: isZh ? "全部时间" : "All Time" },
+    { value: "today", label: isZh ? "今天" : "Today" },
     { value: "1d", label: isZh ? "过去 1 天" : "Past 1 day" },
     { value: "3d", label: isZh ? "过去 3 天" : "Past 3 days" },
     { value: "7d", label: isZh ? "过去 7 天" : "Past 7 days" },
@@ -419,22 +531,26 @@ export default function CandidatesPage() {
     { value: "30d", label: isZh ? "过去 30 天" : "Past 30 days" },
     { value: "90d", label: isZh ? "过去 90 天" : "Past 90 days" },
   ];
-  const statusLabel = useCallback((status: string) => {
-    if (!isZh)
-      return status === "Not Started"
-        ? "NOT STARTED"
-        : status.replace("_", " ");
-    switch (status) {
-      case "COMPLETED":
+  const statusLabel = useCallback((row: UnifiedRow) => {
+    const label = formatSessionStatusLabel(row.session);
+    if (!isZh) return label;
+    switch (label) {
+      case "Completed":
         return "已完成";
-      case "IN_PROGRESS":
+      case "In Progress":
         return "进行中";
-      case "ABANDONED":
+      case "Abandoned":
         return "已放弃";
       case "Not Started":
         return "未开始";
+      case "Opened link":
+        return "已打开链接";
+      case "Setting up":
+        return "准备中";
+      case "Disqualified":
+        return "已取消资格";
       default:
-        return status;
+        return label;
     }
   }, [isZh]);
   const sourceLabel = useCallback((source: "walkin" | "candidate") =>
@@ -450,13 +566,15 @@ export default function CandidatesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [timeRange, setTimeRange] = useState("ALL");
-  const [sortKey, setSortKey] = useState<SortKey | null>("created");
+  const [roundFilter, setRoundFilter] = useState<RoundFilterValue>("ALL");
+  const [sortKey, setSortKey] = useState<SortKey | null>("recent");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [extendFor, setExtendFor] = useState<{ id: string; name: string | null; expiresAt: string | null } | null>(null);
   const [detailEdit, setDetailEdit] = useState(false);
   const [visibleColumns, setVisibleColumns] =
     useState<Set<string>>(DEFAULT_VISIBLE);
@@ -542,8 +660,19 @@ export default function CandidatesPage() {
   // ── Data ──
   const candidateList = trpc.candidate.listAll.useQuery(
     { limit: 200, projectId: projectId ?? undefined },
+    { enabled: !!projectId, refetchInterval: (data) => livePollInterval(data) },
+  );
+  const roundMeta = trpc.roundTwo.projectRoundMeta.useQuery(
+    { projectId: projectId ?? "" },
     { enabled: !!projectId },
   );
+  const maxRound = roundMeta.data?.maxRound ?? 1;
+  const effectiveRoundFilter = clampRoundFilter(roundFilter, maxRound);
+  const r2CandidateIds = useMemo(
+    () => new Set(roundMeta.data?.r2CandidateIds ?? []),
+    [roundMeta.data?.r2CandidateIds],
+  );
+  const r2ByCandidateId = roundMeta.data?.r2ByCandidateId ?? {};
 
   const removeCandidatesMutation = trpc.candidate.removeMany.useMutation({
     onSuccess: () => invalidateAll(),
@@ -587,6 +716,11 @@ export default function CandidatesPage() {
       workExperience: c.workExperience ?? null,
       notes: c.notes ?? null,
       inviteToken: c.inviteToken,
+      expiresAt: c.expiresAt ?? null,
+      followupSentAt: c.followupSentAt ?? null,
+      followupSentToken: c.followupSentToken ?? null,
+      followupError: c.followupError ?? null,
+      decisionStatus: (c.decisionStatus as string | null) ?? "none",
       session: c.session,
       createdAt: c.createdAt,
       interviewTitle: c.interview?.title ?? "-",
@@ -607,7 +741,10 @@ export default function CandidatesPage() {
   );
 
   const isFiltering =
-    searchQuery.trim() || statusFilter !== "ALL" || timeRange !== "ALL";
+    searchQuery.trim() ||
+    statusFilter !== "ALL" ||
+    timeRange !== "ALL" ||
+    effectiveRoundFilter !== "ALL";
 
   // ── Filter + Sort ──
   const processedRows = useMemo(() => {
@@ -627,7 +764,29 @@ export default function CandidatesPage() {
     if (statusFilter !== "ALL") {
       result = result.filter((row) => {
         const s = getSessionStatus(row);
-        if (statusFilter === "NOT_STARTED") return s === "Not Started";
+        // Filter on the displayed label: quiet pre-flight sessions read "Not Started" (never abandoned).
+        const label = formatSessionStatusLabel(row.session);
+        const review = getReviewOutcome(row);
+        if (statusFilter === "EXPIRED") return isRowLinkExpired(row);
+        if (statusFilter === "FOLLOWUP_SENT") return rowFollowup(row).sent;
+        if (statusFilter === "FOLLOWUP_NOT_SENT") {
+          const f = rowFollowup(row);
+          return f.relevant && !f.sent;
+        }
+        if (statusFilter === "APPROVED") return review === "approved";
+        if (statusFilter === "REJECTED") return review === "rejected";
+        if (statusFilter === "PUT_ASIDE") return review === "put_aside";
+        if (statusFilter === "DECISION_FOLLOWUP") return review === "followup_sent";
+        if (statusFilter === "PENDING_REVIEW") {
+          return (
+            s === "COMPLETED" &&
+            review === null &&
+            !(row.session as { mediaClearedAt?: string | null } | null)?.mediaClearedAt
+          );
+        }
+        if (statusFilter === "NOT_STARTED") return label === "Not Started";
+        if (statusFilter === "ABANDONED") return label === "Abandoned";
+        if (statusFilter === "IN_PROGRESS") return s === "IN_PROGRESS" && label !== "Not Started";
         return s === statusFilter;
       });
     }
@@ -635,16 +794,30 @@ export default function CandidatesPage() {
     const cutoff = getTimeRangeCutoff(timeRange);
     if (cutoff) {
       result = result.filter((row) => {
-        const started = getStartDate(row);
+        // "Today" also counts invites created today that haven't started yet.
+        const started = getStartDate(row) ?? (timeRange === "today" ? getCandidateField(row)?.createdAt ?? null : null);
         if (!started) return false;
         return new Date(started) >= cutoff;
       });
     }
 
+    if (effectiveRoundFilter !== "ALL") {
+      result = result.filter((row) =>
+        candidateMatchesRound(
+          {
+            id: row.id,
+            hasSession: !!row.session,
+          },
+          effectiveRoundFilter,
+          r2CandidateIds,
+        ),
+      );
+    }
+
     if (sortKey) {
       result = [...result].sort((a, b) => {
-        const va = getSortValue(a, sortKey);
-        const vb = getSortValue(b, sortKey);
+        const va = getSortValue(a, sortKey, r2CandidateIds);
+        const vb = getSortValue(b, sortKey, r2CandidateIds);
         const cmp =
           typeof va === "number" && typeof vb === "number"
             ? va - vb
@@ -654,7 +827,17 @@ export default function CandidatesPage() {
     }
 
     return result;
-  }, [candidates, walkIns, searchQuery, statusFilter, timeRange, sortKey, sortDir]);
+  }, [
+    candidates,
+    walkIns,
+    searchQuery,
+    statusFilter,
+    timeRange,
+    sortKey,
+    sortDir,
+    effectiveRoundFilter,
+    r2CandidateIds,
+  ]);
 
   // ── Pagination ──
   const totalPages = Math.max(1, Math.ceil(processedRows.length / pageSize));
@@ -827,7 +1010,7 @@ export default function CandidatesPage() {
           }
           case "duration":
             record[col.label] = hasSession
-              ? formatDuration(session.totalDurationSeconds)
+              ? formatDuration(listDurationSeconds(session))
               : "";
             break;
           case "started":
@@ -843,14 +1026,46 @@ export default function CandidatesPage() {
             record[col.label] = sourceLabel(row.type);
             break;
           case "status":
-            record[col.label] = statusLabel(status);
+            record[col.label] = statusLabel(row);
             break;
+          case "round":
+            record[col.label] = formatRoundExport(row, r2CandidateIds, isZh);
+            break;
+          case "decision":
+            record[col.label] = reviewOutcomeLabel(getReviewOutcome(row), isZh);
+            break;
+          case "followup": {
+            const f = rowFollowup(row);
+            record[col.label] = !f.relevant
+              ? ""
+              : f.sent
+                ? `Sent ${f.sentAt ? formatDate(f.sentAt) : ""}`.trim()
+                : `Not sent${f.error ? `: ${f.error}` : ""}`;
+            break;
+          }
+          case "link": {
+            const exp = getCandidateField(row)?.expiresAt;
+            record[col.label] = isRowLinkExpired(row)
+              ? `Expired ${formatDate(exp)}`
+              : exp
+                ? `Valid until ${formatDate(exp)}`
+                : "";
+            break;
+          }
         }
       }
       return record;
     });
     exportToXlsx(rows, `sessions-${new Date().toISOString().slice(0, 10)}`);
-  }, [dynamicColumns, frozenCol, processedRows, sourceLabel, statusLabel]);
+  }, [
+    dynamicColumns,
+    frozenCol,
+    isZh,
+    processedRows,
+    r2CandidateIds,
+    sourceLabel,
+    statusLabel,
+  ]);
 
   // ── Cell values ──
   function getCellValue(row: UnifiedRow, key: string): JSX.Element | string {
@@ -927,26 +1142,12 @@ export default function CandidatesPage() {
             {c?.createdAt ? formatDate(c.createdAt) : "-"}
           </span>
         );
-      case "score": {
-        const scoreVal = getSessionScore(row);
-        if (scoreVal === null)
-          return <span className="text-muted-foreground">-</span>;
-        const scoreColor =
-          scoreVal >= 7
-            ? "text-green-700 dark:text-green-400"
-            : scoreVal >= 4
-              ? "text-amber-700 dark:text-amber-400"
-              : "text-red-700 dark:text-red-400";
-        return (
-          <span className={`font-semibold ${scoreColor}`}>
-            {scoreVal.toFixed(1)}/10
-          </span>
-        );
-      }
+      case "score":
+        return <ScoreWithBreakdown insights={session?.insights} />;
       case "duration":
         return (
           <span>
-            {hasSession ? formatDuration(session.totalDurationSeconds) : "-"}
+            {hasSession ? formatDuration(listDurationSeconds(session)) : "-"}
           </span>
         );
       case "started":
@@ -976,15 +1177,108 @@ export default function CandidatesPage() {
             {sourceLabel("candidate")}
           </Badge>
         );
-      case "status":
+      case "status": {
+        // Round 2 filter → show live-panel status, not Round 1 session labels.
+        if (effectiveRoundFilter === 2 && row.type === "candidate") {
+          const r2 = r2ByCandidateId[row.id];
+          return r2 ? (
+            <div className="flex flex-col items-start gap-0.5">
+              <RoundTwoStatusBadge status={r2.status} />
+            </div>
+          ) : (
+            <span className="text-muted-foreground">-</span>
+          );
+        }
+        return (
+          <div className="flex flex-col items-start gap-0.5">
+            <Badge
+              variant={getSessionBadgeVariant(statusLabel(row))}
+              className="whitespace-nowrap"
+            >
+              {statusLabel(row)}
+            </Badge>
+            <QuitEarlyBadge session={row.session} label={isZh ? "提前退出" : undefined} />
+            {isRowLinkExpired(row) && <ExpiredBadge />}
+          </div>
+        );
+      }
+      case "round": {
+        const hasR2 = rowHasRound2(row, r2CandidateIds);
+        return (
+          <div className="flex flex-wrap items-center gap-1">
+            <Badge
+              variant="outline"
+              className="whitespace-nowrap text-xs font-normal"
+            >
+              {isZh ? "第1轮" : "Round 1"}
+            </Badge>
+            {hasR2 && (
+              <Badge
+                variant="outline"
+                className="whitespace-nowrap border-primary/40 text-xs font-normal text-primary"
+              >
+                {isZh ? "第2轮" : "Round 2"}
+              </Badge>
+            )}
+          </div>
+        );
+      }
+      case "decision": {
+        const review = getReviewOutcome(row);
+        // Incomplete follow-up is tracked in Follow-up column / filters — not Decision.
+        if (!review || review === "followup_sent") {
+          return <span className="text-muted-foreground">-</span>;
+        }
+        const label = reviewOutcomeLabel(review, isZh);
         return (
           <Badge
-            variant={getSessionBadgeVariant(status)}
-            className="whitespace-nowrap"
+            variant="outline"
+            className={cn(
+              "whitespace-nowrap",
+              review === "approved" && "border-green-600 text-green-700",
+              review === "rejected" && "border-red-600 text-red-700",
+              review === "put_aside" && "border-amber-600 text-amber-700",
+            )}
           >
-            {statusLabel(status)}
+            {label}
           </Badge>
         );
+      }
+      case "followup":
+        return c && rowFollowup(row).relevant ? (
+          <LeftFollowupAction candidateId={c.id} candidate={c} session={row.session} variant="compact" />
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        );
+      case "link": {
+        if (!c?.expiresAt) return <span className="text-muted-foreground">-</span>;
+        const exp = new Date(c.expiresAt);
+        const when = exp.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        if (isRowLinkExpired(row)) {
+          return (
+            <div className="flex flex-col items-start gap-0.5">
+              <ExpiredBadge />
+              <span className="text-[10px] text-muted-foreground">Expired {when}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExtendFor({ id: c.id, name: c.name, expiresAt: c.expiresAt });
+                }}
+                className="inline-flex items-center gap-1 text-[10px] font-medium text-primary hover:underline"
+              >
+                <CalendarClock className="h-3 w-3" />
+                Extend expiry
+              </button>
+            </div>
+          );
+        }
+        return (
+          <span className="whitespace-nowrap text-muted-foreground">
+            {status === "COMPLETED" || status === "DISQUALIFIED" ? "-" : `Until ${when}`}
+          </span>
+        );
+      }
       default:
         return "-";
     }
@@ -1048,7 +1342,7 @@ export default function CandidatesPage() {
             setPage(0);
           }}
         >
-          <SelectTrigger className="w-[160px]">
+          <SelectTrigger className="w-[190px]">
             <CircleDot className="mr-2 h-4 w-4 text-muted-foreground" />
             <SelectValue />
           </SelectTrigger>
@@ -1056,17 +1350,56 @@ export default function CandidatesPage() {
             <SelectItem value="ALL">
               {isZh ? "全部状态" : "All Status"}
             </SelectItem>
+            <SelectItem value="APPROVED">
+              {isZh ? "已通过 / 入选" : "Approved / Selected"}
+            </SelectItem>
+            <SelectItem value="REJECTED">
+              {isZh ? "已拒绝" : "Rejected"}
+            </SelectItem>
+            <SelectItem value="PUT_ASIDE">
+              {isZh ? "暂存" : "Put aside"}
+            </SelectItem>
+            <SelectItem value="PENDING_REVIEW">
+              {isZh ? "待审核" : "Pending review"}
+            </SelectItem>
+            <SelectItem value="DECISION_FOLLOWUP">
+              {isZh ? "已发不完整跟进" : "Incomplete follow-up"}
+            </SelectItem>
             <SelectItem value="COMPLETED">
               {isZh ? "已完成" : "Completed"}
             </SelectItem>
             <SelectItem value="IN_PROGRESS">
               {isZh ? "进行中" : "In Progress"}
             </SelectItem>
+            <SelectItem value="ABANDONED">
+              {isZh ? "已放弃" : "Abandoned"}
+            </SelectItem>
+            <SelectItem value="DISQUALIFIED">
+              {isZh ? "已取消资格" : "Disqualified"}
+            </SelectItem>
             <SelectItem value="NOT_STARTED">
               {isZh ? "未开始" : "Not Started"}
             </SelectItem>
+            <SelectItem value="EXPIRED">
+              {isZh ? "链接已过期" : "Link Expired"}
+            </SelectItem>
+            <SelectItem value="FOLLOWUP_SENT">
+              {isZh ? "已发送跟进" : "Follow-up Sent"}
+            </SelectItem>
+            <SelectItem value="FOLLOWUP_NOT_SENT">
+              {isZh ? "未发送跟进" : "Follow-up Not Sent"}
+            </SelectItem>
           </SelectContent>
         </Select>
+
+        <RoundFilterSegments
+          value={effectiveRoundFilter}
+          maxRound={maxRound}
+          onChange={(v) => {
+            setRoundFilter(v);
+            setPage(0);
+          }}
+        />
 
         <Button
           variant="outline"
@@ -1419,6 +1752,22 @@ export default function CandidatesPage() {
         onOpenChange={(o) => !o && setDetailId(null)}
         onSaved={invalidateAll}
       />
+      {extendFor && (
+        <ExtendExpiryDialog
+          open
+          onOpenChange={(o) => !o && setExtendFor(null)}
+          candidateId={extendFor.id}
+          candidateName={extendFor.name}
+          expiresAt={extendFor.expiresAt}
+          onExtended={invalidateAll}
+          sendLabel="Extend & open send options"
+          onExtendAndSend={() => {
+            // Hand over to the detail panel, whose resend / follow-up controls are live again.
+            setDetailEdit(false);
+            setDetailId(extendFor.id);
+          }}
+        />
+      )}
     </div>
   );
 }

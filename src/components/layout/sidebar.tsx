@@ -3,13 +3,17 @@
 import { useAppLocale } from "@/components/app-locale-provider";
 import { useAuth } from "@/components/auth-provider";
 import { OrgRequireGate } from "@/components/org-require-gate";
+import { useOrg } from "@/components/org-provider";
 import { TourCelebration } from "@/components/tour/tour-celebration";
 import { TourOverlay } from "@/components/tour/tour-overlay";
 import { TourProvider } from "@/components/tour/tour-provider";
 import { TourWelcome } from "@/components/tour/tour-welcome";
-import { AuralLogo } from "@/components/ui/aural-logo";
+import { ProductLogo } from "@/components/ui/product-logo";
+import { BrandWordmark } from "@/components/ui/brand-wordmark";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Menu } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -25,6 +29,7 @@ import {
   LayoutDashboardIcon,
   MessageSquareIcon,
   PlayCircleIcon,
+  CameraVideoIcon,
   Files01Icon,
   HelpCircleIcon,
   Folder01Icon,
@@ -43,12 +48,18 @@ import {
   Loading03Icon,
 } from "@/components/ui/hugeicon";
 import { useTheme } from "next-themes";
-import { FileText as LucideFileText, Plug as LucidePlug } from "lucide-react";
+import {
+  FileText as LucideFileText,
+  HeartPulse as LucideHeartPulse,
+  Plug as LucidePlug,
+  Code2 as LucideCode,
+} from "lucide-react";
 import { useThemeTransition } from "@/components/ui/theme-transition";
 import { motion } from "motion/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AccountSwitcher } from "./account-switcher";
 import { Header } from "./header";
 import { SupportDrawer } from "./support-drawer";
 
@@ -196,6 +207,7 @@ export function Sidebar({
     { name: t("sidebar.interviews"), href: "/interviews", icon: createHugeicon(MessageSquareIcon) },
     { name: t("sidebar.batches"), href: "/batches", icon: createHugeicon(Files01Icon) },
     { name: t("sidebar.sessions"), href: "/candidates", icon: createHugeicon(PlayCircleIcon) },
+    { name: "Round 2", href: "/round-two", icon: createHugeicon(CameraVideoIcon) },
     { name: t("sidebar.questions"), href: "/questions", icon: createHugeicon(HelpCircleIcon) },
   ];
 
@@ -211,10 +223,12 @@ export function Sidebar({
       "/interviews",
       "/batches",
       "/candidates",
+      "/round-two",
       "/questions",
       "/settings",
       "/organizations",
       "/usage",
+      "/status",
     ];
     mainRoutes.forEach((route) => {
       try {
@@ -255,16 +269,10 @@ export function Sidebar({
       {/* Logo */}
       <div className="flex h-14 items-center border-b px-4">
         <Link href="/organizations" className="flex items-center gap-2">
-          <AuralLogo size={28} className="shrink-0" priority />
-          {!collapsed && (
-            <div className="flex flex-col">
-              <span className="font-heading text-sm font-bold tracking-[2px] leading-none">
-                SKILLMARK
-              </span>
-              <span className="text-[10px] text-muted-foreground font-medium tracking-tight mt-0.5">
-                Measure what matters
-              </span>
-            </div>
+          {collapsed ? (
+            <ProductLogo size={28} className="shrink-0" priority />
+          ) : (
+            <BrandWordmark height={36} priority />
           )}
         </Link>
       </div>
@@ -285,6 +293,22 @@ export function Sidebar({
 
           {/* Bottom section: Support */}
           <div className="space-y-1 px-3 pb-2">
+            {profile?.role === "ADMIN" ? (
+              <Button
+                asChild
+                variant="outline"
+                size={collapsed ? "icon" : "sm"}
+                className={cn(
+                  "mb-1 w-full",
+                  collapsed ? "justify-center" : "justify-start gap-2",
+                )}
+              >
+                <Link href="/admin" onClick={() => setNavigatingTo("/admin")}>
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4 shrink-0" />
+                  {!collapsed ? t("sidebar.enterControlCenter") : null}
+                </Link>
+              </Button>
+            ) : null}
             <button
               onClick={() => setSupportOpen(true)}
               className={cn(
@@ -295,6 +319,14 @@ export function Sidebar({
               <Hugeicon icon={CustomerService01Icon} className="h-4 w-4 shrink-0" />
               {!collapsed && t("sidebar.support")}
             </button>
+            <SidebarLink
+              href="/status"
+              icon={LucideHeartPulse}
+              label={t("sidebar.status")}
+              active={currentPath.startsWith("/status")}
+              collapsed={collapsed}
+              onClick={() => setNavigatingTo("/status")}
+            />
             <SidebarLink
               href="/usage"
               icon={createHugeicon(GaugeIcon)}
@@ -353,6 +385,7 @@ export function Sidebar({
               {[
                 { name: "Interview Form Integration", href: "/integrations/forms", icon: LucideFileText },
                 { name: "Integrations", href: "/integrations", icon: LucidePlug },
+                { name: "API", href: "/developers", icon: LucideCode },
               ].map((item) => (
                 <SidebarLink
                   key={item.href}
@@ -373,6 +406,22 @@ export function Sidebar({
 
           {/* Bottom section: Settings + Support */}
           <div className="space-y-1 px-3 pb-2">
+            {profile?.role === "ADMIN" ? (
+              <Button
+                asChild
+                variant="outline"
+                size={collapsed ? "icon" : "sm"}
+                className={cn(
+                  "mb-1 w-full",
+                  collapsed ? "justify-center" : "justify-start gap-2",
+                )}
+              >
+                <Link href="/admin" onClick={() => setNavigatingTo("/admin")}>
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4 shrink-0" />
+                  {!collapsed ? t("sidebar.enterControlCenter") : null}
+                </Link>
+              </Button>
+            ) : null}
             <SidebarLink
               href="/settings"
               icon={createHugeicon(Settings01Icon)}
@@ -391,6 +440,14 @@ export function Sidebar({
               <Hugeicon icon={CustomerService01Icon} className="h-4 w-4 shrink-0" />
               {!collapsed && t("sidebar.support")}
             </button>
+            <SidebarLink
+              href="/status"
+              icon={LucideHeartPulse}
+              label={t("sidebar.status")}
+              active={currentPath.startsWith("/status")}
+              collapsed={collapsed}
+              onClick={() => setNavigatingTo("/status")}
+            />
             <SidebarLink
               href="/usage"
               icon={createHugeicon(GaugeIcon)}
@@ -471,6 +528,15 @@ export function Sidebar({
                 {t("sidebar.accountSettings")}
               </Link>
             </DropdownMenuItem>
+            <AccountSwitcher />
+            {profile?.role === "ADMIN" ? (
+              <DropdownMenuItem asChild>
+                <Link href="/admin" className="flex items-center gap-2">
+                  <Hugeicon icon={GaugeIcon} className="h-4 w-4" />
+                  {t("sidebar.controlCenter")}
+                </Link>
+              </DropdownMenuItem>
+            ) : null}
             <ThemeToggle />
             <DropdownMenuItem
               className="flex items-center gap-2 text-destructive"
@@ -478,16 +544,21 @@ export function Sidebar({
               onSelect={async (e) => {
                 e.preventDefault();
                 setSigningOut(true);
-                const supabase = createClient();
+                let switchedTo: string | null = null;
                 try {
-                  await supabase.auth.signOut();
+                  const res = await fetch("/api/auth/logout", { method: "POST" });
+                  switchedTo = (await res.json()).switchedTo ?? null;
                 } catch {
                   // Session may have expired; clear local state instead
-                  await supabase.auth
-                    .signOut({ scope: "local" })
-                    .catch(() => {});
+                  await createClient().auth.signOut().catch(() => {});
                 }
-                window.location.href = "/login";
+                try {
+                  // API docs key persisted by older builds of the developers page.
+                  sessionStorage.removeItem("rsi-docs-key");
+                } catch {
+                  /* storage unavailable */
+                }
+                window.location.href = switchedTo ? "/dashboard" : "/login";
               }}
             >
               {signingOut ? (
@@ -528,26 +599,79 @@ export function SidebarToggle({
   );
 }
 
+function PausedOrgBanner() {
+  const { currentOrg } = useOrg();
+  const { t } = useAppLocale();
+  if (!currentOrg || currentOrg.status !== "SUSPENDED") return null;
+  return (
+    <div
+      role="status"
+      className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-center text-xs text-amber-800 dark:text-amber-200"
+    >
+      {t("org.pausedBanner")}
+    </div>
+  );
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const shellPathname = usePathname();
+
+  // Close the mobile drawer on every route change.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [shellPathname]);
 
   return (
     <TourProvider>
-      <div className="dashboard-shell flex h-screen overflow-hidden bg-background">
-        <Sidebar
-          collapsed={collapsed}
-          onToggle={() => setCollapsed(!collapsed)}
+      <div className="dashboard-shell flex h-[100dvh] overflow-hidden bg-background">
+        {/* Desktop (lg+): permanent sidebar, unchanged */}
+        <div className="hidden lg:flex">
+          <Sidebar
+            collapsed={collapsed}
+            onToggle={() => setCollapsed(!collapsed)}
           />
-          <div className="flex flex-1 flex-col overflow-hidden">
+        </div>
+        {/* Below lg: off-canvas drawer (backdrop tap / Esc / nav click / route change close it) */}
+        <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+          <SheetContent
+            side="left"
+            className="w-52 max-w-[85vw] p-0 lg:hidden [&>button]:hidden"
+            onClickCapture={(e) => {
+              if ((e.target as HTMLElement).closest("a")) setMobileNavOpen(false);
+            }}
+          >
+            <SheetTitle className="sr-only">Navigation</SheetTitle>
+            <div className="flex h-full [&>aside]:w-full [&>aside]:border-r-0">
+              <Sidebar collapsed={false} onToggle={() => setMobileNavOpen(false)} />
+            </div>
+          </SheetContent>
+        </Sheet>
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             <Header
               sidebarToggle={
-                <SidebarToggle
-                  collapsed={collapsed}
-                  onToggle={() => setCollapsed(!collapsed)}
-                />
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-10 w-10 shrink-0 lg:hidden"
+                    aria-label="Open navigation"
+                    onClick={() => setMobileNavOpen(true)}
+                  >
+                    <Menu className="h-5 w-5" />
+                  </Button>
+                  <span className="hidden lg:contents">
+                    <SidebarToggle
+                      collapsed={collapsed}
+                      onToggle={() => setCollapsed(!collapsed)}
+                    />
+                  </span>
+                </>
               }
             />
-            <main className="flex-1 overflow-y-auto p-6 code-scrollbar bg-background">
+            <PausedOrgBanner />
+            <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3 sm:p-4 lg:p-6 code-scrollbar bg-background">
               <OrgRequireGate>{children}</OrgRequireGate>
             </main>
           </div>

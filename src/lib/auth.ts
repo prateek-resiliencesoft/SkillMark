@@ -1,6 +1,7 @@
 import { cookies, headers } from "next/headers";
 import { SESSION_COOKIE } from "@/lib/auth-session";
 import { getUserFromToken } from "@/lib/users";
+import { isApiKeyAuthHeader } from "@/lib/api-keys";
 
 /**
  * Server-side helper to get the authenticated user.
@@ -13,7 +14,7 @@ export async function getAuthUser() {
   } catch { /* no cookies in this context */ }
   try {
     const auth = headers().get("authorization");
-    if (auth?.startsWith("Bearer ") && !auth.startsWith("Bearer dlv_")) {
+    if (auth?.startsWith("Bearer ") && !isApiKeyAuthHeader(auth)) {
       return await getUserFromToken(auth.slice(7));
     }
   } catch { /* ignore */ }

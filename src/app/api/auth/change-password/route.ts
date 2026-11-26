@@ -1,4 +1,7 @@
-import { createClient } from "@/lib/supabase/server";
+import { readAccountTokens, setAccountsCookie, withAccount } from "@/lib/auth-accounts";
+import { SESSION_COOKIE, sessionCookieOptions } from "@/lib/auth-session";
+import { getUserFromToken, issueSessionToken, updatePassword } from "@/lib/users";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -19,24 +22,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const jar = cookies();
+    const user = await getUserFromToken(jar.get(SESSION_COOKIE)?.value);
 
     if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const { error } = await supabase.auth.updateUser({
-      password: newPassword,
-    });
+    const { error } = await updatePassword(user.id, String(newPassword));
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ error }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true });
+    // Every older session (other devices, leaked tokens) is now revoked; keep this browser signed in.
+    const token = await issueSessionToken(user);
+    const res = NextResponse.json({ success: true });
+    res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
+    setAccountsCookie(res, withAccount(readAccountTokens(jar), token));
+    return res;
   } catch {
     return NextResponse.json(
       { error: "Internal server error" },

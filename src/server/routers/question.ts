@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { parseSkipIf, questionSkipIfSchema } from "@/lib/question-conditions";
 import { protectedProcedure, router } from "../trpc";
 import { getOrgMembership, assertMinRole, hasProjectAccess, filterAccessibleProjectIds, getEffectiveProjectRole, type MemberRole } from "../trpc";
 
@@ -24,7 +25,7 @@ const questionInput = z.object({
   probeOnShort: z.boolean().default(true),
   probeThreshold: z.number().nullable().optional(),
   showIf: z.any().optional(),
-  skipIf: z.any().optional(),
+  skipIf: questionSkipIfSchema,
   timeLimitSeconds: z.number().nullable().optional(),
   isRequired: z.boolean().default(true),
   allowFileUpload: z.boolean().default(false),
@@ -35,6 +36,7 @@ async function verifyInterviewAccess(
   supabase: Parameters<typeof getOrgMembership>[0],
   interviewId: string,
   userId: string,
+  options: { write?: boolean } = {},
 ): Promise<{ role: MemberRole; interviewUserId: string }> {
   const { data: interview } = await supabase
     .from("interviews")
@@ -54,6 +56,7 @@ async function verifyInterviewAccess(
     supabase,
     project.organizationId,
     userId,
+    options,
   );
   if (!membership) {
     throw new TRPCError({ code: "FORBIDDEN", message: "You are not a member of this organization" });
@@ -82,6 +85,7 @@ export const questionRouter = router({
         ctx.supabase,
         input.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only modify questions on interviews you created" });
@@ -103,7 +107,7 @@ export const questionRouter = router({
       }
 
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { interviewId, starterCode, order: _order, ...rest } = input;
+      const { interviewId, starterCode, order: _order, skipIf, ...rest } = input;
 
       const { data: question, error } = await ctx.supabase
         .from("questions")
@@ -112,6 +116,7 @@ export const questionRouter = router({
           interviewId,
           order: resolvedOrder,
           starterCode: starterCode ?? null,
+          skipIf: parseSkipIf(skipIf),
         })
         .select()
         .single();
@@ -121,13 +126,79 @@ export const questionRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: error.message,
         });
+
+      // Batch: also append into settings.premadeQuestions so future AI gens include it
+      // (only when this candidate interview has not started yet).
+      try {
+        const { data: iv } = await ctx.supabase
+          .from("interviews")
+          .select("batchId")
+          .eq("id", interviewId)
+          .maybeSingle();
+        const batchId = (iv as { batchId?: string | null } | null)?.batchId;
+        if (batchId) {
+          const { data: cand } = await ctx.supabase
+            .from("candidates")
+            .select("session:sessions!candidates_sessionId_fkey(status)")
+            .eq("interviewId", interviewId)
+            .maybeSingle();
+          const status =
+            (cand as { session?: { status?: string } | null } | null)?.session?.status ??
+            "NOT_STARTED";
+          if (status === "NOT_STARTED" || !status) {
+            const { data: batch } = await ctx.supabase
+              .from("interview_batches")
+              .select("settings")
+              .eq("id", batchId)
+              .single();
+            const settings = (batch?.settings ?? {}) as {
+              premadeQuestions?: {
+                text: string;
+                type?: string;
+                sectionName?: string;
+                description?: string;
+                options?: unknown;
+                starterCode?: unknown;
+              }[];
+            };
+            const prev = settings.premadeQuestions ?? [];
+            const exists = prev.some(
+              (p) => p.text.toLowerCase().trim() === input.text.toLowerCase().trim(),
+            );
+            if (!exists) {
+              await ctx.supabase
+                .from("interview_batches")
+                .update({
+                  settings: {
+                    ...settings,
+                    premadeQuestions: [
+                      ...prev,
+                      {
+                        text: input.text,
+                        type: input.type,
+                        sectionName: "Added after create",
+                        description: input.description ?? undefined,
+                        options: input.options ?? undefined,
+                        starterCode: input.starterCode ?? undefined,
+                      },
+                    ],
+                  },
+                })
+                .eq("id", batchId);
+            }
+          }
+        }
+      } catch {
+        /* non-fatal */
+      }
+
       return question;
     }),
 
   update: protectedProcedure
     .input(z.object({ id: z.string(), ...questionInput.partial().shape }))
     .mutation(async ({ ctx, input }) => {
-      const { id, starterCode, ...rest } = input;
+      const { id, starterCode, skipIf, ...rest } = input;
 
       const { data: question } = await ctx.supabase
         .from("questions")
@@ -143,6 +214,7 @@ export const questionRouter = router({
         ctx.supabase,
         question.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only modify questions on interviews you created" });
@@ -152,6 +224,9 @@ export const questionRouter = router({
       const updateData: Record<string, unknown> = { ...rest };
       if (starterCode !== undefined) {
         updateData.starterCode = starterCode;
+      }
+      if (skipIf !== undefined) {
+        updateData.skipIf = parseSkipIf(skipIf);
       }
 
       const { data: updated } = await ctx.supabase
@@ -181,6 +256,7 @@ export const questionRouter = router({
         ctx.supabase,
         question.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only delete questions on interviews you created" });
@@ -221,6 +297,7 @@ export const questionRouter = router({
         ctx.supabase,
         input.interviewId,
         ctx.user.id,
+        { write: true },
       );
       if (role === "MEMBER" && interviewUserId !== ctx.user.id) {
         throw new TRPCError({ code: "FORBIDDEN", message: "You can only reorder questions on interviews you created" });
@@ -232,7 +309,8 @@ export const questionRouter = router({
           ctx.supabase
             .from("questions")
             .update({ order: index })
-            .eq("id", id),
+            .eq("id", id)
+            .eq("interviewId", input.interviewId),
         ),
       );
 
@@ -261,11 +339,11 @@ export const questionRouter = router({
       // Get interview IDs accessible to user via org membership
       const { data: memberships } = await ctx.supabase
         .from("organization_members")
-        .select("workspaceId")
+        .select("organizationId")
         .eq("userId", ctx.user.id);
 
       let orgIds = (memberships ?? []).map(
-        (m: { workspaceId: string }) => m.workspaceId,
+        (m: { organizationId: string }) => m.organizationId,
       );
 
       if (input.organizationId) {
@@ -279,7 +357,13 @@ export const questionRouter = router({
 
       let projectIds: string[];
       if (input.projectId) {
-        const projAccess = await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id);
+        const { data: project } = await ctx.supabase
+          .from("projects")
+          .select("organizationId")
+          .eq("id", input.projectId)
+          .maybeSingle();
+        const inScope = !!project && orgIds.includes(project.organizationId as string);
+        const projAccess = inScope && (await hasProjectAccess(ctx.supabase, input.projectId, ctx.user.id));
         projectIds = projAccess ? [input.projectId] : [];
       } else {
         const { data: projects } = await ctx.supabase
