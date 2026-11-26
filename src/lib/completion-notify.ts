@@ -1,3 +1,4 @@
+import { normalizeWhatsappPhone } from "@/lib/messaging/templates";
 import { z } from "zod";
 
 /** Org member + WhatsApp number to alert when a candidate finishes. */
@@ -16,10 +17,7 @@ export function parseCompletionNotifyMembers(raw: unknown): CompletionNotifyMemb
   return parsed.success ? parsed.data : [];
 }
 
+/** Same rules as WhatsApp delivery (E.164; Indian 10-digit → +91). */
 export function normalizeNotifyPhone(phone: string | null | undefined): string | null {
-  if (!phone) return null;
-  const cleaned = phone.replace(/[\s()-]/g, "");
-  if (!cleaned.startsWith("+")) return null;
-  if (cleaned.length < 9 || cleaned.length > 16) return null;
-  return cleaned;
+  return normalizeWhatsappPhone(phone);
 }

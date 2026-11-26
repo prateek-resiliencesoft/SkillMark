@@ -17,12 +17,21 @@ export default function AccountPage() {
   const { t } = useAppLocale();
 
   const [displayName, setDisplayName] = useState(profile?.name ?? "");
+  const [phone, setPhone] = useState(profile?.phone ?? "");
 
   useEffect(() => {
     if (profile?.name != null) {
       setDisplayName(profile.name);
     }
   }, [profile?.name]);
+
+  useEffect(() => {
+    if (profile?.phone != null) {
+      setPhone(profile.phone);
+    } else if (profile) {
+      setPhone("");
+    }
+  }, [profile, profile?.phone]);
 
   const [passwordStep, setPasswordStep] = useState<"idle" | "form">("idle");
   const [newPassword, setNewPassword] = useState("");
@@ -105,6 +114,7 @@ export default function AccountPage() {
   };
 
   const [savingName, setSavingName] = useState(false);
+  const [savingPhone, setSavingPhone] = useState(false);
 
   const handleSaveName = async () => {
     const trimmed = displayName.trim();
@@ -132,6 +142,34 @@ export default function AccountPage() {
       }
     } finally {
       setSavingName(false);
+    }
+  };
+
+  const handleSavePhone = async () => {
+    if (!user) return;
+
+    setSavingPhone(true);
+    try {
+      const res = await fetch("/api/auth/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone.trim() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      const error = res.ok ? null : { message: body.error || "Failed" };
+
+      if (error) {
+        toast({
+          title: t("account.failedToUpdate"),
+          description: error.message,
+          variant: "destructive",
+        });
+      } else {
+        await refreshProfile();
+        toast({ title: t("account.phoneUpdated") });
+      }
+    } finally {
+      setSavingPhone(false);
     }
   };
 
@@ -192,6 +230,38 @@ export default function AccountPage() {
                 disabled={savingName}
               >
                 {savingName ? t("account.saving") : t("account.save")}
+              </Button>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* WhatsApp phone */}
+        <section>
+          <h2 className="text-base font-semibold mb-2">{t("account.phone")}</h2>
+          <Card>
+            <CardContent className="py-3 px-4 space-y-3">
+              <p className="text-sm">
+                {t("account.phoneCurrent", {
+                  phone: profile?.phone ?? "—",
+                })}
+              </p>
+              <Input
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder={t("account.phonePlaceholder")}
+                className="w-full font-mono"
+              />
+              <p className="text-xs text-muted-foreground">{t("account.phoneHint")}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleSavePhone}
+                disabled={savingPhone || phone.trim() === (profile?.phone ?? "")}
+              >
+                {savingPhone ? t("account.saving") : t("account.save")}
               </Button>
             </CardContent>
           </Card>
