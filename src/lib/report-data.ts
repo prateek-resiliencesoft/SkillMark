@@ -2,6 +2,7 @@
 import { countStrikes, MAX_STRIKES } from "@/lib/head-movement";
 import { getSessionOverallScore, getSessionScoreBreakdown } from "@/lib/session-score";
 import { interviewLanguageLabel } from "@/lib/interview-language";
+import { stripInternalCueText } from "@/lib/transcript/sanitize";
 
 export type Recommendation = "hire" | "maybe" | "no";
 
@@ -169,6 +170,9 @@ export function buildReportData(d: any): ReportData {
   const qes = (obj.questionEvaluations ?? []) as any[];
   const rawMessages = ((d?.messages ?? []) as any[])
     .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
+    // Hide relay-internal cues ([CODE_UPDATE] …) that older sessions stored as chat lines.
+    .map((m) => ({ ...m, content: stripInternalCueText(String(m.content ?? "")) }))
+    .filter((m) => m.content.trim())
     .slice()
     .sort((a, b) => {
       const ta = new Date(a.timestamp ?? 0).getTime();

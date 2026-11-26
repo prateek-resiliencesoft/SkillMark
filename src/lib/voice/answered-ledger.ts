@@ -289,10 +289,12 @@ export function noReaskBehaviorRules(isZh = false): string {
     return `- 禁止复述或"再确认"任何已经问过并锁定的题目（每一题，不只是筛选题）。不要说"再确认一下"、"回到上一题/第一题"、"请再说一遍"，除非受访者明确要求回到上一题。
 - 受访者已经答过当前题后：不要再朗读题干原文；可以追问细节，或调用 signal_question_change 进入下一题。
 - 收到 [SILENCE_PROMPT] 且受访者只回复"在/能听到"时：不要重复题干，简短确认后等待他们继续回答当前题。
-- 若某题答案已锁定：最多简短致谢一次，绝不再次征求同一事实或同一题干。`;
+- 若某题答案已锁定：最多简短致谢一次，绝不再次征求同一事实或同一题干。
+- 受访者正在写代码或使用白板时：保持安静，不要提醒"题目在屏幕上"，不要催促，也不要复述题目；只有受访者开口时才回应。`;
   }
   return `- NEVER re-ask or "just confirm" ANY question that is already LOCKED (every scripted question, not only screening). Forbidden unless the participant asked to go back: "just to confirm", "heading back", "reiterate", "going back to question 1 / the first question", "that covers all our key questions" then restarting earlier topics.
 - After the participant has answered the CURRENT question: do NOT read its scripted text again — ask a short follow-up OR call signal_question_change to move on.
 - After a [SILENCE_PROMPT], if the participant only says they are present ("yes", "I can hear you"): do NOT repeat the scripted question — briefly acknowledge and wait for them to continue the CURRENT question.
-- Once an answer is LOCKED: acknowledge at most once; never re-solicit that same fact or re-read that question.`;
+- Once an answer is LOCKED: acknowledge at most once; never re-solicit that same fact or re-read that question.
+- While the participant is writing code or using the whiteboard: stay quiet. Do NOT remind them the problem is on their screen, do not nudge, and do not re-read the question. Never respond to [CODE_UPDATE] or [WHITEBOARD_UPDATE]; speak only when the participant speaks to you.`;
 }

@@ -5,6 +5,7 @@ import { AiRunHistory } from "@/components/ai/reasoning-timeline";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { sessionStatusNote } from "@/lib/session-activity";
 import { livePollInterval } from "@/lib/live-poll";
+import { stripInternalCueText } from "@/lib/transcript/sanitize";
 import { getLanguage as getCodeLanguage } from "@/lib/code-languages";
 import { CodeBlock } from "@/components/code-editor/code-block";
 import { useOrg } from "@/components/org-provider";
@@ -131,19 +132,37 @@ interface CodeEvaluation {
   evaluation?: string;
 }
 
-function WhatsappPreview({ label, text }: { label: string; text: string }) {
-  return (
-    <div className="space-y-1.5 rounded-lg border bg-muted/40 p-3">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
-        <MessageCircle className="h-3.5 w-3.5 shrink-0" />
-        {label}
-      </div>
+function WhatsappPreview({ label, text, collapsible = false }: { label: string; text: string; collapsible?: boolean }) {
+  const body = (
+    <>
       <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[12px] leading-relaxed text-muted-foreground">
         {text}
       </pre>
       <p className="text-[11px] text-muted-foreground">
         Sent on WhatsApp when the candidate has a phone with country code and WhatsApp is configured.
       </p>
+    </>
+  );
+  if (collapsible) {
+    return (
+      <details className="group rounded-lg border bg-muted/40 p-2.5">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-foreground [&::-webkit-details-marker]:hidden">
+          <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+          {label}
+          <span className="ml-auto text-[11px] font-normal text-muted-foreground group-open:hidden">Show</span>
+          <span className="ml-auto hidden text-[11px] font-normal text-muted-foreground group-open:inline">Hide</span>
+        </summary>
+        <div className="mt-2 space-y-1.5">{body}</div>
+      </details>
+    );
+  }
+  return (
+    <div className="space-y-1.5 rounded-lg border bg-muted/40 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+        {label}
+      </div>
+      {body}
     </div>
   );
 }
@@ -177,6 +196,7 @@ function MediaReviewActions({
   const [deleteMedia, setDeleteMedia] = useState(false);
   const [roundTwoOpen, setRoundTwoOpen] = useState(false);
   const [approveOnSchedule, setApproveOnSchedule] = useState(false);
+  const [approveChoice, setApproveChoice] = useState<"round2" | "later">("round2");
 
   const roundTwo = trpc.roundTwo.forCandidate.useQuery(
     { candidateId: candidateId ?? "" },
@@ -380,71 +400,110 @@ function MediaReviewActions({
         )}
       </div>
 
-      <Dialog open={approveOpen} onOpenChange={setApproveOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
+      <Dialog
+        open={approveOpen}
+        onOpenChange={(open) => {
+          setApproveOpen(open);
+          if (open) setApproveChoice("round2");
+        }}
+      >
+        {/* Header + scrolling body + sticky footer: the confirm button is always on screen. */}
+        <DialogContent className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="shrink-0 border-b px-6 pb-4 pt-6 pr-12">
             <DialogTitle>Approve candidate</DialogTitle>
-            <DialogDescription>
-              Create Round 2 now — schedule first, then WhatsApp gets join link + time. Or later —
-              approve now and say round cleared (details soon).
-            </DialogDescription>
+            <DialogDescription>Choose what happens next, then press the button at the bottom.</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
-              <Button
-                className="h-auto w-full justify-start gap-3 px-3 py-3 text-left"
-                disabled={busy}
-                onClick={() => {
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4" role="radiogroup" aria-label="After approval">
+            {(
+              [
+                {
+                  id: "round2" as const,
+                  icon: Video,
+                  title: "Create Round 2 now",
+                  hint: "Opens Round 2 planner. Approve + WhatsApp only after schedule succeeds.",
+                  previewLabel: "WhatsApp after you schedule (preview)",
+                  preview: approvalRoundTwoPreview,
+                },
+                {
+                  id: "later" as const,
+                  icon: UserCheck,
+                  title: "Later — inform only",
+                  hint: "Sends shortlist now. Join link comes when you schedule Round 2 later.",
+                  previewLabel: "WhatsApp on inform only",
+                  preview: approvalLaterPreview,
+                },
+              ]
+            ).map((o) => {
+              const selected = approveChoice === o.id;
+              return (
+                <div
+                  key={o.id}
+                  className={cn(
+                    "space-y-2 rounded-lg border p-3 transition-colors",
+                    selected ? "border-primary bg-primary/5 ring-1 ring-primary" : "hover:bg-muted/40",
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={busy}
+                    onClick={() => setApproveChoice(o.id)}
+                    className="flex w-full items-start gap-3 text-left"
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+                        selected ? "border-primary bg-primary" : "border-muted-foreground/50",
+                      )}
+                    >
+                      {selected && <span className="h-1.5 w-1.5 rounded-full bg-primary-foreground" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                        <o.icon className="h-4 w-4 shrink-0" />
+                        {o.title}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{o.hint}</span>
+                    </span>
+                  </button>
+                  <WhatsappPreview collapsible label={o.previewLabel} text={o.preview} />
+                </div>
+              );
+            })}
+          </div>
+          <DialogFooter className="shrink-0 gap-2 border-t bg-background px-6 py-4 sm:gap-0">
+            <Button variant="outline" disabled={busy} onClick={() => setApproveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => {
+                if (approveChoice === "round2") {
                   // Close dialog then open sheet (Radix focus trap needs a tick).
                   setApproveOpen(false);
                   window.setTimeout(() => {
                     setApproveOnSchedule(true);
                     setRoundTwoOpen(true);
                   }, 50);
-                }}
-              >
-                <Video className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  <span className="block text-sm font-medium">Create Round 2 now</span>
-                  <span className="block text-xs font-normal text-primary-foreground/80">
-                    Opens Round 2 planner. Approve + WhatsApp only after schedule succeeds.
-                  </span>
-                </span>
-              </Button>
-              <WhatsappPreview label="WhatsApp after you schedule (preview)" text={approvalRoundTwoPreview} />
-            </div>
-            <div className="space-y-2 rounded-lg border p-3">
-              <Button
-                variant="outline"
-                className="h-auto w-full justify-start gap-3 px-3 py-3 text-left"
-                disabled={busy}
-                onClick={() =>
-                  mutation.mutate({
-                    sessionId,
-                    action: "approved",
-                    deferShortlist: false,
-                    nextRoundDetails: APPROVAL_NEXT_ROUND_PENDING,
-                  })
+                  return;
                 }
-              >
-                {busy && mutation.variables?.action === "approved" ? (
-                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-                ) : (
-                  <UserCheck className="mt-0.5 h-4 w-4 shrink-0" />
-                )}
-                <span>
-                  <span className="block text-sm font-medium">Later — inform only</span>
-                  <span className="block text-xs font-normal text-muted-foreground">
-                    Sends shortlist now. Join link comes when you schedule Round 2 later.
-                  </span>
-                </span>
-              </Button>
-              <WhatsappPreview label="WhatsApp on inform only" text={approvalLaterPreview} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" disabled={busy} onClick={() => setApproveOpen(false)}>
-              Cancel
+                mutation.mutate({
+                  sessionId,
+                  action: "approved",
+                  deferShortlist: false,
+                  nextRoundDetails: APPROVAL_NEXT_ROUND_PENDING,
+                });
+              }}
+            >
+              {busy && mutation.variables?.action === "approved" ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : approveChoice === "round2" ? (
+                <Video className="mr-1.5 h-4 w-4" />
+              ) : (
+                <UserCheck className="mr-1.5 h-4 w-4" />
+              )}
+              {approveChoice === "round2" ? "Approve & create Round 2" : "Approve & inform candidate"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1276,6 +1335,9 @@ function SessionDetailBody({
     }[];
     return msgs
       .filter((m) => m.contentType !== "WHITEBOARD" && m.contentType !== "CODE")
+      // Hide relay-internal cues ([CODE_UPDATE] …) that older sessions stored as chat lines.
+      .map((m) => ({ ...m, content: stripInternalCueText(String(m.content ?? "")) }))
+      .filter((m) => m.content.trim())
       .slice()
       .sort((a, b) => {
         const ta = new Date(a.timestamp ?? 0).getTime();

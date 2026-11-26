@@ -75,32 +75,32 @@ test("stuck turn: Ankit's case — a turn open for 9 minutes is always closed", 
 const idle = { turnActive: false, aiBusy: false, speechInProgress: false };
 const C = ENDPOINTING_CONFIG;
 
-test("silence config: 9s first reminder (8–10s), 5s gaps, 8s final wait, next_question policy", () => {
-  assert.equal(C.silenceFirstPromptMs, 9_000);
-  assert.ok(C.silenceFirstPromptMs >= 8_000 && C.silenceFirstPromptMs <= 10_000);
-  assert.equal(C.silencePromptGapMs, 5_000);
-  assert.equal(C.silenceFinalWaitMs, 8_000);
+test("silence config: 15s first reminder, 8s gaps, 10s final wait, 60s coding hold, next_question policy", () => {
+  assert.equal(C.silenceFirstPromptMs, 15_000);
+  assert.equal(C.silencePromptGapMs, 8_000);
+  assert.equal(C.silenceFinalWaitMs, 10_000);
+  assert.equal(C.silenceCodingHoldMs, 60_000);
   assert.equal(C.silencePolicy, "next_question");
 });
 
 test("silence: stage 1 → 2 → 3 → skip, each wait timed from the end of the reminder's playback", () => {
   const c = new SilenceCheck();
   c.aiFinished(0); // question playback ended
-  assert.equal(c.tick(8_999, idle), null);
-  assert.deepEqual(c.tick(9_000, idle), { type: "prompt", stage: 1, text: "Are you there? Can you hear me?" });
+  assert.equal(c.tick(14_999, idle), null);
+  assert.deepEqual(c.tick(15_000, idle), { type: "prompt", stage: 1, text: "Are you there? Can you hear me?" });
   c.aiStarted(); // reminder 1 plays
-  assert.equal(c.tick(12_000, idle), null);
-  c.aiFinished(11_000);
-  assert.equal(c.tick(15_999, idle), null);
-  assert.deepEqual(c.tick(16_000, idle), { type: "prompt", stage: 2, text: "I can't hear your response. Are you still connected?" });
+  assert.equal(c.tick(18_000, idle), null);
+  c.aiFinished(17_000);
+  assert.equal(c.tick(24_999, idle), null);
+  assert.deepEqual(c.tick(25_000, idle), { type: "prompt", stage: 2, text: "I can't hear your response. Are you still connected?" });
   c.aiStarted();
-  c.aiFinished(18_000);
-  assert.equal(c.tick(22_999, idle), null);
-  assert.deepEqual(c.tick(23_000, idle), { type: "prompt", stage: 3, text: "It seems you've gone silent. I'll wait a little longer." });
+  c.aiFinished(27_000);
+  assert.equal(c.tick(34_999, idle), null);
+  assert.deepEqual(c.tick(35_000, idle), { type: "prompt", stage: 3, text: "It seems you've gone silent. I'll wait a little longer." });
   c.aiStarted();
-  c.aiFinished(25_000);
-  assert.equal(c.tick(32_999, idle), null);
-  assert.deepEqual(c.tick(33_000, idle), { type: "skip", policy: "next_question" });
+  c.aiFinished(37_000);
+  assert.equal(c.tick(46_999, idle), null);
+  assert.deepEqual(c.tick(47_000, idle), { type: "skip", policy: "next_question" });
   // Only once per question; never anything after the skip.
   assert.equal(c.tick(99_000, idle), null);
 });
@@ -128,7 +128,7 @@ for (const stageReached of [0, 1, 2, 3]) {
     let t = 0;
     c.aiFinished(t);
     for (let i = 0; i < stageReached; i++) {
-      t += 10_000;
+      t += 20_000;
       assert.equal(c.tick(t, idle)?.type, "prompt");
       c.aiStarted();
       c.aiFinished(t + 1_000);
@@ -139,7 +139,7 @@ for (const stageReached of [0, 1, 2, 3]) {
     assert.equal(c.tick(t + 60_000, idle), null); // nothing pending
     // Next silence starts again from stage 1 after the AI speaks.
     c.aiFinished(t + 60_000);
-    assert.deepEqual(c.tick(t + 69_000, idle)?.type === "prompt" && (c.currentStage), 1);
+    assert.deepEqual(c.tick(t + 75_000, idle)?.type === "prompt" && (c.currentStage), 1);
   });
 }
 
@@ -147,15 +147,15 @@ test("silence: background noise does not reset the timer (only candidateActivity
   const c = new SilenceCheck();
   c.aiFinished(0);
   // Noise = no turn, no gated speech: ticks keep counting from 0.
-  for (let t = 500; t < 9_000; t += 500) assert.equal(c.tick(t, idle), null);
-  assert.equal(c.tick(9_000, idle)?.type, "prompt");
+  for (let t = 500; t < 15_000; t += 500) assert.equal(c.tick(t, idle), null);
+  assert.equal(c.tick(15_000, idle)?.type, "prompt");
 });
 
 test("silence: speech in progress pauses but does not reset; the wait resumes afterwards", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.equal(c.tick(9_500, { ...idle, speechInProgress: true }), null);
-  assert.equal(c.tick(10_000, idle)?.type, "prompt");
+  assert.equal(c.tick(15_500, { ...idle, speechInProgress: true }), null);
+  assert.equal(c.tick(16_000, idle)?.type, "prompt");
 });
 
 test("silence: never fires during an open candidate turn or while the AI is speaking", () => {
@@ -173,11 +173,11 @@ test("silence: never fires during an open candidate turn or while the AI is spea
 test("silence: relay busy → the same reminder is retried, not skipped past", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.equal(c.tick(9_000, idle)?.type, "prompt");
-  c.promptRejected(9_100, C.silenceCheckSuppressMs);
+  assert.equal(c.tick(15_000, idle)?.type, "prompt");
+  c.promptRejected(15_100, C.silenceCheckSuppressMs);
   assert.equal(c.currentStage, 0);
-  assert.equal(c.tick(9_100 + C.silenceCheckSuppressMs - 1, idle), null);
-  const again = c.tick(9_100 + C.silenceFirstPromptMs, idle);
+  assert.equal(c.tick(15_100 + C.silenceCheckSuppressMs - 1, idle), null);
+  const again = c.tick(15_100 + C.silenceFirstPromptMs, idle);
   assert.deepEqual(again && again.type === "prompt" ? again.stage : null, 1);
 });
 
@@ -195,8 +195,8 @@ test("silence: skip refused while busy is retried later, never lost", () => {
 test("silence: still progresses if the AI never speaks a reminder (grace), so it never waits forever", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  assert.equal(c.tick(9_000, idle)?.type, "prompt");
-  const next = 9_000 + C.silenceCheckAiGraceMs + C.silencePromptGapMs;
+  assert.equal(c.tick(15_000, idle)?.type, "prompt");
+  const next = 15_000 + C.silenceCheckAiGraceMs + C.silencePromptGapMs;
   assert.equal(c.tick(next - 1, idle), null);
   assert.equal(c.tick(next, idle)?.type, "prompt");
 });
@@ -204,7 +204,7 @@ test("silence: still progresses if the AI never speaks a reminder (grace), so it
 test("silence: candidate finished but the AI never replied → reminders still run", () => {
   const c = new SilenceCheck();
   c.candidateFinished(1_000);
-  assert.equal(c.tick(10_000, idle)?.type, "prompt");
+  assert.equal(c.tick(16_000, idle)?.type, "prompt");
 });
 
 test("silence: suppressed while another prompt (check-in / watchdog) is in flight", () => {
@@ -212,14 +212,15 @@ test("silence: suppressed while another prompt (check-in / watchdog) is in fligh
   c.aiFinished(0);
   c.suppress(8_000, 5_000);
   assert.equal(c.tick(12_999, idle), null);
-  assert.equal(c.tick(13_000, idle), null); // waitingSince moved to 8s → fires at 17s
-  assert.equal(c.tick(17_000, idle)?.type, "prompt");
+  assert.equal(c.tick(13_000, idle), null); // waitingSince moved to 8s → fires at 23s
+  assert.equal(c.tick(22_999, idle), null);
+  assert.equal(c.tick(23_000, idle)?.type, "prompt");
 });
 
 test("silence: new question starts fresh", () => {
   const c = new SilenceCheck();
   c.aiFinished(0);
-  c.tick(9_000, idle);
+  c.tick(15_000, idle);
   c.reset();
   assert.equal(c.tick(60_000, idle), null);
   assert.equal(c.attemptCount, 0);
@@ -272,4 +273,37 @@ test("pcm16Rms: silence is 0, a loud tone is well above the voice level", () => 
   const b = Buffer.alloc(320);
   for (let i = 0; i < 160; i++) b.writeInt16LE(i % 2 ? 8000 : -8000, i * 2);
   assert.ok(pcm16Rms(b) > 0.2);
+});
+
+test("silence: typing code or drawing holds every reminder, then the wait resumes when the work stops", () => {
+  const c = new SilenceCheck();
+  c.aiFinished(0);
+  // The candidate keeps editing: no reminder, however long it takes.
+  for (let t = 5_000; t <= 120_000; t += 5_000) {
+    c.codingActivity(t);
+    assert.equal(c.tick(t + 1, idle), null);
+  }
+  // Last edit at 120s: held for the coding hold, then the normal first wait applies.
+  assert.equal(c.tick(120_000 + C.silenceCodingHoldMs - 1, idle), null);
+  assert.equal(c.tick(120_000 + C.silenceCodingHoldMs, idle)?.type, "prompt");
+});
+
+test("silence: coding activity after a reminder resets the stage so the count restarts", () => {
+  const c = new SilenceCheck();
+  c.aiFinished(0);
+  assert.equal(c.tick(15_000, idle)?.type, "prompt");
+  c.aiStarted();
+  c.aiFinished(17_000);
+  c.codingActivity(18_000);
+  assert.equal(c.currentStage, 0);
+  assert.equal(c.tick(18_000 + C.silenceCodingHoldMs - 1, idle), null);
+});
+
+test("silence: a new question clears the coding hold", () => {
+  const c = new SilenceCheck();
+  c.aiFinished(0);
+  c.codingActivity(1_000);
+  c.reset();
+  c.aiFinished(2_000);
+  assert.equal(c.tick(2_000 + C.silenceFirstPromptMs, idle)?.type, "prompt");
 });

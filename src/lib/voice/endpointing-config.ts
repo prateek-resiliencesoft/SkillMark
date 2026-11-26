@@ -100,12 +100,17 @@ export const ENDPOINTING_CONFIG = {
   turnNoVoiceForceEndMs: 8_000,
 
   // ── Silent-candidate reminders (all timed from the end of AI playback) ──
-  /** Silence after the AI finishes a question before "Are you there? Can you hear me?" (spec: 8–10s). */
-  silenceFirstPromptMs: 9_000,
+  /** Silence after the AI finishes a question before "Are you there? Can you hear me?" (15s so thinking time is not mistaken for silence). */
+  silenceFirstPromptMs: 15_000,
   /** Silence after reminder 1 / reminder 2 finishes before the next reminder. */
-  silencePromptGapMs: 5_000,
+  silencePromptGapMs: 8_000,
   /** Silence after the last reminder ("I'll wait a little longer") before the silence policy runs. */
-  silenceFinalWaitMs: 8_000,
+  silenceFinalWaitMs: 10_000,
+  /**
+   * Code editor / whiteboard activity (the candidate is working on the problem)
+   * holds every silence reminder for this long after the last edit.
+   */
+  silenceCodingHoldMs: 60_000,
   /** What happens after the final wait. Only "next_question" (left unanswered) for now. */
   silencePolicy: "next_question" as const,
   /**
