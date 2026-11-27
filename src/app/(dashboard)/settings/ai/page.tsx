@@ -32,7 +32,6 @@ import {
   Loader2,
   Plus,
   Server,
-  Sparkles,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -808,23 +807,19 @@ export default function AiSettingsPage() {
     <div className="mx-auto max-w-5xl space-y-10 pb-10">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-0.5 text-xs font-medium text-primary">
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>Project AI</span>
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight">AI Providers</h1>
+          <h2 className="text-lg font-semibold tracking-tight">Providers</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Add up to {maxKeys} keys per provider. On errors or rate limits the next key, then the next provider, is
-            tried automatically — candidates only see an error if every backup fails. Assign models per section in{" "}
-            <Link href="/settings/ai-studio" className="font-medium text-foreground underline">
-              AI Studio
-            </Link>
-            .
+            Add up to {maxKeys} keys per provider. On rate limits we try the next key, then the next provider.
+            Then open{" "}
+            <Link href="/settings/ai/studio" className="font-medium text-foreground underline underline-offset-2">
+              Studio
+            </Link>{" "}
+            to pick which model each feature uses and preview ₹ cost.
           </p>
         </div>
         <Badge variant="outline" className="px-2.5 py-1 text-xs">
           <span className="mr-1 font-semibold text-foreground">{configuredCount} / {PROVIDERS.length}</span>
-          <span className="text-muted-foreground">Active</span>
+          <span className="text-muted-foreground">with keys</span>
         </Badge>
       </div>
 
