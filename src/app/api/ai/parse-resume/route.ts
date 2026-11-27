@@ -2,6 +2,7 @@ import { getAuthUser } from "@/lib/auth";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { parseResumeText } from "@/lib/ai/resume-parse";
+import { resolveCandidateName } from "@/lib/documents/candidate-name";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 /**
@@ -100,6 +101,13 @@ export async function POST(req: Request) {
           const parsed = await parseResumeText(provider, generatorModel, resumeText, {
             onStatus: (status) => controller.enqueue(encoder.encode(`data: ${JSON.stringify({ status })}\n\n`)),
           });
+          const resolved = resolveCandidateName({
+            candidate: typeof parsed.name === "string" ? parsed.name : null,
+            source: resumeText,
+            email: typeof parsed.email === "string" ? parsed.email : null,
+            fileName: file.name,
+          });
+          if (resolved.name) parsed.name = resolved.name;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: JSON.stringify(parsed) })}\n\n`));
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         } catch (err) {
