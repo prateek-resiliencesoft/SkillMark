@@ -361,7 +361,7 @@ describe("fallback chain", () => {
     assert.equal(silent.clips.length, 0);
     assert.equal(g.calls, 0);
     const spoken = await transcribeAudioClips(
-      { sampleRate: SR, pcm: synth(SR, [{ sec: 1, amp: 0.001 }, { sec: 3, amp: 0.3 }, { sec: 3, amp: 0.001 }, { sec: 2, amp: 0.3 }]) },
+      { sampleRate: SR, pcm: synth(SR, [{ sec: 1, amp: 0.001 }, { sec: 3, amp: 0.3 }, { sec: 5, amp: 0.001 }, { sec: 2, amp: 0.3 }]) },
       { ...ctx, candidates: [cand("gemini")] },
       { engines: e },
     );

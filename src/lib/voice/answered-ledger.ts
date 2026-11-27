@@ -258,13 +258,14 @@ const META_STRONG_RE = [
 ];
 /** Only when the whole turn is short: a bare "wait" / "pardon". */
 const META_SHORT_RE =
-  /^(wait|hold\s+on|one\s+(second|moment|sec)|just\s+a\s+(second|moment|sec)|sorry|pardon|excuse\s+me|what|huh|repeat|again|hello|hi|ruko|rukiye|rukie|ruk\s+jaa?(o|iye|ie)|zara\s+ruk\w*|ek\s+(minute|minat|min|second|sec|pal|second)|kya\s+(bola|kaha|kahaa)|kya)\b[\s\S]{0,40}$/i;
+  /^(wait|hold\s+on|one\s+(second|moment|sec)|just\s+a\s+(second|moment|sec)|sorry|pardon|excuse\s+me|what|huh|repeat|again|hell?o+|hallo+|hi+|hey|ruko|rukiye|rukie|ruk\s+jaa?(o|iye|ie)|zara\s+ruk\w*|ek\s+(minute|minat|min|second|sec|pal|second)|kya\s+(bola|kaha|kahaa)|kya)\b[\s\S]{0,40}$/i;
 
 export function isMetaReply(text: string | null | undefined): boolean {
   const a = devanagariToRoman(text ?? "").replace(/\s+/g, " ").trim();
   if (!a) return false;
   const words = a.split(/\s+/).length;
   if (words <= 60 && META_STRONG_RE.some((re) => re.test(a))) return true;
+  if (isPresenceCheck(a)) return true;
   return words <= 6 && META_SHORT_RE.test(a);
 }
 
@@ -342,6 +343,39 @@ export function isSufficientShortAnswer(
     return true;
   }
   return false;
+}
+
+const PRESENCE_CHECK_RE = [
+  /^((hell?o+|hallo+|halo+|hi+|hey|haay|hai)[\s.,!?]*){1,4}$/i,
+  /^(hell?o+[\s,.!?]+)?((can|could)\s+you\s+(please\s+)?hear\s+me|are\s+you\s+there|am\s+i\s+audible|is\s+my\s+(voice|audio)\s+(coming|clear|audible))\b/i,
+  /\b(aap|aapko|tum)\s+(mujhe\s+|meri\s+(baat|awaaz|aavaaj|awaj)\s+)?(sun|sunn)\s*(pa\s+|paa\s+)?(rahe|rahi|sakte|sakti)\b/i,
+  /\b(meri\s+)?(awaaz|aavaaj|awaz|aawaz|awaj|voice)\s+(aa|a)\s+rahi\b/i,
+];
+
+/**
+ * "Hello? Hello?" / "can you hear me?" / "aap sun pa rahe hain?": the candidate
+ * is only checking the connection. Never an answer, never a reason to go back.
+ */
+export function isPresenceCheck(text: string | null | undefined): boolean {
+  const t = devanagariToRoman(text ?? "").replace(/\s+/g, " ").trim();
+  if (!t || t.split(" ").length > 10) return false;
+  return PRESENCE_CHECK_RE.some((re) => re.test(t));
+}
+
+/** Reply to a connection check: one "yes, I can hear you", then the CURRENT question. */
+export function presenceCheckCue(
+  currentIndex: number,
+  currentQuestionText: string,
+  opts: { isZh?: boolean; hindi?: boolean; asked?: boolean } = {},
+): string {
+  if (opts.isZh) {
+    return `[SYSTEM] 受访者只是在确认连线（"喂/你能听到吗"）。用一句话告诉对方你能听到，然后继续第${currentIndex + 1}题："${currentQuestionText}"${opts.asked ? "（已经问过的话，用自己的话简短重复一次）" : ""}。不要回到之前的题目，不要问对方能否听到你，不要调用任何函数。`;
+  }
+  const yes = opts.hindi ? `"Haan, aapki awaaz aa rahi hai."` : `"Yes, I can hear you."`;
+  const next = opts.asked
+    ? `repeat question ${currentIndex + 1} once, briefly and in your own words`
+    : `ask question ${currentIndex + 1} now`;
+  return `[SYSTEM] The participant is only checking the connection ("hello" / "can you hear me"). This is NOT an answer. Say one short line such as ${yes}, then ${next}: "${currentQuestionText}". Never go back to an earlier question, never ask whether they can hear you, and do not call any function.`;
 }
 
 /** Cue after silence prompt when the candidate only said they are present. */

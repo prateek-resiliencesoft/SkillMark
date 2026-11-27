@@ -50,7 +50,12 @@ export type SttClipRequest = {
   promptHint: string;
 };
 
-export type SttDeps = { fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> };
+export type SttDeps = {
+  fetch?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  /** Epoch ms after which rate-limit waits stop (the run must end in time). */
+  deadlineAt?: number;
+};
 
 export class SttHttpError extends Error {
   constructor(message: string, readonly status: number) {
@@ -145,6 +150,24 @@ export function describeNoSttReason(merged: ResolvedAiCredentials): string {
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
 
+/** Longest wait for a per-minute limit (Gemini free tier: 3 requests a minute on gemini-3.5-transcribe). */
+export const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+const MAX_RATE_LIMIT_RETRIES = 3;
+
+/**
+ * How long a 429 / 503 asks us to wait, or null when waiting won't help (a
+ * daily quota). Reads Retry-After, Google's RetryInfo "retryDelay": "23s" and
+ * "Please retry in 23.4s".
+ */
+export function rateLimitWaitMs(body: string, retryAfter?: string | null): number | null {
+  if (/per[\s_-]*day|PerDay|daily/i.test(body)) return null;
+  const header = Number(retryAfter);
+  if (Number.isFinite(header) && header > 0) return Math.ceil(header * 1000);
+  const m = body.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/) ?? body.match(/retry in (\d+(?:\.\d+)?)\s*s/i);
+  if (m) return Math.ceil(Number(m[1]) * 1000);
+  return 4000;
+}
+
 async function postWithRetry(
   deps: SttDeps | undefined,
   url: string,
@@ -153,8 +176,13 @@ async function postWithRetry(
   const doFetch = deps?.fetch ?? fetch;
   const sleep = deps?.sleep ?? defaultSleep;
   let res = await doFetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (res.status === 429 || res.status === 503) {
-    await sleep(4000); // brief overload / per-minute limit
+  for (let attempt = 0; attempt < MAX_RATE_LIMIT_RETRIES && (res.status === 429 || res.status === 503); attempt++) {
+    // Per-minute limits: wait as long as the API asks (capped), then try again.
+    const body = await res.clone().text().catch(() => "");
+    const wait = rateLimitWaitMs(body, res.headers.get("retry-after"));
+    if (wait === null || wait > MAX_RATE_LIMIT_WAIT_MS) break;
+    if (deps?.deadlineAt && Date.now() + wait + 1000 > deps.deadlineAt) break;
+    await sleep(wait + 500);
     res = await doFetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   }
   return res;
@@ -203,7 +231,7 @@ function generalGeminiPrompt(req: SttClipRequest): string {
   return `Transcribe this short audio clip of a job candidate answering an interview question.
 Rules:
 - Write exactly what was said, in the order said. Never invent, summarise, translate or fix content.
-- ${req.languages.hindi ? "The candidate may speak Hindi, English or a mix (Hinglish). Keep each word in the language it was spoken." : "Keep the language as spoken."}
+- ${req.languages.hindi ? "The candidate may speak Hindi, English or a mix (Hinglish). Keep each word in the language it was spoken. Write it all in Roman (English) letters, never Devanagari: Hindi words in everyday Hinglish spelling (mera naam, kaam karta hoon) and English words in normal English spelling (experience, developer, currently, Flutter, application)." : "Keep the language as spoken."}
 - Keep amounts and numbers as digits (8.65 LPA, 12 lakhs, 30 days). Indian HR terms stay as spoken: CTC, LPA, lakh, notice period.
 - Likely names and terms: ${req.vocabulary.slice(0, 60).map(oneLine).join(", ")}.
 - If there is no speech, return an empty string.
@@ -236,8 +264,10 @@ const geminiEngine: SttEngine = {
       return { text, model: GEMINI_TRANSCRIBE_MODEL };
     } catch (err) {
       const status = err instanceof SttHttpError ? err.status : 0;
-      // A bad or exhausted key won't work on the general models either.
-      if (status === 401 || status === 403 || status === 429) throw err;
+      // A bad key won't work on the general models either. A 429 here is
+      // usually this model's own small per-minute quota: the general models
+      // have their own, so try them before giving up on the key.
+      if (status === 401 || status === 403) throw err;
       // Otherwise (model not available to this key/region, API shape change, network) use the general Gemini path.
     }
 
@@ -328,7 +358,12 @@ function makeCompatEngine(id: "openai" | "groq" | "custom", label: string): SttE
           // `languages` replaces `language` on this model: never send both.
           for (const l of req.languages.iso) form.append("languages[]", l);
           for (const k of req.vocabulary.map(oneLine).filter(Boolean).slice(0, 100)) form.append("keywords[]", k);
-          form.set("prompt", req.languages.hindi ? "Job interview answer in Hindi and English (Hinglish)." : "Job interview answer.");
+          form.set(
+            "prompt",
+            req.languages.hindi
+              ? "Job interview answer in Hindi and English (Hinglish). Write Hindi in Roman letters (mera naam, kaam karta hoon), never Devanagari, and English words in English spelling (experience, developer, Flutter)."
+              : "Job interview answer.",
+          );
         } else {
           if (req.languages.single) form.set("language", req.languages.single);
           form.set("prompt", req.promptHint.slice(0, 600));

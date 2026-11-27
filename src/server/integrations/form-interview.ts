@@ -80,6 +80,7 @@ export async function syncFormInterview(opts: {
   const row: Record<string, unknown> = {
     title: c.title.trim(),
     description: c.description || null,
+    jobRole: c.jobRole?.trim()?.slice(0, 80) || null,
     language: normalizeInterviewLanguageSetting(c.language || "en"),
     timeLimitMinutes: c.durationMinutes || null,
     voiceEnabled: voice,

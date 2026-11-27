@@ -33,12 +33,30 @@ export type PipelineResult = {
 /** A 4 h recording would be ~hundreds of answers; never queue more than this many paid calls for one run. */
 export const MAX_CLIPS_PER_RUN = 400;
 
+/** Join pauses inside one answer into one clip: fewer requests (per-minute quotas) and no words cut in half. */
+export const MERGE_GAP_SEC = 3;
+export const MERGED_MAX_SEC = 55;
+
+export function mergeSpeechSegments<T extends { startSec: number; endSec: number }>(
+  segments: T[],
+  maxGapSec = MERGE_GAP_SEC,
+  maxLenSec = MERGED_MAX_SEC,
+): { startSec: number; endSec: number }[] {
+  const out: { startSec: number; endSec: number }[] = [];
+  for (const s of segments) {
+    const last = out[out.length - 1];
+    if (last && s.startSec - last.endSec <= maxGapSec && s.endSec - last.startSec <= maxLenSec) last.endSec = s.endSec;
+    else out.push({ startSec: s.startSec, endSec: s.endSec });
+  }
+  return out;
+}
+
 export async function transcribeAudioClips(
   audio: WavAudio,
   ctx: PipelineContext,
   deps?: SttDeps & { concurrency?: number; engines?: Record<SttEngineId, SttEngine> },
 ): Promise<PipelineResult> {
-  const segments = splitSpeechSegments(audio.pcm, audio.sampleRate).slice(0, MAX_CLIPS_PER_RUN);
+  const segments = mergeSpeechSegments(splitSpeechSegments(audio.pcm, audio.sampleRate)).slice(0, MAX_CLIPS_PER_RUN);
   if (!segments.length) return { clips: [], usage: {}, failures: [], segments: 0, unTranscribed: 0 };
   const run = await transcribeClips(
     ctx.candidates,

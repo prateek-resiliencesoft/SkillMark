@@ -4,6 +4,7 @@ import {
   dashboardSessionStatusBucket,
   emptyDashboardStatusBreakdown,
 } from "@/lib/preflight";
+import { resolveJobRole } from "@/lib/job-role";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -393,6 +394,7 @@ export const interviewRouter = router({
         title: z.string().min(1),
         description: z.string().optional(),
         objective: z.string().optional(),
+        jobRole: z.string().max(80).optional(),
         assessmentCriteria: z
           .array(z.object({ name: z.string(), description: z.string() }))
           .optional(),
@@ -525,12 +527,19 @@ export const interviewRouter = router({
       const aiName = resolveInterviewerName(input.aiName, aiGender);
 
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { projectId: _pid, aiName: _n, aiGender: _g, ...rest } = input;
+      const { projectId: _pid, aiName: _n, aiGender: _g, jobRole: _jr, ...rest } = input;
+      const jobRole =
+        resolveJobRole({
+          jobRole: input.jobRole,
+          title: input.title,
+          objective: input.objective,
+        }) ?? null;
       const { data: interview, error } = await ctx.supabase
         .from("interviews")
         .insert({
           ...rest,
           ...effectiveIntegrityConfig(rest),
+          jobRole,
           projectId,
           userId: ctx.user.id,
           requireInvite: true,
@@ -627,6 +636,10 @@ export const interviewRouter = router({
           title: template.title,
           description: template.description,
           objective: template.objective,
+          jobRole: resolveJobRole({
+            title: template.title,
+            objective: template.objective,
+          }),
           aiGender,
           aiName,
           aiTone: template.aiTone,
@@ -675,6 +688,7 @@ export const interviewRouter = router({
         title: z.string().min(1).optional(),
         description: z.string().optional(),
         objective: z.string().optional(),
+        jobRole: z.string().max(80).nullable().optional(),
         assessmentCriteria: z
           .array(z.object({ name: z.string(), description: z.string() }))
           .optional(),
@@ -743,6 +757,24 @@ export const interviewRouter = router({
           data.aiGender ?? nextGender,
         );
         if (data.aiGender) data.aiGender = nextGender;
+      }
+      if (data.jobRole !== undefined) {
+        data.jobRole =
+          resolveJobRole({
+            jobRole: data.jobRole,
+            title: data.title ?? result.interview.title,
+            objective: data.objective ?? result.interview.objective,
+          }) ?? null;
+      } else if (data.title !== undefined || data.objective !== undefined) {
+        // Keep role in sync when title/objective change and no role was stored yet.
+        const existingRole = (result.interview as { jobRole?: string | null }).jobRole;
+        if (!existingRole?.trim()) {
+          data.jobRole =
+            resolveJobRole({
+              title: data.title ?? result.interview.title,
+              objective: data.objective ?? result.interview.objective,
+            }) ?? null;
+        }
       }
       const touchesIntegrity = (
         ["antiCheatingEnabled", "headMovementDetectionEnabled", "integrityChecksEnabled", "livenessChallengesEnabled"] as const
@@ -948,6 +980,12 @@ export const interviewRouter = router({
           title: `${source.title} (Copy)`,
           description: source.description,
           objective: source.objective,
+          jobRole:
+            (source as { jobRole?: string | null }).jobRole ??
+            resolveJobRole({
+              title: source.title,
+              objective: source.objective as string | null,
+            }),
           assessmentCriteria: source.assessmentCriteria,
           chatEnabled: source.chatEnabled,
           voiceEnabled: source.voiceEnabled,

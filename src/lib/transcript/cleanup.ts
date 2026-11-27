@@ -74,7 +74,7 @@ Fix ONLY clear mishearings of proper nouns and technical terms, using the known 
 Hard rules:
 - Never translate, summarise, shorten, expand, reorder or add content. Never answer or complete a sentence.
 - Keep the same words in the same order. A fixed term replaces the misheard word(s); nothing else changes.
-- ${ctx.hindi ? "The text is Roman-script Hinglish (Hindi written in English letters mixed with English). Keep it Roman-script Hinglish; never convert to Devanagari or to pure English." : "Keep the language as written."}
+- ${ctx.hindi ? "The text is Roman-script Hinglish (Hindi written in English letters mixed with English). Keep it Roman-script Hinglish; never convert to Devanagari or to pure English. English words that were spelled out letter by letter the Hindi way are mishearings too: write them in normal English spelling (eksapiriyans → experience, devalapar → developer, karentli → currently, phlatar → Flutter, sophtaveyar → software, eplikeshan → application, mainej → manage). Hindi words stay as they are." : "Keep the language as written."}
 - Keep every number and amount exactly as written (8.65 LPA stays 8.65 LPA). Never change digits.
 - If unsure, leave the text unchanged.
 - Each turn also shows the interviewer's question. It is context only; never edit or return it.

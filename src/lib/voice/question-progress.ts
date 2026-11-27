@@ -41,6 +41,28 @@ export function nextOpenQuestion(from: number, total: number, completed: Readonl
   return i;
 }
 
+/**
+ * Is the interviewer still waiting for an answer to its own question when a
+ * question change is requested? `currentTurnText` is what the model said in
+ * this turn before the call; `earlierAssistantText` the interviewer lines since
+ * the candidate's last turn.
+ *
+ * A turn that started as the reply to a candidate answer is the transition
+ * itself: its "shall we move on? / tell me about X?" is the NEXT question, not
+ * an unanswered one (rejecting it left the relay on the old question while the
+ * interviewer moved on aloud, and "hello" turns later sent it back).
+ */
+export function interviewerQuestionOpen(s: {
+  candidateSinceModel: boolean;
+  turnRepliesToCandidate: boolean;
+  currentTurnText: string;
+  earlierAssistantText: string;
+}): boolean {
+  if (s.candidateSinceModel) return false;
+  const spoken = s.turnRepliesToCandidate ? "" : `${s.earlierAssistantText} ${s.currentTurnText}`;
+  return /[?？]/.test(spoken);
+}
+
 export function decideQuestionMove(state: MoveState, req: MoveRequest): MoveDecision {
   const { current, total } = state;
   const stay = `Stay on question ${current + 1}`;

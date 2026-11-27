@@ -59,8 +59,19 @@ import {
   Download01Icon,
 } from "@/components/ui/hugeicon";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { resolveJobRole } from "@/lib/job-role";
 import { rejectTagLabel } from "@/lib/reject-tags";
 import { cn } from "@/lib/utils";
+
+function sessionJobRole(session: SessionRow): string {
+  return (
+    resolveJobRole({
+      jobRole: session.interview?.jobRole,
+      title: session.interview?.title,
+      objective: session.interview?.objective,
+    }) ?? "—"
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -79,11 +90,12 @@ export interface SessionRow {
   mediaReviewStatus?: string | null;
   rejectReason?: string | null;
   rejectTags?: string[] | null;
-  interview?: { id: string; title: string };
+  interview?: { id: string; title: string; objective?: string | null; jobRole?: string | null };
 }
 
 type SortKey =
   | "interview"
+  | "role"
   | "participant"
   | "email"
   | "status"
@@ -121,6 +133,7 @@ type ColumnDef = {
 
 const COLUMNS: ColumnDef[] = [
   { key: "interview",  label: "Interview",   sortKey: "interview",   defaultVisible: true,  alwaysVisible: true, interviewOnly: true },
+  { key: "role",       label: "Role",        sortKey: "role",        defaultVisible: true },
   { key: "participant", label: "Participant", sortKey: "participant", defaultVisible: true },
   { key: "email",      label: "Email",       sortKey: "email",       defaultVisible: true },
   { key: "status",     label: "Status",      sortKey: "status",      defaultVisible: true },
@@ -173,6 +186,8 @@ function getSortValue(session: SessionRow, key: SortKey): string | number {
   switch (key) {
     case "interview":
       return (session.interview?.title ?? "").toLowerCase();
+    case "role":
+      return sessionJobRole(session).toLowerCase();
     case "participant":
       return (session.participantName ?? "").toLowerCase();
     case "email":
@@ -490,6 +505,14 @@ export function SessionsTable({
   // ── Cell value renderer ──
   function getCellValue(session: SessionRow, key: string): JSX.Element | string {
     switch (key) {
+      case "role": {
+        const role = sessionJobRole(session);
+        return (
+          <span className="max-w-[160px] truncate font-medium" title={role}>
+            {role}
+          </span>
+        );
+      }
       case "participant":
         return <span>{session.participantName || "Anonymous"}</span>;
       case "email":
@@ -610,6 +633,7 @@ export function SessionsTable({
       for (const col of visibleCols) {
         switch (col.key) {
           case "interview": record[col.label] = s.interview?.title ?? ""; break;
+          case "role": record[col.label] = sessionJobRole(s); break;
           case "participant": record[col.label] = s.participantName || "Anonymous"; break;
           case "email": record[col.label] = s.participantEmail || ""; break;
           case "status": record[col.label] = s.status; break;

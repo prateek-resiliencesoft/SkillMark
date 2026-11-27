@@ -55,6 +55,8 @@ export type VocabularyInput = {
   candidateName?: string | null;
   companyName?: string | null;
   interviewTitle?: string | null;
+  /** Exact terms to keep near the top (candidate skills). */
+  terms?: string[];
   /** Interview questions, interviewer lines, skills, job description snippets. */
   texts?: string[];
   max?: number;
@@ -79,6 +81,7 @@ export function buildVocabulary(input: VocabularyInput): string[] {
     add(part);
     for (const word of clean(part).split(" ")) if (word.length >= 3) add(word);
   }
+  for (const term of input.terms ?? []) add(term);
   if (input.interviewTitle) {
     add(input.interviewTitle);
     extractTerms(input.interviewTitle).forEach(add);
@@ -106,7 +109,7 @@ export function buildVocabulary(input: VocabularyInput): string[] {
 /** Short plain-text hint for Whisper-style `prompt` fields (limited to ~224 tokens, so keep it brief). */
 export function buildPromptHint(vocabulary: string[], opts: { hindi: boolean }): string {
   const style = opts.hindi
-    ? "Interview answer in Hinglish (Hindi written in English letters, mixed with English). "
+    ? "Interview answer in Hinglish (Hindi written in English letters, mixed with English; English words in English spelling, never Devanagari). "
     : "Job interview answer in Indian English. ";
   const terms = vocabulary.slice(0, 40).join(", ");
   return `${style}Names and terms: ${terms}.`.slice(0, 600);

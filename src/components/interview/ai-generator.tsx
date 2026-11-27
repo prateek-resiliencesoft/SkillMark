@@ -619,6 +619,7 @@ export function AIGenerator({ projectId }: { projectId?: string } = {}) {
         title: result.title,
         description: result.description,
         objective: result.objective,
+        jobRole: result.jobRole?.trim() || undefined,
         assessmentCriteria: editableCriteria.length > 0 ? editableCriteria : undefined,
         chatEnabled,
         voiceEnabled,
