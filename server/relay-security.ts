@@ -19,6 +19,7 @@ import { AI_WARNING_STRIKE, HEAD_STATE_LABEL, STRIKE_LABEL, aiStrikeNotice } fro
 import { normalizeCandidateLanguage } from "../src/lib/interview-language";
 import type { CandidateFocus } from "../src/lib/ai/prompts/candidate-focus";
 import type { RecentLine, ResumeHints } from "../src/lib/voice/resume-prompt";
+import { buildVocabulary } from "../src/lib/transcript/stt-vocab";
 
 type Logger = {
   info: (...args: unknown[]) => void;
@@ -368,6 +369,7 @@ export interface RelaySessionRecord {
   id: string;
   status: string;
   interviewId: string;
+  participantName?: string | null;
   capabilityRequired?: boolean | null;
 }
 
@@ -396,6 +398,7 @@ export interface RelayInterviewRecord extends IntegrityConfigInput {
 }
 
 export interface RelayCandidateRecord {
+  name?: string | null;
   skills?: unknown;
   tailorInterview?: boolean | null;
   tailoredQuestions?: unknown;
@@ -406,6 +409,8 @@ export interface RelaySessionStore {
   getInterview(interviewId: string): Promise<RelayInterviewRecord | null>;
   getOrganizationStatus(organizationId: string): Promise<string | null>;
   getCandidate(sessionId: string): Promise<RelayCandidateRecord | null>;
+  /** Organization display name (speech vocabulary only; optional). */
+  getOrganizationName?(organizationId: string): Promise<string | null>;
   /** Last `limit` TEXT transcript lines, oldest first. */
   getRecentLines(sessionId: string, limit: number): Promise<RecentLine[]>;
 }
@@ -421,7 +426,7 @@ export function relaySessionStore(
     async getSession(sessionId) {
       const { data } = await (await getDb())
         .from("sessions")
-        .select("id, status, interviewId, capabilityRequired")
+        .select("id, status, interviewId, capabilityRequired, participantName")
         .eq("id", sessionId)
         .maybeSingle();
       return (data as RelaySessionRecord | null) ?? null;
@@ -442,10 +447,19 @@ export function relaySessionStore(
         .maybeSingle();
       return (data as { status?: string } | null)?.status ?? null;
     },
+    async getOrganizationName(organizationId) {
+      const { data } = await (await getDb())
+        .from("organizations")
+        .select("name")
+        .eq("id", organizationId)
+        .maybeSingle();
+      const name = (data as { name?: unknown } | null)?.name;
+      return typeof name === "string" ? name : null;
+    },
     async getCandidate(sessionId) {
       const { data } = await (await getDb())
         .from("candidates")
-        .select("skills, tailorInterview, tailoredQuestions")
+        .select("name, skills, tailorInterview, tailoredQuestions")
         .eq("sessionId", sessionId)
         .maybeSingle();
       return (data as RelayCandidateRecord | null) ?? null;
@@ -516,6 +530,8 @@ export interface RelayInterviewContext {
   resume: ResumeHints | null;
   candidateLanguage: string | null;
   candidateFocus: CandidateFocus | null;
+  /** Names and terms speech recognition must spell right: candidate, company, skills, title. */
+  vocabulary: string[];
   questions: Array<{
     text: string;
     type: string;
@@ -588,6 +604,19 @@ export async function buildRelayInterviewContext(
       ? { skills: strArray(candidate.skills), questions: focusQuestions(candidate.tailoredQuestions) }
       : null;
 
+  let organizationName: string | null = null;
+  if (auth.organizationId && store.getOrganizationName) {
+    organizationName = await store.getOrganizationName(auth.organizationId).catch(() => null);
+  }
+  const vocabulary = buildVocabulary({
+    candidateName: (typeof candidate?.name === "string" && candidate.name.trim()) || auth.session.participantName || null,
+    companyName: organizationName,
+    interviewTitle: typeof iv.title === "string" ? iv.title : null,
+    terms: strArray(candidate?.skills).slice(0, 15),
+    texts: questions.map((q) => q.text),
+    max: 60,
+  });
+
   const candidateLanguage =
     typeof client.candidateLanguage === "string" && client.candidateLanguage.length <= 32
       ? normalizeCandidateLanguage(client.candidateLanguage)
@@ -606,6 +635,7 @@ export async function buildRelayInterviewContext(
     resume,
     candidateLanguage,
     candidateFocus,
+    vocabulary,
     questions,
   };
 }

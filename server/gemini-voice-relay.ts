@@ -45,6 +45,8 @@ import {
   isMetaReply,
   metaComplaintKind,
   isPresenceAck,
+  isPresenceCheck,
+  presenceCheckCue,
   isSubstantiveCandidateAnswer,
   isSufficientShortAnswer,
   ledgerPromptBlock,
@@ -59,7 +61,7 @@ import {
   silencePresenceAckCue,
   type AnsweredLedger,
 } from "../src/lib/voice/answered-ledger";
-import { candidateAskedToGoBack, decideQuestionMove, findReopenIndex, nextOpenQuestion } from "../src/lib/voice/question-progress";
+import { candidateAskedToGoBack, decideQuestionMove, findReopenIndex, interviewerQuestionOpen, nextOpenQuestion } from "../src/lib/voice/question-progress";
 import { TurnGate } from "../src/lib/voice/turn-gate";
 import { cleanInterviewerTurn, isInternalText, isStaleRepeatSentence, sanitizeInterviewerText } from "../src/lib/voice/interviewer-text";
 import { toolDecisionDelayMs, silencePromptBlocked } from "../src/lib/voice/tool-call-timing";
@@ -153,6 +155,19 @@ const TRANSCRIPTION_VOCABULARY = [
   "relocate", "relocation", "B.Tech", "M.Tech", "MCA", "React", "Node.js", "JavaScript", "TypeScript",
   "Python", "Java", "API", "database", "framework", "project", "experience",
 ];
+
+/** Session terms first (names are what gets misheard), then the base list; at most 60. */
+function liveVocabulary(session: readonly string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const term of [...(session ?? []).slice(0, 40), ...TRANSCRIPTION_VOCABULARY]) {
+    const t = term.replace(/\s+/g, " ").trim();
+    if (!t || t.length > 60 || seen.has(t.toLowerCase())) continue;
+    seen.add(t.toLowerCase());
+    out.push(t);
+  }
+  return out.slice(0, 60);
+}
 
 // Whisper commonly hallucinates these phrases on silence / low-energy audio.
 const WHISPER_HALLUCINATIONS = new Set([
@@ -296,6 +311,8 @@ interface InterviewContext {
   /** Multi-language interviews: the language the candidate chose / last switched to. */
   candidateLanguage?: string | null;
   candidateFocus?: CandidateFocus | null;
+  /** Candidate / company names, skills and title for speech recognition. */
+  vocabulary?: string[];
   questions: Array<{
     text: string;
     type: string;
@@ -567,20 +584,21 @@ function languageRules(ctx: InterviewContext): string {
 }
 
 /** Hindi text from Gemini may come back in Devanagari: keep everything in Roman script (Hinglish). */
-function romanizeOutgoing(m: Record<string, unknown>): Record<string, unknown> {
+function romanizeOutgoing(m: Record<string, unknown>, vocabulary?: readonly string[]): Record<string, unknown> {
+  const roman = (text: string) => devanagariToRoman(text, { vocabulary });
   if ((m.type === "asr_ended" || m.type === "chat") && typeof m.text === "string") {
-    return { ...m, text: devanagariToRoman(m.text) };
+    return { ...m, text: roman(m.text) };
   }
   const data = m.data as { text?: unknown; results?: Array<{ text?: unknown }> } | undefined;
   if (m.type === "tts_text" && data && typeof data.text === "string") {
-    return { ...m, data: { ...data, text: devanagariToRoman(data.text) } };
+    return { ...m, data: { ...data, text: roman(data.text) } };
   }
   if (m.type === "asr" && data && Array.isArray(data.results)) {
     return {
       ...m,
       data: {
         ...data,
-        results: data.results.map((r) => (typeof r?.text === "string" ? { ...r, text: devanagariToRoman(r.text) } : r)),
+        results: data.results.map((r) => (typeof r?.text === "string" ? { ...r, text: roman(r.text) } : r)),
       },
     };
   }
@@ -613,6 +631,8 @@ interface GeminiConnectOpts {
   clientVad?: boolean;
   /** inputAudioTranscription.languageCodes (e.g. hi-IN + en-IN for Hindi). Empty = auto-detect. */
   transcriptionLanguages?: string[];
+  /** Session names / skills added to the transcription customVocabulary. */
+  transcriptionVocabulary?: string[];
   gender?: string;
 }
 
@@ -690,7 +710,7 @@ function connectGeminiWithKey(opts: GeminiConnectOpts, apiKey: string): Promise<
         // Without a language hint Gemini auto-detects per utterance: Hindi came
         // back as Urdu / other scripts or invented text on short or noisy audio.
         inputAudioTranscription: opts.transcriptionLanguages?.length
-          ? { languageCodes: opts.transcriptionLanguages, customVocabulary: TRANSCRIPTION_VOCABULARY }
+          ? { languageCodes: opts.transcriptionLanguages, customVocabulary: liveVocabulary(opts.transcriptionVocabulary) }
           : {},
         outputAudioTranscription: {},
         sessionResumption: opts.resumeHandle ? { handle: opts.resumeHandle } : {},
@@ -839,6 +859,7 @@ async function handleInterview(
   const isZh = isChineseInterview(ctx);
   const langCode = languageCode(ctx);
   const transcriptionLanguages = transcriptionLanguageHints(ctx.language);
+  const transcriptionVocabulary = ctx.vocabulary ?? [];
   const multiLanguage = isMultiLanguage(ctx.language);
   if (multiLanguage) ctx.candidateLanguage = normalizeCandidateLanguage(ctx.candidateLanguage) ?? "en";
   let currentQuestionIndex = Math.min(Math.max(0, ctx.startQuestionIndex ?? 0), Math.max(0, sortedQuestions.length - 1));
@@ -917,6 +938,8 @@ async function handleInterview(
   let deferredSends: Array<{ kind: "cue" | "context"; text: string }> = [];
   /** Candidate spoke (VAD turn end, voiced audio, transcript, typed text) since the interviewer's last turn. */
   let candidateSpeechSinceModel = false;
+  /** The current interviewer turn started as the reply to a candidate turn. */
+  let modelTurnRepliesToCandidate = false;
   let lastCandidateSpeechAt = 0;
   let lastTranscriptChunkAt = 0;
   /** A signal_question_change is held until the candidate's transcript is in. */
@@ -930,7 +953,7 @@ async function handleInterview(
   let lastTurnCompleteAt = 0;
 
   const send = (m: Record<string, unknown>) => {
-    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(romanizeOutgoing(m)));
+    if (browserWs.readyState === WebSocket.OPEN) browserWs.send(JSON.stringify(romanizeOutgoing(m, transcriptionVocabulary)));
   };
   const sendBinary = (b: Buffer) => {
     if (browserWs.readyState === WebSocket.OPEN) browserWs.send(b, { binary: true });
@@ -1156,7 +1179,7 @@ async function handleInterview(
 
   function pushHistory(role: "user" | "assistant", text: string) {
     if (role === "assistant") text = sanitizeInterviewerText(text);
-    text = devanagariToRoman(text.trim());
+    text = devanagariToRoman(text.trim(), { vocabulary: transcriptionVocabulary });
     if (!text) return;
     history.push({ role, text });
     while (history.length > 40) history.shift();
@@ -1274,6 +1297,12 @@ async function handleInterview(
   function handleMetaReply(t: string) {
     const { complaint, skipped } = metaComplaintKind(t);
     const cur = sortedQuestions[currentQuestionIndex];
+    if (!complaint && isPresenceCheck(t)) {
+      // "Hello? / can you hear me?": yes, then the CURRENT question — never back.
+      const hindi = speaksHindi();
+      sayText(presenceCheckCue(currentQuestionIndex, cur?.text ?? "", { isZh, hindi, asked: questionPosed }));
+      return;
+    }
     if (!complaint) {
       sayText(metaReplyCue(currentQuestionIndex, cur?.text ?? "", isZh));
       return;
@@ -1308,9 +1337,14 @@ async function handleInterview(
     // The candidate already replied to the interviewer's last question (the
     // transcript may still be on its way): it is not waiting any more.
     if (candidateSpeechSinceModel || userTextSinceModel) return false;
-    let spoken = modelBuf;
-    for (let i = history.length - 1; i >= 0 && history[i].role === "assistant"; i--) spoken = `${history[i].text} ${spoken}`;
-    return /[?？]/.test(spoken);
+    let earlier = "";
+    for (let i = history.length - 1; i >= 0 && history[i].role === "assistant"; i--) earlier = `${history[i].text} ${earlier}`;
+    return interviewerQuestionOpen({
+      candidateSinceModel: candidateSpeechSinceModel || userTextSinceModel,
+      turnRepliesToCandidate: modelTurnRepliesToCandidate,
+      currentTurnText: modelBuf,
+      earlierAssistantText: earlier,
+    });
   }
 
   /** First output of a model turn: allowed only after a candidate turn or a relay cue. */
@@ -1327,6 +1361,7 @@ async function handleInterview(
       if (modelBuf.trim() || modelAudioBytes > 0) closeCutModelTurn("new turn");
       modelPending = "";
       modelTurnInternal = false;
+      modelTurnRepliesToCandidate = candidateSpeechSinceModel || userTextSinceModel || !!userBuf.trim() || history[history.length - 1]?.role === "user";
       candidateSpeechSinceModel = false;
     }
     if (ok) modelGenerating = true;
@@ -1780,7 +1815,7 @@ async function handleInterview(
         const handle = attempt === 1 && !opts.fresh ? resumeHandle : null;
         const vadForThisSocket = clientVadEnabled;
         const ws = await connectGemini({
-          apiKeys, langCode, transcriptionLanguages, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
+          apiKeys, langCode, transcriptionLanguages, transcriptionVocabulary, tools: true, resumeHandle: handle, sessionId, stage: `reconnect#${attempt}`,
           clientVad: vadForThisSocket,
           gender: ctx.aiGender,
           // Fresh or resumed, the new session must continue, never start over.
@@ -1913,7 +1948,7 @@ async function handleInterview(
       }
     }
     if (resumingAtStart) log.info(`Resuming at Q${currentQuestionIndex + 1} (asked: ${[...completed].map((i) => i + 1).join(",") || "none"}, ${history.length} recent lines)`);
-    gem = await connectGemini({ apiKeys, langCode, transcriptionLanguages, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null, answeredLedger) });
+    gem = await connectGemini({ apiKeys, langCode, transcriptionLanguages, transcriptionVocabulary, tools: true, sessionId, stage: "initial", clientVad: clientVadEnabled, gender: ctx.aiGender, systemInstruction: buildSystemPrompt(ctx, currentQuestionIndex, resumingAtStart ? resumeState(false) : null, answeredLedger) });
     if (browserClosed) { gem.close(); return; }
     attach(gem);
     log.info(`Gemini session established (clientVad=${clientVadEnabled})`);

@@ -49,7 +49,7 @@ import { decodeToWav, ffmpegAvailable as ffmpegInstalled, loadMicRuns } from "./
 import { describeNoSttReason, selectSttCandidates, sttLanguagesFor } from "./stt-engines";
 import { transcribeAudioClips, type PipelineContext } from "./stt-pipeline";
 import { buildPromptHint, buildVocabulary } from "./stt-vocab";
-import { devanagariToRoman } from "@/lib/transcript/transliterate";
+import { repairRomanHinglish } from "@/lib/transcript/transliterate";
 
 const log = createLogger("retranscribe");
 
@@ -59,6 +59,8 @@ const INLINE_MAX_BYTES = 12 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 280_000;
 /** Auto mode keeps the live transcript unless the recording transcript keeps at least this share of its words. */
 const AUTO_MIN_WORD_RATIO = 0.6;
+/** Speech-to-text share of the automatic report run (its lock goes stale after 10 min, the report takes up to 5). */
+const RETRANSCRIBE_BUDGET_MS = 3.5 * 60 * 1000;
 
 const wordCount = (texts: string[]) => texts.reduce((n, t) => n + (t.trim() ? t.trim().split(/\s+/).length : 0), 0);
 
@@ -227,7 +229,12 @@ Rules:
 - Write exactly what was said. Never invent, summarise, or fix content. Use "[inaudible]" for words you cannot make out.
 - Use the interviewer line just before each candidate turn as context to pick the right word when the audio is ambiguous: an answer to "what is your name" is a person's name, an answer about salary or CTC is an amount, an answer about notice period is a duration.
 - Candidates are often Indian and speak Indian English. Write Indian names in their common romanised spelling, exactly as pronounced; never swap a name for a different, similar-sounding name. Keep Indian HR and money terms as spoken: LPA (lakhs per annum), lakh, crore, CTC, in-hand, fixed, variable, notice period, serving notice, B.Tech, M.Tech, MCA. "5 LPA" is an amount, never a time like "5 PM".
-- Keep the language as spoken${language ? ` (interview language: ${language})` : ""}.
+- Keep the language as spoken${language ? ` (interview language: ${language})` : ""}.${
+    /^hi|hindi|multi/i.test(language ?? "")
+      ? `
+- Hindi or mixed Hindi-English (Hinglish) speech: write it ALL in Roman (English) letters, never Devanagari. Hindi words in everyday Hinglish spelling (mera naam, kaam karta hoon); English words in normal English spelling (experience, developer, currently, Flutter, application), never spelled out the Hindi way.`
+      : ""
+  }
 - speaker is exactly "interviewer" or "candidate". Never put interviewer words inside a candidate turn; split the turn instead.
 - startSec / endSec are when the turn starts and ends, in seconds from the start of the recording.
 - For every interviewer turn set afterLine to the number of the line below it matches (0 if none).
@@ -398,9 +405,13 @@ function mergeUsage(into: Record<string, number>, from: Record<string, number>) 
 }
 
 /** Interview names and skills the speech models should expect (best-effort, never throws). */
-async function loadVocabularySources(sessionId: string, organizationId: string): Promise<{ organizationName: string | null; skills: string[] }> {
+async function loadVocabularySources(
+  sessionId: string,
+  organizationId: string,
+): Promise<{ organizationName: string | null; skills: string[]; candidateName: string | null }> {
   let organizationName: string | null = null;
   let skills: string[] = [];
+  let candidateName: string | null = null;
   try {
     const { data: org } = await supabaseAdmin.from("organizations").select("name").eq("id", organizationId).maybeSingle();
     organizationName = (org as { name?: string | null } | null)?.name ?? null;
@@ -411,14 +422,16 @@ async function loadVocabularySources(sessionId: string, organizationId: string):
     const { data: sess } = await supabaseAdmin.from("sessions").select("candidateId").eq("id", sessionId).maybeSingle();
     const candidateId = (sess as { candidateId?: string | null } | null)?.candidateId;
     if (candidateId) {
-      const { data: c } = await supabaseAdmin.from("candidates").select("skills").eq("id", candidateId).maybeSingle();
+      const { data: c } = await supabaseAdmin.from("candidates").select("name, skills").eq("id", candidateId).maybeSingle();
       const raw = (c as { skills?: unknown } | null)?.skills;
       if (Array.isArray(raw)) skills = raw.filter((x): x is string => typeof x === "string").slice(0, 40);
+      const name = (c as { name?: unknown } | null)?.name;
+      if (typeof name === "string" && name.trim()) candidateName = name.trim();
     }
   } catch {
     /* optional */
   }
-  return { organizationName, skills };
+  return { organizationName, skills, candidateName };
 }
 
 async function retranscribeInner(sessionId: string, opts: { source: string; auto?: boolean }): Promise<RetranscribeResult> {
@@ -492,12 +505,17 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
     .map((q) => q.text ?? "")
     .filter(Boolean);
+  // The invited candidate's name (from the invite) beats the name typed on the join page.
+  const candidateName = extra.candidateName || s.participantName || null;
   const vocabulary = buildVocabulary({
-    candidateName: s.participantName,
+    candidateName,
     companyName: extra.organizationName,
     interviewTitle: s.interview.title,
+    terms: extra.skills.slice(0, 15),
     texts: [...questionTexts, ...interviewerLines, extra.skills.join(". ")],
   });
+  // Rate-limit waits stop here so the report that follows still fits its lock.
+  const sttDeps = { deadlineAt: Date.now() + RETRANSCRIBE_BUDGET_MS };
   const ctx: PipelineContext = {
     candidates,
     languages,
@@ -520,7 +538,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
       let segments = 0;
       let missed = 0;
       for (const run of mic.runs) {
-        const r = await transcribeAudioClips(run.audio, ctx);
+        const r = await transcribeAudioClips(run.audio, ctx, sttDeps);
         segments += r.segments;
         missed += r.unTranscribed;
         mergeUsage(usage, r.usage);
@@ -576,7 +594,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
         throw new RetranscribeError("ffmpeg is needed to transcribe this recording with the configured speech engine.", 503);
       }
       const wav = await decodeToWav(rawAudio, path.extname(objectPath).slice(1) || "webm");
-      const r = await transcribeAudioClips(wav, { ...ctx, candidates: engines });
+      const r = await transcribeAudioClips(wav, { ...ctx, candidates: engines }, sttDeps);
       mergeUsage(usage, r.usage);
       failures.push(...r.failures);
       if (r.segments > 0 && r.unTranscribed / r.segments > MIC_MAX_UNTRANSCRIBED_SHARE) {
@@ -612,7 +630,8 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   }
 
   // Roman-script first (Hindi), then a short text-model pass that fixes only clear mishearings of names and skills.
-  const romanized = aligned.map((t) => devanagariToRoman(t.text));
+  // English words in Devanagari go back to English and names to their real spelling.
+  const romanized = aligned.map((t) => repairRomanHinglish(t.text, { vocabulary }));
   const assistantAt = assistant.map((m) => ({ at: Date.parse(m.timestamp), text: m.content }));
   const questionFor = (iso: string) => {
     const at = Date.parse(iso);
@@ -624,7 +643,7 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
     romanized.map((text, i) => ({ text, question: questionFor(aligned[i].timestamp) })),
     {
       hindi: languages.hindi,
-      candidateName: s.participantName,
+      candidateName,
       companyName: extra.organizationName,
       interviewTitle: s.interview.title,
       vocabulary,
