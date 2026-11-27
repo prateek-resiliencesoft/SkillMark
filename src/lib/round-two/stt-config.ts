@@ -13,10 +13,13 @@ type Env = Record<string, string | undefined>;
 
 /** One speech-to-text endpoint the agent may use (the app sends an ordered list per room). */
 export interface SttTarget {
-  provider: "openai" | "groq" | "custom";
+  /** "gemini" = the org's Gemini key via gemini-3.5-transcribe (src/lib/transcript/stt-engines.ts), not /audio/transcriptions. */
+  provider: "openai" | "groq" | "custom" | "gemini";
   baseUrl: string;
   model: string;
   apiKey: string;
+  /** Language hints for Gemini (from the round 1 interview language). */
+  languages?: { bcp47: string[]; iso: string[]; single?: string; hindi: boolean };
 }
 
 export function defaultSttModel(provider: "openai" | "groq" | "custom"): string {

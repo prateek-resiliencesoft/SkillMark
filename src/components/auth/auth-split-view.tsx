@@ -295,7 +295,7 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
         </div>
 
         <div className="flex min-h-0 flex-1 items-center justify-center py-4">
-          <div className="w-full max-w-md rounded-2xl sm:border sm:border-border/60 sm:bg-card sm:p-8 sm:shadow-xl sm:shadow-primary/5 [@media(max-height:760px)]:sm:p-6">
+          <div className="w-full min-w-0 max-w-md rounded-2xl sm:border sm:border-border/60 sm:bg-card sm:p-8 sm:shadow-xl sm:shadow-primary/5 [@media(max-height:760px)]:sm:p-6">
             {/* Sign In / Create Account tabs with sliding indicator */}
             <div className="relative mb-7 flex rounded-xl border border-border bg-muted/60 p-1 [@media(max-height:760px)]:mb-4">
               <span
@@ -323,7 +323,8 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
               transition={{ duration: 0.22, ease: "easeOut" }}
               className="overflow-hidden"
             >
-              <div ref={cardContentRef}>
+              {/* px-1: room for input focus rings; overflow-hidden otherwise clips L/R */}
+              <div ref={cardContentRef} className="px-1">
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.div
                     key={activeTab}
@@ -417,8 +418,8 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
                           <Label htmlFor="auth-phone" className="text-sm font-medium text-foreground">
                             WhatsApp number
                           </Label>
-                          <div className="relative">
-                            <Phone className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-muted-foreground" />
+                          <div className="relative min-w-0">
+                            <Phone className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                             <Input
                               id="auth-phone"
                               type="tel"
@@ -428,7 +429,7 @@ export function AuthSplitView({ defaultTab = "login", googleEnabled = false }: A
                               value={phone}
                               onChange={(e) => setPhone(e.target.value)}
                               required
-                              className="h-11 rounded-lg border-input bg-background pl-10 font-mono placeholder:text-muted-foreground/70 focus-visible:ring-primary"
+                              className="h-11 w-full min-w-0 rounded-lg border-input bg-background pl-10 pr-3 font-mono placeholder:text-muted-foreground/70 focus-visible:ring-primary"
                             />
                           </div>
                           <p className="text-[11px] text-muted-foreground">

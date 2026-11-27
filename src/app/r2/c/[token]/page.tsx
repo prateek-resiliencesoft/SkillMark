@@ -2,6 +2,7 @@
 
 import "@livekit/components-styles";
 import { CandidateFeedbackCard } from "@/components/round-two/candidate-feedback";
+import { useRoundTwoCandidateCapture } from "@/components/round-two/room/candidate-capture";
 import { BoardSurfaces, CandidateTaskCard, useRoundTwoBoards, type BoardControls } from "@/components/round-two/room/boards";
 import { TaskHistory } from "@/components/round-two/room/task-history";
 import { useToast } from "@/hooks/use-toast";
@@ -133,8 +134,9 @@ export default function CandidateRoundTwoPage() {
           <label className="flex max-w-lg items-start gap-2 rounded-lg border bg-card p-3 text-sm text-card-foreground">
             <Checkbox className="mt-0.5" checked={consent} onCheckedChange={(v) => setConsent(v === true)} />
             <span>
-              I understand this interview is conducted live by the hiring team and that the conversation is transcribed with
-              AI assistance to help the panel take notes and write their evaluation.
+              I understand this interview is conducted live by the hiring team, that the audio is recorded and transcribed
+              with AI assistance, and that photos are taken from my camera during the interview, to help the panel take
+              notes and write their evaluation.
             </span>
           </label>
           {error && <p className="text-sm text-destructive">{error}</p>}
@@ -193,6 +195,8 @@ function CandidateRoom({ choices, linkToken }: { choices: LocalUserChoices; link
   const perms = useLocalParticipantPermissions();
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
   const admitted = perms?.canPublish === true;
+  // Audio recording + camera snapshots, like round 1 (accepted on the join screen).
+  useRoundTwoCandidateCapture(linkToken, admitted);
   const loadReplay = useCallback(async (): Promise<BoardReplay | null> => {
     const res = await fetch(`${BOARD_API}?token=${encodeURIComponent(linkToken)}`, { cache: "no-store" });
     return res.ok ? ((await res.json()) as BoardReplay) : null;

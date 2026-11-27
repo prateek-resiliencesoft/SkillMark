@@ -44,6 +44,7 @@ import { runCopilot } from "../round-two/copilot";
 import { liveScoringEnabled, runLiveScoring } from "../round-two/live-score";
 import { scheduleLine, sendRoundTwoEmail, type MailOutcome } from "../round-two/email";
 import { generateQuestionPlan } from "../round-two/plan";
+import { roundTwoMediaForView, type RoundTwoMediaView } from "../round-two/media";
 import { runRoundTwoReport } from "../round-two/report";
 import { hasProjectAccess, protectedProcedure, publicProcedure, router } from "../trpc";
 
@@ -518,6 +519,19 @@ export const roundTwoRouter = router({
     };
   }),
 
+  /** Round 2 recording (candidate-side audio) and camera snapshots, as short-lived signed URLs. */
+  media: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+    const r = access.round;
+    if (r.status !== "ended" && r.status !== "live") return { recording: null, recordingPending: false, snapshots: [] } satisfies RoundTwoMediaView;
+    try {
+      return await roundTwoMediaForView({ ...r, recordingUrl: (r as { recordingUrl?: string | null }).recordingUrl ?? null });
+    } catch (err) {
+      log.warn("round 2 media list failed", input.id, err instanceof Error ? err.message : err);
+      return { recording: null, recordingPending: false, snapshots: [] } satisfies RoundTwoMediaView;
+    }
+  }),
+
   /** Live panel feed: transcript, latest copilot output, notes, style signals. */
   live: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
@@ -528,8 +542,8 @@ export const roundTwoRouter = router({
         .select('id, "speakerRole", "speakerName", text, "startMs", "endMs"')
         .eq("roundTwoId", r.id)
         .order("startMs", { ascending: false })
-        // Live UI only — keep payload small; full transcript still in report/ended view.
-        .limit(120),
+        // Live UI: keep the payload small. Ended: the whole transcript (read-only view in the report).
+        .limit(r.status === "ended" ? 3000 : 120),
       ctx.supabase
         .from("round_two_ai_events")
         .select("id, kind, trigger, payload, \"createdAt\"")

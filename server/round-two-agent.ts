@@ -3,7 +3,7 @@
  *
  * Joins every live round-two LiveKit room as a hidden subscriber, segments each
  * participant's audio into utterances (energy VAD), transcribes them with an
- * OpenAI-compatible /audio/transcriptions endpoint and posts final segments to
+ * OpenAI-compatible /audio/transcriptions endpoint (or the org's Gemini key) and posts final segments to
  * the app, which stores them, fans them out to the panel and drives the copilot.
  *
  * Env: ROUND2_APP_URL, ROUND2_AGENT_SECRET, LIVEKIT_AGENT_URL | LIVEKIT_URL,
@@ -66,7 +66,25 @@ function rms(samples: Int16Array): number {
   return Math.sqrt(sum / Math.max(1, samples.length));
 }
 
+/** Live utterances can't wait out a per-minute limit; fail over (or drop the line) instead. */
+const GEMINI_LIVE_DEADLINE_MS = 20_000;
+
+/** Gemini: same engine as the post-call transcript (gemini-3.5-transcribe, then the general Gemini models). */
+async function transcribeWithGemini(t: SttTarget, pcm: Int16Array): Promise<string> {
+  const { STT_ENGINES } = await import("../src/lib/transcript/stt-engines");
+  const { repairRomanHinglish } = await import("../src/lib/transcript/transliterate");
+  const languages = t.languages ?? { bcp47: ["en-IN", "hi-IN"], iso: ["en", "hi"], hindi: false };
+  const { text } = await STT_ENGINES.gemini.transcribeClip(
+    { engine: "gemini", apiKey: t.apiKey, label: "gemini/live" },
+    { audio: wav(pcm, SAMPLE_RATE), mime: "audio/wav", languages, vocabulary: [], promptHint: "" },
+    { deadlineAt: Date.now() + GEMINI_LIVE_DEADLINE_MS },
+  );
+  // Hindi comes back in Devanagari; transcripts are stored in Roman Hinglish (same as round 1).
+  return repairRomanHinglish(text).trim();
+}
+
 async function transcribeWith(t: SttTarget, pcm: Int16Array): Promise<string> {
+  if (t.provider === "gemini") return transcribeWithGemini(t, pcm);
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(wav(pcm, SAMPLE_RATE))], { type: "audio/wav" }), "utterance.wav");
   form.append("model", t.model);
