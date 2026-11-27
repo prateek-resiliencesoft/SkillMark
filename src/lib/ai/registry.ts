@@ -176,10 +176,10 @@ export async function resolveProviderChain(
       const studioModel = storedTaskModel(orgPlain.taskModels, task, id);
       chain.push({
         provider,
-        // Studio hop → custom text model → per-task env override → provider default.
+        // Studio hop → org provider text model → per-task env override → provider default.
         model:
           studioModel ||
-          (id === "custom" && source === "org" && orgPlain.custom?.textModel) ||
+          (source === "org" && orgPlain[id]?.textModel) ||
           taskModel(task, id) ||
           modelFor(provider),
         source,

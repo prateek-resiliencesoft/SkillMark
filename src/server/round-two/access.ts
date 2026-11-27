@@ -35,6 +35,8 @@ export interface RoundRow {
   coveredQuestionIds: string[];
   aiTokensUsed: number;
   reportStatus: string;
+  /** Last report failure message (db/init/46). */
+  reportError?: string | null;
   report: unknown;
   /** Open boards + coding task (db/init/51). */
   boardState?: unknown;

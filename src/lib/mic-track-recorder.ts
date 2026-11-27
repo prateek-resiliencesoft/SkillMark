@@ -36,7 +36,13 @@ export type MicTrackRecorder = {
   flush(): void;
 };
 
-export function createMicTrackRecorder(sessionId: string): MicTrackRecorder {
+/**
+ * Where parts go. Default: round 1's /api/session/upload as `mic_part`.
+ * Round 2 sends its tracks to its own route with its own fields.
+ */
+export type TrackPartTarget = { url: string; fields: Record<string, string> };
+
+export function createMicTrackRecorder(sessionId: string, target?: TrackPartTarget): MicTrackRecorder {
   const runs: Run[] = [];
   let current: Run | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
@@ -66,13 +72,17 @@ export function createMicTrackRecorder(sessionId: string): MicTrackRecorder {
   const post = async (run: Run, part: Part): Promise<boolean> => {
     const form = new FormData();
     form.append("file", part.blob, `mic-${part.seq}`);
-    form.append("sessionId", sessionId);
-    form.append("type", "mic_part");
+    if (target) {
+      for (const [k, v] of Object.entries(target.fields)) form.append(k, v);
+    } else {
+      form.append("sessionId", sessionId);
+      form.append("type", "mic_part");
+    }
     form.append("runId", String(run.runId));
     form.append("seq", String(part.seq));
     form.append("elapsedSec", String(Math.round(part.elapsedSec)));
     try {
-      const res = await fetch("/api/session/upload", { method: "POST", body: form });
+      const res = await fetch(target?.url ?? "/api/session/upload", { method: "POST", body: form });
       // Interview ended / part too big / storage full: stop trying for the rest of this session.
       if (res.status === 403 || res.status === 413 || res.status === 507) disabled = true;
       return res.ok;

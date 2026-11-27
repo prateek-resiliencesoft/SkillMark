@@ -5,6 +5,7 @@ import { PlanChat } from "@/components/round-two/plan-chat";
 import { PlanEditor } from "@/components/round-two/plan-editor";
 import { AiRunHistory } from "@/components/ai/reasoning-timeline";
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { RoundTwoMedia } from "@/components/round-two/round-media";
 import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import {
@@ -142,11 +143,22 @@ export default function RoundTwoDetailPage() {
       {round.status === "ended" && (
         <div className="space-y-3">
           {round.reportStatus === "ready" && report ? (
-            <RoundTwoReportView report={report} />
+            <>
+              {canManage && (
+                <div className="flex justify-end">
+                  <Button size="sm" variant="ghost" onClick={() => retry.mutate({ id })} disabled={retry.isLoading}>
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Regenerate report
+                  </Button>
+                </div>
+              )}
+              <RoundTwoReportView report={report} />
+            </>
           ) : round.reportStatus === "failed" ? (
             <Card>
               <CardContent className="flex items-center justify-between gap-4 p-5 text-sm">
-                <span>Report generation failed.</span>
+                <span>
+                  Report generation failed{round.reportError ? `: ${round.reportError}` : "."}
+                </span>
                 {canManage && (
                   <Button size="sm" variant="outline" onClick={() => retry.mutate({ id })} disabled={retry.isLoading}>
                     <RefreshCw className="mr-1.5 h-3.5 w-3.5" /> Retry
@@ -157,7 +169,7 @@ export default function RoundTwoDetailPage() {
           ) : (
             <Card>
               <CardContent className="flex items-center gap-2 p-5 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> The report is being generated in the background. You&apos;ll get an email when it&apos;s ready.
+                <Loader2 className="h-4 w-4 animate-spin" /> {round.reportStatus === "generating" ? "Transcribing the recording, then writing the report" : "The report is queued"}. You&apos;ll get an email when it&apos;s ready.
               </CardContent>
             </Card>
           )}
@@ -335,6 +347,17 @@ export default function RoundTwoDetailPage() {
           )}
         </div>
       </div>
+
+      {round.status === "ended" && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Recording and snapshots</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <RoundTwoMedia id={id} />
+          </CardContent>
+        </Card>
+      )}
 
       {round.status === "ended" && (live.data?.transcript.length ?? 0) > 0 && (
         <Card>

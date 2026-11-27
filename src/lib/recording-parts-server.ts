@@ -269,7 +269,7 @@ async function verifyRecording(audio: Buffer, ext: RecordingPartExt): Promise<st
  * duration). Several runs (page reload): ffmpeg joins them; without ffmpeg
  * keep the longest run.
  */
-async function buildRecording(
+export async function buildRecording(
   runs: RecordingRun[],
 ): Promise<{ audio: Buffer; ext: RecordingPartExt; durationSec: number; note?: string }> {
   const usable = runs.filter(isRunComplete);

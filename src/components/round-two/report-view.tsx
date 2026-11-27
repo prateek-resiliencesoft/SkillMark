@@ -39,22 +39,69 @@ export function StyleTable({ r1, r2 }: { r1: StyleMetrics | null; r2: StyleMetri
   );
 }
 
+const avg = (n: number | null | undefined) => (n == null ? "—" : n.toFixed(1));
+
 export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
+  const b = report.scoreBreakdown;
+  const notes = report.basis?.notes ?? [];
   return (
     <div className="space-y-4">
+      {notes.length > 0 && !report.insufficientEvidence && (
+        <div className="rounded-lg border border-amber-600/40 bg-amber-600/5 p-3 text-sm">
+          {notes.map((n, i) => (
+            <p key={i}>{n}</p>
+          ))}
+        </div>
+      )}
       <Card>
         <CardContent className="flex flex-wrap items-center gap-6 p-5">
-          <div>
-            <div className="text-3xl font-bold">{report.overallScore.toFixed(1)}</div>
-            <div className="text-xs text-muted-foreground">out of 10</div>
-          </div>
-          <div className="space-y-1">
-            <RecommendationBadge value={report.recommendation} />
-            <div className="text-xs text-muted-foreground">Confidence {(report.confidence * 100).toFixed(0)}%</div>
-          </div>
+          {report.insufficientEvidence ? (
+            <div className="rounded-md border border-amber-600/40 bg-amber-600/5 px-3 py-2 text-sm font-medium">Not enough data to score</div>
+          ) : (
+            <>
+              <div>
+                <div className="text-3xl font-bold">{report.overallScore.toFixed(1)}</div>
+                <div className="text-xs text-muted-foreground">out of 10</div>
+              </div>
+              <div className="space-y-1">
+                <RecommendationBadge value={report.recommendation} />
+                <div className="text-xs text-muted-foreground">Confidence {(report.confidence * 100).toFixed(0)}%</div>
+              </div>
+            </>
+          )}
           <p className="min-w-[260px] flex-1 text-sm">{report.summary}</p>
         </CardContent>
+        {b && (b.questions != null || b.criteria != null || b.coding != null) && (
+          <CardContent className="flex flex-wrap gap-x-6 gap-y-1 border-t px-5 py-3 text-xs text-muted-foreground">
+            <span>Questions avg <strong className="text-foreground">{avg(b.questions)}</strong></span>
+            <span>Skills avg <strong className="text-foreground">{avg(b.criteria)}</strong></span>
+            <span>Coding avg <strong className="text-foreground">{avg(b.coding)}</strong></span>
+            <span>Panel scorecards weigh heavily in the overall score.</span>
+          </CardContent>
+        )}
       </Card>
+
+      {!!report.criteriaEvaluations?.length && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Skills</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {report.criteriaEvaluations.map((c) => (
+              <div key={c.name} className="text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium">{c.name}</span>
+                  <span className="font-semibold tabular-nums">{c.score.toFixed(1)}/10</span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, c.score * 10))}%` }} />
+                </div>
+                {c.reasoning && <p className="mt-1 text-xs text-muted-foreground">{c.reasoning}</p>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
@@ -102,6 +149,24 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
                 <span className="shrink-0 text-sm font-semibold">{q.score.toFixed(1)}</span>
               </div>
               <p className="mt-1 text-sm text-muted-foreground">{q.answerSummary}</p>
+              {(q.highlights?.length || q.improvements?.length) ? (
+                <div className="mt-1 grid gap-x-4 text-xs sm:grid-cols-2">
+                  {!!q.highlights?.length && (
+                    <ul className="list-disc pl-4 text-emerald-700 dark:text-emerald-400">
+                      {q.highlights.map((h, j) => (
+                        <li key={j}>{h}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {!!q.improvements?.length && (
+                    <ul className="list-disc pl-4 text-amber-700 dark:text-amber-400">
+                      {q.improvements.map((h, j) => (
+                        <li key={j}>{h}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
               {q.evidence && (
                 <p className="mt-1 border-l-2 pl-2 text-xs italic text-muted-foreground">
                   {q.evidence}
@@ -149,6 +214,66 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
                 )}
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {!!report.whiteboardEvaluations?.length && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Whiteboard</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {report.whiteboardEvaluations.map((w) => (
+              <div key={w.taskId} className="flex items-start justify-between gap-3">
+                <span>
+                  <span className="font-medium">{w.label}</span>
+                  <span className="block text-xs text-muted-foreground">{w.observation}</span>
+                </span>
+                <span className="shrink-0 text-xs font-semibold tabular-nums">{w.score != null ? `${w.score}/10` : "not scored"}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {(!!report.themes?.length || !!report.keyInsights?.length || !!report.notableQuotes?.length || report.sentiment || report.toneAnalysis) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Insights</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {!!report.themes?.length && (
+              <div className="flex flex-wrap gap-1.5">
+                {report.themes.map((t) => (
+                  <span key={t} className="rounded-full border px-2 py-0.5 text-xs">{t}</span>
+                ))}
+              </div>
+            )}
+            {(report.sentiment || report.toneAnalysis) && (
+              <div className="grid gap-2 text-xs sm:grid-cols-2">
+                {report.sentiment && (
+                  <p><span className="font-semibold">Sentiment: {report.sentiment.overall}.</span> {report.sentiment.details}</p>
+                )}
+                {report.toneAnalysis && (
+                  <p><span className="font-semibold">Tone: {report.toneAnalysis.overall}.</span> {report.toneAnalysis.details}</p>
+                )}
+              </div>
+            )}
+            {!!report.keyInsights?.length && (
+              <ul className="list-disc space-y-1 pl-4">
+                {report.keyInsights.map((k, i) => (
+                  <li key={i}>{k}</li>
+                ))}
+              </ul>
+            )}
+            {!!report.notableQuotes?.length && (
+              <div className="space-y-1">
+                {report.notableQuotes.map((q, i) => (
+                  <p key={i} className="border-l-2 pl-2 text-xs italic text-muted-foreground">&ldquo;{q}&rdquo;</p>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -205,6 +330,26 @@ export function RoundTwoReportView({ report }: { report: RoundTwoReport }) {
                 {p.comments && <span className="text-muted-foreground">{p.comments}</span>}
               </div>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {!!report.integrity?.notes.length && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Integrity and evidence</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="list-disc space-y-1 pl-4 text-xs">
+              {report.integrity.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+            {report.basis && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Built from the {report.basis.transcript === "none" ? "tasks and panel input (no transcript)" : `${report.basis.transcript} transcript`}: {report.basis.transcriptLines} lines, {report.basis.candidateWords} candidate words, {report.basis.tasksSubmitted} of {report.basis.tasksGiven} task(s) submitted.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

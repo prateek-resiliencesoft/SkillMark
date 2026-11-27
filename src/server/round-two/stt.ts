@@ -2,6 +2,7 @@ import "server-only";
 import { DEFAULT_TASK_ROUTING, isSttProvider, taskModelOverride, type AiProviderId } from "@/lib/ai/credentials";
 import { loadCredsPair } from "@/lib/ai/registry";
 import { defaultSttModel, resolveSttConfig, type SttTarget } from "@/lib/round-two/stt-config";
+import { GEMINI_TRANSCRIBE_MODEL } from "@/lib/transcript/stt-engines";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 const MAX_TARGETS = 3;
@@ -12,7 +13,7 @@ const MAX_TARGETS = 3;
  *
  * Order: Settings → AI "Round 2 transcript" routing if the org saved one; otherwise
  * the ROUND2_STT_* env endpoint first, then AI_ROUTING_ROUND2_TRANSCRIPT / the default
- * (Groq → OpenAI → Custom). Keys come from the org's AI providers, then env.
+ * (Groq → OpenAI → Custom), then the org's Gemini key last. Keys come from the org's AI providers, then env.
  * Tenant-supplied custom base URLs are never used here (the agent runs inside the
  * private network), only a platform CUSTOM_LLM_BASE_URL.
  */
@@ -51,6 +52,12 @@ export async function resolveRoundTwoStt(organizationId: string | null | undefin
         apiKey: key,
       });
     }
+  }
+  // Gemini has no /audio/transcriptions endpoint, so it isn't in the routing list above, but an org
+  // whose only speech-capable key is Gemini must still get a live transcript (gemini-3.5-transcribe).
+  const gemini = merged.gemini?.apiKeys[0];
+  if (gemini && out.length < MAX_TARGETS) {
+    push({ provider: "gemini", baseUrl: "https://generativelanguage.googleapis.com", model: GEMINI_TRANSCRIBE_MODEL, apiKey: gemini });
   }
   return out.slice(0, MAX_TARGETS);
 }

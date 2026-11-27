@@ -138,7 +138,16 @@ export interface RoundTwoReport {
   overallScore: number;
   strengths: string[];
   concerns: string[];
-  questions: { question: string; answerSummary: string; score: number; evidence?: string; evidenceVerified?: boolean }[];
+  questions: {
+    question: string;
+    answerSummary: string;
+    score: number;
+    evidence?: string;
+    evidenceVerified?: boolean;
+    /** Round 1 parity (per-question highlights / improvements). */
+    highlights?: string[];
+    improvements?: string[];
+  }[];
   round1Comparison: {
     consistency: "consistent" | "mixed" | "inconsistent" | "unknown";
     notes: string[];
@@ -157,7 +166,37 @@ export interface RoundTwoReport {
   evidenceCheck?: { verified: number; unverified: number };
   /** Code written in the shared editor, reviewed like round 1's coding answers. */
   codeEvaluations?: CodeEvaluation[];
+  /** Per-skill scores (the round 1 interview's assessment criteria, else the default competencies). */
+  criteriaEvaluations?: { name: string; score: number; reasoning: string }[];
+  /** Whiteboard tasks: what the drawing shows (from its text labels), scored only with enough evidence. */
+  whiteboardEvaluations?: { taskId: string; label: string; observation: string; score: number | null }[];
+  themes?: string[];
+  sentiment?: { overall: "positive" | "neutral" | "negative"; details: string };
+  keyInsights?: string[];
+  /** Verbatim candidate quotes (unverifiable ones are dropped). */
+  notableQuotes?: string[];
+  toneAnalysis?: { overall: "confident" | "neutral" | "hesitant"; details: string };
+  /** Averages of the model's per-question / per-skill / per-coding scores (computed, not generated). */
+  scoreBreakdown?: { questions: number | null; criteria: number | null; coding: number | null };
+  /** What the report was built from (transcript source, tasks, media). */
+  basis?: RoundTwoReportBasis;
+  /** Integrity / proctoring notes, computed from flags, snapshots, tasks and the recording. */
+  integrity?: { notes: string[]; snapshotCount: number };
+  /** No transcript, tasks, notes or scorecards: nothing could be evaluated (score / recommendation are placeholders). */
+  insufficientEvidence?: boolean;
   generatedAt: string;
+}
+
+export interface RoundTwoReportBasis {
+  transcript: "recording" | "live" | "none";
+  transcriptLines: number;
+  candidateWords: number;
+  tasksGiven: number;
+  tasksSubmitted: number;
+  whiteboardTasks: number;
+  hasRecording: boolean;
+  /** Plain-language limits, e.g. "No transcript was captured; this report rests on the tasks and panel notes." */
+  notes: string[];
 }
 
 /* ------------------------------------------------------------------ */

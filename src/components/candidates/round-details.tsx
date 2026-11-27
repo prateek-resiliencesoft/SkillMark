@@ -1,6 +1,7 @@
 "use client";
 
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { RoundTwoMedia } from "@/components/round-two/round-media";
 import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RecommendationBadge, RoundTwoStatusBadge } from "@/components/round-two/status-badge";
 import { Button } from "@/components/ui/button";
@@ -414,7 +415,7 @@ export function RoundTwoPanel({
             </EmptyState>
           ) : (
             <div className="flex items-center gap-2 rounded-xl border bg-card p-4 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> The Round 2 report is being generated. This page updates by itself.
+              <Loader2 className="h-4 w-4 animate-spin" /> {reportStatus === "generating" ? "Transcribing the recording, then writing the Round 2 report." : "The Round 2 report is queued."} This page updates by itself.
             </div>
           )}
 
@@ -462,6 +463,10 @@ export function RoundTwoPanel({
               <p className="mt-1.5 whitespace-pre-wrap text-sm">{candFeedback.candidateFeedback || <span className="text-muted-foreground">No comment.</span>}</p>
             </Section>
           ) : null}
+
+          <Section title="Recording and snapshots" icon={Video}>
+            <RoundTwoMedia id={id} compact />
+          </Section>
 
           <Section
             title="Transcript"

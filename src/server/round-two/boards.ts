@@ -29,6 +29,7 @@ import {
   type TaskSummary,
   type RoundTwoCodeSnippet,
 } from "@/lib/round-two/boards";
+import { whiteboardSummary, type WhiteboardInput } from "@/lib/round-two/report-extras";
 import { AGENT_IDENTITY_PREFIX, DATA_TOPICS, candidateIdentity, type Round1Context } from "@/lib/round-two/types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { callJson, clip } from "./ai";
@@ -238,6 +239,40 @@ export async function loadCodeSnippets(roundTwoId: string): Promise<RoundTwoCode
     return [];
   }
   return snippetsFromSnapshots((data ?? []) as BoardSnapshotRow[]);
+}
+
+/** Task results for the report: counts, whiteboard contents, and a one-line status per task. */
+export async function loadReportTasks(roundTwoId: string): Promise<{
+  given: number;
+  submitted: number;
+  whiteboards: WhiteboardInput[];
+  lines: string[];
+}> {
+  const { data, error } = await supabaseAdmin
+    .from("round_two_board_snapshots")
+    .select('"taskId", kind, task, data, status, "runOutput"')
+    .eq("roundTwoId", roundTwoId)
+    .order("sentAt", { ascending: true })
+    .limit(30);
+  if (error) {
+    log.warn("task results load failed", roundTwoId, error.message);
+    return { given: 0, submitted: 0, whiteboards: [], lines: [] };
+  }
+  const rows = (data ?? []) as { taskId: string; kind: string; task: unknown; data: string; status: string; runOutput: unknown }[];
+  const whiteboards: WhiteboardInput[] = [];
+  const lines: string[] = [];
+  for (const r of rows) {
+    const task = normalizeTask(r.task);
+    const label = task?.title || (r.kind === "whiteboard" ? "Whiteboard" : "Coding task");
+    const submitted = r.status === "submitted";
+    const run = normalizeRunOutput(r.runOutput);
+    lines.push(`- ${r.kind} "${label}": ${submitted ? "submitted" : r.status === "ended" ? "ended without submission" : r.status}${run ? `; last run ${run.stderr ? "had errors" : "ran cleanly"}` : ""}`);
+    if (r.kind === "whiteboard") {
+      const w = whiteboardSummary(r.data);
+      whiteboards.push({ taskId: r.taskId, label, submitted, texts: w?.texts ?? [], shapes: w?.shapes ?? {} });
+    }
+  }
+  return { given: rows.length, submitted: rows.filter((r) => r.status === "submitted").length, whiteboards, lines };
 }
 
 /** Enabled CODING questions from the org's question bank. */

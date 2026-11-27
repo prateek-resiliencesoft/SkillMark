@@ -55,7 +55,7 @@ export type AiProviderStored = {
   /** Parallel to apiKeys: free | paid (default free when missing). */
   keyTiers?: AiKeyTier[];
   baseUrl?: string | null;
-  /** Custom endpoint only: model for chat/reports/etc. */
+  /** Default chat/text model for this provider (reports, generate, etc.). */
   textModel?: string | null;
   /** Custom endpoint only: realtime model for voice interviews (validated). */
   voiceModel?: string | null;
@@ -126,9 +126,8 @@ export function decryptAiProviders(raw: unknown): AiProvidersStored {
       apiKey: plainKeys[0] ?? null,
       keyTiers: normalizeKeyTiers(row.keyTiers, plainKeys.length),
       baseUrl: row.baseUrl?.trim() || null,
-      ...(id === "custom"
-        ? { textModel: row.textModel?.trim() || null, voiceModel: row.voiceModel?.trim() || null }
-        : {}),
+      textModel: row.textModel?.trim() || null,
+      ...(id === "custom" ? { voiceModel: row.voiceModel?.trim() || null } : {}),
     };
   }
   if (obj.routing && typeof obj.routing === "object") {
@@ -390,18 +389,19 @@ export function applyKeySlotsPatch(
   return current;
 }
 
-/** Save the custom endpoint's models. Voice model must pass the voice check. */
-export function applyCustomModelsPatch(
+/** Save provider default models. Voice model (custom only) must pass the voice check. */
+export function applyProviderModelsPatch(
   currentRaw: unknown,
+  providerId: AiProviderId,
   patch: { textModel?: string | null; voiceModel?: string | null },
 ): { next: AiProvidersStored; error?: string } {
   const current = (
     currentRaw && typeof currentRaw === "object" ? { ...(currentRaw as object) } : {}
   ) as AiProvidersStored;
-  const prev = current.custom ?? {};
+  const prev = current[providerId] ?? {};
   const row: AiProviderStored = { ...prev };
   if (patch.textModel !== undefined) row.textModel = patch.textModel?.trim() || null;
-  if (patch.voiceModel !== undefined) {
+  if (providerId === "custom" && patch.voiceModel !== undefined) {
     const v = patch.voiceModel?.trim() || null;
     if (v) {
       const check = checkVoiceModel(v);
@@ -409,8 +409,16 @@ export function applyCustomModelsPatch(
     }
     row.voiceModel = v;
   }
-  current.custom = row;
+  current[providerId] = row;
   return { next: current };
+}
+
+/** @deprecated Prefer applyProviderModelsPatch. */
+export function applyCustomModelsPatch(
+  currentRaw: unknown,
+  patch: { textModel?: string | null; voiceModel?: string | null },
+): { next: AiProvidersStored; error?: string } {
+  return applyProviderModelsPatch(currentRaw, "custom", patch);
 }
 
 export type KeySlotInput = {
