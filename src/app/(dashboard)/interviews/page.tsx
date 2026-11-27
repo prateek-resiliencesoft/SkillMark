@@ -82,6 +82,7 @@ import {
   Users,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { cleanInterviewTitle } from "@/lib/documents/candidate-name";
 import { exportToXlsx } from "@/lib/export-xlsx";
 import {
   INTERVIEW_TEMPLATES,
@@ -968,7 +969,7 @@ export default function InterviewsPage() {
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
                       <CardTitle className="text-base truncate">
-                        {interview.title}
+                        {cleanInterviewTitle(interview.title) || interview.title}
                       </CardTitle>
                       <CardDescription className="mt-1 line-clamp-2">
                         {interview.description ?? t("dashboard.noData")}
@@ -1142,7 +1143,7 @@ export default function InterviewsPage() {
                     </TableCell>
                     <TableCell className="max-w-md">
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="font-medium">{interview.title}</div>
+                        <div className="font-medium">{cleanInterviewTitle(interview.title) || interview.title}</div>
                         {interview.formSource && (
                           <Badge
                             variant="outline"

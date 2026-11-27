@@ -3,6 +3,7 @@ import { resolveTaskModels } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { parseResumeText } from "@/lib/ai/resume-parse";
 import { resolveCandidateName } from "@/lib/documents/candidate-name";
+import { sanitizeCvMarkdown } from "@/lib/documents/cv-sanitize";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 /**
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
     // Extract text locally using pdf-parse (preserves emails reliably)
     const buffer = Buffer.from(await file.arrayBuffer());
     const pdfData = await pdfParse(buffer, { max: MAX_RESUME_PAGES });
-    const resumeText = pdfData.text?.trim();
+    const resumeText = sanitizeCvMarkdown(pdfData.text);
 
     if (!resumeText) {
       return new Response(

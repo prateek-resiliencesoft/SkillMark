@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  cleanInterviewTitle,
   firstPlausibleNameFromSource,
   isJunkStoredName,
   isPlausiblePersonName,
   nameFromEmailLocalPart,
   nameFromFileName,
   resolveCandidateName,
+  sanitizeContactName,
   stripPageDecorations,
 } from "../src/lib/documents/candidate-name";
 
@@ -73,4 +75,26 @@ test("nameFromEmailLocalPart and nameFromFileName ignore generic labels", () => 
   assert.equal(nameFromEmailLocalPart("dewashish.h@example.com"), "Dewashish H");
   assert.equal(nameFromFileName("Resume.pdf"), null);
   assert.equal(nameFromFileName("Microsoft Word - Priya_Nair_CV.pdf"), "Priya Nair");
+});
+
+test("cleanInterviewTitle strips PDF page-marker suffixes from batch titles", () => {
+  assert.equal(
+    cleanInterviewTitle("HR & Social Media Executive Screening - Vyom Sahu · <!-- page 1 -->"),
+    "HR & Social Media Executive Screening - Vyom Sahu",
+  );
+  assert.equal(
+    cleanInterviewTitle("HR Recruiter Screening Interview · AASTHA JAIN"),
+    "HR Recruiter Screening Interview · AASTHA JAIN",
+  );
+  assert.equal(cleanInterviewTitle("Role · Page 1"), "Role");
+});
+
+test("sanitizeContactName never returns page markers", () => {
+  const name = sanitizeContactName({
+    name: "<!-- page 1 -->",
+    source: "<!-- page 1 -->\nShriya Yadav\nshriya@example.com\n",
+    email: "shriya@example.com",
+    fileName: "Shriya_Yadav_CV.pdf",
+  });
+  assert.equal(name, "Shriya Yadav");
 });
