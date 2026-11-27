@@ -19,6 +19,7 @@ import {
   ExternalLink,
   AlertTriangle,
   ChevronDown,
+  ChevronUp,
   Eye,
   EyeOff,
   Mic,
@@ -301,7 +302,8 @@ function SectionHeader({
 export default function AiSettingsPage() {
   const { currentOrg } = useOrg();
   const orgId = currentOrg?.id ?? "";
-  const canEdit = currentOrg?.role === "OWNER" || currentOrg?.role === "ADMIN";
+  const role = (currentOrg?.role ?? "").toUpperCase();
+  const canEdit = role === "OWNER" || role === "ADMIN";
   const { toast } = useToast();
   const utils = trpc.useUtils();
   const query = trpc.aiSettings.get.useQuery({ organizationId: orgId }, { enabled: !!orgId });
@@ -450,6 +452,19 @@ export default function AiSettingsPage() {
       const cur = prev[pid] ?? [newSlot()];
       if (cur.length >= maxKeys) return prev;
       return { ...prev, [pid]: [...cur, newSlot()] };
+    });
+  };
+
+  /** Move a provider up/down in a priority list (Primary = index 0). */
+  const movePriority = (task: string, index: number, dir: -1 | 1) => {
+    setRouting((prev) => {
+      const list = [...(prev[task] ?? [])];
+      const j = index + dir;
+      if (j < 0 || j >= list.length) return prev;
+      const tmp = list[index]!;
+      list[index] = list[j]!;
+      list[j] = tmp;
+      return { ...prev, [task]: list };
     });
   };
 
@@ -980,8 +995,10 @@ export default function AiSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Provider priority</h2>
             <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-              {canEdit ? "Drag the ⋮⋮ grip to change order. " : ""}
-              Top = tried first; lower rows are backups. Reject-reason drafts use{" "}
+              {canEdit
+                ? "Drag the grip, or use ↑ ↓, to set Primary (top) vs backups. "
+                : "View only — "}
+              Top = tried first. Reject-reason drafts use{" "}
               <span className="font-medium">Question generation</span> — keep a second keyed provider so
               quota on one does not block drafts.
             </p>
@@ -999,6 +1016,20 @@ export default function AiSettingsPage() {
             </Button>
           )}
         </div>
+
+        {!canEdit && (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-100"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <p>
+              Drag / Add / Save need org <span className="font-semibold">Owner</span> or{" "}
+              <span className="font-semibold">Admin</span>. Your role:{" "}
+              <span className="font-semibold">{currentOrg?.role || "unknown"}</span>.
+            </p>
+          </div>
+        )}
 
         {/* Voice interviews */}
         <div className="rounded-2xl border border-emerald-500/20 bg-card/70 p-5">
@@ -1033,10 +1064,10 @@ export default function AiSettingsPage() {
                 <div
                   className={cn(
                     "flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 text-sm",
-                    index === 0 && "border-emerald-500/30",
+                    index === 0 && "border-emerald-500/40 bg-emerald-500/5",
                   )}
                 >
-                  {handle ?? <span className="w-5 shrink-0" />}
+                  {handle ?? <span className="h-8 w-8 shrink-0" />}
                   {Logo ? <Logo className="h-4 w-4 shrink-0" /> : null}
                   <span className="min-w-0 flex-1 truncate font-medium">
                     {PROVIDER_SHORT[pid] ?? pid}
@@ -1056,19 +1087,43 @@ export default function AiSettingsPage() {
                     {index === 0 ? "Primary" : `Backup ${index}`}
                   </Badge>
                   {canEdit && (
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                      aria-label={`Remove ${PROVIDER_SHORT[pid]} from voice`}
-                      disabled={busy}
-                      onClick={() =>
-                        setRouting((prev) => ({ ...prev, voice: (prev.voice ?? []).filter((x) => x !== pid) }))
-                      }
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        disabled={busy || index === 0}
+                        aria-label="Move up (make higher priority)"
+                        onClick={() => movePriority("voice", index, -1)}
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        disabled={busy || index >= voiceList.length - 1}
+                        aria-label="Move down (make backup)"
+                        onClick={() => movePriority("voice", index, 1)}
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                        aria-label={`Remove ${PROVIDER_SHORT[pid]} from voice`}
+                        disabled={busy}
+                        onClick={() =>
+                          setRouting((prev) => ({ ...prev, voice: (prev.voice ?? []).filter((x) => x !== pid) }))
+                        }
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               );
@@ -1080,30 +1135,33 @@ export default function AiSettingsPage() {
             </p>
           )}
 
-          {canEdit && (
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-muted-foreground">Add:</span>
-              {PROVIDERS.filter((p) => !voiceList.includes(p.id)).map((p) => {
-                const blocked = !!voiceBlockedReason(p.id);
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => addToVoice(p.id)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
-                      blocked
-                        ? "border-dashed text-muted-foreground hover:border-destructive/50 hover:text-destructive"
-                        : "hover:bg-muted",
-                    )}
-                  >
-                    {blocked ? <MicOff className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
-                    {PROVIDER_SHORT[p.id]}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">Add:</span>
+            {PROVIDERS.filter((p) => !voiceList.includes(p.id)).map((p) => {
+              const blocked = !!voiceBlockedReason(p.id);
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  disabled={!canEdit || busy}
+                  onClick={() => addToVoice(p.id)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    !canEdit || busy ? "cursor-not-allowed opacity-50" : "",
+                    blocked
+                      ? "border-dashed text-muted-foreground hover:border-destructive/50 hover:text-destructive"
+                      : "hover:bg-muted",
+                  )}
+                >
+                  {blocked ? <MicOff className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+                  {PROVIDER_SHORT[p.id]}
+                </button>
+              );
+            })}
+            {PROVIDERS.every((p) => voiceList.includes(p.id)) && (
+              <span className="text-[11px] text-muted-foreground">All providers already listed</span>
+            )}
+          </div>
         </div>
 
         {/* Text tasks */}
@@ -1137,10 +1195,10 @@ export default function AiSettingsPage() {
                       <div
                         className={cn(
                           "flex items-center gap-2 rounded-lg border bg-card px-2 py-1.5 text-sm",
-                          index === 0 && "border-emerald-500/30",
+                          index === 0 && "border-emerald-500/40 bg-emerald-500/5",
                         )}
                       >
-                        {handle ?? <span className="w-5 shrink-0" />}
+                        {handle ?? <span className="h-8 w-8 shrink-0" />}
                         {Logo ? <Logo className="h-4 w-4 shrink-0" /> : null}
                         <span className="min-w-0 flex-1 truncate font-medium">
                           {PROVIDER_SHORT[pid] ?? pid}
@@ -1162,22 +1220,46 @@ export default function AiSettingsPage() {
                           {index === 0 ? "Primary" : `Backup ${index}`}
                         </Badge>
                         {canEdit && (
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            aria-label={`Remove ${PROVIDER_SHORT[pid]} from ${meta.title}`}
-                            disabled={busy}
-                            onClick={() =>
-                              setRouting((prev) => ({
-                                ...prev,
-                                [task]: (prev[task] ?? []).filter((x) => x !== pid),
-                              }))
-                            }
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              disabled={busy || index === 0}
+                              aria-label="Move up (make higher priority)"
+                              onClick={() => movePriority(task, index, -1)}
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              disabled={busy || index >= list.length - 1}
+                              aria-label="Move down (make backup)"
+                              onClick={() => movePriority(task, index, 1)}
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              aria-label={`Remove ${PROVIDER_SHORT[pid]} from ${meta.title}`}
+                              disabled={busy}
+                              onClick={() =>
+                                setRouting((prev) => ({
+                                  ...prev,
+                                  [task]: (prev[task] ?? []).filter((x) => x !== pid),
+                                }))
+                              }
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         )}
                       </div>
                     );
@@ -1188,28 +1270,33 @@ export default function AiSettingsPage() {
                     Empty — add a provider below (platform defaults apply until you save).
                   </p>
                 )}
-                {canEdit && addable.length > 0 && (
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className="text-[11px] text-muted-foreground">Add:</span>
-                    {addable.map((p) => (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground">Add:</span>
+                  {addable.length === 0 ? (
+                    <span className="text-[11px] text-muted-foreground">All allowed providers listed</span>
+                  ) : (
+                    addable.map((p) => (
                       <button
                         key={p.id}
                         type="button"
-                        disabled={busy}
+                        disabled={!canEdit || busy}
                         onClick={() =>
                           setRouting((prev) => ({
                             ...prev,
                             [task]: [...(prev[task] ?? []), p.id],
                           }))
                         }
-                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs hover:bg-muted"
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs hover:bg-muted",
+                          (!canEdit || busy) && "cursor-not-allowed opacity-50",
+                        )}
                       >
                         <Plus className="h-3 w-3" />
                         {PROVIDER_SHORT[p.id]}
                       </button>
-                    ))}
-                  </div>
-                )}
+                    ))
+                  )}
+                </div>
               </div>
             );
           })}

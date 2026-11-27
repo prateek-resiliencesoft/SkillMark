@@ -24,8 +24,11 @@ function Row<T>({
       type="button"
       aria-label="Drag to reorder"
       title="Drag to reorder"
-      onPointerDown={(e) => controls.start(e)}
-      className="flex h-7 w-5 shrink-0 cursor-grab touch-none items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+      onPointerDown={(e) => {
+        e.preventDefault();
+        controls.start(e);
+      }}
+      className="flex h-8 w-8 shrink-0 cursor-grab touch-none items-center justify-center rounded-md border border-border/80 bg-muted/60 text-foreground shadow-sm transition-colors hover:bg-muted active:cursor-grabbing"
     >
       <GripVertical className="h-4 w-4" />
     </button>
@@ -36,7 +39,7 @@ function Row<T>({
       dragListener={false}
       dragControls={controls}
       className={cn("list-none", className)}
-      whileDrag={{ scale: 1.015, boxShadow: "0 8px 24px rgb(0 0 0 / 0.14)", zIndex: 10 }}
+      whileDrag={{ scale: 1.02, boxShadow: "0 8px 24px rgb(0 0 0 / 0.14)", zIndex: 10 }}
       transition={{ type: "spring", stiffness: 500, damping: 40 }}
     >
       {children(handle, controls)}
@@ -63,7 +66,14 @@ export function SortableList<T>({
   children: (item: T, index: number, handle: Handle) => ReactNode;
 }) {
   return (
-    <Reorder.Group axis="y" values={items} onReorder={onReorder} className={cn("space-y-1.5", className)}>
+    <Reorder.Group
+      axis="y"
+      values={items}
+      onReorder={onReorder}
+      className={cn("space-y-1.5", className)}
+      // Prefer layout animations that don't fight nested groups on the same page.
+      layoutScroll
+    >
       {items.map((item, index) => (
         <Row key={getKey(item)} item={item} disabled={disabled} className={itemClassName}>
           {(handle) => children(item, index, handle)}
