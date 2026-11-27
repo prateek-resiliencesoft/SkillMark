@@ -17,6 +17,8 @@ export const flowScope = new AsyncLocalStorage<{ flow: string }>();
 
 export interface StepUsage {
   tokens: number;
+  promptTokens: number;
+  completionTokens: number;
   calls: number;
   thinking: string[];
   models: Set<string>;
@@ -44,11 +46,20 @@ export function extractThinking(text: string): string {
 
 const MAX_THINKING_CHARS = 6_000;
 
-function noteUsage(model: string | undefined, tokens: number, content: string) {
+function noteUsage(
+  model: string | undefined,
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number },
+  content: string,
+) {
   const s = stepUsage.getStore();
   if (!s) return;
   s.calls++;
-  s.tokens += tokens;
+  s.promptTokens += Math.max(0, usage.promptTokens);
+  s.completionTokens += Math.max(0, usage.completionTokens);
+  s.tokens += Math.max(
+    0,
+    usage.totalTokens || usage.promptTokens + usage.completionTokens,
+  );
   if (model) s.models.add(model);
   const t = extractThinking(content);
   if (t) {
@@ -117,10 +128,15 @@ export async function tracedGenerate(
   const gen = startGeneration(meta, params, false);
   try {
     const res = await call();
-    noteUsage(meta.model, res.usage?.totalTokens ?? 0, res.content);
+    const promptTokens = res.usage?.promptTokens ?? 0;
+    const completionTokens = res.usage?.completionTokens ?? 0;
+    const totalTokens = res.usage?.totalTokens ?? promptTokens + completionTokens;
+    noteUsage(meta.model, { promptTokens, completionTokens, totalTokens }, res.content);
     gen?.update({
       output: captureContent() ? res.content : undefined,
-      usageDetails: res.usage ? { input: res.usage.promptTokens, output: res.usage.completionTokens, total: res.usage.totalTokens } : undefined,
+      usageDetails: res.usage
+        ? { input: promptTokens, output: completionTokens, total: totalTokens }
+        : undefined,
       metadata: { finishReason: res.finishReason },
     });
     gen?.end();
@@ -152,10 +168,16 @@ export async function* tracedStream(
       yield t;
     }
     const inChars = params.messages.reduce((n, m) => n + (typeof m.content === "string" ? m.content.length : 0), 0);
-    noteUsage(meta.model, estimateTokens(inChars + out.length), out);
+    const promptTokens = estimateTokens(inChars);
+    const completionTokens = estimateTokens(out.length);
+    noteUsage(
+      meta.model,
+      { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+      out,
+    );
     gen?.update({
       output: captureContent() ? out : undefined,
-      usageDetails: { input: estimateTokens(inChars), output: estimateTokens(out.length) },
+      usageDetails: { input: promptTokens, output: completionTokens },
       metadata: { usageEstimated: true },
     });
     gen?.end();

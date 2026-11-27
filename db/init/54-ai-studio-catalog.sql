@@ -64,6 +64,48 @@ INSERT INTO ai_model_catalog (
     2.50, 10.00, NULL, NULL, NULL, 'seed'
   ),
   (
+    'openai', 'gpt-4.1', 'GPT-4.1', 'Strong general text model',
+    ARRAY['text'], 5,
+    ARRAY['report','heavy','round2_report','generate','standard'],
+    2.00, 8.00, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'gpt-4.1-mini', 'GPT-4.1 mini', 'Cheaper GPT-4.1 tier',
+    ARRAY['text'], 3,
+    ARRAY['screening','standard','interview','generate','resume','report'],
+    0.40, 1.60, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'gpt-5', 'GPT-5', 'Flagship GPT-5 text',
+    ARRAY['text'], 5,
+    ARRAY['report','heavy','round2_report','generate','standard'],
+    1.25, 10.00, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'gpt-5-mini', 'GPT-5 mini', 'Balanced GPT-5 tier',
+    ARRAY['text'], 4,
+    ARRAY['screening','standard','interview','generate','resume','report','round2_live','round2_scoring'],
+    0.25, 2.00, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'gpt-5-nano', 'GPT-5 nano', 'Cheapest GPT-5 tier',
+    ARRAY['text'], 2,
+    ARRAY['screening','standard','interview','generate','resume'],
+    0.05, 0.40, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'o3', 'o3', 'Reasoning model',
+    ARRAY['text'], 5,
+    ARRAY['report','heavy','round2_report'],
+    2.00, 8.00, NULL, NULL, NULL, 'seed'
+  ),
+  (
+    'openai', 'o3-mini', 'o3 mini', 'Smaller reasoning model',
+    ARRAY['text'], 4,
+    ARRAY['report','heavy','generate','standard'],
+    1.10, 4.40, NULL, NULL, NULL, 'seed'
+  ),
+  (
     'openai', 'gpt-realtime-1.5', 'GPT Realtime 1.5', 'OpenAI Realtime voice (priciest)',
     ARRAY['audio','text'], 5,
     ARRAY['voice'],

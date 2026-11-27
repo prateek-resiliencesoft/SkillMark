@@ -17,6 +17,25 @@ export function usdToInr(usd: number, usdInr: number): number {
   return usd * usdInr;
 }
 
+/**
+ * OpenAI-style list price: (inputTok / 1M) * inputRate + (outputTok / 1M) * outputRate.
+ * Rates are USD per 1M tokens (catalog `inputUsdPerMtok` / `outputUsdPerMtok`).
+ */
+export function estimateUsdFromIoTokens(
+  inputTokens: number,
+  outputTokens: number,
+  inputUsdPerMtok: number | null | undefined,
+  outputUsdPerMtok: number | null | undefined,
+): number | null {
+  const inn = Math.max(0, inputTokens);
+  const out = Math.max(0, outputTokens);
+  if (!Number.isFinite(inn) || !Number.isFinite(out)) return null;
+  if (inn === 0 && out === 0) return 0;
+  if (inputUsdPerMtok == null || outputUsdPerMtok == null) return null;
+  if (!Number.isFinite(inputUsdPerMtok) || !Number.isFinite(outputUsdPerMtok)) return null;
+  return (inn / 1_000_000) * inputUsdPerMtok + (out / 1_000_000) * outputUsdPerMtok;
+}
+
 /** Estimate USD for one canonical workload. Null if rates missing. */
 export function estimateWorkloadUsd(model: PriceableModel, workload: WorkloadEstimate): number | null {
   if (workload.kind === "audio_min") {
@@ -32,10 +51,12 @@ export function estimateWorkloadUsd(model: PriceableModel, workload: WorkloadEst
     const outTok = tokensPerMin * workload.minutes;
     return (inTok / 1_000_000) * ain + (outTok / 1_000_000) * aout;
   }
-  const inn = model.inputUsdPerMtok;
-  const out = model.outputUsdPerMtok;
-  if (inn == null || out == null) return null;
-  return (workload.inputTokens / 1_000_000) * inn + (workload.outputTokens / 1_000_000) * out;
+  return estimateUsdFromIoTokens(
+    workload.inputTokens,
+    workload.outputTokens,
+    model.inputUsdPerMtok,
+    model.outputUsdPerMtok,
+  );
 }
 
 export function formatInr(amount: number): string {

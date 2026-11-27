@@ -61,6 +61,7 @@ export default function SettingsLayout({
       "/settings/api-keys",
       "/settings/ai",
       "/settings/ai/studio",
+      "/settings/ai/usage",
       "/organizations",
     ];
     routes.forEach((route) => {

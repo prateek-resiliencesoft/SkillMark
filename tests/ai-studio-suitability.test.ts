@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { estimateWorkloadUsd, usdToInr, formatInr } from "@/lib/ai/studio/pricing";
+import {
+  estimateUsdFromIoTokens,
+  estimateWorkloadUsd,
+  usdToInr,
+  formatInr,
+} from "@/lib/ai/studio/pricing";
+import { estimateUsdForTokens } from "@/lib/ai/studio/usage-aggregate";
 import { rankModelsForTask, suggestionStrip } from "@/lib/ai/studio/suitability";
 
 describe("pricing helpers", () => {
@@ -13,6 +19,19 @@ describe("pricing helpers", () => {
     assert.equal(usd, 0.75);
     assert.equal(usdToInr(usd!, 93), 69.75);
     assert.ok(formatInr(69.75).includes("69"));
+  });
+
+  it("prices OpenAI gpt-4o with separate input/output tokens", () => {
+    // Official list: $2.50 / $10.00 per 1M
+    const usd = estimateUsdFromIoTokens(2_000_000, 500_000, 2.5, 10);
+    assert.equal(usd, 2_000_000 / 1_000_000 * 2.5 + 500_000 / 1_000_000 * 10);
+    assert.equal(usd, 10);
+  });
+
+  it("falls back to 70/30 when only total tokens known", () => {
+    const withIo = estimateUsdForTokens(1000, 0.15, 0.6, 700, 300);
+    const guessed = estimateUsdForTokens(1000, 0.15, 0.6);
+    assert.equal(withIo, guessed);
   });
 });
 

@@ -74,7 +74,14 @@ export function step<S, U>(
     const emit = () => config.writer?.({ [STEP_EVENT]: { ...s } } satisfies StepEvent);
     emit();
 
-    const usage: StepUsage = { tokens: 0, calls: 0, thinking: [], models: new Set() };
+    const usage: StepUsage = {
+      tokens: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      calls: 0,
+      thinking: [],
+      models: new Set(),
+    };
     const notes: string[] = [];
     const thoughts: string[] = [];
     const ctx: StepCtx = {
@@ -87,6 +94,8 @@ export function step<S, U>(
       s.status = status;
       s.ms = Date.now() - s.startedAt;
       s.tokens = usage.tokens || undefined;
+      s.promptTokens = usage.promptTokens || undefined;
+      s.completionTokens = usage.completionTokens || undefined;
       s.models = usage.models.size ? [...usage.models] : undefined;
       const detail = err ? (err instanceof Error ? err.message : String(err)) : notes.join(" · ");
       s.detail = detail ? clipText(detail, 600) : undefined;
