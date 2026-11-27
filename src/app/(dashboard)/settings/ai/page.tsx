@@ -815,7 +815,11 @@ export default function AiSettingsPage() {
           <h1 className="text-2xl font-bold tracking-tight">AI Providers</h1>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
             Add up to {maxKeys} keys per provider. On errors or rate limits the next key, then the next provider, is
-            tried automatically — candidates only see an error if every backup fails.
+            tried automatically — candidates only see an error if every backup fails. Assign models per section in{" "}
+            <Link href="/settings/ai-studio" className="font-medium text-foreground underline">
+              AI Studio
+            </Link>
+            .
           </p>
         </div>
         <Badge variant="outline" className="px-2.5 py-1 text-xs">

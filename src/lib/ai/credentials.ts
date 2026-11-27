@@ -63,8 +63,16 @@ export type AiProviderStored = {
 
 export type AiRoutingStored = Partial<Record<AiTaskKind, AiProviderId[]>>;
 
+/** One failover hop: provider + concrete model id for that provider. */
+export type AiTaskModelHop = { provider: AiProviderId; model: string };
+
+/** Per-task ordered failover chain with models (Studio). Aligns with `routing` provider order. */
+export type AiTaskModelsStored = Partial<Record<AiTaskKind, AiTaskModelHop[]>>;
+
 export type AiProvidersStored = Partial<Record<AiProviderId, AiProviderStored>> & {
   routing?: AiRoutingStored;
+  /** Optional per-task model hops; when set, registry prefers hop.model over provider default. */
+  taskModels?: AiTaskModelsStored;
 };
 
 export type ResolvedProviderCreds = {
@@ -126,6 +134,9 @@ export function decryptAiProviders(raw: unknown): AiProvidersStored {
   if (obj.routing && typeof obj.routing === "object") {
     out.routing = sanitizeRouting(obj.routing);
   }
+  if (obj.taskModels && typeof obj.taskModels === "object") {
+    out.taskModels = sanitizeTaskModels(obj.taskModels);
+  }
   return out;
 }
 
@@ -143,6 +154,69 @@ function sanitizeRouting(raw: AiRoutingStored): AiRoutingStored {
     if (cleaned.length) out[kind] = cleaned;
   }
   return out;
+}
+
+function hopAllowedForTask(task: AiTaskKind, provider: AiProviderId): boolean {
+  if (task === "voice") return isVoiceCapableProvider(provider);
+  if (task === "round2_transcript") return isSttProvider(provider);
+  return (AI_PROVIDER_IDS as readonly string[]).includes(provider);
+}
+
+/** Drop bad hops; trim models; enforce voice/STT provider rules. */
+export function sanitizeTaskModels(raw: unknown): AiTaskModelsStored {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as AiTaskModelsStored;
+  const out: AiTaskModelsStored = {};
+  for (const kind of AI_TASK_KINDS) {
+    const list = obj[kind];
+    if (!Array.isArray(list)) continue;
+    const cleaned: AiTaskModelHop[] = [];
+    const seen = new Set<string>();
+    for (const hop of list) {
+      if (!hop || typeof hop !== "object") continue;
+      const provider = hop.provider;
+      const model = typeof hop.model === "string" ? hop.model.trim() : "";
+      if (!(AI_PROVIDER_IDS as readonly string[]).includes(provider)) continue;
+      if (!model || !hopAllowedForTask(kind, provider)) continue;
+      const key = `${provider}:${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cleaned.push({ provider, model });
+    }
+    if (cleaned.length) out[kind] = cleaned;
+  }
+  return out;
+}
+
+/** Derive provider routing lists from taskModels hops (provider order, deduped). */
+export function routingFromTaskModels(taskModels: AiTaskModelsStored): AiRoutingStored {
+  const out: AiRoutingStored = {};
+  for (const kind of AI_TASK_KINDS) {
+    const hops = taskModels[kind];
+    if (!hops?.length) continue;
+    const ids: AiProviderId[] = [];
+    for (const h of hops) {
+      if (!ids.includes(h.provider)) ids.push(h.provider);
+    }
+    if (ids.length) out[kind] = ids;
+  }
+  return sanitizeRouting(out);
+}
+
+export function getStoredTaskModels(raw: unknown): AiTaskModelsStored {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as AiProvidersStored;
+  return sanitizeTaskModels(obj.taskModels ?? {});
+}
+
+/** Model string for this task+provider from stored hops (first matching hop). */
+export function storedTaskModel(
+  taskModels: AiTaskModelsStored | undefined,
+  task: AiTaskKind,
+  provider: AiProviderId,
+): string | null {
+  const hops = taskModels?.[task];
+  if (!hops?.length) return null;
+  const hit = hops.find((h) => h.provider === provider);
+  return hit?.model?.trim() || null;
 }
 
 /** Masked hints for settings UI (one hint per saved key slot). */
@@ -199,6 +273,7 @@ export function mergeAiProvidersPatch(
   currentRaw: unknown,
   patch: Partial<Record<AiProviderId, ProviderPatch>>,
   routing?: AiRoutingStored | null,
+  taskModels?: AiTaskModelsStored | null,
 ): AiProvidersStored {
   const current = (
     currentRaw && typeof currentRaw === "object" ? { ...(currentRaw as object) } : {}
@@ -258,6 +333,18 @@ export function mergeAiProvidersPatch(
       delete current.routing;
     } else {
       current.routing = sanitizeRouting(routing);
+    }
+  }
+
+  if (taskModels !== undefined) {
+    if (taskModels === null) {
+      delete current.taskModels;
+    } else {
+      const cleaned = sanitizeTaskModels(taskModels);
+      current.taskModels = cleaned;
+      // Keep routing aligned with hop provider order when models are saved.
+      const derived = routingFromTaskModels(cleaned);
+      current.routing = { ...(current.routing ?? {}), ...derived };
     }
   }
 
@@ -498,7 +585,16 @@ export const DEFAULT_PROVIDER_MODELS: Record<AiProviderId, string> = {
   custom: defaultModelForProvider("custom"),
 };
 
-export function routingForTask(stored: AiRoutingStored | undefined, task: AiTaskKind): AiProviderId[] {
+export function routingForTask(
+  stored: AiRoutingStored | undefined,
+  task: AiTaskKind,
+  taskModels?: AiTaskModelsStored,
+): AiProviderId[] {
+  const fromHops = taskModels?.[task]?.map((h) => h.provider).filter(Boolean);
+  if (fromHops?.length) {
+    // Preserve hop order; dedupe providers.
+    return Array.from(new Set(fromHops));
+  }
   const custom = stored?.[task];
   if (custom?.length) return custom;
   return DEFAULT_TASK_ROUTING[task];

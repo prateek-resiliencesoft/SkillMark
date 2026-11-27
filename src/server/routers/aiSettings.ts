@@ -10,16 +10,25 @@ import {
   applyKeySlotsPatch,
   defaultModelForProvider,
   getStoredRouting,
+  getStoredTaskModels,
   loadOrgAiProvidersRaw,
   maskAiProviders,
   mergeAiProvidersPatch,
+  sanitizeTaskModels,
   type AiProviderId,
   type AiRoutingStored,
   type AiTaskKind,
+  type AiTaskModelsStored,
   decryptAiProviders,
 } from "@/lib/ai/credentials";
 import { checkVoiceModel, voiceBlockedReason } from "@/lib/ai/capabilities";
+import { listProviderModels } from "@/lib/ai/list-models";
+import { loadCatalogRows, loadUsdInr, upsertListedModels, withInrEstimate } from "@/lib/ai/studio/catalog";
+import { STUDIO_MODULES } from "@/lib/ai/studio/modules";
+import { estimateWorkloadUsd, formatInr } from "@/lib/ai/studio/pricing";
+import { rankModelsForTask, suggestionStrip } from "@/lib/ai/studio/suitability";
 import { assertSafeRemoteUrl } from "@/lib/network-security";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isPlatformAdmin } from "../tenant";
@@ -65,6 +74,7 @@ export const aiSettingsRouter = router({
     const masked = maskAiProviders(raw);
     const plain = decryptAiProviders(raw);
     const storedRouting = getStoredRouting(raw);
+    const taskModels = getStoredTaskModels(raw);
     const routing = Object.fromEntries(
       AI_TASK_KINDS.map((kind) => [kind, storedRouting[kind] ?? DEFAULT_TASK_ROUTING[kind]]),
     ) as Record<AiTaskKind, AiProviderId[]>;
@@ -84,6 +94,8 @@ export const aiSettingsRouter = router({
         configured: masked[id].keyCount > 0 || (id === "custom" && !!masked[id].baseUrl),
       })),
       routing,
+      taskModels,
+      modules: STUDIO_MODULES,
       defaultRouting: DEFAULT_TASK_ROUTING,
       defaultModels: DEFAULT_PROVIDER_MODELS,
       taskKinds: AI_TASK_KINDS,
@@ -202,6 +214,163 @@ export const aiSettingsRouter = router({
       );
       if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
       return { ok: true };
+    }),
+
+  /** Save Studio task → provider+model failover hops (also syncs routing). */
+  saveTaskModels: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        taskModels: z.record(
+          taskKindSchema,
+          z
+            .array(
+              z.object({
+                provider: providerIdSchema,
+                model: z.string().trim().min(1).max(200),
+              }),
+            )
+            .max(12),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      const cleaned = sanitizeTaskModels(input.taskModels);
+      for (const hop of cleaned.voice ?? []) {
+        const blocked = voiceBlockedReason(hop.provider);
+        if (blocked) throw new TRPCError({ code: "BAD_REQUEST", message: blocked });
+      }
+      for (const hop of cleaned.round2_transcript ?? []) {
+        if (!isSttProvider(hop.provider)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Transcript hops need Groq, OpenAI, or Custom.",
+          });
+        }
+      }
+      const current = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
+      const next = mergeAiProvidersPatch(current, {}, undefined, cleaned);
+      const { error } = await ctx.supabase.from("org_integrations").upsert(
+        { organizationId: input.organizationId, aiProviders: next },
+        { onConflict: "organizationId" },
+      );
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { ok: true, taskModels: getStoredTaskModels(next) };
+    }),
+
+  /** Catalog + ₹ estimates + cheap→best suggestions for one module/task. */
+  listCatalog: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        task: taskKindSchema.optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!(await isPlatformAdmin(ctx.supabase, ctx.user.id))) {
+        const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+        if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      }
+      const { usdInr, asOf } = await loadUsdInr();
+      const rows = await loadCatalogRows();
+      const mod = STUDIO_MODULES.find((m) => m.task === input.task);
+      const workload = mod?.workload ?? { kind: "text" as const, inputTokens: 8_000, outputTokens: 1_500 };
+      const ranked = input.task
+        ? rankModelsForTask(rows, input.task, workload)
+        : rows.map((m) => ({ ...m, estimateUsd: estimateWorkloadUsd(m, workload), rankLabel: "other" as const }));
+      const withInr = ranked.map((m) => {
+        const row = withInrEstimate(m, m.estimateUsd, usdInr);
+        return {
+          ...row,
+          rankLabel: m.rankLabel,
+          estimateUsd: m.estimateUsd,
+          estimateInrLabel: row.estimateInr != null ? formatInr(row.estimateInr) : "₹ unknown",
+        };
+      });
+      return {
+        usdInr,
+        pricesAsOf: asOf,
+        models: withInr,
+        suggestions: input.task ? suggestionStrip(ranked).map((m) => m.modelId) : [],
+        modules: STUDIO_MODULES,
+      };
+    }),
+
+  /** Validate key + list live models into catalog. */
+  testProvider: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        providerId: providerIdSchema,
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      const plain = decryptAiProviders(await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId));
+      const key = plain[input.providerId]?.apiKeys?.[0];
+      if (!key) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Add an API key for this provider first." });
+      }
+      try {
+        const listed = await listProviderModels({
+          provider: input.providerId,
+          apiKey: key,
+          baseUrl: plain[input.providerId]?.baseUrl,
+        });
+        const upserted = await upsertListedModels(input.providerId, listed);
+        return { ok: true as const, count: listed.length, upserted, models: listed.slice(0, 100) };
+      } catch (err) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Could not list models: ${(err as Error).message}`,
+        });
+      }
+    }),
+
+  listSuggestedPresets: protectedProcedure
+    .input(z.object({ organizationId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      if (!(await isPlatformAdmin(ctx.supabase, ctx.user.id))) {
+        const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+        if (!membership) throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+      }
+      const { data, error } = await supabaseAdmin
+        .from("ai_preset_templates")
+        .select("id, slug, name, blurb, payload, \"updatedAt\"")
+        .eq("published", true)
+        .order("name");
+      if (error) return [];
+      return data ?? [];
+    }),
+
+  applyPreset: protectedProcedure
+    .input(z.object({ organizationId: z.string(), presetId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
+      const { data: preset, error: pErr } = await supabaseAdmin
+        .from("ai_preset_templates")
+        .select("payload, published")
+        .eq("id", input.presetId)
+        .maybeSingle();
+      if (pErr || !preset?.published) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Preset not found." });
+      }
+      const payload = (preset.payload ?? {}) as { taskModels?: AiTaskModelsStored; routing?: AiRoutingStored };
+      const cleaned = sanitizeTaskModels(payload.taskModels ?? {});
+      const current = await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId);
+      const next = mergeAiProvidersPatch(
+        current,
+        {},
+        payload.routing ?? undefined,
+        Object.keys(cleaned).length ? cleaned : null,
+      );
+      const { error } = await ctx.supabase.from("org_integrations").upsert(
+        { organizationId: input.organizationId, aiProviders: next },
+        { onConflict: "organizationId" },
+      );
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      return { ok: true, taskModels: getStoredTaskModels(next) };
     }),
 
   /** Legacy single-key save (still used by older clients). */

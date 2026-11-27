@@ -28,6 +28,12 @@ export default function AdminAiTriagePage() {
         title="AI Triage"
         description="Platform AI keys, bug clustering from feedback + error logs, thresholds, and GitHub issue automation."
       />
+      <p className="text-sm text-muted-foreground">
+        Org-facing Studio templates:{" "}
+        <a href="/admin/ai/presets" className="font-medium text-foreground underline">
+          AI preset templates
+        </a>
+      </p>
 
       <div className="flex flex-wrap gap-2">
         {TABS.map(({ id, label, icon: Icon }) => (
