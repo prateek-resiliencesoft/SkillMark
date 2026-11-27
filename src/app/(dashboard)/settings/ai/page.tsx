@@ -36,11 +36,13 @@ import {
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom";
 
 const STT_PROVIDERS: ProviderId[] = ["groq", "openai", "custom"];
+/** Must match server `MAX_KEYS_PER_PROVIDER` in credentials.ts */
+const MAX_PROVIDER_KEYS = 5;
 
 /** One API key row. `keep` = index of the already-saved key it represents (null = new). */
 type KeySlot = { id: string; keep: number | null; value: string; tier: "free" | "paid" };
@@ -330,13 +332,31 @@ export default function AiSettingsPage() {
   const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: ProviderId | "routing"; type: "save" | "clear" } | null>(null);
   const [testingProvider, setTestingProvider] = useState<ProviderId | null>(null);
+  /** Skip re-hydrate on identical server key state so focus-refetch does not wipe draft backup slots. */
+  const hydratedSig = useRef("");
 
   useEffect(() => {
-    if (!query.data) return;
+    if (!query.data || !orgId) return;
+    const sig = `${orgId}:${query.data.providers
+      .map(
+        (p) =>
+          `${p.id}:${p.keyCount}:${(p.apiKeyHints ?? []).join(",")}:${(p as ProviderRow).textModel ?? ""}:${(p as ProviderRow).voiceModel ?? ""}:${(p as ProviderRow).baseUrl ?? ""}`,
+      )
+      .join("|")}`;
+    if (hydratedSig.current === sig) return;
+    hydratedSig.current = sig;
+
     const custom = query.data.providers.find((p) => p.id === "custom");
     setCustomBase(custom?.baseUrl ?? "");
     setCustomVoiceModel(custom?.voiceModel ?? "");
-    const nextModels = { ...textModels };
+    const nextModels: Record<ProviderId, string> = {
+      openai: "",
+      gemini: "",
+      nvidia: "",
+      anthropic: "",
+      groq: "",
+      custom: "",
+    };
     const nextSlots = emptySlots();
     for (const p of query.data.providers) {
       const id = p.id as ProviderId;
@@ -350,8 +370,7 @@ export default function AiSettingsPage() {
     setTextModels(nextModels);
     setKeySlots(nextSlots);
     setRouting(query.data.routing as Record<string, ProviderId[]>);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once per query payload
-  }, [query.data]);
+  }, [query.data, orgId]);
 
   const saveKeys = trpc.aiSettings.saveProviderKeys.useMutation({
     onSuccess: () => {
@@ -420,8 +439,19 @@ export default function AiSettingsPage() {
 
   const byId = Object.fromEntries(query.data.providers.map((p) => [p.id, p])) as unknown as Record<ProviderId, ProviderRow>;
   const envFallback = query.data.envFallback;
-  const maxKeys = query.data.providers[0]?.maxKeys ?? 5;
+  const maxKeys = Math.min(
+    MAX_PROVIDER_KEYS,
+    query.data.providers[0]?.maxKeys ?? MAX_PROVIDER_KEYS,
+  );
   const providerMeta = Object.fromEntries(PROVIDERS.map((m) => [m.id, m])) as Record<ProviderId, ProviderMeta>;
+
+  const addBackupKey = (pid: ProviderId) => {
+    setKeySlots((prev) => {
+      const cur = prev[pid] ?? [newSlot()];
+      if (cur.length >= maxKeys) return prev;
+      return { ...prev, [pid]: [...cur, newSlot()] };
+    });
+  };
 
   const isConfigured = (id: ProviderId) => {
     const row = byId[id];
@@ -695,12 +725,18 @@ export default function AiSettingsPage() {
           )}
 
           <div className="space-y-2">
-            <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Key className="h-3 w-3" />
-              API keys · drag grip to reorder failover (max {maxKeys})
-            </Label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Key className="h-3 w-3" />
+                API keys · up to {maxKeys} (primary + backups)
+              </Label>
+              <span className="text-[11px] tabular-nums text-muted-foreground">
+                {slots.length} / {maxKeys}
+              </span>
+            </div>
             <p className="text-[11px] text-muted-foreground">
-              Free = confirmed free account · Paid = confirmed paid account
+              Drag ⋮⋮ to set failover order. Free / Paid = account type. Paste each key before Save — empty
+              backup rows are dropped on save.
             </p>
             <SortableList
               items={slots}
@@ -787,17 +823,19 @@ export default function AiSettingsPage() {
                 </div>
               )}
             </SortableList>
-            {canEdit && slots.length < maxKeys && (
+            {canEdit && (
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-8 text-xs"
-                disabled={busy}
-                onClick={() => setKeySlots((prev) => ({ ...prev, [p.id]: [...(prev[p.id] ?? []), newSlot()] }))}
+                className="h-8 w-full text-xs sm:w-auto"
+                disabled={busy || slots.length >= maxKeys}
+                onClick={() => addBackupKey(p.id)}
               >
                 <Plus className="mr-1.5 h-3.5 w-3.5" />
-                Add backup key
+                {slots.length >= maxKeys
+                  ? `Max ${maxKeys} keys reached`
+                  : `Add backup key (${slots.length + 1}/${maxKeys})`}
               </Button>
             )}
           </div>
@@ -894,12 +932,12 @@ export default function AiSettingsPage() {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Providers</h2>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Add up to {maxKeys} keys per provider. On rate limits we try the next key, then the next provider.
-            Then open{" "}
+            Every provider supports up to {maxKeys} keys (1 primary + backups). On rate limits we try the next
+            key, then the next provider. Then open{" "}
             <Link href="/settings/ai/studio" className="font-medium text-foreground underline underline-offset-2">
               Studio
             </Link>{" "}
-            to pick which model each feature uses and preview ₹ cost.
+            to pick models and preview ₹ cost.
           </p>
         </div>
         <Badge variant="outline" className="px-2.5 py-1 text-xs">
