@@ -11,6 +11,7 @@ import {
 } from "@/lib/media-stream-store";
 import fixWebmDuration from "fix-webm-duration";
 import { reportSessionError } from "@/lib/session-error-report-client";
+import { createMicTrackRecorder, type MicTrackRecorder } from "@/lib/mic-track-recorder";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const log = createLogger("recording");
@@ -156,6 +157,8 @@ export function useInterviewRecording({
   const partTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const partsUploadedRef = useRef(0);
   const partFailureReportedRef = useRef(false);
+  // Candidate-only mic track (best-effort, independent of the mixed recording above).
+  const micTrackRef = useRef<MicTrackRecorder | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { cameraStreamRef.current = cameraStream; }, [cameraStream]);
@@ -224,7 +227,13 @@ export function useInterviewRecording({
     const source = ctx.createMediaStreamSource(micStream);
     source.connect(mixDestRef.current);
     micSourceRef.current = source;
-  }, []);
+
+    // Also record the mic on its own (no AI voice) for a cleaner post-interview transcript. Best-effort.
+    try {
+      if (!micTrackRef.current) micTrackRef.current = createMicTrackRecorder(sessionId);
+      micTrackRef.current.start(micStream);
+    } catch { /* never affects the interview */ }
+  }, [sessionId]);
 
   /**
    * Feed a TTS PCM chunk (float32 @ 24 kHz) into the recording mixer.
@@ -414,6 +423,7 @@ export function useInterviewRecording({
     const onHidden = () => {
       if (!recorderRef.current || stoppedRef.current) return;
       try { recorderRef.current.requestData(); } catch { /* inactive */ }
+      micTrackRef.current?.flush();
       // requestData is async; give it a tick, then upload.
       setTimeout(() => { cutPart(); void uploadParts(); }, 50);
     };
@@ -576,6 +586,10 @@ export function useInterviewRecording({
     // Take one final set of screenshots
     takeScreenshots();
 
+    // Finish the candidate-only mic track alongside the main recorder (bounded, never throws).
+    // Awaited before the recording is finalized, so the transcript rebuild finds the mic parts.
+    const micTrackDone: Promise<void> = micTrackRef.current?.stop(5_000) ?? Promise.resolve();
+
     // Stop MediaRecorder and collect audio
     let audioUrl: string | undefined;
     let audioDuration: number | undefined;
@@ -606,6 +620,7 @@ export function useInterviewRecording({
       //    (with retries). Ending the interview no longer waits for the join,
       //    which took longer than 30 s for long interviews on remote storage.
       cutPart();
+      await micTrackDone;
       let finalizeQueued = false;
       if (partSeqRef.current > 0) {
         const drained = await drainParts(FINAL_DRAIN_MS);
@@ -668,6 +683,10 @@ export function useInterviewRecording({
       }
     }
 
+    micTrackRef.current = null;
+
+    await micTrackDone;
+
     // Disconnect mic source
     try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
     micSourceRef.current = null;
@@ -714,6 +733,7 @@ export function useInterviewRecording({
       if (screenshotTimerRef.current) clearInterval(screenshotTimerRef.current);
       if (partTimerRef.current) clearInterval(partTimerRef.current);
       try { recorderRef.current?.stop(); } catch { /* noop */ }
+      void micTrackRef.current?.stop(0);
       try { micSourceRef.current?.disconnect(); } catch { /* noop */ }
       try { mixCtxRef.current?.close(); } catch { /* noop */ }
       cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
