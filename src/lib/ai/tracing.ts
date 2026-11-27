@@ -19,6 +19,12 @@ export interface StepUsage {
   tokens: number;
   promptTokens: number;
   completionTokens: number;
+  /** Tokens from keys marked paid (or env). Used for ₹ cost. */
+  paidPromptTokens: number;
+  paidCompletionTokens: number;
+  /** Tokens from keys marked free — usage shown, cost ₹0. */
+  freePromptTokens: number;
+  freeCompletionTokens: number;
   calls: number;
   thinking: string[];
   models: Set<string>;
@@ -50,16 +56,23 @@ function noteUsage(
   model: string | undefined,
   usage: { promptTokens: number; completionTokens: number; totalTokens: number },
   content: string,
+  keyTier: "free" | "paid" = "paid",
 ) {
   const s = stepUsage.getStore();
   if (!s) return;
   s.calls++;
-  s.promptTokens += Math.max(0, usage.promptTokens);
-  s.completionTokens += Math.max(0, usage.completionTokens);
-  s.tokens += Math.max(
-    0,
-    usage.totalTokens || usage.promptTokens + usage.completionTokens,
-  );
+  const prompt = Math.max(0, usage.promptTokens);
+  const completion = Math.max(0, usage.completionTokens);
+  s.promptTokens += prompt;
+  s.completionTokens += completion;
+  s.tokens += Math.max(0, usage.totalTokens || prompt + completion);
+  if (keyTier === "free") {
+    s.freePromptTokens += prompt;
+    s.freeCompletionTokens += completion;
+  } else {
+    s.paidPromptTokens += prompt;
+    s.paidCompletionTokens += completion;
+  }
   if (model) s.models.add(model);
   const t = extractThinking(content);
   if (t) {
@@ -84,6 +97,8 @@ interface CallMeta {
   provider: string;
   source: string;
   keyIndex: number;
+  /** free = no ₹ cost in Usage; paid (default) = billable. */
+  keyTier?: "free" | "paid";
   model?: string;
   attempt: number;
 }
@@ -108,7 +123,13 @@ function observe(meta: CallMeta, params: GenerationParams, stream: boolean) {
         ...(params.jsonMode ? { jsonMode: "true" } : {}),
         stream: stream ? "true" : "false",
       },
-      metadata: { provider: meta.provider, keySource: meta.source, keySlot: meta.keyIndex + 1, attempt: meta.attempt },
+      metadata: {
+        provider: meta.provider,
+        keySource: meta.source,
+        keySlot: meta.keyIndex + 1,
+        keyTier: meta.keyTier ?? "paid",
+        attempt: meta.attempt,
+      },
     },
     { asType: "generation" },
   );
@@ -131,7 +152,12 @@ export async function tracedGenerate(
     const promptTokens = res.usage?.promptTokens ?? 0;
     const completionTokens = res.usage?.completionTokens ?? 0;
     const totalTokens = res.usage?.totalTokens ?? promptTokens + completionTokens;
-    noteUsage(meta.model, { promptTokens, completionTokens, totalTokens }, res.content);
+    noteUsage(
+      meta.model,
+      { promptTokens, completionTokens, totalTokens },
+      res.content,
+      meta.keyTier ?? "paid",
+    );
     gen?.update({
       output: captureContent() ? res.content : undefined,
       usageDetails: res.usage
@@ -174,6 +200,7 @@ export async function* tracedStream(
       meta.model,
       { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
       out,
+      meta.keyTier ?? "paid",
     );
     gen?.update({
       output: captureContent() ? out : undefined,

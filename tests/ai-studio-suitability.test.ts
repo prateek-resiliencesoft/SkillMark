@@ -35,6 +35,63 @@ describe("pricing helpers", () => {
   });
 });
 
+describe("paid-key-only usage cost", () => {
+  it("charges only paid tokens; free-tier tokens are ₹0", async () => {
+    const { aggregateAiUsage } = await import("@/lib/ai/studio/usage-aggregate");
+    const catalog = [
+      {
+        provider: "openai" as const,
+        modelId: "gpt-4o-mini",
+        qualityTier: 3,
+        inputUsdPerMtok: 0.15,
+        outputUsdPerMtok: 0.6,
+      },
+    ];
+    const range = { start: new Date("2026-11-01"), end: new Date("2026-11-30") };
+    const out = aggregateAiUsage(
+      [
+        {
+          id: "1",
+          flow: "round1-summary",
+          status: "done",
+          tokens: 2000,
+          startedAt: "2026-11-15T10:00:00.000Z",
+          endedAt: "2026-11-15T10:00:01.000Z",
+          error: null,
+          subjectType: null,
+          subjectId: null,
+          steps: [
+            {
+              id: "a",
+              node: "a",
+              label: "a",
+              status: "done",
+              startedAt: 0,
+              tokens: 2000,
+              promptTokens: 1000,
+              completionTokens: 1000,
+              paidPromptTokens: 500,
+              paidCompletionTokens: 500,
+              freePromptTokens: 500,
+              freeCompletionTokens: 500,
+              models: ["gpt-4o-mini"],
+            },
+          ],
+        },
+      ],
+      catalog,
+      100,
+      range,
+    );
+    // Paid 500 in + 500 out at 0.15 / 0.6 per MTok → USD = 0.000375
+    assert.ok(out.totals.estimateUsd != null);
+    assert.ok(Math.abs(out.totals.estimateUsd! - 0.000375) < 1e-9);
+    assert.equal(out.totals.paidTokens, 1000);
+    assert.equal(out.totals.freeTokens, 1000);
+    assert.equal(out.byModel[0]?.estimateInrLabel, "₹0.04");
+  });
+});
+
 describe("rankModelsForTask", () => {
   it("filters voice-incapable providers and ranks cheap → best", () => {
     const ranked = rankModelsForTask(

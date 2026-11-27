@@ -78,6 +78,10 @@ export function step<S, U>(
       tokens: 0,
       promptTokens: 0,
       completionTokens: 0,
+      paidPromptTokens: 0,
+      paidCompletionTokens: 0,
+      freePromptTokens: 0,
+      freeCompletionTokens: 0,
       calls: 0,
       thinking: [],
       models: new Set(),
@@ -96,6 +100,10 @@ export function step<S, U>(
       s.tokens = usage.tokens || undefined;
       s.promptTokens = usage.promptTokens || undefined;
       s.completionTokens = usage.completionTokens || undefined;
+      s.paidPromptTokens = usage.paidPromptTokens || undefined;
+      s.paidCompletionTokens = usage.paidCompletionTokens || undefined;
+      s.freePromptTokens = usage.freePromptTokens || undefined;
+      s.freeCompletionTokens = usage.freeCompletionTokens || undefined;
       s.models = usage.models.size ? [...usage.models] : undefined;
       const detail = err ? (err instanceof Error ? err.message : String(err)) : notes.join(" · ");
       s.detail = detail ? clipText(detail, 600) : undefined;

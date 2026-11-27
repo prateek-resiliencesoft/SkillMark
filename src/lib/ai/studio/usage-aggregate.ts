@@ -23,6 +23,10 @@ export type ModelUsageBucket = {
   tokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens from paid keys (₹ billable). */
+  paidTokens: number;
+  /** Tokens from free-tier keys (₹0). */
+  freeTokens: number;
   calls: number;
   inputUsdPerMtok: number | null;
   outputUsdPerMtok: number | null;
@@ -112,7 +116,36 @@ type Attr = {
   outputTokens: number;
   calls: number;
   splitEstimated: boolean;
+  /** Only paid-key (or legacy/env) tokens contribute to ₹ cost. */
+  billable: boolean;
 };
+
+function pushModelAttrs(
+  attrs: Attr[],
+  models: string[],
+  inputTokens: number,
+  outputTokens: number,
+  calls: number,
+  splitEstimated: boolean,
+  billable: boolean,
+) {
+  const list = models.length ? models : ["unknown"];
+  const tokens = inputTokens + outputTokens;
+  const eachTok = tokens / list.length;
+  const eachIn = inputTokens / list.length;
+  const eachOut = outputTokens / list.length;
+  for (const modelId of list) {
+    attrs.push({
+      modelId,
+      tokens: eachTok,
+      inputTokens: eachIn,
+      outputTokens: eachOut,
+      calls,
+      splitEstimated,
+      billable,
+    });
+  }
+}
 
 function attributeRun(run: AiRunRow): Attr[] {
   const steps = Array.isArray(run.steps) ? run.steps : [];
@@ -123,36 +156,47 @@ function attributeRun(run: AiRunRow): Attr[] {
     const prompt = s.promptTokens;
     const completion = s.completionTokens;
     const hasIo = prompt != null || completion != null;
+    const hasTier =
+      s.paidPromptTokens != null ||
+      s.paidCompletionTokens != null ||
+      s.freePromptTokens != null ||
+      s.freeCompletionTokens != null;
+    const models = s.models?.filter(Boolean) ?? [];
+    if (!tok && !hasIo && !hasTier && !models.length) continue;
+
+    if (hasTier) {
+      const paidIn = Math.max(0, s.paidPromptTokens ?? 0);
+      const paidOut = Math.max(0, s.paidCompletionTokens ?? 0);
+      const freeIn = Math.max(0, s.freePromptTokens ?? 0);
+      const freeOut = Math.max(0, s.freeCompletionTokens ?? 0);
+      if (paidIn > 0 || paidOut > 0) {
+        pushModelAttrs(attrs, models, paidIn, paidOut, 1, false, true);
+        stepped += paidIn + paidOut;
+      }
+      if (freeIn > 0 || freeOut > 0) {
+        pushModelAttrs(attrs, models, freeIn, freeOut, paidIn || paidOut ? 0 : 1, false, false);
+        stepped += freeIn + freeOut;
+      }
+      continue;
+    }
+
+    // Legacy steps (no key-tier fields): treat as billable paid so we don't under-report.
     const inputTokens = hasIo ? Math.max(0, prompt ?? 0) : tok * 0.7;
     const outputTokens = hasIo ? Math.max(0, completion ?? 0) : tok * 0.3;
-    const models = s.models?.filter(Boolean) ?? [];
-    if (!tok && !hasIo && !models.length) continue;
-    const list = models.length ? models : ["unknown"];
-    const eachTok = (tok || inputTokens + outputTokens) / list.length;
-    const eachIn = inputTokens / list.length;
-    const eachOut = outputTokens / list.length;
-    for (const modelId of list) {
-      attrs.push({
-        modelId,
-        tokens: eachTok,
-        inputTokens: eachIn,
-        outputTokens: eachOut,
-        calls: 1,
-        splitEstimated: !hasIo,
-      });
-      stepped += eachTok;
-    }
+    pushModelAttrs(attrs, models, inputTokens, outputTokens, 1, !hasIo, true);
+    stepped += inputTokens + outputTokens || tok;
   }
   const remainder = Math.max(0, (run.tokens ?? 0) - stepped);
   if (remainder > 0 || attrs.length === 0) {
-    attrs.push({
-      modelId: "unknown",
-      tokens: remainder || (run.tokens ?? 0),
-      inputTokens: (remainder || (run.tokens ?? 0)) * 0.7,
-      outputTokens: (remainder || (run.tokens ?? 0)) * 0.3,
-      calls: attrs.length ? 0 : 1,
-      splitEstimated: true,
-    });
+    pushModelAttrs(
+      attrs,
+      ["unknown"],
+      (remainder || (run.tokens ?? 0)) * 0.7,
+      (remainder || (run.tokens ?? 0)) * 0.3,
+      attrs.length ? 0 : 1,
+      true,
+      true,
+    );
   }
   return attrs;
 }
@@ -201,6 +245,8 @@ export function aggregateAiUsage(
       tokens: number;
       inputTokens: number;
       outputTokens: number;
+      paidTokens: number;
+      freeTokens: number;
       calls: number;
       inRate: number | null;
       outRate: number | null;
@@ -222,12 +268,15 @@ export function aggregateAiUsage(
   let totalTokens = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalPaidTokens = 0;
+  let totalFreeTokens = 0;
   let totalRuns = 0;
   let totalErrors = 0;
   let totalUsd = 0;
   let totalInputCostUsd = 0;
   let totalOutputCostUsd = 0;
-  let pricedTokens = 0;
+  let pricedBillableTokens = 0;
+  let billableTokens = 0;
   let measuredIoTokens = 0;
 
   for (const run of runs) {
@@ -259,6 +308,7 @@ export function aggregateAiUsage(
     let runOutCost = 0;
     let runIn = 0;
     let runOut = 0;
+    let runBillable = 0;
     let runPriced = true;
 
     for (const a of attributeRun(run)) {
@@ -269,6 +319,8 @@ export function aggregateAiUsage(
         tokens: 0,
         inputTokens: 0,
         outputTokens: 0,
+        paidTokens: 0,
+        freeTokens: 0,
         calls: 0,
         inRate: rates.inRate,
         outRate: rates.outRate,
@@ -281,12 +333,21 @@ export function aggregateAiUsage(
       bucket.inputTokens += a.inputTokens;
       bucket.outputTokens += a.outputTokens;
       bucket.calls += a.calls;
+      if (a.billable) bucket.paidTokens += a.tokens;
+      else bucket.freeTokens += a.tokens;
       if (a.splitEstimated) bucket.splitEstimated = true;
       if (!a.splitEstimated) measuredIoTokens += a.tokens;
 
       runIn += a.inputTokens;
       runOut += a.outputTokens;
 
+      // Free-tier keys: count tokens, ₹0 cost.
+      if (!a.billable) {
+        modelMap.set(key, bucket);
+        continue;
+      }
+
+      runBillable += a.tokens;
       const inPiece =
         rates.inRate != null && Number.isFinite(rates.inRate)
           ? (a.inputTokens / 1_000_000) * rates.inRate
@@ -321,6 +382,9 @@ export function aggregateAiUsage(
 
     totalInputTokens += runIn;
     totalOutputTokens += runOut;
+    totalPaidTokens += runBillable;
+    totalFreeTokens += Math.max(0, runIn + runOut - runBillable);
+    billableTokens += runBillable;
     f.inputTokens += runIn;
     f.outputTokens += runOut;
     d.inputTokens += runIn;
@@ -330,7 +394,7 @@ export function aggregateAiUsage(
       totalUsd += runUsd;
       totalInputCostUsd += runInCost;
       totalOutputCostUsd += runOutCost;
-      pricedTokens += toks;
+      pricedBillableTokens += runBillable;
       d.usd += runUsd;
       f.usd = (typeof f.usd === "number" ? f.usd : 0) + runUsd;
     } else if (typeof f.usd === "number") {
@@ -352,6 +416,8 @@ export function aggregateAiUsage(
         tokens: Math.round(v.tokens),
         inputTokens: Math.round(v.inputTokens),
         outputTokens: Math.round(v.outputTokens),
+        paidTokens: Math.round(v.paidTokens),
+        freeTokens: Math.round(v.freeTokens),
         calls: v.calls,
         inputUsdPerMtok: v.inRate,
         outputUsdPerMtok: v.outRate,
@@ -400,18 +466,29 @@ export function aggregateAiUsage(
     cursor.setDate(cursor.getDate() + 1);
   }
 
-  const totalsMoney = moneyLabel(pricedTokens > 0 ? totalUsd : totalTokens > 0 ? null : 0, usdInr);
-  const inputMoney = moneyLabel(pricedTokens > 0 ? totalInputCostUsd : totalTokens > 0 ? null : 0, usdInr);
-  const outputMoney = moneyLabel(pricedTokens > 0 ? totalOutputCostUsd : totalTokens > 0 ? null : 0, usdInr);
+  const totalsMoney = moneyLabel(
+    pricedBillableTokens > 0 || billableTokens === 0 ? totalUsd : totalTokens > 0 ? null : 0,
+    usdInr,
+  );
+  const inputMoney = moneyLabel(
+    pricedBillableTokens > 0 || billableTokens === 0 ? totalInputCostUsd : totalTokens > 0 ? null : 0,
+    usdInr,
+  );
+  const outputMoney = moneyLabel(
+    pricedBillableTokens > 0 || billableTokens === 0 ? totalOutputCostUsd : totalTokens > 0 ? null : 0,
+    usdInr,
+  );
 
   return {
     totals: {
       tokens: totalTokens,
       inputTokens: Math.round(totalInputTokens),
       outputTokens: Math.round(totalOutputTokens),
+      paidTokens: Math.round(totalPaidTokens),
+      freeTokens: Math.round(totalFreeTokens),
       runs: totalRuns,
       errors: totalErrors,
-      pricedTokenShare: totalTokens > 0 ? pricedTokens / totalTokens : 1,
+      pricedTokenShare: billableTokens > 0 ? pricedBillableTokens / billableTokens : 1,
       measuredIoShare: totalTokens > 0 ? measuredIoTokens / totalTokens : 1,
       inputCostUsd: inputMoney.estimateUsd,
       outputCostUsd: outputMoney.estimateUsd,
@@ -426,9 +503,11 @@ export function aggregateAiUsage(
       const attrs = attributeRun(r);
       const inputTokens = Math.round(attrs.reduce((n, a) => n + a.inputTokens, 0));
       const outputTokens = Math.round(attrs.reduce((n, a) => n + a.outputTokens, 0));
+      const freeTokens = Math.round(attrs.filter((a) => !a.billable).reduce((n, a) => n + a.tokens, 0));
       const splitEstimated = attrs.some((a) => a.splitEstimated);
       let costUsd: number | null = 0;
       for (const a of attrs) {
+        if (!a.billable) continue;
         const rates = catalogRate(catalog, a.modelId);
         const piece = estimateUsdForTokens(
           a.tokens,
@@ -452,6 +531,7 @@ export function aggregateAiUsage(
         tokens: r.tokens ?? 0,
         inputTokens,
         outputTokens,
+        freeTokens,
         splitEstimated,
         estimateInrLabel: money.estimateInrLabel,
         startedAt: r.startedAt,

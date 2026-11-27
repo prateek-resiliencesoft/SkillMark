@@ -19,6 +19,14 @@ export interface ReasoningStep {
   promptTokens?: number;
   /** Completion / output tokens when the provider reported usage. */
   completionTokens?: number;
+  /** Input tokens from paid keys (₹ billable). */
+  paidPromptTokens?: number;
+  /** Output tokens from paid keys (₹ billable). */
+  paidCompletionTokens?: number;
+  /** Input tokens from free-tier keys (shown, ₹0). */
+  freePromptTokens?: number;
+  /** Output tokens from free-tier keys (shown, ₹0). */
+  freeCompletionTokens?: number;
   models?: string[];
 }
 
