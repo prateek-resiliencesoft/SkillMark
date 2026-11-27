@@ -10,6 +10,7 @@ import { AI_CALL_TIMEOUT_MS, budgetSignal, isAbortError } from "@/lib/ai/fail-fa
 import { classifyAiFailure } from "@/lib/ai/key-chain";
 import { resolveFallbackProviders, resolveTaskModels } from "@/lib/ai/registry";
 import type { LLMProvider } from "@/lib/ai/types";
+import { isPlausiblePersonName, prettifyName, resolveCandidateName } from "@/lib/documents/candidate-name";
 
 /** Cap one profile LLM call so Gemini 503/slow paths fall back before parse-cv's 75s budget dies. */
 const PROFILE_CALL_TIMEOUT_MS = Math.min(AI_CALL_TIMEOUT_MS, 22_000);
@@ -135,6 +136,8 @@ export async function extractCandidateProfile(
     signal?: AbortSignal;
     /** Pre-resolved provider (tests); default resolves from Settings → AI. */
     models?: { provider: LLMProvider; generatorModel: string };
+    /** Original upload filename, used when the CV text has no usable name. */
+    fileName?: string;
   } = {},
 ): Promise<{ profile: CandidateProfile; reviewFlags: ReviewFlag[] }> {
   const source = markdown.slice(0, MAX_SOURCE_CHARS);
@@ -161,7 +164,7 @@ export async function extractCandidateProfile(
   for (const attempt of attempts) {
     for (const variant of variants) {
       if (options.signal?.aborted) {
-        return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
+        return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out", { fileName: options.fileName });
       }
       try {
         const res = await generateProfileJson(attempt.provider, attempt.model, source, {
@@ -171,11 +174,11 @@ export async function extractCandidateProfile(
         const raw = extractJson<Record<string, unknown>>(
           res.content.replace(/<think>[\s\S]*?<\/think>/g, ""),
         );
-        return validateProfile(raw, source, options.defaultCountryCode);
+        return validateProfile(raw, source, options.defaultCountryCode, { fileName: options.fileName });
       } catch (err) {
         lastErr = err;
         if (options.signal?.aborted || isAbortError(err)) {
-          return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out");
+          return heuristicCandidateProfile(source, options.defaultCountryCode, "AI timed out", { fileName: options.fileName });
         }
         // Quota/auth: still try heuristic so bulk upload is not a hard 504.
         if (classifyAiFailure(err)) {
@@ -183,6 +186,7 @@ export async function extractCandidateProfile(
             source,
             options.defaultCountryCode,
             "AI quota/auth failed — used text heuristics",
+            { fileName: options.fileName },
           );
         }
         const msg = err instanceof Error ? err.message : String(err);
@@ -191,10 +195,11 @@ export async function extractCandidateProfile(
             source,
             options.defaultCountryCode,
             "AI key rejected — used text heuristics",
+            { fileName: options.fileName },
           );
         }
         if (!isRetryableProfileError(msg, err)) {
-          return heuristicCandidateProfile(source, options.defaultCountryCode, msg.slice(0, 120));
+          return heuristicCandidateProfile(source, options.defaultCountryCode, msg.slice(0, 120), { fileName: options.fileName });
         }
         // else try next variant / model
       }
@@ -208,6 +213,7 @@ export async function extractCandidateProfile(
     isDeadModelError(msg)
       ? `AI model unavailable (${generatorModel}) — used text heuristics`
       : "AI profile failed — used text heuristics",
+    { fileName: options.fileName },
   );
 }
 
@@ -218,26 +224,13 @@ export function heuristicCandidateProfile(
   source: string,
   defaultCountryCode?: string,
   reason = "Used text heuristics",
+  opts?: { fileName?: string },
 ): { profile: CandidateProfile; reviewFlags: ReviewFlag[] } {
   const emailMatch = source.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
   const phoneMatch = source.match(/(?:\+?\d[\d\s()./-]{7,}\d)/);
-  const lines = source
-    .split(/\n/)
-    .map((l) => l.replace(/^#+\s*/, "").replace(/[*_`]+/g, "").trim())
-    .filter(Boolean);
-  let name: string | null = null;
-  for (const line of lines.slice(0, 10)) {
-    if (EMAIL_RE.test(line)) continue;
-    if (/https?:\/\//i.test(line)) continue;
-    if (/\d{6,}/.test(line)) continue;
-    if (line.length < 3 || line.length > 60) continue;
-    if (!/[A-Za-z]/.test(line)) continue;
-    name = line.split(/[|,•·]/)[0]?.trim() || line;
-    break;
-  }
   const { profile, reviewFlags } = validateProfile(
     {
-      name,
+      name: null,
       email: emailMatch?.[0] ?? null,
       phone: phoneMatch?.[0] ?? null,
       location: null,
@@ -251,6 +244,7 @@ export function heuristicCandidateProfile(
     },
     source,
     defaultCountryCode,
+    { fileName: opts?.fileName },
   );
   reviewFlags.unshift({ field: "document", reason });
   return { profile, reviewFlags };
@@ -315,16 +309,37 @@ export function validateProfile(
   raw: Record<string, unknown>,
   source: string,
   defaultCountryCode?: string,
+  opts?: { fileName?: string },
 ): { profile: CandidateProfile; reviewFlags: ReviewFlag[] } {
   const flags: ReviewFlag[] = [];
   const srcSquashed = squash(source);
   const srcDigits = digits(source);
 
-  // Name: must appear in the document.
+  // Name: reject page markers / titles even if they appear in the extracted text,
+  // then fall back to CV text → email local part → filename.
   let name = str(raw.name, 120);
-  if (name && !srcSquashed.includes(squash(name))) {
+  if (name && !isPlausiblePersonName(name) && !isPlausiblePersonName(prettifyName(name))) {
+    flags.push({ field: "name", reason: `"${name}" is not a usable candidate name` });
+    name = null;
+  } else if (name && !srcSquashed.includes(squash(name))) {
     flags.push({ field: "name", reason: `"${name}" not found verbatim in the CV` });
     name = null;
+  }
+  const resolved = resolveCandidateName({
+    candidate: name,
+    source,
+    email: str(raw.email, 200),
+    fileName: opts?.fileName,
+  });
+  name = resolved.name;
+  if (name && resolved.source && resolved.source !== "provided") {
+    const via =
+      resolved.source === "text"
+        ? "the CV text"
+        : resolved.source === "email"
+          ? "the email address"
+          : "the file name";
+    flags.push({ field: "name", reason: `Name taken from ${via} — please confirm` });
   }
   if (!name) flags.push({ field: "name", reason: "Name missing — enter it manually" });
 

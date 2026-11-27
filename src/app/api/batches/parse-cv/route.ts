@@ -83,6 +83,7 @@ async function parseFile(
     defaultCountryCode,
     organizationId,
     signal,
+    fileName: file.name,
   });
   for (const w of doc.warnings) reviewFlags.push({ field: "document", reason: w });
 

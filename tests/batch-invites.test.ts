@@ -32,14 +32,17 @@ describe("validateProfile", () => {
     assert.equal(reviewFlags.filter((f) => ["name", "email", "phone"].includes(f.field)).length, 0);
   });
 
-  it("drops and flags hallucinated contact details instead of guessing", () => {
+  it("drops hallucinated email/phone and recovers the name from the CV text", () => {
     const { profile, reviewFlags } = validateProfile(
       { name: "Rahul Verma", email: "rahul@example.com", phone: "+1 555 123 4567" },
       CV,
     );
-    assert.equal(profile.name, null);
+    // Hallucinated name is discarded; the name printed on the CV is used instead.
+    assert.equal(profile.name, "Priya Sharma");
+    assert.notEqual(profile.name, "Rahul Verma");
     assert.equal(profile.email, null);
     assert.equal(profile.phone, null);
+    assert.ok(reviewFlags.some((f) => f.field === "name" && /verbatim|CV text/i.test(f.reason)));
     assert.ok(reviewFlags.some((f) => f.field === "email" && /not found/.test(f.reason)));
     assert.ok(reviewFlags.some((f) => f.field === "phone" && /not found/.test(f.reason)));
   });

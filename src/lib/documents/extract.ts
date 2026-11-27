@@ -11,6 +11,7 @@ import "server-only";
 import OpenAI from "openai";
 import sharp from "sharp";
 import { loadOrgAiCredentials } from "@/lib/ai/credentials";
+import { stripPageDecorations } from "@/lib/documents/candidate-name";
 import { assertZipWithinLimits, htmlToMarkdown, normalise } from "@/lib/documents/docx-safety";
 import { budgetSignal, isAbortError, VISION_CALL_TIMEOUT_MS } from "@/lib/ai/fail-fast";
 import { classifyAiFailure, isAuthError, isQuotaError, keyChainExhaustedError } from "@/lib/ai/key-chain";
@@ -174,7 +175,7 @@ async function extractPdf(
     numPages = parsed.numpages;
     pages = parsed.text
       .split("\f")
-      .map((p) => p.trim())
+      .map((p) => stripPageDecorations(p).trim())
       .filter((_, i) => i < Math.min(numPages, MAX_PDF_PAGES));
     if (numPages > MAX_PDF_PAGES) warnings.push(`Only the first ${MAX_PDF_PAGES} of ${numPages} pages were read.`);
   } catch (err) {
