@@ -110,6 +110,7 @@ OUTPUT VALID JSON ONLY (no markdown, no explanation):
   "title": "string",
   "description": "string (1-2 sentence summary of the interview purpose)",
   "objective": "string",
+  "jobRole": "string (short hiring role title only, e.g. Flutter Developer, HR Business Partner, MERN Stack Developer — not a sentence)",
   "assessmentCriteria": [
     { "name": "string (criterion name)", "description": "string (what this criterion measures)" }
   ],
@@ -156,6 +157,7 @@ export function buildImprovePrompt(
     title: string;
     description?: string | null;
     objective?: string | null;
+    jobRole?: string | null;
     assessmentCriteria?: { name: string; description: string }[];
     questions: { text: string; type: string }[];
   },
@@ -205,6 +207,7 @@ OUTPUT VALID JSON ONLY (no markdown, no explanation):
   "title": "string",
   "description": "string (1-2 sentence summary of the interview purpose)",
   "objective": "string",
+  "jobRole": "string (short hiring role title only, e.g. Flutter Developer, HR Business Partner, MERN Stack Developer — not a sentence)",
   "assessmentCriteria": [
     { "name": "string (criterion name)", "description": "string (what this criterion measures)" }
   ],
@@ -242,6 +245,7 @@ IMPORTANT: For SINGLE_CHOICE and MULTIPLE_CHOICE questions, ALWAYS include "opti
 Title: ${currentInterview.title}
 Description: ${currentInterview.description ?? "Not set"}
 Objective: ${currentInterview.objective ?? "Not set"}
+Job role: ${currentInterview.jobRole ?? "Not set"}
 Assessment Criteria:
 ${criteriaText}
 Questions:

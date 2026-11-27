@@ -4,6 +4,7 @@ import { buildGeneratorPrompt } from "@/lib/ai/prompts/generator";
 import { resolveTaskModels } from "@/lib/ai/registry";
 import { classifyAiFailure } from "@/lib/ai/key-chain";
 import type { GeneratedInterview } from "@/lib/ai/types";
+import { resolveJobRole } from "@/lib/job-role";
 import { LANGUAGES } from "@/lib/constants";
 import { experienceBucket, profileToResumeText, type CandidateProfile } from "@/lib/documents/cv-profile";
 import { nanoid } from "@/lib/id";
@@ -322,6 +323,11 @@ export const batchRouter = router({
           title: `${generated.title} · ${input.contact.name}`.slice(0, 200),
           description: generated.description,
           objective: generated.objective,
+          jobRole: resolveJobRole({
+            jobRole: generated.jobRole,
+            title: generated.title,
+            objective: generated.objective,
+          }),
           assessmentCriteria: generated.assessmentCriteria ?? null,
           chatEnabled: settings.chatEnabled,
           voiceEnabled: settings.voiceEnabled,

@@ -50,6 +50,8 @@ export interface GeneratedInterview {
   title: string;
   description: string;
   objective: string;
+  /** Short hiring role, e.g. "Flutter Developer", "HR Business Partner", "MERN Stack Developer". */
+  jobRole?: string;
   assessmentCriteria: AssessmentCriterion[];
   estimatedDurationMinutes: number;
   questions: GeneratedQuestion[];

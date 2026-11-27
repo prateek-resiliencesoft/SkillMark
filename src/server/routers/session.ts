@@ -1290,7 +1290,7 @@ export const sessionRouter = router({
       let query = ctx.supabase
         .from("sessions")
         .select(
-          "*, interview:interviews!inner(id, title, chatEnabled, voiceEnabled, videoEnabled), messages(id)",
+          "*, interview:interviews!inner(id, title, objective, jobRole, chatEnabled, voiceEnabled, videoEnabled), messages(id)",
         )
         .in("interviewId", interviewIds)
         .order("createdAt", { ascending: false })
@@ -1356,7 +1356,9 @@ export const sessionRouter = router({
 
       let query = ctx.supabase
         .from("sessions")
-        .select(SESSION_LIST_WITH_MESSAGE_IDS)
+        .select(
+          `${SESSION_LIST_WITH_MESSAGE_IDS}, interview:interviews!inner(id, title, objective, jobRole)`,
+        )
         .eq("interviewId", input.interviewId)
         .is("dataArchivedAt", null)
         .order("createdAt", { ascending: false })

@@ -232,6 +232,7 @@ export type Database = {
           title: string;
           description: string | null;
           objective: string | null;
+          jobRole: string | null;
           assessmentCriteria: Json | null;
           mode: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch: boolean;
@@ -262,6 +263,7 @@ export type Database = {
           title: string;
           description?: string | null;
           objective?: string | null;
+          jobRole?: string | null;
           assessmentCriteria?: Json | null;
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;
@@ -292,6 +294,7 @@ export type Database = {
           title?: string;
           description?: string | null;
           objective?: string | null;
+          jobRole?: string | null;
           assessmentCriteria?: Json | null;
           mode?: Database["public"]["Enums"]["InterviewMode"];
           allowModeSwitch?: boolean;

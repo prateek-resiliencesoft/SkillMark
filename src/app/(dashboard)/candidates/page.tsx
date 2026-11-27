@@ -46,6 +46,7 @@ import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { formatSessionStatusLabel } from "@/lib/preflight";
+import { resolveJobRole } from "@/lib/job-role";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { decisionStatusLabel } from "@/lib/candidate-decision";
 import { trpc } from "@/lib/trpc/client";
@@ -113,6 +114,7 @@ type CandidateRow = {
   createdAt: string;
   interviewTitle: string;
   interviewId: string;
+  jobRole: string;
 };
 
 type WalkInRow = {
@@ -123,12 +125,14 @@ type WalkInRow = {
   session: any;
   interviewTitle: string;
   interviewId: string;
+  jobRole: string;
 };
 
 type UnifiedRow = CandidateRow | WalkInRow;
 
 type SortKey =
   | "interview"
+  | "role"
   | "name"
   | "email"
   | "phone"
@@ -176,6 +180,7 @@ const COLUMNS: ColumnDef[] = [
     defaultVisible: true,
     alwaysVisible: true,
   },
+  { key: "role", label: "Role", sortKey: "role", defaultVisible: true },
   { key: "name", label: "Name", sortKey: "name", defaultVisible: true },
   { key: "email", label: "Email", sortKey: "email", defaultVisible: true },
   { key: "phone", label: "Phone", sortKey: "phone", defaultVisible: false },
@@ -395,6 +400,8 @@ function getSortValue(
   switch (key) {
     case "interview":
       return row.interviewTitle.toLowerCase();
+    case "role":
+      return row.jobRole.toLowerCase();
     case "name":
       return (row.name ?? "").toLowerCase();
     case "email":
@@ -726,6 +733,12 @@ export default function CandidatesPage() {
       createdAt: c.createdAt,
       interviewTitle: c.interview?.title ?? "-",
       interviewId: c.interview?.id ?? c.interviewId,
+      jobRole:
+        resolveJobRole({
+          jobRole: c.interview?.jobRole,
+          title: c.interview?.title,
+          objective: c.interview?.objective,
+        }) ?? "—",
     }),
   );
 
@@ -738,6 +751,12 @@ export default function CandidatesPage() {
       session: s,
       interviewTitle: s.interview?.title ?? "-",
       interviewId: s.interview?.id ?? s.interviewId,
+      jobRole:
+        resolveJobRole({
+          jobRole: s.interview?.jobRole,
+          title: s.interview?.title,
+          objective: s.interview?.objective,
+        }) ?? "—",
     }),
   );
 
@@ -758,7 +777,8 @@ export default function CandidatesPage() {
         (row) =>
           (row.email?.toLowerCase().includes(q) ?? false) ||
           (row.name?.toLowerCase().includes(q) ?? false) ||
-          row.interviewTitle.toLowerCase().includes(q),
+          row.interviewTitle.toLowerCase().includes(q) ||
+          row.jobRole.toLowerCase().includes(q),
       );
     }
 
@@ -968,6 +988,9 @@ export default function CandidatesPage() {
           case "interview":
             record[col.label] = row.interviewTitle;
             break;
+          case "role":
+            record[col.label] = row.jobRole;
+            break;
           case "name":
             record[col.label] = row.name || "";
             break;
@@ -1076,6 +1099,12 @@ export default function CandidatesPage() {
     const hasSession = !!session && status !== "Not Started";
 
     switch (key) {
+      case "role":
+        return (
+          <span className="max-w-[160px] truncate font-medium" title={row.jobRole}>
+            {row.jobRole}
+          </span>
+        );
       case "name":
         return (
           <span className="font-medium">

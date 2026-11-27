@@ -14,7 +14,7 @@ export const CANDIDATE_LIST_WITH_SESSION =
 
 /** Cross-project candidate list. */
 export const CANDIDATE_LIST_ALL_WITH_SESSION =
-  "*, session:sessions!candidates_sessionId_fkey(id, interviewId, candidateId, participantName, participantEmail, participantPhone, status, modeUsed, insights, themes, startedAt, completedAt, lastActivityAt, lastHeartbeatAt, interviewBeganAt, totalDurationSeconds, endReason, reportStatus, reportAttempts, reportStartedAt, dataArchivedAt, supersededAt, mediaReviewStatus, mediaClearedAt, mediaExpiresAt, createdAt, updatedAt), interview:interviews!inner(id, title)" as const;
+  "*, session:sessions!candidates_sessionId_fkey(id, interviewId, candidateId, participantName, participantEmail, participantPhone, status, modeUsed, insights, themes, startedAt, completedAt, lastActivityAt, lastHeartbeatAt, interviewBeganAt, totalDurationSeconds, endReason, reportStatus, reportAttempts, reportStartedAt, dataArchivedAt, supersededAt, mediaReviewStatus, mediaClearedAt, mediaExpiresAt, createdAt, updatedAt), interview:interviews!inner(id, title, objective, jobRole)" as const;
 
 /** Walk-in sessions for interview list. */
 export const WALKIN_SESSION_LIST =
@@ -22,7 +22,7 @@ export const WALKIN_SESSION_LIST =
 
 /** Walk-ins on the all-candidates page. */
 export const WALKIN_SESSION_LIST_ALL =
-  "id, interviewId, candidateId, participantName, participantEmail, participantPhone, status, modeUsed, insights, themes, startedAt, completedAt, lastActivityAt, lastHeartbeatAt, interviewBeganAt, totalDurationSeconds, endReason, reportStatus, reportAttempts, reportStartedAt, dataArchivedAt, supersededAt, mediaReviewStatus, mediaClearedAt, mediaExpiresAt, createdAt, updatedAt, messages(id), interview:interviews!inner(id, title)" as const;
+  "id, interviewId, candidateId, participantName, participantEmail, participantPhone, status, modeUsed, insights, themes, startedAt, completedAt, lastActivityAt, lastHeartbeatAt, interviewBeganAt, totalDurationSeconds, endReason, reportStatus, reportAttempts, reportStartedAt, dataArchivedAt, supersededAt, mediaReviewStatus, mediaClearedAt, mediaExpiresAt, createdAt, updatedAt, messages(id), interview:interviews!inner(id, title, objective, jobRole)" as const;
 
 /** session.listByInterview */
 export const SESSION_LIST_WITH_MESSAGE_IDS =
