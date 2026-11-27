@@ -1,5 +1,6 @@
 name: Deploy
 
+# Production CD only. CI already ran on dev — do not re-run checks here.
 on:
   push:
     branches: [main]

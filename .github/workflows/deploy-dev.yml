@@ -1,5 +1,6 @@
 name: Deploy dev
 
+# Dev CD: runs with CI on every push/merge to dev. Feature branches do not trigger this.
 on:
   push:
     branches: [dev]

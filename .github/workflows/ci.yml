@@ -1,9 +1,11 @@
 name: CI
 
+# Only when code lands on dev (direct push or merge into dev).
+# main skips CI — already validated on dev. Feature branches do nothing.
 on:
-  pull_request:
   push:
-    branches: [main, dev]
+    branches: [dev]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

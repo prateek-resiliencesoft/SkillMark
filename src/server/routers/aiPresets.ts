@@ -1,8 +1,4 @@
-import {
-  AI_TASK_KINDS,
-  sanitizeTaskModels,
-  type AiTaskModelsStored,
-} from "@/lib/ai/credentials";
+import { sanitizeTaskModels, type AiTaskModelsStored } from "@/lib/ai/credentials";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -14,9 +10,10 @@ const hopSchema = z.object({
 });
 
 const payloadSchema = z.object({
-  taskModels: z.record(z.enum(AI_TASK_KINDS), z.array(hopSchema).max(12)).optional(),
+  // String keys — sanitizeTaskModels keeps only known AiTaskKind entries.
+  taskModels: z.record(z.string(), z.array(hopSchema).max(12)).optional(),
   routing: z
-    .record(z.enum(AI_TASK_KINDS), z.array(z.enum(["openai", "gemini", "nvidia", "anthropic", "groq", "custom"])))
+    .record(z.string(), z.array(z.enum(["openai", "gemini", "nvidia", "anthropic", "groq", "custom"])))
     .optional(),
 });
 

@@ -106,7 +106,10 @@ export default function AdminAiPresetsPage() {
               name: name.trim(),
               blurb: blurb.trim(),
               published,
-              payload: payload as { taskModels?: Record<string, { provider: string; model: string }[]> },
+              payload: payload as {
+                taskModels?: Record<string, { provider: "openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom"; model: string }[]>;
+                routing?: Record<string, ("openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom")[]>;
+              },
             });
           }}
         >
