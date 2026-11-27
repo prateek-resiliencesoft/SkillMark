@@ -5,6 +5,7 @@ import {
   defaultModelForProvider,
   resolveCredentials,
   routingForTask,
+  storedTaskModel,
   taskModelOverride,
 } from "./credentials";
 import { createLogger } from "@/lib/logger";
@@ -157,7 +158,7 @@ export async function resolveProviderChain(
   task: AiTaskKind = "standard",
 ): Promise<ChainEntry[]> {
   const { merged, envOnly, routing, orgPlain } = await loadCredsPair(organizationId);
-  const order = routingForTask(routing, task);
+  const order = routingForTask(routing, task, orgPlain.taskModels);
   const chain: ChainEntry[] = [];
   const seenKeys = new Set<string>();
 
@@ -172,11 +173,12 @@ export async function resolveProviderChain(
       if (!k || seenKeys.has(`${id}:${k}`)) return;
       const provider = providerInstance(id, k, baseUrl, untrustedBaseUrl);
       if (!provider) return;
+      const studioModel = storedTaskModel(orgPlain.taskModels, task, id);
       chain.push({
         provider,
-        // Custom endpoint: honour the model the org configured for text work; then a
-        // per-task env override (AI_MODEL_<TASK>_<PROVIDER>); then the provider default.
+        // Studio hop → custom text model → per-task env override → provider default.
         model:
+          studioModel ||
           (id === "custom" && source === "org" && orgPlain.custom?.textModel) ||
           taskModel(task, id) ||
           modelFor(provider),

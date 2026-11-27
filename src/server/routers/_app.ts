@@ -18,6 +18,7 @@ import { batchRouter } from "./batch";
 import { integrationRouter } from "./integration";
 import { interviewFormRouter } from "./interviewForm";
 import { aiSettingsRouter } from "./aiSettings";
+import { aiPresetsRouter } from "./aiPresets";
 import { platformRouter } from "./platform";
 import { platformOpsRouter } from "./platform-ops";
 import { errorLogsRouter } from "./error-logs";
@@ -48,6 +49,7 @@ export const appRouter = router({
   integration: integrationRouter,
   interviewForm: interviewFormRouter,
   aiSettings: aiSettingsRouter,
+  aiPresets: aiPresetsRouter,
   platform: platformRouter,
   platformOps: platformOpsRouter,
   errorLogs: errorLogsRouter,
