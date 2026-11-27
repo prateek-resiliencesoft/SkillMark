@@ -2,6 +2,7 @@ import { createLogger } from "@/lib/logger";
 import { REPORT_SWEEP_INTERVAL_MS } from "@/lib/session-report-policy";
 
 const log = createLogger("report-sweeper");
+const ROUND_TWO_PRESENCE_INTERVAL_MS = 10_000;
 const g = globalThis as unknown as { __reportSweeperStarted?: boolean };
 
 /** Starts once per process: picks up ended sessions with no report. */
@@ -42,6 +43,23 @@ export function startReportSweeper(): void {
       running = false;
     }
   };
+  // Round 2 presence: end a round whose room has been empty for the grace period (default 30 s),
+  // so it needs a much shorter tick than the report sweep.
+  let checkingPresence = false;
+  const presence = async () => {
+    if (checkingPresence) return;
+    checkingPresence = true;
+    try {
+      const { sweepRoundTwoPresence } = await import("@/server/round-two/autoclose");
+      await sweepRoundTwoPresence();
+    } catch (err) {
+      log.error("Round 2 presence check failed:", err);
+    } finally {
+      checkingPresence = false;
+    }
+  };
+  setTimeout(presence, 20_000).unref?.();
+  setInterval(presence, ROUND_TWO_PRESENCE_INTERVAL_MS).unref?.();
   // First run after boot settles, then on an interval.
   setTimeout(run, 60_000).unref?.();
   setInterval(run, REPORT_SWEEP_INTERVAL_MS).unref?.();

@@ -4,6 +4,7 @@ import { createLogger } from "@/lib/logger";
 import { admitParticipant, closeRoom, ensureRoom, liveKitConfig, mintRoomToken, removeParticipant } from "@/lib/livekit";
 import { canControlBoards, checkSnapshot, normalizeTask } from "@/lib/round-two/boards";
 import { deriveMaxRound } from "@/lib/round-two/round-filter";
+import { rescheduleMode } from "@/lib/round-two/reschedule";
 import {
   QUESTION_CATEGORIES,
   RECOMMENDATIONS,
@@ -136,6 +137,7 @@ async function inviteParticipants(
   round: RoundRow,
   invitedBy: string,
   people: { email: string; role: "interviewer" | "observer" }[],
+  rescheduled?: { note?: string | null },
 ): Promise<{ email: string; link: string; delivery: MailOutcome }[]> {
   const out: { email: string; link: string; delivery: MailOutcome }[] = [];
   const { data: candidate } = await db.from("candidates").select("name").eq("id", round.candidateId).maybeSingle();
@@ -160,10 +162,12 @@ async function inviteParticipants(
     const link = interviewerLink(token);
     const delivery = await sendRoundTwoEmail(db, round.organizationId, {
       to: email,
-      subject: `Interview panel invite: ${candidate?.name ?? round.title}`,
+      subject: `${rescheduled ? "Rescheduled interview panel invite" : "Interview panel invite"}: ${candidate?.name ?? round.title}`,
       lines: [
         `${invitedBy} invited you to join a round 2 interview panel for ${candidate?.name ?? "a candidate"} (${round.title}).`,
+        ...(rescheduled ? ["This interview was rescheduled; use this new link."] : []),
         scheduleLine(round.scheduledAt, round.durationMin),
+        ...(rescheduled?.note ? [`Note: ${rescheduled.note}`] : []),
         "Sign in with Google or your ResilienceSoft Interview account using this email address to join.",
       ],
       ctaUrl: link,
@@ -172,6 +176,88 @@ async function inviteParticipants(
     out.push({ email, link, delivery });
   }
   return out;
+}
+
+type ScheduleInput = {
+  title: string;
+  scheduledAt: string | null;
+  durationMin: number;
+  interviewers: { email: string; role: "interviewer" | "observer" }[];
+  emailCandidate: boolean;
+  /** Set when this schedules a reschedule: changes the wording of the emails. */
+  rescheduled?: { note?: string | null };
+};
+type RoundCtx = { supabase: import("../context").Context["supabase"]; user: { id: string; email: string } };
+
+/** Sets time, new candidate/partner tokens and invites for an open round (shared by schedule and reschedule). */
+async function scheduleRound(ctx: RoundCtx, r: RoundRow, input: ScheduleInput) {
+    const token = newRoundToken();
+    const partnerToken = (r as RoundShareFields).partnerInviteToken ?? newRoundToken();
+    const schedulePatch = {
+      title: input.title,
+      scheduledAt: input.scheduledAt,
+      durationMin: input.durationMin,
+      status: r.status === "draft" ? "scheduled" : r.status,
+      candidateTokenHash: hashRoundToken(token),
+      candidateInviteToken: token,
+      partnerInviteToken: partnerToken,
+      partnerInviteTokenHash: hashRoundToken(partnerToken),
+      updatedAt: new Date().toISOString(),
+    };
+    let { data: updated, error } = await ctx.supabase
+      .from("round_two_interviews")
+      .update(schedulePatch)
+      .eq("id", r.id)
+      .select("*")
+      .single();
+    if (error && /candidateInviteToken|partnerInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
+      ({ data: updated, error } = await ctx.supabase
+        .from("round_two_interviews")
+        .update({
+          title: schedulePatch.title,
+          scheduledAt: schedulePatch.scheduledAt,
+          durationMin: schedulePatch.durationMin,
+          status: schedulePatch.status,
+          candidateTokenHash: schedulePatch.candidateTokenHash,
+          updatedAt: schedulePatch.updatedAt,
+        })
+        .eq("id", r.id)
+        .select("*")
+        .single());
+    }
+    if (error || !updated) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error?.message });
+    const round = updated as RoundRow;
+    const hostName = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
+    const invites = await inviteParticipants(
+      ctx.supabase,
+      round,
+      hostName,
+      input.interviewers.filter((p) => p.email.toLowerCase() !== ctx.user.email.toLowerCase()),
+      input.rescheduled,
+    );
+
+    const link = candidateLink(token);
+    let candidateDelivery: MailOutcome = { status: "skipped" };
+    const { data: cand } = await ctx.supabase.from("candidates").select("name, email").eq("id", round.candidateId).maybeSingle();
+    if (input.emailCandidate && cand?.email) {
+      candidateDelivery = await sendRoundTwoEmail(ctx.supabase, round.organizationId, {
+        to: cand.email as string,
+        toName: cand.name as string,
+        subject: input.rescheduled ? `Your interview has been rescheduled: ${round.title}` : `Your next interview: ${round.title}`,
+        lines: [
+          `Hi ${cand.name},`,
+          input.rescheduled
+            ? "Your live video interview has been rescheduled. Please use the new link below; any earlier link no longer works."
+            : "Congratulations on clearing the first round. You're invited to a live video interview with our team.",
+          scheduleLine(round.scheduledAt, round.durationMin),
+          ...(input.rescheduled?.note ? [`Note from the team: ${input.rescheduled.note}`] : []),
+          "Use a laptop with a camera and microphone, in a quiet place. Open the link a few minutes early to check your devices.",
+        ],
+        ctaUrl: link,
+        ctaLabel: "Join the interview",
+      });
+    }
+    return { candidateLink: link, candidateDelivery, invites };
 }
 
 export const roundTwoRouter = router({
@@ -679,69 +765,7 @@ export const roundTwoRouter = router({
       assertCanManage(access);
       const r = access.round;
       if (!isOpenRound(r.status)) throw new TRPCError({ code: "BAD_REQUEST", message: "This interview is already closed" });
-      const token = newRoundToken();
-      const partnerToken = (r as RoundShareFields).partnerInviteToken ?? newRoundToken();
-      const schedulePatch = {
-        title: input.title,
-        scheduledAt: input.scheduledAt,
-        durationMin: input.durationMin,
-        status: r.status === "draft" ? "scheduled" : r.status,
-        candidateTokenHash: hashRoundToken(token),
-        candidateInviteToken: token,
-        partnerInviteToken: partnerToken,
-        partnerInviteTokenHash: hashRoundToken(partnerToken),
-        updatedAt: new Date().toISOString(),
-      };
-      let { data: updated, error } = await ctx.supabase
-        .from("round_two_interviews")
-        .update(schedulePatch)
-        .eq("id", r.id)
-        .select("*")
-        .single();
-      if (error && /candidateInviteToken|partnerInviteToken|42703|PGRST204/.test(`${error.code} ${error.message}`)) {
-        ({ data: updated, error } = await ctx.supabase
-          .from("round_two_interviews")
-          .update({
-            title: schedulePatch.title,
-            scheduledAt: schedulePatch.scheduledAt,
-            durationMin: schedulePatch.durationMin,
-            status: schedulePatch.status,
-            candidateTokenHash: schedulePatch.candidateTokenHash,
-            updatedAt: schedulePatch.updatedAt,
-          })
-          .eq("id", r.id)
-          .select("*")
-          .single());
-      }
-      if (error || !updated) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error?.message });
-      const round = updated as RoundRow;
-      const hostName = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
-      const invites = await inviteParticipants(
-        ctx.supabase,
-        round,
-        hostName,
-        input.interviewers.filter((p) => p.email.toLowerCase() !== ctx.user.email.toLowerCase()),
-      );
-
-      const link = candidateLink(token);
-      let candidateDelivery: MailOutcome = { status: "skipped" };
-      const { data: cand } = await ctx.supabase.from("candidates").select("name, email").eq("id", round.candidateId).maybeSingle();
-      if (input.emailCandidate && cand?.email) {
-        candidateDelivery = await sendRoundTwoEmail(ctx.supabase, round.organizationId, {
-          to: cand.email as string,
-          toName: cand.name as string,
-          subject: `Your next interview: ${round.title}`,
-          lines: [
-            `Hi ${cand.name},`,
-            "Congratulations on clearing the first round. You're invited to a live video interview with our team.",
-            scheduleLine(round.scheduledAt, round.durationMin),
-            "Use a laptop with a camera and microphone, in a quiet place. Open the link a few minutes early to check your devices.",
-          ],
-          ctaUrl: link,
-          ctaLabel: "Join the interview",
-        });
-      }
-      return { candidateLink: link, candidateDelivery, invites };
+      return scheduleRound(ctx, r, input);
     }),
 
   invite: protectedProcedure
@@ -1246,6 +1270,153 @@ export const roundTwoRouter = router({
     if (liveKitConfig()) await closeRoom(access.round.livekitRoom);
     return { ok: true };
   }),
+
+  /**
+   * Reschedule Round 2 (managers only). A round that has not started (draft/scheduled, incl. expired)
+   * gets a new time and a new candidate link on the same round. A round that is over (ended, auto-closed,
+   * cancelled, no-show, report failed) stays as history and a fresh attempt is created for the same
+   * candidate and interview with the same plan, panel and duration, a new room and a new link.
+   */
+  reschedule: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        scheduledAt: z.string().datetime(),
+        title: z.string().trim().min(1).max(200).optional(),
+        durationMin: z.number().int().min(10).max(240).optional(),
+        /** Panel for the new time. Omit to keep the previous panel. */
+        interviewers: z.array(z.object({ email: z.string().email(), role: z.enum(["interviewer", "observer"]) })).max(15).optional(),
+        note: z.string().trim().max(500).optional(),
+        emailCandidate: z.boolean().default(true),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);
+      assertCanManage(access);
+      const old = access.round;
+      const mode = rescheduleMode(old.status);
+      if (!mode) throw new TRPCError({ code: "BAD_REQUEST", message: "End the live interview first, then reschedule." });
+      if (Date.parse(input.scheduledAt) < Date.now() - 5 * 60_000) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Pick a time in the future." });
+      }
+      const rescheduled = { note: input.note?.trim() || null };
+      const title = input.title ?? old.title;
+      const durationMin = input.durationMin ?? old.durationMin;
+
+      const { data: panel } = await ctx.supabase
+        .from("round_two_participants")
+        .select("email, role, status")
+        .eq("roundTwoId", old.id)
+        .neq("status", "revoked");
+      const previousPanel = (panel ?? [])
+        .filter((p) => p.role !== "host" && (p.email as string).toLowerCase() !== ctx.user.email.toLowerCase())
+        .map((p) => ({ email: (p.email as string).toLowerCase(), role: (p.role === "observer" ? "observer" : "interviewer") as "interviewer" | "observer" }));
+      const interviewers = input.interviewers ?? previousPanel;
+
+      if (mode === "in_place") {
+        // Same round, new time and link. People already on the panel keep access and are told the new time.
+        const wanted = new Set(interviewers.map((p) => p.email.toLowerCase()));
+        for (const gone of previousPanel.filter((p) => !wanted.has(p.email))) {
+          await ctx.supabase
+            .from("round_two_participants")
+            .update({ status: "revoked", inviteTokenHash: null })
+            .eq("roundTwoId", old.id)
+            .ilike("email", gone.email)
+            .neq("role", "host");
+        }
+        const known = new Set(previousPanel.map((p) => p.email));
+        const fresh = interviewers.filter((p) => !known.has(p.email.toLowerCase()));
+        const result = await scheduleRound(ctx, old, {
+          title,
+          scheduledAt: input.scheduledAt,
+          durationMin,
+          interviewers: fresh,
+          emailCandidate: input.emailCandidate,
+          rescheduled,
+        });
+        const hostName = await profileName(ctx.supabase, ctx.user.id, ctx.user.email);
+        const { data: cand } = await ctx.supabase.from("candidates").select("name").eq("id", old.candidateId).maybeSingle();
+        for (const p of previousPanel.filter((x) => interviewers.some((i) => i.email.toLowerCase() === x.email))) {
+          await sendRoundTwoEmail(ctx.supabase, old.organizationId, {
+            to: p.email,
+            subject: `Interview rescheduled: ${cand?.name ?? title}`,
+            lines: [
+              `${hostName} rescheduled the round 2 interview for ${cand?.name ?? "the candidate"} (${title}).`,
+              scheduleLine(input.scheduledAt, durationMin),
+              ...(rescheduled.note ? [`Note: ${rescheduled.note}`] : []),
+            ],
+            ctaUrl: `${appBaseUrl()}/round-two/${old.id}`,
+            ctaLabel: "Open the interview",
+          });
+        }
+        return { roundTwoId: old.id, mode, ...result };
+      }
+
+      // New attempt. Guard against double clicks and a second open attempt for the same candidate.
+      const { data: open } = await ctx.supabase
+        .from("round_two_interviews")
+        .select("id, status")
+        .eq("candidateId", old.candidateId)
+        .in("status", ["scheduled", "live"])
+        .limit(1);
+      if (open && open.length > 0) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "This candidate already has an upcoming or live Round 2. Reschedule that one instead.",
+        });
+      }
+      const id = crypto.randomUUID();
+      const candToken = newRoundToken();
+      const partnerToken = newRoundToken();
+      let row: Record<string, unknown> = {
+        id,
+        organizationId: old.organizationId,
+        projectId: old.projectId,
+        candidateId: old.candidateId,
+        sourceSessionId: old.sourceSessionId,
+        hostUserId: ctx.user.id,
+        title,
+        durationMin,
+        status: "draft",
+        livekitRoom: `r2-${id}`,
+        candidateTokenHash: hashRoundToken(candToken),
+        candidateInviteToken: candToken,
+        partnerInviteToken: partnerToken,
+        partnerInviteTokenHash: hashRoundToken(partnerToken),
+        questionPlan: normalizePlan(old.questionPlan),
+        round1Context: old.round1Context ?? {},
+        rescheduledFromId: old.id,
+        rescheduleNote: rescheduled.note,
+      };
+      // Tolerate a database that has not had migrations 49 / 55 yet: drop the columns it lacks.
+      const optional = [["rescheduledFromId", "rescheduleNote"], ["candidateInviteToken", "partnerInviteToken", "partnerInviteTokenHash"]];
+      let { error } = await ctx.supabase.from("round_two_interviews").insert(row);
+      for (const group of optional) {
+        if (!error || !new RegExp(`${group.join("|")}|42703|PGRST204`).test(`${error.code} ${error.message}`)) continue;
+        row = Object.fromEntries(Object.entries(row).filter(([k]) => !group.includes(k)));
+        ({ error } = await ctx.supabase.from("round_two_interviews").insert(row));
+      }
+      if (error) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: error.message });
+      const hostEmail = ctx.user.email.toLowerCase();
+      await ctx.supabase.from("round_two_participants").insert({
+        roundTwoId: id,
+        userId: ctx.user.id,
+        email: hostEmail,
+        name: await profileName(ctx.supabase, ctx.user.id, hostEmail),
+        role: "host",
+        status: "accepted",
+      });
+      const { data: created } = await ctx.supabase.from("round_two_interviews").select("*").eq("id", id).single();
+      const result = await scheduleRound(ctx, created as RoundRow, {
+        title,
+        scheduledAt: input.scheduledAt,
+        durationMin,
+        interviewers,
+        emailCandidate: input.emailCandidate,
+        rescheduled,
+      });
+      return { roundTwoId: id, mode, ...result };
+    }),
 
   retryReport: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const access = await loadRoundAccess(ctx.supabase, input.id, ctx.user.id);

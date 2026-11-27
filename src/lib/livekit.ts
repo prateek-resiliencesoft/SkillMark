@@ -93,6 +93,22 @@ export async function listRoomIdentities(room: string): Promise<string[]> {
   }
 }
 
+/**
+ * Identities currently in a room, or null when LiveKit could not be asked (so callers never treat
+ * an outage as "everyone left"). A room LiveKit no longer has (deleted after it emptied) is empty.
+ */
+export async function listRoomIdentitiesStrict(room: string): Promise<string[] | null> {
+  try {
+    const ps = await roomService().listParticipants(room);
+    return ps.map((p) => p.identity);
+  } catch (err) {
+    const code = (err as { code?: string; status?: number } | null)?.code;
+    if (code === "not_found" || (err as { status?: number } | null)?.status === 404) return [];
+    log.warn("listParticipants failed", room, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 /** Reliable data packet to specific identities only (never broadcast). */
 export async function sendToIdentities(
   room: string,
