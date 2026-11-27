@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { FEEDBACK_COMMENT_MAX, FEEDBACK_TAGS } from "@/lib/candidate-feedback";
+import { FEEDBACK_ENHANCE_MIN } from "@/lib/draft-candidate-feedback";
 import { cn } from "@/lib/utils";
 import { Loader2, Star } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -17,6 +18,7 @@ export function CandidateFeedback({ sessionId, inviteToken }: { sessionId: strin
   const [tags, setTags] = useState<string[]>([]);
   const [comment, setComment] = useState("");
   const [sending, setSending] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,6 +43,37 @@ export function CandidateFeedback({ sessionId, inviteToken }: { sessionId: strin
       live = false;
     };
   }, [sessionId, inviteToken]);
+
+  async function enhance() {
+    const draft = comment.trim();
+    if (draft.length < FEEDBACK_ENHANCE_MIN) {
+      setError(`Write at least ${FEEDBACK_ENHANCE_MIN} characters before enhancing.`);
+      return;
+    }
+    setEnhancing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/session/feedback/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          ...(inviteToken ? { inviteToken } : {}),
+          draft,
+        }),
+      });
+      const j = (await res.json().catch(() => null)) as { comment?: string; message?: string } | null;
+      if (!res.ok || !j?.comment) {
+        setError(j?.message ?? "Could not enhance feedback. Please try again.");
+        return;
+      }
+      setComment(j.comment.slice(0, FEEDBACK_COMMENT_MAX));
+    } catch {
+      setError("Could not enhance feedback. Please check your connection and try again.");
+    } finally {
+      setEnhancing(false);
+    }
+  }
 
   async function submit() {
     if (!rating) {
@@ -129,12 +162,25 @@ export function CandidateFeedback({ sessionId, inviteToken }: { sessionId: strin
           rows={3}
           className="text-sm"
         />
-        <p className="mt-1 text-right text-[11px] text-muted-foreground">
-          {comment.length}/{FEEDBACK_COMMENT_MAX}
-        </p>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={sending || enhancing || comment.trim().length < FEEDBACK_ENHANCE_MIN}
+            onClick={() => void enhance()}
+          >
+            {enhancing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+            Enhance with AI
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            {comment.length}/{FEEDBACK_COMMENT_MAX}
+          </p>
+        </div>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      <Button onClick={submit} disabled={sending} size="sm" className="w-full">
+      <Button onClick={submit} disabled={sending || enhancing} size="sm" className="w-full">
         {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
         Send feedback
       </Button>

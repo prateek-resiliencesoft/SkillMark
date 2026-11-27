@@ -20,6 +20,11 @@ export async function sendRoundTwoEmail(
   organizationId: string,
   msg: { to: string; toName?: string | null; subject: string; lines: string[]; ctaUrl: string; ctaLabel: string },
 ): Promise<MailOutcome> {
+  // Local testing: log instead of sending (ROUND2_EMAIL_DRY_RUN=1). Off by default.
+  if (/^(1|true|yes)$/i.test(process.env.ROUND2_EMAIL_DRY_RUN ?? "")) {
+    log.info(`dry run: not sending "${msg.subject}"`);
+    return { status: "skipped", error: "Dry run (ROUND2_EMAIL_DRY_RUN)" };
+  }
   const cfg = await loadDeliveryConfig(db, organizationId);
   const text = [...msg.lines, "", `${msg.ctaLabel}: ${msg.ctaUrl}`].join("\n");
   const link = esc(msg.ctaUrl);

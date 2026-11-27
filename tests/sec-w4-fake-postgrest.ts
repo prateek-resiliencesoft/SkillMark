@@ -66,6 +66,10 @@ function applyFilter(rows: Row[], col: string, expr: string): Row[] {
       const list = raw.replace(/^\(|\)$/g, "").split(",").map((v) => v.replace(/^"|"$/g, ""));
       return rows.filter((r) => list.some((v) => same(r[col], v)));
     }
+    case "ilike": {
+      const re = new RegExp(`^${raw.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/[*%]/g, ".*")}$`, "i");
+      return rows.filter((r) => re.test(String(r[col] ?? "")));
+    }
     case "lt":
       return rows.filter((r) => r[col] < raw);
     case "gte":
@@ -108,7 +112,7 @@ export function installFakePostgrest(
     const wantsObject = (headers.get("accept") ?? "").includes("vnd.pgrst.object+json");
     const select = url.searchParams.get("select");
     // Plain column lists only; embedded resources (`rel(...)`) return whole rows.
-    const columns = select && select !== "*" && !select.includes("(") ? select.split(",").map((c) => c.trim()) : null;
+    const columns = select && select !== "*" && !select.includes("(") ? select.split(",").map((c) => c.trim().replace(/^"|"$/g, "")) : null;
     const project = (r: Row) => (columns ? Object.fromEntries(columns.filter((c) => c in r).map((c) => [c, r[c]])) : r);
     const respond = (raw: Row[] | null, status = 200, extra: Record<string, string> = {}) => {
       if (raw === null) return new Response(null, { status: 204, headers: extra });

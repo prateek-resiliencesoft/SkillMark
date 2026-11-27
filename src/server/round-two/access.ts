@@ -37,6 +37,10 @@ export interface RoundRow {
   reportStatus: string;
   /** Last report failure message (db/init/46). */
   reportError?: string | null;
+  /** db/init/55: 'host' | 'auto_empty' (everyone left), plus reschedule links. */
+  endReason?: string | null;
+  rescheduledFromId?: string | null;
+  rescheduleNote?: string | null;
   report: unknown;
   /** Open boards + coding task (db/init/51). */
   boardState?: unknown;

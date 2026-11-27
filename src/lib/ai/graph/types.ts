@@ -15,6 +15,10 @@ export interface ReasoningStep {
   startedAt: number;
   ms?: number;
   tokens?: number;
+  /** Prompt / input tokens when the provider reported usage. */
+  promptTokens?: number;
+  /** Completion / output tokens when the provider reported usage. */
+  completionTokens?: number;
   models?: string[];
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { KeyRound, SlidersHorizontal } from "lucide-react";
+import { Activity, KeyRound, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -18,6 +18,13 @@ const TABS = [
     label: "Studio",
     hint: "Models, costs & playground",
     icon: SlidersHorizontal,
+    exact: false,
+  },
+  {
+    href: "/settings/ai/usage",
+    label: "Usage",
+    hint: "Tokens, cost & which AI",
+    icon: Activity,
     exact: false,
   },
 ] as const;

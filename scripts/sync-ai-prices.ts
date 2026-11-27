@@ -43,8 +43,18 @@ const KNOWN: {
   audioOutUsdPerMtok?: number;
   perMinuteUsd?: number;
 }[] = [
+  // OpenAI standard API list prices (USD / 1M tokens) — https://developers.openai.com/api/docs/pricing
   { provider: "openai", modelId: "gpt-4o-mini", inputUsdPerMtok: 0.15, outputUsdPerMtok: 0.6 },
   { provider: "openai", modelId: "gpt-4o", inputUsdPerMtok: 2.5, outputUsdPerMtok: 10 },
+  { provider: "openai", modelId: "gpt-4.1", inputUsdPerMtok: 2, outputUsdPerMtok: 8 },
+  { provider: "openai", modelId: "gpt-4.1-mini", inputUsdPerMtok: 0.4, outputUsdPerMtok: 1.6 },
+  { provider: "openai", modelId: "gpt-5", inputUsdPerMtok: 1.25, outputUsdPerMtok: 10 },
+  { provider: "openai", modelId: "gpt-5-mini", inputUsdPerMtok: 0.25, outputUsdPerMtok: 2 },
+  { provider: "openai", modelId: "gpt-5-nano", inputUsdPerMtok: 0.05, outputUsdPerMtok: 0.4 },
+  { provider: "openai", modelId: "gpt-5.1", inputUsdPerMtok: 1.25, outputUsdPerMtok: 10 },
+  { provider: "openai", modelId: "gpt-5.2", inputUsdPerMtok: 1.75, outputUsdPerMtok: 14 },
+  { provider: "openai", modelId: "o3", inputUsdPerMtok: 2, outputUsdPerMtok: 8 },
+  { provider: "openai", modelId: "o3-mini", inputUsdPerMtok: 1.1, outputUsdPerMtok: 4.4 },
   {
     provider: "openai",
     modelId: "gpt-realtime-1.5",

@@ -5,6 +5,7 @@ import { PlanChat } from "@/components/round-two/plan-chat";
 import { PlanEditor } from "@/components/round-two/plan-editor";
 import { AiRunHistory } from "@/components/ai/reasoning-timeline";
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { RescheduleRoundTwoButton } from "@/components/round-two/reschedule-dialog";
 import { RoundTwoMedia } from "@/components/round-two/round-media";
 import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RoundTwoStatusBadge } from "@/components/round-two/status-badge";
@@ -32,6 +33,31 @@ import { useEffect, useState } from "react";
 
 function fmt(d: string | null | undefined) {
   return d ? new Date(d).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "Not set";
+}
+
+/** Every Round 2 attempt for this candidate; the earlier ones stay as history. */
+function RoundAttempts({ candidateId, currentId }: { candidateId: string; currentId: string }) {
+  const q = trpc.roundTwo.roundsForCandidate.useQuery({ candidateId }, { retry: false });
+  const rows = q.data ?? [];
+  if (rows.length < 2) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted-foreground">Attempts</span>
+      {[...rows].reverse().map((a, i) => (
+        <Link
+          key={a.id}
+          href={`/round-two/${a.id}`}
+          className={
+            a.id === currentId
+              ? "rounded-full border border-primary bg-primary/10 px-2.5 py-0.5 font-medium text-primary"
+              : "rounded-full border px-2.5 py-0.5 text-muted-foreground hover:bg-muted"
+          }
+        >
+          #{i + 1} · {a.status.replace("_", "-")}
+        </Link>
+      ))}
+    </div>
+  );
 }
 
 export default function RoundTwoDetailPage() {
@@ -126,6 +152,7 @@ export default function RoundTwoDetailPage() {
               End interview
             </Button>
           )}
+          <RescheduleRoundTwoButton roundId={round.id} status={round.status} canManage={canManage} />
           {canManage && open && round.status !== "live" && (
             <Button variant="outline" onClick={() => setConfirm("cancel")}>
               Cancel
@@ -133,6 +160,22 @@ export default function RoundTwoDetailPage() {
           )}
         </div>
       </div>
+
+      {round.status === "ended" && round.endReason === "auto_empty" && (
+        <p className="rounded-lg border border-amber-600/40 bg-amber-600/5 p-3 text-sm">
+          This round was closed automatically because everyone left the room. The recording, transcript and report are being prepared from what was captured.
+        </p>
+      )}
+      {round.rescheduledFromId && (
+        <p className="text-sm text-muted-foreground">
+          Rescheduled from an earlier attempt.{" "}
+          <Link href={`/round-two/${round.rescheduledFromId}`} className="underline">
+            View it
+          </Link>
+          {round.rescheduleNote ? ` · Note: ${round.rescheduleNote}` : ""}
+        </p>
+      )}
+      {candidate?.id && <RoundAttempts candidateId={candidate.id} currentId={round.id} />}
 
       {!q.data.liveKitConfigured && joinable && (
         <p className="rounded-lg border border-amber-600/40 bg-amber-600/5 p-3 text-sm">

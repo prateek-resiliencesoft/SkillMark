@@ -27,12 +27,20 @@ import { loadCatalogRows, loadUsdInr, upsertListedModels, withInrEstimate } from
 import { STUDIO_MODULES } from "@/lib/ai/studio/modules";
 import { estimateWorkloadUsd, formatInr } from "@/lib/ai/studio/pricing";
 import { rankModelsForTask, suggestionStrip } from "@/lib/ai/studio/suitability";
+import {
+  aggregateAiUsage,
+  resolveUsageRange,
+  type AiRunRow,
+  type UsagePeriod,
+} from "@/lib/ai/studio/usage-aggregate";
+import { langfuseTraceUrl } from "@/lib/ai/tracing";
+import type { ReasoningStep } from "@/lib/ai/graph/types";
 import { assertSafeRemoteUrl } from "@/lib/network-security";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isPlatformAdmin } from "../tenant";
-import { assertMinRole, getOrgMembership, protectedProcedure, router } from "../trpc";
+import { assertMinRole, getOrgMembership, hasMinRole, protectedProcedure, router } from "../trpc";
 
 async function requireOrgAdmin(
   supabase: Parameters<typeof getOrgMembership>[0],
@@ -341,6 +349,73 @@ export const aiSettingsRouter = router({
           message: `Could not list models: ${(err as Error).message}`,
         });
       }
+    }),
+
+  /** Org-wide AI spend / tokens from `ai_runs` + catalog rates (₹ estimate). */
+  usageDashboard: protectedProcedure
+    .input(
+      z.object({
+        organizationId: z.string(),
+        period: z.enum(["last7", "last30", "thisMonth"]).default("last30"),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      let canSeeTraces = false;
+      if (!(await isPlatformAdmin(ctx.supabase, ctx.user.id))) {
+        const membership = await getOrgMembership(ctx.supabase, input.organizationId, ctx.user.id);
+        if (!membership) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Not a member of this organization" });
+        }
+        canSeeTraces = hasMinRole(membership.role, "ADMIN");
+      } else {
+        canSeeTraces = true;
+      }
+      const period = input.period as UsagePeriod;
+      const range = resolveUsageRange(period);
+      const [{ usdInr, asOf }, catalog, runsRes] = await Promise.all([
+        loadUsdInr(),
+        loadCatalogRows(),
+        supabaseAdmin
+          .from("ai_runs")
+          .select(
+            'id, flow, status, tokens, steps, "startedAt", "endedAt", error, "subjectType", "subjectId", "traceId"',
+          )
+          .eq("organizationId", input.organizationId)
+          .gte("startedAt", range.start.toISOString())
+          .lte("startedAt", range.end.toISOString())
+          .order("startedAt", { ascending: false })
+          .limit(2500),
+      ]);
+      const raw = runsRes.error ? [] : (runsRes.data ?? []);
+      const traceById = new Map(
+        raw.map((r) => [r.id as string, (r.traceId as string | null) ?? null] as const),
+      );
+      const runs: AiRunRow[] = raw.map((r) => ({
+        id: r.id as string,
+        flow: (r.flow as string) ?? "unknown",
+        status: (r.status as string) ?? "done",
+        tokens: Number(r.tokens) || 0,
+        steps: (r.steps as ReasoningStep[] | null) ?? null,
+        startedAt: r.startedAt as string,
+        endedAt: (r.endedAt as string | null) ?? null,
+        error: (r.error as string | null) ?? null,
+        subjectType: (r.subjectType as string | null) ?? null,
+        subjectId: (r.subjectId as string | null) ?? null,
+      }));
+      const aggregated = aggregateAiUsage(runs, catalog, usdInr, range);
+      return {
+        period,
+        range: { start: range.start.toISOString(), end: range.end.toISOString() },
+        usdInr,
+        pricesAsOf: asOf,
+        estimateNote:
+          "All costs shown in ₹. Formula: (input / 1M) × ₹-per-MTok_in + (output / 1M) × ₹-per-MTok_out (catalog USD rates × FX). OpenAI models use official ChatGPT API list prices. Legacy runs without separate in/out fall back to ≈70% / 30%. Unpriced models show ₹ —.",
+        ...aggregated,
+        recent: aggregated.recent.map((r) => ({
+          ...r,
+          traceUrl: canSeeTraces ? langfuseTraceUrl(traceById.get(r.id)) : null,
+        })),
+      };
     }),
 
   listSuggestedPresets: protectedProcedure

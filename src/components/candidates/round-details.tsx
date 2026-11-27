@@ -1,6 +1,7 @@
 "use client";
 
 import { RoundTwoReportView } from "@/components/round-two/report-view";
+import { RescheduleRoundTwoButton } from "@/components/round-two/reschedule-dialog";
 import { RoundTwoMedia } from "@/components/round-two/round-media";
 import { TaskAnswers } from "@/components/round-two/room/task-history";
 import { RecommendationBadge, RoundTwoStatusBadge } from "@/components/round-two/status-badge";
@@ -361,12 +362,12 @@ export function RoundTwoPanel({
               Open Round 2 page <ExternalLink className="ml-1.5 h-3 w-3" />
             </Link>
           </Button>
-          {(status === "draft" || status === "cancelled" || status === "no_show") &&
-            (onSchedule ? (
-              <Button size="sm" onClick={onSchedule}>
-                {status === "draft" ? "Continue scheduling" : "Reschedule Round 2"}
-              </Button>
-            ) : null)}
+          {status === "draft" && onSchedule && (
+            <Button size="sm" onClick={onSchedule}>
+              Continue scheduling
+            </Button>
+          )}
+          <RescheduleRoundTwoButton roundId={id} status={status} canManage={!!q.data?.canManage} />
         </div>
       </Section>
 
@@ -405,6 +406,11 @@ export function RoundTwoPanel({
 
       {ended && (
         <>
+          {round?.endReason === "auto_empty" && (
+            <p className="rounded-lg border border-amber-600/40 bg-amber-600/5 p-3 text-xs">
+              Closed automatically because everyone left the room. Use Reschedule Round 2 to run it again; this attempt stays here as history.
+            </p>
+          )}
           {reportStatus === "ready" && report ? (
             <RoundTwoReportView report={report} />
           ) : reportStatus === "failed" ? (
