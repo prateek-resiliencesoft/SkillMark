@@ -1371,12 +1371,17 @@ export const sessionRouter = router({
       const { data: raw } = await query;
       const rows = raw ?? [];
 
-      const mapped = rows.slice(0, limit).map((s) => ({
-        ...s,
-        _count: {
-          messages: (s.messages as { id: string }[])?.length ?? 0,
-        },
-      }));
+      const mapped = rows.slice(0, limit).map((s) => {
+        const interviewRaw = s.interview;
+        const interview = Array.isArray(interviewRaw) ? interviewRaw[0] : interviewRaw;
+        return {
+          ...s,
+          interview,
+          _count: {
+            messages: (s.messages as { id: string }[])?.length ?? 0,
+          },
+        };
+      });
       const sessions = await expireSessionsIfStale(mapped);
 
       let nextCursor: string | undefined;
