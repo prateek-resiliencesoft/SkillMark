@@ -8,7 +8,7 @@ import {
 } from "@/lib/storage-paths";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { NextResponse } from "next/server";
-import { mimeForRecordingExt, recordingExtForMime, recordingPartFileName } from "@/lib/recording-parts";
+import { micPartFileName, mimeForRecordingExt, recordingExtForMime, recordingPartFileName } from "@/lib/recording-parts";
 import {
   linkRecordingToSession,
   linkScreenshotToSession,
@@ -61,9 +61,9 @@ export async function POST(req: Request) {
       );
     }
 
-    if (type !== "recording" && type !== "screenshot" && type !== "recording_part") {
+    if (type !== "recording" && type !== "screenshot" && type !== "recording_part" && type !== "mic_part") {
       return NextResponse.json(
-        { error: 'type must be "recording", "recording_part" or "screenshot"' },
+        { error: 'type must be "recording", "recording_part", "mic_part" or "screenshot"' },
         { status: 400 },
       );
     }
@@ -91,7 +91,11 @@ export async function POST(req: Request) {
     }
 
     const maxBytes =
-      type === "recording" ? MAX_RECORDING_BYTES : type === "recording_part" ? MAX_PART_BYTES : MAX_SCREENSHOT_BYTES;
+      type === "recording"
+        ? MAX_RECORDING_BYTES
+        : type === "recording_part" || type === "mic_part"
+          ? MAX_PART_BYTES
+          : MAX_SCREENSHOT_BYTES;
     if (file.size > maxBytes) {
       return NextResponse.json(
         { error: `File exceeds maximum allowed size (${maxBytes / (1024 * 1024)}MB)` },
@@ -128,8 +132,9 @@ export async function POST(req: Request) {
     const orgId = interview.project.organizationId;
     const projectId = interview.projectId;
 
-    // Chunk uploaded during the interview (joined by /api/session/recording/finalize).
-    if (type === "recording_part") {
+    // Chunk uploaded during the interview. recording_part is joined by /api/session/recording/finalize;
+    // mic_part is the candidate-only mic track, read back later by the transcript rebuild.
+    if (type === "recording_part" || type === "mic_part") {
       const runId = Number(formData.get("runId"));
       const seq = Number(formData.get("seq"));
       const elapsedSec = Number(formData.get("elapsedSec"));
@@ -145,7 +150,7 @@ export async function POST(req: Request) {
         candidateEmail,
         prefix: folderPrefix,
         kind: "recordings",
-        fileName: recordingPartFileName({ sessionId, runId, seq, elapsedSec, ext: partExt }),
+        fileName: (type === "mic_part" ? micPartFileName : recordingPartFileName)({ sessionId, runId, seq, elapsedSec, ext: partExt }),
       });
       const { error: partErr } = await supabaseAdmin.storage
         .from("recordings")

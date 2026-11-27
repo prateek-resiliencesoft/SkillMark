@@ -101,6 +101,80 @@ export function isRunComplete(run: RecordingRun): boolean {
   return run.parts.every((p, i) => p.seq === i);
 }
 
+// ── Candidate-only mic track ─────────────────────────────────────────────────
+/**
+ * A second MediaRecorder on the candidate's mic (no AI voice on it) uploads its
+ * own parts next to the mixed recording:
+ *   micpart-{sessionId}-{runId}-{seq}-{elapsedSec}.{ext}
+ * runId = that recorder's start time (ms), so a turn at `t` seconds into a run
+ * happened at runId + t·1000 (epoch ms). A new run starts when the mic changes
+ * or the page reloads. The `micpart-` prefix keeps these out of the part
+ * grouping above (`part-…`), so joining the mixed recording never sees them.
+ */
+const MIC_PART_RE =
+  /^micpart-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d{10,16})-(\d{1,6})-(\d{1,6})\.(webm|m4a|mp4|ogg)$/i;
+
+export type MicPart = RecordingPart;
+export type MicRun = RecordingRun;
+
+export function micPartFileName(opts: {
+  sessionId: string;
+  runId: number;
+  seq: number;
+  elapsedSec: number;
+  ext: RecordingPartExt;
+}): string {
+  return recordingPartFileName(opts).replace(/^part-/, "micpart-");
+}
+
+export function parseMicPartKey(key: string): MicPart | null {
+  const base = key.split("/").pop() ?? "";
+  const m = MIC_PART_RE.exec(base);
+  if (!m) return null;
+  return {
+    key,
+    sessionId: m[1].toLowerCase(),
+    runId: Number(m[2]),
+    seq: Number(m[3]),
+    elapsedSec: Number(m[4]),
+    ext: m[5].toLowerCase() as RecordingPartExt,
+  };
+}
+
+/** Group a session's mic part keys into runs (oldest first), parts in seq order. */
+export function groupMicParts(keys: string[], sessionId: string): MicRun[] {
+  const sid = sessionId.toLowerCase();
+  const runs = new Map<number, Map<number, MicPart>>();
+  for (const k of keys) {
+    const p = parseMicPartKey(k);
+    if (!p || p.sessionId !== sid) continue;
+    const run = runs.get(p.runId) ?? new Map<number, MicPart>();
+    run.set(p.seq, p);
+    runs.set(p.runId, run);
+  }
+  return Array.from(runs.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([runId, bySeq]) => {
+      const parts = Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+      return {
+        runId,
+        ext: parts[0].ext,
+        parts,
+        durationSec: parts.reduce((mx, p) => Math.max(mx, p.elapsedSec), 0),
+      };
+    });
+}
+
+/** Parts from seq 0 up to the first gap: byte-continuous slices stay decodable only that far. */
+export function contiguousMicParts(run: MicRun): MicPart[] {
+  const out: MicPart[] = [];
+  for (const p of run.parts) {
+    if (p.seq !== out.length) break;
+    out.push(p);
+  }
+  return out;
+}
+
 /** Background finalize attempts: now, then after 15 s, 60 s and 3 min. */
 export const FINALIZE_RETRY_DELAYS_MS = [0, 15_000, 60_000, 180_000] as const;
 

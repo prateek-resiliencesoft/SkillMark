@@ -5,8 +5,17 @@
  * USER lines were saved) but the browser recording still has their answers.
  * Server-only.
  *
+ * Source audio, best first:
+ *   1. the candidate-only mic track (`micpart-*` parts): cut at pauses, each clip
+ *      transcribed on its own and placed after the interviewer line before it;
+ *   2. the mixed recording (interviewer + candidate): Gemini separates the speakers
+ *      itself, or other engines get their clips labelled against the saved lines.
+ * Engines follow the org's own AI keys (stt-engines.ts): Gemini 3.5 Transcribe,
+ * OpenAI gpt-transcribe, Groq Whisper large v3; a short text-model pass then fixes
+ * only clear mishearings of names and skills (cleanup.ts).
+ *
  * - Interviewer (ASSISTANT) rows are the source of truth and are never touched.
- * - Only speech the model labels "candidate" becomes USER rows; anything that
+ * - Only speech that is the candidate's becomes USER rows; anything that
  *   repeats an interviewer line (the AI voice is on the recording) is dropped.
  * - Voice USER rows are replaced (re-running replaces, never stacks); typed chat answers are kept.
  * - Replaced USER rows are backed up as JSON next to the recording first.
@@ -19,14 +28,27 @@ import { mkdtemp, readFile as readLocalFile, rm, writeFile } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import { extractJson } from "@/lib/ai/extract-json";
-import { loadOrgAiCredentials } from "@/lib/ai/credentials";
+import { callJson } from "@/lib/ai/json-call";
+import { loadCredsPair } from "@/lib/ai/registry";
 import { createLogger } from "@/lib/logger";
 import { recordSessionError } from "@/lib/session-error-log-server";
 import { generateSummaryForSession, type SummaryOutcome } from "@/lib/session-summary";
 import { readFile, storage } from "@/lib/storage";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { objectPathFromSignedUrl, pathBelongsToSession } from "@/lib/tenant-storage";
-import { planTranscriptReplacement, type StoredMessage, type TranscribedTurn } from "./align";
+import {
+  diarizeByLines,
+  micClipsToTurns,
+  planTranscriptReplacement,
+  type MicClip,
+  type StoredMessage,
+  type TranscribedTurn,
+} from "./align";
+import { cleanupTranscript } from "./cleanup";
+import { decodeToWav, ffmpegAvailable as ffmpegInstalled, loadMicRuns } from "./mic-runs-server";
+import { describeNoSttReason, selectSttCandidates, sttLanguagesFor } from "./stt-engines";
+import { transcribeAudioClips, type PipelineContext } from "./stt-pipeline";
+import { buildPromptHint, buildVocabulary } from "./stt-vocab";
 import { devanagariToRoman } from "@/lib/transcript/transliterate";
 
 const log = createLogger("retranscribe");
@@ -342,16 +364,68 @@ export async function refineTranscriptFromRecording(sessionId: string): Promise<
     log.info(`Auto re-transcribed ${sessionId}: ${r.candidateLines} candidate lines (replaced ${r.replacedLines})`);
     return true;
   } catch (err) {
-    log.info(`Auto re-transcribe skipped for ${sessionId}: ${err instanceof Error ? err.message.slice(0, 200) : err}`);
+    const msg = err instanceof Error ? err.message.slice(0, 300) : String(err);
+    const status = err instanceof RetranscribeError ? err.status : 0;
+    log.info(`Auto re-transcribe skipped for ${sessionId}: ${msg}`);
+    // Only "already done" and "nothing recorded" are routine. Anything else (no usable AI key,
+    // engine errors, a transcript that lost too many words) used to vanish silently; now it shows
+    // in the session's error log so a bad Hindi transcript can be traced.
+    if (status !== 409 && !/no recording/i.test(msg)) {
+      void recordSessionError({
+        sessionId,
+        category: "tts_stt",
+        severity: "warning",
+        source: "auto/report",
+        message: `Live transcript kept, recording transcript not used: ${msg}`,
+        status: status || null,
+        context: { stage: "retranscribe" },
+      });
+    }
     return false;
   }
+}
+
+/** Mic turns lose to the mixed recording when this share of their speech clips could not be transcribed. */
+const MIC_MAX_UNTRANSCRIBED_SHARE = 0.3;
+
+const usageLabel = (usage: Record<string, number>) =>
+  Object.entries(usage)
+    .map(([k, n]) => `${k}×${n}`)
+    .join(", ");
+
+function mergeUsage(into: Record<string, number>, from: Record<string, number>) {
+  for (const [k, n] of Object.entries(from)) into[k] = (into[k] ?? 0) + n;
+}
+
+/** Interview names and skills the speech models should expect (best-effort, never throws). */
+async function loadVocabularySources(sessionId: string, organizationId: string): Promise<{ organizationName: string | null; skills: string[] }> {
+  let organizationName: string | null = null;
+  let skills: string[] = [];
+  try {
+    const { data: org } = await supabaseAdmin.from("organizations").select("name").eq("id", organizationId).maybeSingle();
+    organizationName = (org as { name?: string | null } | null)?.name ?? null;
+  } catch {
+    /* optional */
+  }
+  try {
+    const { data: sess } = await supabaseAdmin.from("sessions").select("candidateId").eq("id", sessionId).maybeSingle();
+    const candidateId = (sess as { candidateId?: string | null } | null)?.candidateId;
+    if (candidateId) {
+      const { data: c } = await supabaseAdmin.from("candidates").select("skills").eq("id", candidateId).maybeSingle();
+      const raw = (c as { skills?: unknown } | null)?.skills;
+      if (Array.isArray(raw)) skills = raw.filter((x): x is string => typeof x === "string").slice(0, 40);
+    }
+  } catch {
+    /* optional */
+  }
+  return { organizationName, skills };
 }
 
 async function retranscribeInner(sessionId: string, opts: { source: string; auto?: boolean }): Promise<RetranscribeResult> {
   const { data: session } = await supabaseAdmin
     .from("sessions")
     .select(
-      `id, audioRecordingUrl, mediaClearedAt, mediaStoragePrefix, interview:interviews!inner(language, projectId, project:projects!inner(organizationId))`,
+      `id, audioRecordingUrl, mediaClearedAt, mediaStoragePrefix, participantName, interview:interviews!inner(title, language, projectId, questions(text, order), project:projects!inner(organizationId))`,
     )
     .eq("id", sessionId)
     .maybeSingle();
@@ -360,31 +434,43 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
     audioRecordingUrl?: string | null;
     mediaClearedAt?: string | null;
     mediaStoragePrefix?: string | null;
-    interview: { language?: string | null; projectId?: string | null; project: { organizationId: string } };
+    participantName?: string | null;
+    interview: {
+      title?: string | null;
+      language?: string | null;
+      projectId?: string | null;
+      questions?: { text?: string | null; order?: number | null }[] | null;
+      project: { organizationId: string };
+    };
   };
   const organizationId = s.interview.project.organizationId;
-  if (!s.audioRecordingUrl || s.mediaClearedAt) {
-    throw new RetranscribeError("This session has no recording to transcribe.");
-  }
-  const objectPath =
-    objectPathFromSignedUrl("recordings", s.audioRecordingUrl) ?? s.audioRecordingUrl.split("?")[0];
-  if (
-    !pathBelongsToSession(objectPath, sessionId, organizationId, {
-      projectId: s.interview.projectId,
-      mediaStoragePrefix: s.mediaStoragePrefix,
-    })
-  ) {
-    throw new RetranscribeError("Recording path does not belong to this session.", 403);
+  if (s.mediaClearedAt) throw new RetranscribeError("This session has no recording to transcribe.");
+  let objectPath: string | null = null;
+  if (s.audioRecordingUrl) {
+    objectPath = objectPathFromSignedUrl("recordings", s.audioRecordingUrl) ?? s.audioRecordingUrl.split("?")[0];
+    if (
+      !pathBelongsToSession(objectPath, sessionId, organizationId, {
+        projectId: s.interview.projectId,
+        mediaStoragePrefix: s.mediaStoragePrefix,
+      })
+    ) {
+      throw new RetranscribeError("Recording path does not belong to this session.", 403);
+    }
   }
 
-  const creds = await loadOrgAiCredentials(supabaseAdmin, organizationId);
-  const apiKeys = creds.gemini.apiKeys;
-  if (!apiKeys.length) throw new RetranscribeError("No Gemini API key configured for transcription.", 503);
+  // Engines come from the org's own keys (Settings → AI); env keys are only the platform fallback.
+  const { merged, routing } = await loadCredsPair(organizationId);
+  const candidates = selectSttCandidates({ merged, routing });
+  if (!candidates.length) throw new RetranscribeError(describeNoSttReason(merged), 503);
 
-  const { data: rawAudio, contentType } = await readFile("recordings", objectPath);
-  if (!rawAudio.length) throw new RetranscribeError("The recording file is empty.");
-  const prepared = await normalizeAudioForTranscription(rawAudio, guessMime(contentType, objectPath));
-  const { audio, mime } = prepared;
+  // Where this session's recordings live (mic parts sit next to the mixed recording).
+  let recordingsDir: string | null = objectPath ? path.posix.dirname(objectPath) : null;
+  if (!recordingsDir) {
+    const { resolveSessionMediaTarget } = await import("@/lib/recording-parts-server");
+    const target = await resolveSessionMediaTarget(sessionId);
+    if (target) recordingsDir = `${target.prefix}/recordings`;
+  }
+  if (!recordingsDir) throw new RetranscribeError("This session has no recording to transcribe.");
 
   const { data: rows } = await supabaseAdmin
     .from("messages")
@@ -398,15 +484,114 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
     throw new RetranscribeError("Already transcribed from the recording.", 409);
   }
 
-  log.info(
-    `Transcribing recording for ${sessionId} (${Math.round(audio.length / 1024)} KB, ${mime}${prepared.converted ? ", converted with ffmpeg" : ""})`,
-  );
-  const { turns, model } = await transcribeAudio(
-    apiKeys,
-    audio,
-    mime,
-    buildPrompt(assistant.map((m) => m.content), s.interview.language),
-  );
+  const interviewerLines = assistant.map((m) => m.content);
+  const languages = sttLanguagesFor(s.interview.language);
+  const extra = await loadVocabularySources(sessionId, organizationId);
+  const questionTexts = (s.interview.questions ?? [])
+    .slice()
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((q) => q.text ?? "")
+    .filter(Boolean);
+  const vocabulary = buildVocabulary({
+    candidateName: s.participantName,
+    companyName: extra.organizationName,
+    interviewTitle: s.interview.title,
+    texts: [...questionTexts, ...interviewerLines, extra.skills.join(". ")],
+  });
+  const ctx: PipelineContext = {
+    candidates,
+    languages,
+    vocabulary,
+    promptHint: buildPromptHint(vocabulary, { hindi: languages.hindi }),
+  };
+
+  const notes: string[] = [];
+  const failures: string[] = [];
+  const usage: Record<string, number> = {};
+  let turns: TranscribedTurn[] | null = null;
+  let source: "mic" | "mixed" = "mixed";
+
+  // 1) Candidate-only mic track: nothing to separate from the interviewer.
+  try {
+    const mic = await loadMicRuns(recordingsDir, sessionId);
+    notes.push(...mic.notes);
+    if (mic.runs.length) {
+      const clips: MicClip[] = [];
+      let segments = 0;
+      let missed = 0;
+      for (const run of mic.runs) {
+        const r = await transcribeAudioClips(run.audio, ctx);
+        segments += r.segments;
+        missed += r.unTranscribed;
+        mergeUsage(usage, r.usage);
+        failures.push(...r.failures);
+        for (const c of r.clips) {
+          clips.push({ text: c.text, startMs: run.runId + c.startSec * 1000, endMs: run.runId + c.endSec * 1000 });
+        }
+      }
+      const micTurns = micClipsToTurns(clips, assistant.map((m) => Date.parse(m.timestamp)));
+      if (segments > 0 && missed / segments > MIC_MAX_UNTRANSCRIBED_SHARE) {
+        notes.push(`mic-only track dropped: ${missed} of ${segments} clips could not be transcribed`);
+      } else if (micTurns.length) {
+        turns = micTurns;
+        source = "mic";
+      } else {
+        notes.push("mic-only track had no speech");
+      }
+    }
+  } catch (err) {
+    notes.push(`mic-only track failed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`);
+  }
+
+  // 2) Mixed recording (interviewer + candidate) with speaker handling.
+  let mime = "audio/wav";
+  if (!turns) {
+    if (!objectPath) {
+      throw new RetranscribeError(`No usable recording. ${notes.join("; ")}`.trim(), 422);
+    }
+    const { data: rawAudio, contentType } = await readFile("recordings", objectPath);
+    if (!rawAudio.length) throw new RetranscribeError("The recording file is empty.");
+    let engines = candidates;
+    if (engines[0]?.engine === "gemini") {
+      // Gemini first: its general model separates the speakers itself, using the saved interviewer lines.
+      const prepared = await normalizeAudioForTranscription(rawAudio, guessMime(contentType, objectPath));
+      mime = prepared.mime;
+      log.info(`Transcribing mixed recording for ${sessionId} (${Math.round(prepared.audio.length / 1024)} KB, ${mime})`);
+      try {
+        const out = await transcribeAudio(
+          engines.filter((c) => c.engine === "gemini").map((c) => c.apiKey),
+          prepared.audio,
+          prepared.mime,
+          buildPrompt(interviewerLines, s.interview.language),
+        );
+        turns = out.turns;
+        usage[`gemini:${out.model}`] = 1;
+      } catch (err) {
+        failures.push(`gemini mixed: ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`);
+        engines = engines.filter((c) => c.engine !== "gemini");
+      }
+    }
+    if (!turns && engines.length) {
+      if (!ffmpegInstalled()) {
+        throw new RetranscribeError("ffmpeg is needed to transcribe this recording with the configured speech engine.", 503);
+      }
+      const wav = await decodeToWav(rawAudio, path.extname(objectPath).slice(1) || "webm");
+      const r = await transcribeAudioClips(wav, { ...ctx, candidates: engines });
+      mergeUsage(usage, r.usage);
+      failures.push(...r.failures);
+      if (r.segments > 0 && r.unTranscribed / r.segments > MIC_MAX_UNTRANSCRIBED_SHARE) {
+        throw new RetranscribeError(
+          `No speech engine could transcribe the recording (${r.unTranscribed} of ${r.segments} clips failed). ${r.failures.slice(0, 2).join("; ")}`.trim(),
+          502,
+        );
+      }
+      turns = diarizeByLines(r.clips, interviewerLines);
+    }
+    if (!turns) {
+      throw new RetranscribeError(`No speech engine could transcribe the recording. ${failures.slice(0, 2).join("; ")}`.trim(), 502);
+    }
+  }
+  const model = `${source}: ${usageLabel(usage) || "unknown"}`;
 
   // Re-read right before writing so a run started meanwhile can't leave stacked rows.
   const { data: freshRows } = await supabaseAdmin
@@ -421,33 +606,72 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   if (aligned.length === 0) {
     throw new RetranscribeError("No candidate speech was found in the recording. Nothing was changed.", 422);
   }
-  const candidateWords = aligned.reduce((n, t) => n + t.text.split(/\s+/).length, 0);
+  const rawWords = aligned.reduce((n, t) => n + t.text.split(/\s+/).length, 0);
   if (opts.auto && !recordingTranscriptKeepsWords(replaceable.map((m) => m.content), aligned.map((t) => t.text))) {
-    throw new RetranscribeError(`Recording transcript has only ${candidateWords} words; kept the live transcript.`, 422);
+    throw new RetranscribeError(`Recording transcript has only ${rawWords} words; kept the live transcript.`, 422);
   }
+
+  // Roman-script first (Hindi), then a short text-model pass that fixes only clear mishearings of names and skills.
+  const romanized = aligned.map((t) => devanagariToRoman(t.text));
+  const assistantAt = assistant.map((m) => ({ at: Date.parse(m.timestamp), text: m.content }));
+  const questionFor = (iso: string) => {
+    const at = Date.parse(iso);
+    let q: string | undefined;
+    for (const a of assistantAt) if (a.at <= at) q = a.text;
+    return q;
+  };
+  const cleanup = await cleanupTranscript(
+    romanized.map((text, i) => ({ text, question: questionFor(aligned[i].timestamp) })),
+    {
+      hindi: languages.hindi,
+      candidateName: s.participantName,
+      companyName: extra.organizationName,
+      interviewTitle: s.interview.title,
+      vocabulary,
+    },
+    async (system, user) =>
+      (await callJson({ organizationId, task: "report", system, messages: [{ role: "user", content: user }], maxTokens: 8000, temperature: 0 })).raw,
+    (raw) => extractJson<{ turns?: { id?: number; text?: string }[] }>(raw),
+  );
+  const finalTexts = cleanup.texts;
+  const candidateWords = finalTexts.reduce((n, t) => n + t.split(/\s+/).length, 0);
 
   // Back up the rows we are about to replace (none for a session with zero answers).
   let backupPath: string | null = null;
   if (replaceable.length > 0) {
-    backupPath = path.posix.join(path.posix.dirname(objectPath), `transcript-backup-${sessionId.toLowerCase()}-${Date.now()}.json`);
+    backupPath = path.posix.join(recordingsDir, `transcript-backup-${sessionId.toLowerCase()}-${Date.now()}.json`);
     const { error } = await storage
       .from("recordings")
-      .upload(backupPath, Buffer.from(JSON.stringify({ sessionId, savedAt: new Date().toISOString(), messages: replaceable }, null, 2)), {
-        contentType: "application/json",
-      });
+      .upload(
+        backupPath,
+        Buffer.from(
+          JSON.stringify(
+            {
+              sessionId,
+              savedAt: new Date().toISOString(),
+              messages: replaceable,
+              // Speech-to-text output before the clean-up pass, kept so a bad edit can be traced.
+              ...(cleanup.changed > 0 ? { recordingTranscriptBeforeCleanup: romanized } : {}),
+            },
+            null,
+            2,
+          ),
+        ),
+        { contentType: "application/json" },
+      );
     if (error) throw new RetranscribeError(`Could not back up the old transcript: ${error.message}`, 500);
   }
 
   // Insert the new candidate lines first, then remove the old ones by id, so a
   // failed insert never loses the old transcript and a re-run never stacks lines.
   const { error: insErr } = await supabaseAdmin.from("messages").insert(
-    aligned.map((t) => ({
+    aligned.map((t, i) => ({
       sessionId,
       role: "USER" as const,
-      content: devanagariToRoman(t.text),
+      content: finalTexts[i],
       contentType: "TEXT" as const,
       questionId: t.questionId,
-      wordCount: t.text.split(/\s+/).length,
+      wordCount: finalTexts[i].split(/\s+/).length,
       transcription: "recording",
       timestamp: t.timestamp,
     })),
@@ -466,10 +690,12 @@ async function retranscribeInner(sessionId: string, opts: { source: string; auto
   void recordSessionError({
     sessionId,
     category: "tts_stt",
-    severity: "info",
+    severity: failures.length || cleanup.error ? "warning" : "info",
     source: opts.source,
-    message: `Transcript rebuilt from recording: ${aligned.length} candidate lines (${candidateWords} words), replaced ${replaceable.length}.`,
-    context: { stage: "retranscribe", model, backupPath, mime },
+    message: `Transcript rebuilt from recording (${model}): ${aligned.length} candidate lines (${candidateWords} words), replaced ${replaceable.length}. Clean-up: ${
+      cleanup.ran ? `${cleanup.changed} lines fixed, ${cleanup.rejected} edits rejected${cleanup.wholeRejected ? " (all, word count drifted)" : ""}` : `skipped${cleanup.error ? ` (${cleanup.error})` : ""}`
+    }.`,
+    context: { stage: "retranscribe", model, source, backupPath, mime, notes: notes.slice(0, 5), engineFailures: failures.slice(0, 5) },
   });
 
   let summary: RetranscribeResult["summary"] = opts.auto ? "skipped" : "failed";

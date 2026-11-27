@@ -90,7 +90,8 @@ export function isInterviewerEcho(fragment: string, index: EchoIndex, threshold 
 export function stripInterviewerEcho(text: string, index: EchoIndex): string {
   if (!index.tokenSets.length) return text;
   if (isInterviewerEcho(text, index)) return "";
-  const sentences = text.match(/[^.!?。？！]+[.!?。？！]*/g) ?? [text];
+  // A "." inside a token (8.65 LPA, Node.js) is not a sentence end.
+  const sentences = text.match(/(?:[^.!?。？！]|[.!?](?=\S))+[.!?。？！]*/g) ?? [text];
   if (sentences.length < 2) return text;
   return sentences
     .filter((s) => !isInterviewerEcho(s, index))
@@ -230,4 +231,63 @@ export function planTranscriptReplacement(messages: StoredMessage[], turns: Tran
     replaced,
     insert: aligned.map((t) => ({ ...t, role: "USER" as const, transcription: "recording" as const })),
   };
+}
+
+// ── Candidate-only mic clips ────────────────────────────────────────────────
+
+/** A candidate may start talking just before the AI's line is saved (barge-in); count that as "after" it. */
+const MIC_ANCHOR_SLACK_MS = 1000;
+
+export type MicClip = { text: string; /** Absolute start (epoch ms, the browser's clock). */ startMs: number; endMs: number };
+
+/**
+ * Candidate-only mic clips → candidate turns. The mic track holds no interviewer
+ * voice, so a clip belongs after the last saved interviewer line that came before
+ * it (message times are on the same browser clock as the recording).
+ */
+export function micClipsToTurns(clips: MicClip[], assistantTimestampsMs: number[]): TranscribedTurn[] {
+  const ts = assistantTimestampsMs.filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
+  return clips
+    .filter((c) => c.text.trim())
+    .sort((a, b) => a.startMs - b.startMs)
+    .map((c) => ({
+      speaker: "candidate",
+      startSec: c.startMs / 1000,
+      endSec: c.endMs / 1000,
+      afterLine: ts.filter((t) => t <= c.startMs + MIC_ANCHOR_SLACK_MS).length,
+      text: c.text.trim(),
+    }));
+}
+
+// ── Mixed recording clips ───────────────────────────────────────────────────
+
+export type MixedClip = { text: string; startSec: number; endSec: number };
+
+/**
+ * Label clips from the mixed recording (AI voice + candidate) without a model's
+ * speaker labels: a clip that repeats a saved interviewer line is the interviewer
+ * (and tells us where that line sits in time); everything else is the candidate.
+ */
+export function diarizeByLines(clips: MixedClip[], interviewerLines: string[], threshold = 0.6): TranscribedTurn[] {
+  const index = buildEchoIndex(interviewerLines);
+  const lineTokens = interviewerLines.map((l) => buildEchoIndex([l]));
+  return clips
+    .filter((c) => c.text.trim())
+    .sort((a, b) => a.startSec - b.startSec)
+    .map((c) => {
+      const text = c.text.trim();
+      const words = tokens(text).length;
+      const isAi = words >= 3 ? echoScore(text, index) >= threshold : isInterviewerEcho(text, index);
+      if (!isAi) return { speaker: "candidate", startSec: c.startSec, endSec: c.endSec, afterLine: 0, text };
+      let best = 0;
+      let bestIdx = 0;
+      lineTokens.forEach((li, i) => {
+        const s = echoScore(text, li);
+        if (s > best) {
+          best = s;
+          bestIdx = i + 1;
+        }
+      });
+      return { speaker: "interviewer", startSec: c.startSec, endSec: c.endSec, afterLine: bestIdx, text };
+    });
 }
