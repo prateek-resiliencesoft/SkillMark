@@ -221,17 +221,20 @@ export const aiSettingsRouter = router({
     .input(
       z.object({
         organizationId: z.string(),
-        taskModels: z.record(
-          taskKindSchema,
-          z
-            .array(
-              z.object({
-                provider: providerIdSchema,
-                model: z.string().trim().min(1).max(200),
-              }),
-            )
-            .max(12),
-        ),
+        // Partial map — only customized tasks; sanitizeTaskModels drops unknown keys.
+        taskModels: z
+          .record(
+            z.string(),
+            z
+              .array(
+                z.object({
+                  provider: providerIdSchema,
+                  model: z.string().trim().min(1).max(200),
+                }),
+              )
+              .max(12),
+          )
+          .default({}),
       }),
     )
     .mutation(async ({ ctx, input }) => {
