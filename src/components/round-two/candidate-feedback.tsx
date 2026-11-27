@@ -2,8 +2,9 @@
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { FEEDBACK_ENHANCE_MIN } from "@/lib/draft-candidate-feedback";
 import { cn } from "@/lib/utils";
-import { Star } from "lucide-react";
+import { Loader2, Star } from "lucide-react";
 import { useState } from "react";
 
 /** Short, optional experience feedback shown to the candidate after the interview (1-5 stars + a comment). */
@@ -11,10 +12,37 @@ export function CandidateFeedbackCard({ token, className }: { token: string; cla
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "done" | "skipped">("idle");
+  const [enhancing, setEnhancing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (state === "done") return <p className={cn("text-sm font-medium", className)}>Thank you for your feedback!</p>;
   if (state === "skipped") return null;
+
+  const enhance = async () => {
+    const draft = comment.trim();
+    if (draft.length < FEEDBACK_ENHANCE_MIN) {
+      setError(`Write at least ${FEEDBACK_ENHANCE_MIN} characters before enhancing.`);
+      return;
+    }
+    setEnhancing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/round-two/candidate/feedback/enhance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, draft }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.comment) {
+        throw new Error(body.error || body.message || "Couldn't enhance your feedback");
+      }
+      setComment(String(body.comment).slice(0, 1000));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't enhance your feedback");
+    } finally {
+      setEnhancing(false);
+    }
+  };
 
   const send = async () => {
     setState("sending");
@@ -55,10 +83,30 @@ export function CandidateFeedbackCard({ token, className }: { token: string; cla
           </button>
         ))}
       </div>
-      <Textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} maxLength={1000} placeholder="Anything you'd like to tell us? (optional)" className="text-sm" />
+      <Textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        rows={3}
+        maxLength={1000}
+        placeholder="Anything you'd like to tell us? (optional)"
+        className="text-sm"
+      />
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          disabled={state === "sending" || enhancing || comment.trim().length < FEEDBACK_ENHANCE_MIN}
+          onClick={() => void enhance()}
+        >
+          {enhancing ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+          Enhance with AI
+        </Button>
+      </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">
-        <Button disabled={!rating || state === "sending"} onClick={() => void send()}>
+        <Button disabled={!rating || state === "sending" || enhancing} onClick={() => void send()}>
           {state === "sending" ? "Sending…" : "Send feedback"}
         </Button>
         <Button variant="ghost" onClick={() => setState("skipped")}>

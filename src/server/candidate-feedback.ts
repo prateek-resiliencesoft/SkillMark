@@ -60,6 +60,20 @@ async function sessionContext(db: Db, sessionId: string, inviteToken: string | u
   return { sessionId, candidateId: (cand?.id as string | undefined) ?? null, organizationId, interviewId: (s.interviewId as string | null) ?? null };
 }
 
+/** Same gates as submitFeedback; returns org id for AI enhance. Does not write. */
+export async function feedbackEnhanceContext(
+  db: Db,
+  sessionId: string,
+  inviteToken?: string,
+  nowMs = Date.now(),
+): Promise<{ sessionId: string; organizationId: string }> {
+  const ctx = await sessionContext(db, sessionId, inviteToken, nowMs);
+  if (!ctx.organizationId) {
+    throw new FeedbackError("UNAVAILABLE", "Feedback enhance is not available for this interview.", 503);
+  }
+  return { sessionId: ctx.sessionId, organizationId: ctx.organizationId };
+}
+
 /** Whether the form should show for this session. */
 export async function feedbackStatus(
   db: Db,
