@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   DEFAULT_PREFLIGHT_STALE_MS,
   buildPreflightTimeline,
+  dashboardSessionStatusBucket,
   formatSessionStatusLabel,
   isPreflightStale,
   preflightStuckStep,
@@ -79,6 +80,37 @@ describe("formatSessionStatusLabel", () => {
       ),
       "Not Started",
     );
+  });
+});
+
+describe("dashboardSessionStatusBucket", () => {
+  it("matches candidates IN_PROGRESS filter (stale → NOT_STARTED, setup stays IN_PROGRESS)", () => {
+    assert.equal(
+      dashboardSessionStatusBucket(
+        { status: "IN_PROGRESS", interviewBeganAt: null, preflightStep: "mic_check", lastActivityAt: ago(DEFAULT_PREFLIGHT_STALE_MS + 5_000) },
+        NOW,
+      ),
+      "NOT_STARTED",
+    );
+    assert.equal(
+      dashboardSessionStatusBucket(
+        { status: "IN_PROGRESS", interviewBeganAt: null, preflightStep: "camera_permission", lastActivityAt: ago(1_000) },
+        NOW,
+      ),
+      "IN_PROGRESS",
+    );
+    assert.equal(
+      dashboardSessionStatusBucket({ status: "IN_PROGRESS", interviewBeganAt: ago(5_000) }, NOW),
+      "IN_PROGRESS",
+    );
+  });
+
+  it("keeps terminal statuses and defaults unknown/null to NOT_STARTED", () => {
+    assert.equal(dashboardSessionStatusBucket({ status: "COMPLETED" }, NOW), "COMPLETED");
+    assert.equal(dashboardSessionStatusBucket({ status: "ABANDONED" }, NOW), "ABANDONED");
+    assert.equal(dashboardSessionStatusBucket({ status: "DISQUALIFIED" }, NOW), "DISQUALIFIED");
+    assert.equal(dashboardSessionStatusBucket({ status: null }, NOW), "NOT_STARTED");
+    assert.equal(dashboardSessionStatusBucket(null, NOW), "NOT_STARTED");
   });
 });
 

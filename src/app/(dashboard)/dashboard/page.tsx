@@ -92,18 +92,8 @@ export default function DashboardPage() {
     };
   }, [data?.daily]);
 
-  // Derive real average candidate score for Radial Gauge
-  const avgCandidateScore = useMemo(() => {
-    const scoredSessions =
-      data?.recentSessions?.filter((s) => typeof s.score === "number" && s.score > 0) ?? [];
-    if (scoredSessions.length === 0) return 0;
-    const sum = scoredSessions.reduce((acc, curr) => acc + (curr.score ?? 0), 0);
-    return Math.round((sum / scoredSessions.length) * 10) / 10;
-  }, [data?.recentSessions]);
-
-  const totalEvaluated = useMemo(() => {
-    return data?.recentSessions?.filter((s) => typeof s.score === "number" && s.score > 0).length ?? 0;
-  }, [data?.recentSessions]);
+  const avgCandidateScore = data?.avgCandidateScore ?? 0;
+  const totalEvaluated = data?.scoredSessions ?? 0;
 
   const completionRate = useMemo(() => {
     const total = data?.totalSessions ?? 0;
@@ -112,19 +102,19 @@ export default function DashboardPage() {
     return Math.round((completed / total) * 100);
   }, [data?.totalSessions, data?.statusBreakdown]);
 
-  // Funnel data from real candidate numbers
+  // Funnel: monotonic counts from live status buckets + scored sessions
   const funnelStages = useMemo(() => {
     const totalSessions = data?.totalSessions ?? 0;
-    const completed = data?.statusBreakdown.COMPLETED ?? 0;
-    const inProgress = data?.statusBreakdown.IN_PROGRESS ?? 0;
     const notStarted = data?.statusBreakdown.NOT_STARTED ?? 0;
-    const scored = data?.recentSessions?.filter((s) => typeof s.score === "number" && s.score > 0).length ?? 0;
+    const began = data?.beganInterview ?? 0;
+    const completed = data?.statusBreakdown.COMPLETED ?? 0;
+    const scored = data?.scoredSessions ?? 0;
 
     return [
-      { name: "Invited Candidates", count: totalSessions + notStarted, color: "#0511F2" },
-      { name: "Sessions Commenced", count: totalSessions, color: "#296CF2" },
-      { name: "Active Assessment", count: completed + inProgress, color: "#277FF2" },
-      { name: "Completed Interviews", count: completed, color: "#5941F2" },
+      { name: "All Sessions", count: totalSessions, color: "#0511F2" },
+      { name: "Opened or Active", count: Math.max(0, totalSessions - notStarted), color: "#296CF2" },
+      { name: "Interview Begun", count: began, color: "#277FF2" },
+      { name: "Completed", count: completed, color: "#5941F2" },
       { name: "AI Evaluated & Scored", count: scored, color: "#8B5CF6" },
     ];
   }, [data]);
@@ -244,6 +234,14 @@ export default function DashboardPage() {
               {
                 name: t("dashboard.notStarted"),
                 value: data?.statusBreakdown.NOT_STARTED ?? 0,
+              },
+              {
+                name: t("dashboard.abandoned"),
+                value: data?.statusBreakdown.ABANDONED ?? 0,
+              },
+              {
+                name: t("dashboard.disqualified"),
+                value: data?.statusBreakdown.DISQUALIFIED ?? 0,
               },
             ]}
             loading={isLoading}

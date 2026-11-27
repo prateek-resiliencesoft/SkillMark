@@ -247,6 +247,48 @@ export function formatSessionStatusLabel(
   return status.replaceAll("_", " ");
 }
 
+/**
+ * Dashboard / filter bucket aligned with candidates IN_PROGRESS filter:
+ * quiet pre-flight → NOT_STARTED; Opened link / Setting up stay IN_PROGRESS.
+ */
+export const DASHBOARD_STATUS_BUCKETS = [
+  "COMPLETED",
+  "IN_PROGRESS",
+  "NOT_STARTED",
+  "ABANDONED",
+  "DISQUALIFIED",
+] as const;
+
+export type DashboardStatusBucket = (typeof DASHBOARD_STATUS_BUCKETS)[number];
+
+export function dashboardSessionStatusBucket(
+  session: PreflightSessionFields | null | undefined,
+  nowMs: number = Date.now(),
+): DashboardStatusBucket {
+  if (!session) return "NOT_STARTED";
+  const status = session.status ?? "";
+  if (status === "COMPLETED") return "COMPLETED";
+  if (status === "ABANDONED") return "ABANDONED";
+  if (status === "DISQUALIFIED") return "DISQUALIFIED";
+  if (status === "IN_PROGRESS") {
+    // Same rule as candidates statusFilter === "IN_PROGRESS":
+    // exclude only quiet pre-flight that displays as "Not Started".
+    if (formatSessionStatusLabel(session, nowMs) === "Not Started") return "NOT_STARTED";
+    return "IN_PROGRESS";
+  }
+  return "NOT_STARTED";
+}
+
+export function emptyDashboardStatusBreakdown(): Record<DashboardStatusBucket, number> {
+  return {
+    COMPLETED: 0,
+    IN_PROGRESS: 0,
+    NOT_STARTED: 0,
+    ABANDONED: 0,
+    DISQUALIFIED: 0,
+  };
+}
+
 export type DeviceInfo = {
   userAgent?: string;
   language?: string;

@@ -1,5 +1,9 @@
 import { nanoid } from "@/lib/id";
 import { INTERVIEW_TEMPLATES } from "@/lib/interview-templates";
+import {
+  dashboardSessionStatusBucket,
+  emptyDashboardStatusBreakdown,
+} from "@/lib/preflight";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -28,6 +32,9 @@ function emptyDashboard() {
     completionRate: 0,
     avgSessionDuration: 0,
     avgMessagesPerSession: 0,
+    avgCandidateScore: 0,
+    scoredSessions: 0,
+    beganInterview: 0,
     daily: [] as {
       date: string;
       sessions: number;
@@ -44,7 +51,7 @@ function emptyDashboard() {
       WHITEBOARD: 0,
       RESEARCH: 0,
     },
-    statusBreakdown: { COMPLETED: 0, IN_PROGRESS: 0, NOT_STARTED: 0 },
+    statusBreakdown: emptyDashboardStatusBreakdown(),
     topThemes: [] as { theme: string; count: number }[],
     recentSessions: [] as {
       id: string;
@@ -1175,11 +1182,11 @@ export const interviewRouter = router({
         .select("id", { count: "exact", head: true })
         .in("interviewId", interviewIds);
 
-      // List fields only — insights loaded later for the 5 recent completed rows.
+      // List fields only — insights loaded later for completed rows (scores + recent).
       const { data: sessions } = await ctx.supabase
         .from("sessions")
         .select(
-          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail",
+          "id, interviewId, status, modeUsed, totalDurationSeconds, themes, createdAt, participantName, participantEmail, interviewBeganAt, lastActivityAt, startedAt, preflightStep, lastHeartbeatAt",
         )
         .in("interviewId", interviewIds);
       const allSessions = sessions ?? [];
@@ -1291,13 +1298,32 @@ export const interviewRouter = router({
           questionTypeBreakdown[t as keyof typeof questionTypeBreakdown]++;
       }
 
-      // Status breakdown (NOT_STARTED = sessions with no startedAt or status still default)
-      const statusBreakdown = { COMPLETED: 0, IN_PROGRESS: 0, NOT_STARTED: 0 };
+      // Status breakdown — same recruiter-facing buckets as /candidates filters
+      const nowMs = Date.now();
+      const statusBreakdown = emptyDashboardStatusBreakdown();
+      let beganInterview = 0;
       for (const s of allSessions) {
-        const st = (s.status as string) ?? "IN_PROGRESS";
-        if (st === "COMPLETED") statusBreakdown.COMPLETED++;
-        else if (st === "IN_PROGRESS") statusBreakdown.IN_PROGRESS++;
-        else statusBreakdown.NOT_STARTED++;
+        const bucket = dashboardSessionStatusBucket(
+          {
+            status: s.status as string | null,
+            interviewBeganAt: s.interviewBeganAt as string | null,
+            lastActivityAt: s.lastActivityAt as string | null,
+            startedAt: s.startedAt as string | null,
+            createdAt: s.createdAt as string | null,
+            preflightStep: s.preflightStep as string | null,
+            lastHeartbeatAt: s.lastHeartbeatAt as string | null,
+          },
+          nowMs,
+        );
+        statusBreakdown[bucket]++;
+        if (
+          bucket === "COMPLETED" ||
+          bucket === "ABANDONED" ||
+          bucket === "DISQUALIFIED" ||
+          (bucket === "IN_PROGRESS" && Boolean(s.interviewBeganAt))
+        ) {
+          beganInterview++;
+        }
       }
 
       // Top themes
@@ -1313,20 +1339,37 @@ export const interviewRouter = router({
         .slice(0, 8)
         .map(([theme, count]) => ({ theme, count }));
 
-      // Recent completed sessions (fetch insights only for these 5)
-      const recentIds = [...allSessions]
+      // Insights for all completed (avg score) — recent list still capped at 5
+      const completedSorted = [...allSessions]
         .filter((s) => s.status === "COMPLETED")
-        .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string))
-        .slice(0, 5)
-        .map((s) => s.id as string);
+        .sort((a, b) => (b.createdAt as string).localeCompare(a.createdAt as string));
+      const completedIds = completedSorted.map((s) => s.id as string);
+      const recentIds = completedIds.slice(0, 5);
       const insightsById = new Map<string, unknown>();
-      if (recentIds.length > 0) {
-        const { data: recentRows } = await ctx.supabase
+      if (completedIds.length > 0) {
+        const { data: insightRows } = await ctx.supabase
           .from("sessions")
           .select("id, insights")
-          .in("id", recentIds);
-        for (const r of recentRows ?? []) insightsById.set(r.id as string, r.insights);
+          .in("id", completedIds);
+        for (const r of insightRows ?? []) insightsById.set(r.id as string, r.insights);
       }
+      let scoredSessions = 0;
+      let scoreSum = 0;
+      for (const id of completedIds) {
+        const score = getSessionOverallScore(
+          insightsById.get(id) as {
+            questionEvaluations?: { score: number }[];
+            criteriaEvaluations?: { score: number }[];
+          } | null,
+        );
+        if (typeof score === "number" && score > 0) {
+          scoredSessions++;
+          scoreSum += score;
+        }
+      }
+      const avgCandidateScore =
+        scoredSessions > 0 ? Math.round((scoreSum / scoredSessions) * 10) / 10 : 0;
+
       const recentMsgCount = new Map<string, number>();
       if (recentIds.length > 0) {
         const { data: recentMsgs } = await ctx.supabase
@@ -1370,6 +1413,9 @@ export const interviewRouter = router({
         completionRate,
         avgSessionDuration,
         avgMessagesPerSession,
+        avgCandidateScore,
+        scoredSessions,
+        beganInterview,
         daily,
         questionTypeBreakdown,
         statusBreakdown,
