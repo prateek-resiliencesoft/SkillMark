@@ -5,7 +5,7 @@ import {
   DEFAULT_PROVIDER_MODELS,
   DEFAULT_TASK_ROUTING,
   MAX_KEYS_PER_PROVIDER,
-  applyCustomModelsPatch,
+  applyProviderModelsPatch,
   applyKeyOrderPatch,
   applyKeySlotsPatch,
   defaultModelForProvider,
@@ -88,7 +88,7 @@ export const aiSettingsRouter = router({
         keyTiers: masked[id].keyTiers,
         maxKeys: MAX_KEYS_PER_PROVIDER,
         baseUrl: id === "custom" ? masked[id].baseUrl : undefined,
-        textModel: id === "custom" ? plain.custom?.textModel ?? "" : undefined,
+        textModel: plain[id]?.textModel ?? "",
         voiceModel: id === "custom" ? plain.custom?.voiceModel ?? "" : undefined,
         defaultModel: defaultModelForProvider(id),
         configured: masked[id].keyCount > 0 || (id === "custom" && !!masked[id].baseUrl),
@@ -130,8 +130,9 @@ export const aiSettingsRouter = router({
           .max(MAX_KEYS_PER_PROVIDER)
           .optional(),
         baseUrl: z.string().max(500).nullable().optional(),
-        /** Custom endpoint only. */
+        /** Default chat model for this provider. */
         textModel: z.string().max(200).nullable().optional(),
+        /** Custom endpoint only — realtime voice model. */
         voiceModel: z.string().max(200).nullable().optional(),
       }),
     )
@@ -143,10 +144,10 @@ export const aiSettingsRouter = router({
       let next = input.slots
         ? applyKeyOrderPatch(current, input.providerId, input.slots, baseUrl)
         : applyKeySlotsPatch(current, input.providerId, input.keySlots ?? [], baseUrl);
-      if (input.providerId === "custom") {
-        const models = applyCustomModelsPatch(next, {
+      if (input.textModel !== undefined || (input.providerId === "custom" && input.voiceModel !== undefined)) {
+        const models = applyProviderModelsPatch(next, input.providerId, {
           textModel: input.textModel,
-          voiceModel: input.voiceModel,
+          voiceModel: input.providerId === "custom" ? input.voiceModel : undefined,
         });
         if (models.error) throw new TRPCError({ code: "BAD_REQUEST", message: models.error });
         next = models.next;
@@ -306,20 +307,31 @@ export const aiSettingsRouter = router({
       z.object({
         organizationId: z.string(),
         providerId: providerIdSchema,
+        /** Optional draft key (unsaved) — used when testing before Save. */
+        apiKey: z.string().max(500).optional(),
+        /** Optional draft base URL for Custom. */
+        baseUrl: z.string().max(500).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       await requireOrgAdmin(ctx.supabase, input.organizationId, ctx.user.id);
       const plain = decryptAiProviders(await loadOrgAiProvidersRaw(ctx.supabase, input.organizationId));
-      const key = plain[input.providerId]?.apiKeys?.[0];
+      const key = input.apiKey?.trim() || plain[input.providerId]?.apiKeys?.[0];
       if (!key) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "Add an API key for this provider first." });
+      }
+      const baseUrl =
+        input.providerId === "custom"
+          ? input.baseUrl?.trim() || plain.custom?.baseUrl || undefined
+          : plain[input.providerId]?.baseUrl;
+      if (input.providerId === "custom" && input.baseUrl !== undefined) {
+        await validateCustomBaseUrl(input.baseUrl);
       }
       try {
         const listed = await listProviderModels({
           provider: input.providerId,
           apiKey: key,
-          baseUrl: plain[input.providerId]?.baseUrl,
+          baseUrl,
         });
         const upserted = await upsertListedModels(input.providerId, listed);
         return { ok: true as const, count: listed.length, upserted, models: listed.slice(0, 100) };

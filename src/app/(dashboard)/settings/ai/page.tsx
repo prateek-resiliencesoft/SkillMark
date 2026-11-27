@@ -31,6 +31,7 @@ import {
   Key,
   Loader2,
   Plus,
+  RefreshCw,
   Server,
   Trash2,
 } from "lucide-react";
@@ -38,6 +39,8 @@ import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
 
 type ProviderId = "openai" | "gemini" | "nvidia" | "anthropic" | "groq" | "custom";
+
+const STT_PROVIDERS: ProviderId[] = ["groq", "openai", "custom"];
 
 /** One API key row. `keep` = index of the already-saved key it represents (null = new). */
 type KeySlot = { id: string; keep: number | null; value: string; tier: "free" | "paid" };
@@ -311,29 +314,43 @@ export default function AiSettingsPage() {
     custom: false,
   });
   const [customBase, setCustomBase] = useState("");
-  const [customTextModel, setCustomTextModel] = useState("");
   const [customVoiceModel, setCustomVoiceModel] = useState("");
+  const [textModels, setTextModels] = useState<Record<ProviderId, string>>({
+    openai: "",
+    gemini: "",
+    nvidia: "",
+    anthropic: "",
+    groq: "",
+    custom: "",
+  });
+  const [fetchedModels, setFetchedModels] = useState<
+    Partial<Record<ProviderId, { id: string; name?: string }[]>>
+  >({});
   const [routing, setRouting] = useState<Record<string, ProviderId[]>>({});
   const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<{ id: ProviderId | "routing"; type: "save" | "clear" } | null>(null);
+  const [testingProvider, setTestingProvider] = useState<ProviderId | null>(null);
 
   useEffect(() => {
     if (!query.data) return;
     const custom = query.data.providers.find((p) => p.id === "custom");
     setCustomBase(custom?.baseUrl ?? "");
-    setCustomTextModel(custom?.textModel ?? "");
     setCustomVoiceModel(custom?.voiceModel ?? "");
+    const nextModels = { ...textModels };
     const nextSlots = emptySlots();
     for (const p of query.data.providers) {
       const id = p.id as ProviderId;
+      nextModels[id] = (p as ProviderRow).textModel?.trim() || (p as ProviderRow).defaultModel || "";
       if ((p.keyCount || 0) > 0) {
         nextSlots[id] = Array.from({ length: p.keyCount }, (_, i) =>
           newSlot(i, p.keyTiers?.[i] === "paid" ? "paid" : "free"),
         );
       }
     }
+    setTextModels(nextModels);
     setKeySlots(nextSlots);
     setRouting(query.data.routing as Record<string, ProviderId[]>);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once per query payload
   }, [query.data]);
 
   const saveKeys = trpc.aiSettings.saveProviderKeys.useMutation({
@@ -369,8 +386,24 @@ export default function AiSettingsPage() {
       setPendingAction(null);
     },
   });
+  const testProvider = trpc.aiSettings.testProvider.useMutation({
+    onSuccess: (res, vars) => {
+      setFetchedModels((prev) => ({
+        ...prev,
+        [vars.providerId]: res.models.map((m) => ({ id: m.id, name: m.displayName })),
+      }));
+      toast({ title: "Models fetched", description: `${res.count} models from ${vars.providerId}` });
+      setTestingProvider(null);
+      void utils.aiSettings.listCatalog.invalidate();
+    },
+    onError: (e) => {
+      toast({ title: "Test failed", description: e.message, variant: "destructive" });
+      setTestingProvider(null);
+    },
+  });
 
-  const busy = saveKeys.isLoading || clearProvider.isLoading || saveRouting.isLoading;
+  const busy =
+    saveKeys.isLoading || clearProvider.isLoading || saveRouting.isLoading || testProvider.isLoading;
 
   const voiceCheck = useMemo(
     () => (customVoiceModel.trim() ? checkVoiceModel(customVoiceModel) : null),
@@ -396,6 +429,28 @@ export default function AiSettingsPage() {
   };
   const configuredCount = PROVIDERS.filter((p) => isConfigured(p.id)).length;
 
+  const draftKeyFor = (pid: ProviderId) =>
+    (keySlots[pid] ?? []).map((s) => s.value.trim()).find(Boolean) || undefined;
+
+  const canTestProvider = (pid: ProviderId) => {
+    const row = byId[pid];
+    return (row?.keyCount ?? 0) > 0 || !!draftKeyFor(pid) || (pid === "custom" && !!customBase.trim());
+  };
+
+  const handleTestProvider = (pid: ProviderId) => {
+    if (!canTestProvider(pid)) {
+      toast({ title: "Add an API key first", description: "Paste a key, then Test to list models." });
+      return;
+    }
+    setTestingProvider(pid);
+    testProvider.mutate({
+      organizationId: orgId,
+      providerId: pid,
+      apiKey: draftKeyFor(pid),
+      ...(pid === "custom" ? { baseUrl: customBase.trim() || undefined } : {}),
+    });
+  };
+
   const handleSaveKeys = (p: ProviderMeta) => {
     if (p.id === "custom" && customVoiceModel.trim() && voiceCheck && !voiceCheck.ok) {
       toast({ title: "Can't save this voice model", description: voiceCheck.reason, variant: "destructive" });
@@ -410,10 +465,10 @@ export default function AiSettingsPage() {
         value: sl.value.trim() || undefined,
         tier: sl.tier,
       })),
+      textModel: textModels[p.id]?.trim() || null,
       ...(p.needsBaseUrl
         ? {
             baseUrl: customBase.trim() || null,
-            textModel: customTextModel.trim() || null,
             voiceModel: customVoiceModel.trim() || null,
           }
         : {}),
@@ -575,21 +630,7 @@ export default function AiSettingsPage() {
                 />
               </div>
 
-              {scope === "text" ? (
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-muted-foreground">Chat model</Label>
-                  <Input
-                    placeholder={row?.defaultModel ?? "llama3.1:8b"}
-                    value={customTextModel}
-                    onChange={(e) => setCustomTextModel(e.target.value)}
-                    disabled={!canEdit || busy}
-                    className="bg-background/80 font-mono text-xs"
-                  />
-                  <p className="text-[11px] text-muted-foreground">
-                    Used for chat interviews, reports, CV parsing and question generation. Any chat model works.
-                  </p>
-                </div>
-              ) : (
+              {scope === "voice" ? (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium text-muted-foreground">Voice model (realtime)</Label>
                   <Input
@@ -624,14 +665,39 @@ export default function AiSettingsPage() {
                     </p>
                   )}
                 </div>
-              )}
+              ) : null}
             </>
+          )}
+
+          {/* Default chat model — all providers */}
+          {(scope === "text" || !isCustom) && (
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-muted-foreground">Default chat model</Label>
+              <Input
+                list={`models-pick-${p.id}-${scope}`}
+                placeholder={row?.defaultModel ?? "Select or type a model id"}
+                value={textModels[p.id] ?? ""}
+                onChange={(e) => setTextModels((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                disabled={!canEdit || busy}
+                className="bg-background/80 font-mono text-xs"
+              />
+              <datalist id={`models-pick-${p.id}-${scope}`}>
+                {(fetchedModels[p.id] ?? []).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name && m.name !== m.id ? m.name : m.id}
+                  </option>
+                ))}
+              </datalist>
+              <p className="text-[11px] text-muted-foreground">
+                Used when Studio has no hop for a task. Hit Test to load models from this API key.
+              </p>
+            </div>
           )}
 
           <div className="space-y-2">
             <Label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               <Key className="h-3 w-3" />
-              API keys · drag to set failover order (max {maxKeys})
+              API keys · drag grip to reorder failover (max {maxKeys})
             </Label>
             <p className="text-[11px] text-muted-foreground">
               Free = confirmed free account · Paid = confirmed paid account
@@ -639,7 +705,7 @@ export default function AiSettingsPage() {
             <SortableList
               items={slots}
               getKey={(sl) => sl.id}
-              disabled={!canEdit || busy || slots.length < 2}
+              disabled={!canEdit || busy}
               onReorder={(next) => setKeySlots((prev) => ({ ...prev, [p.id]: next }))}
             >
               {(slot, i, handle) => (
@@ -737,7 +803,7 @@ export default function AiSettingsPage() {
           </div>
 
           {canEdit && (
-            <div className="flex items-center justify-end gap-2 border-t border-border/40 pt-3">
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/40 pt-3">
               {hasOrg && (
                 <Button
                   size="sm"
@@ -752,6 +818,25 @@ export default function AiSettingsPage() {
                     <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                   )}
                   Clear all
+                </Button>
+              )}
+              {canTestProvider(p.id) && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => handleTestProvider(p.id)}
+                  className="h-8 text-xs"
+                >
+                  {testingProvider === p.id ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Test · fetch models
+                  {(fetchedModels[p.id]?.length ?? 0) > 0
+                    ? ` (${fetchedModels[p.id]!.length})`
+                    : ""}
                 </Button>
               )}
               <Button size="sm" disabled={busy} onClick={() => handleSaveKeys(p)} className="h-8 text-xs font-medium">
@@ -857,9 +942,10 @@ export default function AiSettingsPage() {
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Provider priority</h2>
             <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
-              {canEdit ? "Drag to reorder. " : ""}Top of each list is tried first; the rest are
-              backups. Reject-reason AI draft uses <span className="font-medium">Question generation</span>{" "}
-              — keep a second provider with a key so Gemini quota does not block drafts.
+              {canEdit ? "Drag the ⋮⋮ grip to change order. " : ""}
+              Top = tried first; lower rows are backups. Reject-reason drafts use{" "}
+              <span className="font-medium">Question generation</span> — keep a second keyed provider so
+              quota on one does not block drafts.
             </p>
           </div>
           {canEdit && (
@@ -900,7 +986,7 @@ export default function AiSettingsPage() {
           <SortableList
             items={voiceList}
             getKey={(pid) => `voice-${pid}`}
-            disabled={!canEdit || busy || voiceList.length < 2}
+            disabled={!canEdit || busy}
             onReorder={(next) => setRouting((prev) => ({ ...prev, voice: next }))}
           >
             {(pid, index, handle) => {
@@ -986,6 +1072,12 @@ export default function AiSettingsPage() {
         <div className="grid gap-4 md:grid-cols-2">
           {Object.entries(TEXT_TASKS).map(([task, meta]) => {
             const list = routing[task] ?? [];
+            const sttOnly = task === "round2_transcript";
+            const addable = PROVIDERS.filter((p) => {
+              if (list.includes(p.id)) return false;
+              if (sttOnly) return STT_PROVIDERS.includes(p.id);
+              return true;
+            });
             return (
               <div key={task} className="rounded-xl border bg-card/60 p-3">
                 <div className="mb-2 flex items-center gap-2">
@@ -998,7 +1090,7 @@ export default function AiSettingsPage() {
                 <SortableList
                   items={list}
                   getKey={(pid) => `${task}-${pid}`}
-                  disabled={!canEdit || busy || list.length < 2}
+                  disabled={!canEdit || busy}
                   onReorder={(next) => setRouting((prev) => ({ ...prev, [task]: next }))}
                 >
                   {(pid, index, handle) => {
@@ -1031,10 +1123,55 @@ export default function AiSettingsPage() {
                         >
                           {index === 0 ? "Primary" : `Backup ${index}`}
                         </Badge>
+                        {canEdit && (
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            aria-label={`Remove ${PROVIDER_SHORT[pid]} from ${meta.title}`}
+                            disabled={busy}
+                            onClick={() =>
+                              setRouting((prev) => ({
+                                ...prev,
+                                [task]: (prev[task] ?? []).filter((x) => x !== pid),
+                              }))
+                            }
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </div>
                     );
                   }}
                 </SortableList>
+                {list.length === 0 && (
+                  <p className="rounded-lg border border-dashed p-2 text-center text-[11px] text-muted-foreground">
+                    Empty — add a provider below (platform defaults apply until you save).
+                  </p>
+                )}
+                {canEdit && addable.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground">Add:</span>
+                    {addable.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          setRouting((prev) => ({
+                            ...prev,
+                            [task]: [...(prev[task] ?? []), p.id],
+                          }))
+                        }
+                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs hover:bg-muted"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {PROVIDER_SHORT[p.id]}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
