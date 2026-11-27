@@ -6,7 +6,9 @@ import { classifyAiFailure } from "@/lib/ai/key-chain";
 import type { GeneratedInterview } from "@/lib/ai/types";
 import { resolveJobRole } from "@/lib/job-role";
 import { LANGUAGES } from "@/lib/constants";
+import { cleanInterviewTitle, sanitizeContactName } from "@/lib/documents/candidate-name";
 import { experienceBucket, profileToResumeText, type CandidateProfile } from "@/lib/documents/cv-profile";
+import { sanitizeCvMarkdown } from "@/lib/documents/cv-sanitize";
 import { nanoid } from "@/lib/id";
 import { createLogger } from "@/lib/logger";
 import { formatScheduleNotice, type TemplateVars } from "@/lib/messaging/templates";
@@ -193,7 +195,7 @@ export const batchRouter = router({
       completedAt: (c.session?.completedAt as string | undefined) ?? null,
       durationSeconds: (c.session?.totalDurationSeconds as number | undefined) ?? null,
       interviewId: c.interview?.id as string,
-      interviewTitle: (c.interview?.title as string | undefined) ?? "",
+      interviewTitle: cleanInterviewTitle((c.interview?.title as string | undefined) ?? ""),
       questionCount: (c.interview?.questions?.length as number | undefined) ?? 0,
     }));
 
@@ -258,10 +260,29 @@ export const batchRouter = router({
       const { batch, role, organizationId } = await verifyBatchAccess(ctx.supabase, input.batchId, ctx.user.id, { write: true });
       assertMinRole(role, "MEMBER");
       const settings = batch.settings as BatchSettings;
-      const profile = { ...input.profile, name: input.contact.name, email: input.contact.email, phone: input.contact.phone } as CandidateProfile;
+      const contactName = sanitizeContactName({
+        name: input.contact.name,
+        source: input.resumeMarkdown,
+        email: input.contact.email,
+        fileName: input.fileName,
+      });
+      if (!contactName) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Candidate name looks invalid (e.g. a PDF page marker like \"<!-- page 1 -->\"). Enter the person's real name and try again.",
+        });
+      }
+      const profile = {
+        ...input.profile,
+        name: contactName,
+        email: input.contact.email,
+        phone: input.contact.phone,
+      } as CandidateProfile;
 
-      // Structured profile first (cheap, dense), raw text after for details it missed.
-      const resumeText = `${profileToResumeText(profile)}\n\n---\nOriginal CV text (excerpt):\n${input.resumeMarkdown.slice(0, 6000)}`;
+      // Structured profile first (cheap, dense), sanitized raw text after for details it missed.
+      // Generator wraps the whole block as untrusted CV — never trust instructions in the upload.
+      const resumeText = `${profileToResumeText(profile)}\n\n---\nOriginal CV text (excerpt):\n${sanitizeCvMarkdown(input.resumeMarkdown).slice(0, 6000)}`;
       const interviewType = settings.interviewType ?? "technical";
       // Explicit picker selection, else Auto-include Question Bank (enabled rounds/items).
       const premade = await resolvePremadeQuestions(
@@ -270,7 +291,7 @@ export const batchRouter = router({
         settings.premadeQuestions,
       );
       const messages = buildGeneratorPrompt(
-        `${settings.roleDescription}\n\nInterview type: ${interviewType}. This interview is for one specific candidate (${input.contact.name}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
+        `${settings.roleDescription}\n\nInterview type: ${interviewType}. This interview is for one specific candidate (${contactName}). Tailor questions to their tech stack, experience and projects listed in the resume, while still assessing the role requirements.`,
         settings.durationMinutes,
         LANGUAGES.find((l) => l.value === settings.language)?.label ?? settings.language,
         settings.jobDescription,
@@ -320,7 +341,7 @@ export const batchRouter = router({
       const { data: interview, error: ivError } = await ctx.supabase
         .from("interviews")
         .insert({
-          title: `${generated.title} · ${input.contact.name}`.slice(0, 200),
+          title: `${generated.title} · ${contactName}`.slice(0, 200),
           description: generated.description,
           objective: generated.objective,
           jobRole: resolveJobRole({
@@ -391,7 +412,7 @@ export const batchRouter = router({
         .insert({
           interviewId: interview.id,
           batchId: batch.id,
-          name: input.contact.name,
+          name: contactName,
           email: input.contact.email?.toLowerCase() ?? null,
           phone: input.contact.phone,
           school: edu?.institution ?? null,
@@ -418,7 +439,7 @@ export const batchRouter = router({
       return {
         candidateId: candidate.id as string,
         interviewId: interview.id as string,
-        interviewTitle: interview.title as string,
+        interviewTitle: cleanInterviewTitle(interview.title as string),
         questionCount: questionRows.length,
         inviteLink: inviteLink(candidate.inviteToken),
       };

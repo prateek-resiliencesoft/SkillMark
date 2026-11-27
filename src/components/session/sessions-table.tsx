@@ -59,6 +59,7 @@ import {
   Download01Icon,
 } from "@/components/ui/hugeicon";
 import { exportToXlsx } from "@/lib/export-xlsx";
+import { cleanInterviewTitle } from "@/lib/documents/candidate-name";
 import { resolveJobRole } from "@/lib/job-role";
 import { rejectTagLabel } from "@/lib/reject-tags";
 import { cn } from "@/lib/utils";
@@ -67,10 +68,14 @@ function sessionJobRole(session: SessionRow): string {
   return (
     resolveJobRole({
       jobRole: session.interview?.jobRole,
-      title: session.interview?.title,
+      title: cleanInterviewTitle(session.interview?.title) || session.interview?.title,
       objective: session.interview?.objective,
     }) ?? "—"
   );
+}
+
+function sessionInterviewTitle(session: SessionRow): string {
+  return cleanInterviewTitle(session.interview?.title) || session.interview?.title || "-";
 }
 
 /* ------------------------------------------------------------------ */
@@ -185,7 +190,7 @@ function getTimeRangeCutoff(value: string): Date | null {
 function getSortValue(session: SessionRow, key: SortKey): string | number {
   switch (key) {
     case "interview":
-      return (session.interview?.title ?? "").toLowerCase();
+      return sessionInterviewTitle(session).toLowerCase();
     case "role":
       return sessionJobRole(session).toLowerCase();
     case "participant":
@@ -441,7 +446,7 @@ export function SessionsTable({
       const q = searchQuery.toLowerCase();
       result = result.filter(
         (s) =>
-          (s.interview?.title ?? "").toLowerCase().includes(q) ||
+          sessionInterviewTitle(s).toLowerCase().includes(q) ||
           (s.participantName ?? "").toLowerCase().includes(q) ||
           (s.participantEmail ?? "").toLowerCase().includes(q),
       );
@@ -616,7 +621,7 @@ export function SessionsTable({
 
   function getFrozenCellContent(session: SessionRow): string {
     if (frozenCol?.key === "interview") {
-      return session.interview?.title ?? "-";
+      return sessionInterviewTitle(session);
     }
     return session.participantName || "Anonymous";
   }
@@ -632,7 +637,7 @@ export function SessionsTable({
       const record: Record<string, string | number | null> = {};
       for (const col of visibleCols) {
         switch (col.key) {
-          case "interview": record[col.label] = s.interview?.title ?? ""; break;
+          case "interview": record[col.label] = sessionInterviewTitle(s); break;
           case "role": record[col.label] = sessionJobRole(s); break;
           case "participant": record[col.label] = s.participantName || "Anonymous"; break;
           case "email": record[col.label] = s.participantEmail || ""; break;

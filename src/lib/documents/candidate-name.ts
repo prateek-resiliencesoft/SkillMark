@@ -207,5 +207,46 @@ export function resolveCandidateName(opts: {
 /** True when a stored candidate name looks like a page marker or other placeholder. */
 export function isJunkStoredName(name: string | null | undefined): boolean {
   if (!name || !name.trim()) return true;
-  return !isPlausiblePersonName(prettifyName(name.trim())) && !isPlausiblePersonName(name.trim());
+  const t = name.trim();
+  // Raw HTML comment / page marker even if other checks somehow pass.
+  if (/<!--/.test(t) || /-->/.test(t)) return true;
+  if (/^page\s*\d+(?:\s*(?:of|\/|-)\s*\d+)?$/i.test(t)) return true;
+  return !isPlausiblePersonName(prettifyName(t)) && !isPlausiblePersonName(t);
+}
+
+/**
+ * Batch interviews store `"{role title} · {candidateName}"`. If the name was a
+ * PDF page marker, strip that junk suffix for display (and repair scripts).
+ */
+export function cleanInterviewTitle(title: string | null | undefined): string {
+  if (!title?.trim()) return "";
+  const raw = title.trim();
+  // Drop any embedded page comments anywhere in the title.
+  let t = raw.replace(/<!--[\s\S]*?-->/g, " ").replace(/\s+/g, " ").trim();
+  t = t.replace(/\s*[·•]\s*$/g, "").trim();
+
+  const parts = t.split(/\s*[·•]\s*/).map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return t || raw.replace(/<!--[\s\S]*?-->/g, "").trim();
+
+  const head = parts.slice(0, -1).join(" · ");
+  const tail = parts[parts.length - 1]!;
+  if (isJunkStoredName(tail)) return head || t;
+  return t;
+}
+
+/** Resolve a usable person name for batch create; never returns page-marker junk. */
+export function sanitizeContactName(opts: {
+  name?: string | null;
+  source?: string | null;
+  email?: string | null;
+  fileName?: string | null;
+}): string | null {
+  const resolved = resolveCandidateName({
+    candidate: opts.name,
+    source: opts.source,
+    email: opts.email,
+    fileName: opts.fileName,
+  });
+  if (resolved.name && !isJunkStoredName(resolved.name)) return resolved.name;
+  return null;
 }

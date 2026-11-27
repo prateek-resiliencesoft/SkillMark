@@ -42,7 +42,7 @@ export default function SettingsLayout({
       external: true,
     },
     {
-      name: isZh ? "AI" : "AI",
+      name: isZh ? "AI 设置" : "AI Settings",
       href: "/settings/ai",
       icon: Sparkles,
     },
@@ -55,7 +55,14 @@ export default function SettingsLayout({
   ];
 
   useEffect(() => {
-    const routes = ["/settings", "/settings/members", "/settings/api-keys", "/settings/ai", "/organizations"];
+    const routes = [
+      "/settings",
+      "/settings/members",
+      "/settings/api-keys",
+      "/settings/ai",
+      "/settings/ai/studio",
+      "/organizations",
+    ];
     routes.forEach((route) => {
       try {
         router.prefetch(route);

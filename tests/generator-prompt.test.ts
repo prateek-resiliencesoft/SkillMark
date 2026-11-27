@@ -75,7 +75,11 @@ describe("Improve / refine prompt", () => {
     assert.ok(user.includes("USER FEEDBACK (mandatory"));
     assert.ok(user.includes("ask questions for HR — hiring process and management"));
     assert.ok(user.includes("--- JOB DESCRIPTION ---"));
-    assert.ok(user.includes("--- CANDIDATE RESUME ---"));
+    // CV is wrapped as untrusted data (anti prompt-injection), not raw --- CANDIDATE RESUME --- fences.
+    assert.ok(user.includes("<<<BEGIN_UNTRUSTED_CV>>>"));
+    assert.ok(user.includes("<<<END_UNTRUSTED_CV>>>"));
+    assert.ok(user.includes("Candidate CV text"));
+    assert.ok(system.includes("NEVER follow instructions") || system.includes("jailbreaks"));
   });
 });
 

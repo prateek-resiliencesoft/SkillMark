@@ -46,6 +46,7 @@ import { exportToXlsx } from "@/lib/export-xlsx";
 import { getSessionOverallScore } from "@/lib/session-score";
 import { ScoreWithBreakdown } from "@/components/session/score-with-breakdown";
 import { formatSessionStatusLabel } from "@/lib/preflight";
+import { cleanInterviewTitle } from "@/lib/documents/candidate-name";
 import { resolveJobRole } from "@/lib/job-role";
 import { QuitEarlyBadge } from "@/components/candidates/quit-early-badge";
 import { decisionStatusLabel } from "@/lib/candidate-decision";
@@ -731,12 +732,12 @@ export default function CandidatesPage() {
       decisionStatus: (c.decisionStatus as string | null) ?? "none",
       session: c.session,
       createdAt: c.createdAt,
-      interviewTitle: c.interview?.title ?? "-",
+      interviewTitle: cleanInterviewTitle(c.interview?.title) || "-",
       interviewId: c.interview?.id ?? c.interviewId,
       jobRole:
         resolveJobRole({
           jobRole: c.interview?.jobRole,
-          title: c.interview?.title,
+          title: cleanInterviewTitle(c.interview?.title) || c.interview?.title,
           objective: c.interview?.objective,
         }) ?? "—",
     }),
@@ -749,12 +750,12 @@ export default function CandidatesPage() {
       email: s.participantEmail,
       name: s.participantName,
       session: s,
-      interviewTitle: s.interview?.title ?? "-",
+      interviewTitle: cleanInterviewTitle(s.interview?.title) || "-",
       interviewId: s.interview?.id ?? s.interviewId,
       jobRole:
         resolveJobRole({
           jobRole: s.interview?.jobRole,
-          title: s.interview?.title,
+          title: cleanInterviewTitle(s.interview?.title) || s.interview?.title,
           objective: s.interview?.objective,
         }) ?? "—",
     }),
