@@ -187,8 +187,8 @@ export default function AiUsagePage() {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">AI Usage</h2>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            All costs in ₹ — input/output tokens × catalog rates (OpenAI list prices converted at
-            live FX).
+            ₹ cost for <span className="font-medium text-foreground">paid keys only</span>. Free-tier
+            keys still show tokens at ₹0. Rates from catalog (OpenAI list × FX).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -264,7 +264,7 @@ export default function AiUsagePage() {
           <Kpi
             label="Tokens"
             value={formatTokens(totals?.tokens ?? 0)}
-            hint={`In ${formatTokens(totals?.inputTokens ?? 0)} · Out ${formatTokens(totals?.outputTokens ?? 0)}`}
+            hint={`Paid ${formatTokens(totals?.paidTokens ?? 0)} · Free ${formatTokens(totals?.freeTokens ?? 0)}`}
             icon={Activity}
             accent="#0891b2"
           />
@@ -290,10 +290,13 @@ export default function AiUsagePage() {
       )}
 
       <div className="rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:px-5">
-        <span className="font-medium text-foreground">₹ pricing: </span>
+        <span className="font-medium text-foreground">₹ pricing (paid keys only): </span>
         (input ÷ 1M) × ₹/MTok<sub>in</sub> + (output ÷ 1M) × ₹/MTok<sub>out</sub>
         {data?.usdInr
           ? ` · FX ₹${Number(data.usdInr).toLocaleString("en-IN", { maximumFractionDigits: 2 })}/USD`
+          : ""}
+        {totals?.freeTokens
+          ? ` · ${formatTokens(totals.freeTokens)} free-tier tokens excluded from cost`
           : ""}
         {totals?.measuredIoShare != null && totals.measuredIoShare < 0.999
           ? ` · ${Math.round((1 - totals.measuredIoShare) * 100)}% legacy ≈70/30 split`
@@ -584,6 +587,11 @@ export default function AiUsagePage() {
                             }}
                           />
                           {m.provider}
+                          {m.freeTokens > 0 ? (
+                            <span className="rounded bg-sky-500/15 px-1 text-[10px] text-sky-700 dark:text-sky-400">
+                              {formatTokens(m.freeTokens)} free
+                            </span>
+                          ) : null}
                           {m.splitEstimated ? (
                             <span className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-400">
                               est. split
@@ -667,6 +675,7 @@ export default function AiUsagePage() {
                 <div className="flex shrink-0 flex-wrap items-center gap-3 text-sm">
                   <span className="tabular-nums text-muted-foreground">
                     in {formatTokens(r.inputTokens)} · out {formatTokens(r.outputTokens)}
+                    {r.freeTokens > 0 ? ` · ${formatTokens(r.freeTokens)} free` : ""}
                     {r.splitEstimated ? " ≈" : ""}
                   </span>
                   <span className="font-medium tabular-nums">{r.estimateInrLabel}</span>

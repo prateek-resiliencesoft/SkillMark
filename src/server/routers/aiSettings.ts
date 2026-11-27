@@ -409,7 +409,7 @@ export const aiSettingsRouter = router({
         usdInr,
         pricesAsOf: asOf,
         estimateNote:
-          "All costs shown in ₹. Formula: (input / 1M) × ₹-per-MTok_in + (output / 1M) × ₹-per-MTok_out (catalog USD rates × FX). OpenAI models use official ChatGPT API list prices. Legacy runs without separate in/out fall back to ≈70% / 30%. Unpriced models show ₹ —.",
+          "₹ cost counts paid keys only (free-tier keys show tokens at ₹0). Formula: (input / 1M) × ₹-per-MTok_in + (output / 1M) × ₹-per-MTok_out (catalog USD × FX). Env/platform keys count as paid. Legacy runs without key-tier metadata are treated as paid.",
         ...aggregated,
         recent: aggregated.recent.map((r) => ({
           ...r,

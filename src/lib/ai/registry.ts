@@ -1,8 +1,9 @@
-import type { AiProviderId, AiTaskKind, ResolvedAiCredentials } from "./credentials";
+import type { AiKeyTier, AiProviderId, AiTaskKind, ResolvedAiCredentials } from "./credentials";
 import {
   DEFAULT_TASK_ROUTING,
   decryptAiProviders,
   defaultModelForProvider,
+  normalizeKeyTiers,
   resolveCredentials,
   routingForTask,
   storedTaskModel,
@@ -27,6 +28,8 @@ type ChainEntry = {
   model: string;
   source: "org" | "env";
   keyIndex: number;
+  /** Org keys use stored free|paid; env / legacy / omitted → paid (real spend). */
+  keyTier?: AiKeyTier;
 };
 
 function modelFor(provider: LLMProvider, kind: "generator" | "report" = "generator"): string {
@@ -169,6 +172,10 @@ export async function resolveProviderChain(
     source: "org" | "env",
     untrustedBaseUrl = false,
   ) => {
+    const tiers =
+      source === "org"
+        ? normalizeKeyTiers(orgPlain[id]?.keyTiers, keys.length)
+        : keys.map(() => "paid" as AiKeyTier);
     keys.forEach((k, keyIndex) => {
       if (!k || seenKeys.has(`${id}:${k}`)) return;
       const provider = providerInstance(id, k, baseUrl, untrustedBaseUrl);
@@ -184,6 +191,7 @@ export async function resolveProviderChain(
           modelFor(provider),
         source,
         keyIndex,
+        keyTier: tiers[keyIndex] ?? "free",
       });
       seenKeys.add(`${id}:${k}`);
     });
@@ -221,6 +229,7 @@ export async function resolveProviderChain(
       model: modelFor(envMap.get("kimi")!),
       source: "env",
       keyIndex: 0,
+      keyTier: "paid",
     });
   }
   if (process.env.MINIMAX_API_KEY && envMap.has("minimax")) {
@@ -229,6 +238,7 @@ export async function resolveProviderChain(
       model: modelFor(envMap.get("minimax")!),
       source: "env",
       keyIndex: 0,
+      keyTier: "paid",
     });
   }
   return chain;
@@ -362,7 +372,14 @@ export class FailoverProvider implements LLMProvider {
       try {
         const model = this.modelForEntry(i, params.model);
         const res = await tracedGenerate(
-          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          {
+            provider: e.provider.id,
+            source: e.source,
+            keyIndex: e.keyIndex,
+            keyTier: e.keyTier ?? "paid",
+            model,
+            attempt: i + 1,
+          },
           params,
           () => e.provider.generateResponse({ ...params, model }),
         );
@@ -398,7 +415,14 @@ export class FailoverProvider implements LLMProvider {
       try {
         const model = this.modelForEntry(i, params.model);
         for await (const t of tracedStream(
-          { provider: e.provider.id, source: e.source, keyIndex: e.keyIndex, model, attempt: i + 1 },
+          {
+            provider: e.provider.id,
+            source: e.source,
+            keyIndex: e.keyIndex,
+            keyTier: e.keyTier ?? "paid",
+            model,
+            attempt: i + 1,
+          },
           params,
           () => e.provider.streamResponse({ ...params, model }),
         )) {
